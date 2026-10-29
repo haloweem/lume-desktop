@@ -9,7 +9,7 @@ export {validApplicationSettingsState as isApplicationSettingsSnapshot};
 const sections=['general','user','autostart',...(DIAGNOSTICS_ENABLED?['diagnostics']:[]),'support','about'];
 const text={
   'zh-CN':{
-    settings:'设置',categories:'设置分类',back:'返回',general:'通用',user:'用户设置',autostart:'开机启动',diagnostics:'诊断与维护',support:'问题反馈',about:'关于',
+    settings:'设置',categories:'设置分类',back:'返回',general:'通用',user:'用户设置',autostart:'开机启动',diagnostics:'诊断与维护',support:'问题反馈',about:'关于',agreement:'用户协议',
     supportDescription:'遇到组件不显示、材质失效、任务栏异常、壁纸卡顿或程序崩溃时，生成一份诊断报告发给我们，我们可以据此直接定位原因。',
     supportPrivacy:'报告包含系统与显卡信息、各组件状态、运行日志和崩溃记录，不包含账号密码、登录凭据和位置信息。报告只保存在你的桌面，由你决定发给谁。',
     supportNote:'发生了什么（可选）',supportNotePlaceholder:'例如：开机后任务栏透明失效，重新打开 Lume 后恢复',
@@ -46,7 +46,7 @@ const text={
     diagnosticClearConfirm:'确定清除问题记录和运行事件吗？',
   },
   en:{
-    settings:'Settings',categories:'Settings categories',back:'Back',general:'General',user:'User settings',autostart:'Startup',diagnostics:'Diagnostics & maintenance',support:'Report a problem',about:'About',
+    settings:'Settings',categories:'Settings categories',back:'Back',general:'General',user:'User settings',autostart:'Startup',diagnostics:'Diagnostics & maintenance',support:'Report a problem',about:'About',agreement:'User agreement',
     supportDescription:'If a component does not show, materials stop working, the taskbar misbehaves, the wallpaper stutters or Lume crashes, create a diagnostic report and send it to us so the cause can be found directly.',
     supportPrivacy:'The report contains system and graphics information, component states, runtime logs and crash records. It never includes passwords, sign-in credentials or your location. It is saved on your desktop and you decide who receives it.',
     supportNote:'What happened (optional)',supportNotePlaceholder:'For example: after startup the transparent taskbar stopped working until Lume was reopened',
@@ -188,7 +188,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     <div class="application-settings__version"><span data-settings-text="version"></span> 1.0.8</div>
     <div class="application-settings__update-actions">${['checkUpdate','downloadUpdate','installUpdate'].map(action=>`<button type="button" data-settings-action="${action}">${action==='checkUpdate'?REFRESH_ICON:`<span class="application-settings__glyph" aria-hidden="true">${action==='downloadUpdate'?'&#xE896;':'&#xE74E;'}</span>`}<span data-settings-text="${action}"></span></button>`).join('')}</div>
     <div data-update-status role="status" aria-live="polite"></div><progress data-update-progress max="100" hidden></progress></div>
-    <div class="application-settings__copyright">Copyright 2026 LumeDesktop</div></div></div>
+    <div class="application-settings__copyright">Copyright 2026 LumeDesktop · <button type="button" class="application-settings__legal" data-settings-legal data-settings-text="agreement"></button></div><div class="application-settings__legal-text" data-settings-legal-text hidden></div></div></div>
     <p class="application-settings__message" data-settings-message role="status" aria-live="polite"></p></section>`;
   host.replaceChildren(root);
   const $=selector=>root.querySelector(selector),panels=[...root.querySelectorAll('[data-settings-panel]')];
@@ -392,6 +392,12 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     const button=event.target.closest?.('button');
     if(!button || !root.contains(button) || button.closest('[hidden]'))return;
     if(button.hasAttribute('data-settings-back')) {hide();onBack();return;}
+    if(button.hasAttribute('data-settings-legal')) {
+      const panel=$('[data-settings-legal-text]');
+      if(!panel.hidden){panel.hidden=true;return;}
+      import('./user-agreement.js').then(({USER_AGREEMENT})=>{if(disposed)return;panel.textContent=USER_AGREEMENT;panel.hidden=false;panel.scrollIntoView({block:'nearest'});});
+      return;
+    }
     if(button.dataset.settingsSection) {render(button.dataset.settingsSection);return;}
     if(button.dataset.settingsAction && !button.disabled && button.getAttribute('aria-disabled')!=='true')
       request(button.dataset.settingsAction);

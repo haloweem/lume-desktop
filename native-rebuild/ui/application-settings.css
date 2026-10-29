@@ -211,6 +211,9 @@
 .application-settings [data-update-status][role="alert"] { color: #ff9f9b; }
 .application-settings [data-update-progress] { width: min(100%, 280px); height: 8px; accent-color: #75b6ff; }
 .application-settings__copyright { padding: 20px 0 22px; border-top: 1px solid rgba(255, 255, 255, .08); color: rgba(255, 255, 255, .45); font-size: 13px; text-align: center; }
+.application-settings__legal { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.application-settings__legal:hover { color: rgba(255, 255, 255, .72); text-decoration: underline; }
+.application-settings__legal-text { margin: 0 0 18px; padding: 14px 16px; max-height: 320px; overflow: auto; white-space: pre-wrap; border-radius: 10px; background: rgba(255, 255, 255, .05); color: rgba(255, 255, 255, .6); font-size: 12px; line-height: 1.7; }
 .application-settings__message { margin: 0; padding: 10px 0; font-size: 13px; }
 .application-settings__message.error { color: #ff7875; }
 .application-settings__diagnostics { padding-top: 0; }
