@@ -1,0 +1,8 @@
+{
+  "architecture": "bootstrapper",
+  "installerFile": "MicrosoftEdgeWebView2Setup.exe",
+  "url": "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+  "sha256": "87AD3FE4E3FAA1B48BAD79DE1B9269E5EB30574545BB6F5F7C37D51035748CAF",
+  "publisher": "Microsoft Corporation",
+  "downloadedAt": "2026-10-09"
+}

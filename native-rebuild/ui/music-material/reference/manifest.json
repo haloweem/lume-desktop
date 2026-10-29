@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "builder": "esbuild",
+  "builderVersion": "0.25.12",
+  "reference": "lume1.0.1/third_party/folia-major/upstream",
+  "sources": {
+    "src/components/liquid-glass/LiquidGlassRenderer.ts": "70e4a7ee9d301fe6244d6ca20c7350df5ff92c0ed169bc6343e3bca456b7b29d",
+    "src/components/liquid-glass/liquidGlassShaders.ts": "2b488adf0b22018ac6d2e1505250604f9690bd2929404a42725c30ba511f1646",
+    "src/components/liquid-glass/liquidGlassPreset.ts": "3881e38ea9b844f2cbf332b4567b74c95ba3e1b02da633a5abffb2c8bef4bf95",
+    "src/components/liquid-glass/liquidGlassModel.ts": "5a872827f38cec483563adf9279246120a5307b1df5e5b40d0fb0678302f8ba4",
+    "src/components/liquid-glass/LiquidGlassSceneComposition.ts": "613375a32eaf19e21a05526dce35ad1596c7cab166817be3f0cafe998e09926c",
+    "src/components/liquid-glass/sceneOverflow.ts": "b48901bd8a19e409205fd06b4254fd60e0a626e79d00107f326bd104e6654a39",
+    "src/components/liquid-glass/LiquidGlassSceneCapture.ts": "61a31dcfffc0802ec951a72f7f0b15eb83cec15fa4993de4088ea8466f4edf7f",
+    "src/components/FloatingPlayerControls.tsx": "4fa58490595b3b7b4d27ae3c104af58fa4310189dc1c3f5c57c1e76626a99ef4"
+  },
+  "adaptations": [
+    "Renderer, shaders, model and preset are unmodified; import.meta.env.DEV is false.",
+    "Composition and overflow lookup use each element ownerDocument for same-origin iframe realms.",
+    "Overflow bounds copy coordinates explicitly because native DOMRect properties are not enumerable.",
+    "Historical text painter extracted by AST; global scene registry and React lifecycle are not imported."
+  ],
+  "generated": {
+    "material.js": "0ffd2cf411fa858964473fdb4093165c8cbc0058a5f014de693c249bc6eddb68",
+    ".gitattributes": "48bb1362146048f9b976c357599e97ae30561b1d7b7d61345835b12f7607dcc5",
+    "source/upstream/src/components/liquid-glass/LiquidGlassRenderer.ts": "70e4a7ee9d301fe6244d6ca20c7350df5ff92c0ed169bc6343e3bca456b7b29d",
+    "source/upstream/src/components/liquid-glass/liquidGlassShaders.ts": "2b488adf0b22018ac6d2e1505250604f9690bd2929404a42725c30ba511f1646",
+    "source/upstream/src/components/liquid-glass/liquidGlassPreset.ts": "3881e38ea9b844f2cbf332b4567b74c95ba3e1b02da633a5abffb2c8bef4bf95",
+    "source/upstream/src/components/liquid-glass/liquidGlassModel.ts": "5a872827f38cec483563adf9279246120a5307b1df5e5b40d0fb0678302f8ba4",
+    "source/upstream/src/components/liquid-glass/LiquidGlassSceneComposition.ts": "613375a32eaf19e21a05526dce35ad1596c7cab166817be3f0cafe998e09926c",
+    "source/upstream/src/components/liquid-glass/sceneOverflow.ts": "b48901bd8a19e409205fd06b4254fd60e0a626e79d00107f326bd104e6654a39",
+    "source/upstream/src/components/liquid-glass/LiquidGlassSceneCapture.ts": "61a31dcfffc0802ec951a72f7f0b15eb83cec15fa4993de4088ea8466f4edf7f",
+    "source/upstream/src/components/FloatingPlayerControls.tsx": "4fa58490595b3b7b4d27ae3c104af58fa4310189dc1c3f5c57c1e76626a99ef4",
+    "licenses/Folia-AGPL-3.0.txt": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e",
+    "source/entry.ts": "66182fd3e8d0600912dcf1cf83ffe6d7fc17ea1dcec908688256aec82a44d780"
+  }
+}

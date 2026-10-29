@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "physicalViewport": {"width": 1440, "height": 900},
+  "scales": [1, 1.25],
+  "fontFamily": "\"Segoe UI\", \"Microsoft YaHei\", sans-serif",
+  "topInset": 34,
+  "listTitle": "\u6b4c\u5355",
+  "guestTitle": "\u767b\u5f55\uff0c\u5f00\u542f\u4f60\u7684\u97f3\u4e50",
+  "historicalGuestPrompt": "\u9009\u62e9\u97f3\u4e50\u5e73\u53f0\u767b\u5f55\uff0c\u5373\u53ef\u67e5\u770b\u4f60\u7684\u6b4c\u5355\u548c\u63a8\u8350\u97f3\u4e50\u3002",
+  "guestPrompt": "\u626b\u7801\u8fde\u63a5\u97f3\u4e50\u5e73\u53f0\u8d26\u6237\u3002\u5728\u7ebf\u6b4c\u5355\u4e0e\u63a8\u8350\u5c1a\u672a\u63a5\u5165\uff0c\u672c\u5730\u97f3\u4e50\u53ef\u7ee7\u7eed\u64ad\u653e\u3002",
+  "filterQuery": "\u5c71\u95f4",
+  "providers": [
+    {"providerId": "netease", "displayName": "\u7f51\u6613\u4e91\u97f3\u4e50", "shortName": "\u7f51\u6613\u4e91\u97f3\u4e50", "status": "guest", "availability": {"configured": true}},
+    {"providerId": "qq", "displayName": "QQ \u97f3\u4e50", "shortName": "QQ \u97f3\u4e50", "status": "guest", "availability": {"configured": true}},
+    {"providerId": "kugou", "displayName": "\u9177\u72d7\u97f3\u4e50", "shortName": "\u9177\u72d7\u97f3\u4e50", "status": "guest", "availability": {"configured": true}}
+  ],
+  "tracks": [
+    {"id": "parity-01", "title": "\u5c71\u95f4\u6765\u4fe1", "artist": "Lume Ensemble", "album": "\u6668\u5149\u8bb0\u5f55", "duration": 241},
+    {"id": "parity-02", "title": "Window Light", "artist": "Mira / Chen", "album": "Northbound", "duration": 193},
+    {"id": "parity-03", "title": "\u96e8\u843d\u5728\u5b89\u9759\u7684\u7a97\u8fb9", "artist": "\u5c0f\u8def", "album": "\u8fdc\u65b9\u7684\u56de\u58f0", "duration": 305},
+    {"id": "parity-04", "title": "A Long Journey Through the Quiet Northern Valley", "artist": "The Evening Quartet", "album": "Letters from the Valley / Live Sessions", "duration": 367},
+    {"id": "parity-05", "title": "\u6cbf\u9014\u98ce\u666f", "artist": "\u6797\u4e0e\u6d77", "album": "\u8f66\u7a97", "duration": 228},
+    {"id": "parity-06", "title": "\u5c71\u95f4\u56de\u58f0", "artist": "Lume Ensemble", "album": "\u6668\u5149\u8bb0\u5f55", "duration": 276},
+    {"id": "parity-07", "title": "Still Water", "artist": "Mira", "album": "Reflections", "duration": 184},
+    {"id": "parity-08", "title": "\u5199\u7ed9\u660e\u5929", "artist": "\u5c0f\u8def", "album": "\u591c\u822a", "duration": 259},
+    {"id": "parity-09", "title": "After the Last Train", "artist": "Chen", "album": "Northbound", "duration": 321},
+    {"id": "parity-10", "title": "\u51ac\u65e5\u901a\u4fe1", "artist": "\u6797\u4e0e\u6d77", "album": "\u8f66\u7a97", "duration": 207},
+    {"id": "parity-11", "title": "Small Hours", "artist": "The Evening Quartet", "album": "Reflections", "duration": 289},
+    {"id": "parity-12", "title": "\u98ce\u7a7f\u8fc7\u5c71\u8c37", "artist": "Lume Ensemble", "album": "\u8fdc\u65b9\u7684\u56de\u58f0", "duration": 234}
+  ],
+  "recommendations": [
+    {"id": "rec-01", "title": "\u4eca\u65e5\u7cbe\u9009", "trackCount": 12},
+    {"id": "rec-02", "title": "\u6e05\u6668\u6162\u884c", "trackCount": 24},
+    {"id": "rec-03", "title": "Window Seat", "trackCount": 36},
+    {"id": "rec-04", "title": "\u5b89\u9759\u7684\u4e0b\u5348", "trackCount": 48},
+    {"id": "rec-05", "title": "Night Letters", "trackCount": 60},
+    {"id": "rec-06", "title": "\u56de\u5bb6\u7684\u8def", "trackCount": 18},
+    {"id": "rec-07", "title": "\u68ee\u6797\u4e4b\u95f4", "trackCount": 30},
+    {"id": "rec-08", "title": "Northern Lights", "trackCount": 42},
+    {"id": "rec-09", "title": "\u65e7\u65f6\u5149", "trackCount": 54},
+    {"id": "rec-10", "title": "\u8fdc\u65b9\u7684\u6d77", "trackCount": 66},
+    {"id": "rec-11", "title": "After Rain", "trackCount": 78}
+  ],
+  "playlists": [
+    {"id": "list-parity", "title": "\u6b4c\u5355", "owned": true},
+    {"id": "list-travel", "title": "\u65c5\u9014\u8bb0\u5f55", "owned": true},
+    {"id": "list-evening", "title": "Evening Notes", "owned": true},
+    {"id": "list-saved", "title": "\u6536\u85cf\u7684\u65cb\u5f8b", "owned": false}
+  ]
+}

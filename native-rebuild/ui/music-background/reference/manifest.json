@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "builder": "esbuild",
+  "builderVersion": "0.25.12",
+  "reference": "lume1.0.1/third_party/folia-major/upstream",
+  "sources": {
+    "src/components/liquid-glass/glassMediaSource.ts": "df2c8b338b0474816f6b8a6907c651b9f952aa81fe9429ca1ff9cc32dbbd5b37",
+    "src/components/visualizer/backgrounds/wallpaper/AnimatedWallpaperImage.ts": "77945a676dac22491c6973f87dda621dc7464c9f0ee82343bf708bf2ef8ac94f",
+    "src/components/visualizer/backgrounds/wallpaper/WallpaperCompositor.ts": "43a07d63a473b08934fb48222b253869b28d616dc506a2dc36971e8a8a44fc78"
+  },
+  "adaptations": [
+    "WallpaperCompositor and AnimatedWallpaperImage are bundled as browser-only ESM with no React, store, native or global registry dependency.",
+    "Original 420ms cubic-bezier fade, cover crop, canvas frame event and video-frame scheduling are retained.",
+    "Added cancelPending for bounded view timeouts and stale replacement cancellation.",
+    "Animated decoding is skipped for the static default image to avoid a second fetch/decode.",
+    "Animated fetches are bounded to 50 MiB and decoded frames to 64 Mi pixels with a 16384-pixel side limit."
+  ],
+  "generated": [
+    {
+      "path": "background.js",
+      "bytes": 16683,
+      "sha256": "93c8ba0f67af7d2f6d73e75af15acbed7eba39afb4e1a5aea8dbf988a1b9fd62"
+    },
+    {
+      "path": "licenses/Folia-AGPL-3.0.txt",
+      "bytes": 35184,
+      "sha256": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e"
+    },
+    {
+      "path": "source/entry.ts",
+      "bytes": 550,
+      "sha256": "071486cd6db78391dc3cd24f1361fccb21ac2892f9ee6741c6ec2fcf78b41122"
+    },
+    {
+      "path": "source/upstream/src/components/liquid-glass/glassMediaSource.ts",
+      "bytes": 4647,
+      "sha256": "df2c8b338b0474816f6b8a6907c651b9f952aa81fe9429ca1ff9cc32dbbd5b37"
+    },
+    {
+      "path": "source/upstream/src/components/visualizer/backgrounds/wallpaper/AnimatedWallpaperImage.ts",
+      "bytes": 4159,
+      "sha256": "77945a676dac22491c6973f87dda621dc7464c9f0ee82343bf708bf2ef8ac94f"
+    },
+    {
+      "path": "source/upstream/src/components/visualizer/backgrounds/wallpaper/WallpaperCompositor.ts",
+      "bytes": 13033,
+      "sha256": "43a07d63a473b08934fb48222b253869b28d616dc506a2dc36971e8a8a44fc78"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+.radial-slots {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 800px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.radial-slot {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-content: center;
+  gap: 4px 8px;
+  min-width: 0;
+  min-height: 76px;
+  padding: 12px;
+  border: 1px solid #434343;
+  border-radius: 2px;
+  background: #141414;
+  color: rgba(255, 255, 255, .45);
+}
+.radial-slot.active { border-color: #177ddc; color: rgba(255, 255, 255, .85); }
+.radial-slot-index { color: #8e8e8e; font-variant-numeric: tabular-nums; }
+.radial-slot-label { min-width: 0; overflow-wrap: anywhere; }
+.radial-slot-status { grid-column: 2; font-size: 12px; overflow-wrap: anywhere; }
+.radial-slot.active .radial-slot-status { color: #64ba8a; }
+.radial-shortcut {
+  width: 240px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 11px;
+  border: 1px solid #434343;
+  border-radius: 2px;
+  background: #141414;
+  color: rgba(255, 255, 255, .85);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.radial-shortcut:focus-visible, .radial-shortcut[aria-pressed="true"] {
+  border-color: #177ddc;
+  outline: 2px solid rgba(23, 125, 220, .2);
+  outline-offset: 1px;
+}
+.radial-recorder-status { color: #ffb86b; font-size: 12px; }
+@media (max-width: 720px) {
+  .radial-slots { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+}

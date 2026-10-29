@@ -1,0 +1,21 @@
+Bundled license information:
+
+tiny-lru/dist/tiny-lru.js:
+  /**
+   * tiny-lru
+   *
+   * @copyright 2026 Jason Mulligan <jason.mulligan@avoidwork.com>
+   * @license BSD-3-Clause
+   * @version 11.4.7
+   */
+
+react/cjs/react.production.js:
+  /**
+   * @license React
+   * react.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */

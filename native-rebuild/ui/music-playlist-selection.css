@@ -1,0 +1,35 @@
+/* PlaylistSelectionDropdown / index.css music-frosted-surface, independent of create dialog. */
+.MusicPlaylistSelection {
+  position: fixed; z-index: 1000; display: flex; flex-direction: column;
+  box-sizing: border-box; width: 336px; max-width: calc(100vw - 16px);
+  max-height: min(404px,calc(100dvh - 16px)); overflow: hidden;
+  border: 1px solid rgba(255,255,255,.1); border-radius: 16px;
+  color: rgba(255,255,255,.92); background: rgba(0,0,0,.2);
+  backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 25px 50px -12px rgba(0,0,0,.25);
+  font: 14px/1.5 ui-sans-serif,system-ui,sans-serif; letter-spacing: 0;
+}
+.MusicPlaylistSelection * { box-sizing: border-box; }
+.MusicPlaylistSelection [hidden] { display: none !important; }
+.MusicPlaylistSelection h2, .MusicPlaylistSelection p { margin: 0; }
+.MusicPlaylistSelection header { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 8px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.MusicPlaylistSelection header > div { flex: 1; min-width: 0; }
+.MusicPlaylistSelection h2 { font-size: 14px; line-height: 20px; font-weight: 600; }
+.MusicPlaylistSelection [data-playlist-song] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 16px; color: rgba(255,255,255,.45); }
+.MusicPlaylistSelection button { cursor: pointer; border: 0; background: transparent; color: inherit; font: inherit; }
+.MusicPlaylistSelection button:hover { background: rgba(255,255,255,.1); }
+.MusicPlaylistSelection button:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: -2px; }
+.MusicPlaylistSelection button:disabled { cursor: default; opacity: .5; }
+.MusicPlaylistSelection .MusicIcon { flex-shrink: 0; width: 15px; height: 15px; }
+.MusicPlaylistSelection [data-playlist-close] { padding: 4px; border-radius: 6px; color: rgba(255,255,255,.45); }
+.MusicPlaylistSelectionList { min-height: 0; max-height: 320px; overflow-y: auto; overscroll-behavior: contain; padding: 8px 4px 8px 8px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+.MusicPlaylistSelectionList button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border-radius: 8px; text-align: left; }
+.MusicPlaylistSelectionList button + button { margin-top: 4px; }
+.MusicPlaylistSelectionList button > span { flex: 1; min-width: 0; }
+.MusicPlaylistSelectionList [data-playlist-name], .MusicPlaylistSelectionList small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.MusicPlaylistSelectionList [data-playlist-name] { font-size: 14px; line-height: 20px; }
+.MusicPlaylistSelectionList small { font-size: 12px; line-height: 16px; color: rgba(255,255,255,.4); }
+.MusicPlaylistSelectionList button > .MusicIcon { color: rgba(255,255,255,.35); }
+.MusicPlaylistSelectionList [data-playlist-create] { border: 1px dashed rgba(255,255,255,.15); color: rgba(255,255,255,.8); }
+.MusicPlaylistSelection .MusicPlaylistSelectionEmpty { padding: 12px; color: rgba(255,255,255,.45); font-size: 12px; }
+.MusicPlaylistSelection [data-playlist-error] { flex: 0 0 auto; padding: 8px 16px; color: #fecaca; font-size: 12px; }

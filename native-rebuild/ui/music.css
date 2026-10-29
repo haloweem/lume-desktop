@@ -1,0 +1,404 @@
+@import url("./music-provider-account.css");
+@import url("./music-playlist-selection.css");
+@import url("./music-wallpaper-gallery.css");
+.MusicBackgroundSetting { position: relative; }
+.MusicBackgroundSourceMenu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; width: 192px; max-width: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid #ffffff1a; border-radius: 16px; background: rgba(0,0,0,.2); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 20px 25px -5px #0002; }
+.MusicRoot .MusicBackgroundSourceMenu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: #fff; text-align: left; font-size: 12px; }
+.MusicBackgroundSourceMenu button:hover { background: #ffffff1a; }
+.MusicBackgroundSourceMenu button[data-music-background-action="clear"] { color: #f87171; }
+.MusicBackgroundSourceMenu svg { width: 14px; height: 14px; flex-shrink: 0; }
+/* Geometry from MusicHomeNextLayout / Grid3D; materials from reference index.css. */
+.MusicRoot {
+  --music-titlebar: 34px;
+  --music-sidebar: 208px;
+  --music-inset: 40px;
+  --music-search-height: 42px;
+  --music-border: rgba(255,255,255,.1);
+  --music-muted: rgba(255,255,255,.55);
+  --music-faint: rgba(255,255,255,.4);
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: #fff;
+  background: #09090b;
+  font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0;
+  font-variant-numeric: normal;
+}
+.MusicRoot *, .MusicRoot *::before, .MusicRoot *::after { box-sizing: border-box; }
+.MusicRoot button, .MusicRoot input { font: inherit; }
+.MusicRoot button { cursor: pointer; }
+.MusicRoot button:disabled { cursor: default; }
+.MusicRoot [hidden] { display: none !important; }
+.MusicRoot button:focus-visible, .MusicRoot input:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: 2px; }
+.MusicRoot h1, .MusicRoot h2, .MusicRoot p { margin: 0; }
+.MusicIcon { display: block; flex: 0 0 auto; width: 17px; height: 17px; }
+.MusicBackground { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; object-fit: cover; object-position: center; pointer-events: none; }
+.MusicFileInput { display: none; }
+.MusicSidebar { display: flex; flex: 0 0 var(--music-sidebar); flex-direction: column; min-height: 0; width: var(--music-sidebar); padding: calc(var(--music-titlebar) + 20px) 12px 20px; overflow-y: auto; overscroll-behavior: contain; border-right: 1px solid var(--music-border); background: rgba(0,0,0,.1); }
+.MusicSidebar > * { flex-shrink: 0; }
+.MusicBrand { padding: 0 12px 28px; font-size: 20px; line-height: 28px; font-weight: 600; }
+.MusicNavLabel { padding: 0 12px 8px; color: var(--music-faint); font-size: 11px; line-height: 16.5px; }
+.MusicNavLabel--library { margin-top: 28px; }
+.MusicNav { display: flex; flex-direction: column; gap: 4px; }
+.MusicNavItem { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 0; border-radius: 12px; color: rgba(255,255,255,.65); background: transparent; text-align: left; line-height: 20px !important; }
+.MusicNavItem:hover { color: #fff; background: rgba(255,255,255,.1); }
+.MusicNavItem.is-active { color: #020617; background: #fff; }
+.MusicPlaylistLibrary { display: flex; flex-direction: column; min-height: 0; margin-top: 28px; padding: 16px 4px 0; border-top: 1px solid var(--music-border); }
+.MusicPlaylistTabs { display: flex; align-items: center; margin-bottom: 8px; padding: 0 8px; white-space: nowrap; font-size: 11px; line-height: 16.5px; color: rgba(255,255,255,.25); }
+.MusicPlaylistTabs > span { padding: 0 4px; }
+.MusicPlaylistTabs > button:not(.MusicIconButton) { padding: 0 0 4px; border: 0; border-bottom: 1px solid transparent; color: rgba(255,255,255,.45); background: transparent; }
+.MusicPlaylistTabs > button[aria-pressed="true"] { color: #fff; border-bottom-color: #fff; }
+.MusicPlaylistTabs .MusicIconButton { width: 18px; height: 18px; margin-left: auto; }
+.MusicPlaylistItems { min-height: 0; max-height: min(42vh,512px); overflow-y: auto; padding-right: 4px; }
+.MusicPlaylistEmpty { margin: 6px 4px; color: rgba(255,255,255,.45); font-size: 12px; }
+.MusicPlaylistItem { display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 4px; padding: 6px; border: 0; border-radius: 8px; background: transparent; color: rgba(255,255,255,.65); text-align: left; }
+.MusicPlaylistItem:hover { background: rgba(255,255,255,.1); color: #fff; }
+.MusicPlaylistItem[aria-current="page"] { background: #fff; color: #020617; }
+.MusicPlaylistItem > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.MusicLocalLibrary { margin-top: auto; padding-top: 16px; }
+.MusicImportButton { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 0; border-radius: 12px; color: rgba(255,255,255,.65); background: transparent; text-align: left; }
+.MusicImportButton:hover { color: #fff; background: rgba(255,255,255,.1); }
+.MusicMain { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: calc(var(--music-titlebar) + 28px) var(--music-inset) 0; }
+.MusicTopbar { position: relative; display: flex; flex: 0 0 var(--music-search-height); align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.MusicSearchShell { display: flex; align-items: center; flex: 0 1 480px; gap: 9px; width: 100%; height: var(--music-search-height); padding: 0 14px; border: 0; border-radius: 50px; color: rgba(255,255,255,.92); background: rgba(17,20,27,.62); box-shadow: 0 20px 70px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.08); backdrop-filter: blur(24px) saturate(1.18); -webkit-backdrop-filter: blur(24px) saturate(1.18); }
+.MusicSearchShell > button { display: grid; place-items: center; flex: 0 0 15px; width: 15px; padding: 0; border: 0; color: rgba(255,255,255,.45); background: transparent; }
+.MusicSearchShell .MusicIcon { width: 15px; height: 15px; }
+.MusicSearchShell input { min-width: 0; width: 100%; height: 100%; padding: 0; border: 0; outline: none !important; background: transparent; color: #fff; }
+.MusicSearchShell input::placeholder { color: var(--music-faint); }
+.MusicSearchShell input::-webkit-search-cancel-button { appearance: none; }
+.MusicIconButton { display: inline-grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: rgba(255,255,255,.6); background: transparent; transition: color 150ms, opacity 150ms; }
+.MusicIconButton:hover { color: #fff; }
+.MusicIconButton:active { opacity: .75; }
+.MusicIconButton:disabled { opacity: .3; }
+.MusicIconButton.is-active { color: #fff; }
+[data-music-open-player], [data-music-return] { width: 40px; height: 40px; color: rgba(255,255,255,.6); background: rgba(0,0,0,.2); backdrop-filter: blur(12px); }
+[data-music-open-player] { position: absolute; z-index: 3; top: calc(var(--music-titlebar) + 32px); right: 24px; }
+.MusicTopbar { padding-right: 48px; }
+[data-music-open-player] .MusicIcon, [data-music-return] .MusicIcon { width: 20px; height: 20px; }
+[data-music-open-player]:hover, [data-music-return]:hover { background: rgba(255,255,255,.1); }
+.MusicContent { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-bottom: 112px; }
+.MusicContent.music-drop-active { outline: 2px solid rgba(255,255,255,.65); outline-offset: -4px; }
+.MusicSidebar::-webkit-scrollbar, .MusicContent::-webkit-scrollbar, .MusicPlaylistItems::-webkit-scrollbar, .MusicPanelBody::-webkit-scrollbar { width: 6px; }
+.MusicContent::-webkit-scrollbar-track, .MusicPlaylistItems::-webkit-scrollbar-track, .MusicPanelBody::-webkit-scrollbar-track { background: transparent; }
+.MusicContent::-webkit-scrollbar-thumb, .MusicPlaylistItems::-webkit-scrollbar-thumb, .MusicPanelBody::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: rgba(255,255,255,.18); background-clip: padding-box; }
+.MusicContent::-webkit-scrollbar-thumb:hover, .MusicPlaylistItems::-webkit-scrollbar-thumb:hover, .MusicPanelBody::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,.3); }
+.MusicContent::-webkit-scrollbar-button, .MusicPlaylistItems::-webkit-scrollbar-button, .MusicPanelBody::-webkit-scrollbar-button { display: none; }
+.MusicSectionHeader { margin-bottom: 24px; }
+.MusicSectionHeader h1 { font-size: 30px; line-height: 36px; font-weight: 700; }
+.MusicSongTab { position: relative; display: table; margin-top: 16px; padding-bottom: 8px; color: #6ee7b7; font-size: 14px; line-height: 20px; font-weight: 500; }
+.MusicSongTab::after { position: absolute; inset: auto 0 0; height: 2px; border-radius: 999px; background: currentColor; content: ''; }
+.MusicRecommendations { margin-bottom: 24px; }
+.MusicRecommendations h2 { margin: 0 0 24px; font-size: 18px; line-height: 28px; font-weight: 600; }
+.MusicRecommendationGrid { display: grid; align-items: start; gap: 12px; }
+.MusicRecommendationGrid--featured { grid-template-columns: 2fr repeat(4,minmax(0,1fr)); margin-bottom: 24px; }
+.MusicRecommendationGrid--supply { grid-template-columns: repeat(6,minmax(0,1fr)); }
+.MusicRecommendationCard { display: block; min-width: 0; width: 100%; padding: 0; border: 0; color: rgba(255,255,255,.8); background: transparent; text-align: left; transition: transform 200ms; }
+.MusicRecommendationCard:hover { transform: translateY(-2px); }
+.MusicRecommendationArtwork { position: relative; display: block; width: 100%; aspect-ratio: 1; overflow: hidden; border: 1px solid var(--music-border); border-radius: 12px; background: rgba(0,0,0,.2); box-shadow: 0 10px 15px -3px rgba(0,0,0,.2); }
+.MusicRecommendationCard--featured .MusicRecommendationArtwork { aspect-ratio: 2; }
+.MusicRecommendationImage { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(255,255,255,.35); background: rgba(255,255,255,.1); }
+.MusicRecommendationImage .MusicIcon { width: 28px; height: 28px; }
+.MusicRecommendationImage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform 300ms; }
+.MusicRecommendationCard--featured .MusicRecommendationImage .MusicIcon { width: 34px; height: 34px; }
+.MusicRecommendationCard:hover img { transform: scale(1.03); }
+.MusicRecommendationShade { position: absolute; inset: 0; background: linear-gradient(to top,rgba(0,0,0,.65),transparent 50%,transparent); }
+.MusicRecommendationArtwork > strong { position: absolute; right: 16px; bottom: 12px; left: 16px; font-size: 18px; font-weight: 600; }
+.MusicRecommendationCard > strong, .MusicRecommendationCard > span:last-child:not(.MusicRecommendationArtwork) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.MusicRecommendationCard > strong { margin-top: 8px; font-size: 14px; line-height: 20px; font-weight: 500; }
+.MusicRecommendationCard > span:last-child:not(.MusicRecommendationArtwork) { margin-top: 2px; font-size: 12px; line-height: 16px; color: rgba(255,255,255,.45); }
+.MusicRecommendations .MusicSupplyTitle { margin-bottom: 12px; }
+.MusicToolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 0; padding-bottom: 20px; border-bottom: 1px solid var(--music-border); }
+.MusicPrimaryButton { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 8px 20px; border: 0; border-radius: 999px; color: #020617; background: #fff; font-weight: 500 !important; line-height: 20px !important; }
+.MusicPrimaryButton .MusicIcon { width: 14px; height: 14px; fill: currentColor; }
+.MusicPrimaryButton:disabled { opacity: .4; }
+.MusicListSearch { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--music-muted); }
+.MusicListSearch label { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; background: rgba(0,0,0,.25); color: rgba(255,255,255,.75); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.MusicListSearch input { width: 144px; min-width: 0; padding: 0; border: 0; outline: 0; color: #fff; background: transparent; line-height: 20px; }
+.MusicListSearch .MusicIcon { width: 14px; height: 14px; }
+.MusicListSearch label .MusicIconButton { width: 14px; height: 20px; }
+.MusicTextButton { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; color: var(--music-muted); background: transparent; }
+.MusicTextButton:hover { color: #fff; }
+.MusicTrackList { overflow: hidden; margin-bottom: 32px; border: 1px solid var(--music-border); border-radius: 16px; color: #fff; background: rgba(0,0,0,.2); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+.MusicTableHead, .MusicTrackRow { display: grid; grid-template-columns: minmax(0,1fr) 72px minmax(160px,.55fr) 80px; align-items: center; gap: 16px; padding: 8px 16px; }
+.MusicTableHead { font-size: 12px; line-height: 16px; color: var(--music-faint); }
+.MusicTrackRow { position: relative; min-height: 61px; border-top: 1px solid rgba(255,255,255,.06); }
+.MusicTrackRow:hover { background: rgba(255,255,255,.1); }
+.MusicTrackName { min-width: 0; }
+.MusicTrackPlay { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
+.MusicTrackPlay:not(:disabled)::after { position: absolute; inset: 0; content: ''; }
+.MusicTrackPlay:focus-visible::after { outline: 2px solid rgba(255,255,255,.8); outline-offset: -2px; }
+.MusicTrackActions { position: relative; z-index: 1; }
+.MusicTrackNumber { flex: 0 0 20px; color: rgba(255,255,255,.35); font-size: 12px; text-align: center; }
+.MusicTrackRow.is-current .MusicTrackNumber { color: #6ee7b7; }
+.MusicTrackArtwork, .MusicPlaylistArtwork, .MusicPlayerArtwork { position: relative; display: grid; place-items: center; flex: 0 0 auto; width: 44px; height: 44px; overflow: hidden; border-radius: 8px; color: rgba(255,255,255,.35); background: rgba(255,255,255,.1); }
+.MusicTrackArtwork img, .MusicPlaylistArtwork img, .MusicPlayerArtwork img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.MusicPlaylistArtwork { width: 32px; height: 32px; border-radius: 4px; }
+.MusicTrackMeta, .MusicNowPlayingMeta { display: grid; min-width: 0; }
+.MusicTrackMeta strong, .MusicTrackMeta > span:not(.MusicTrackTitle), .MusicTrackAlbum, .MusicNowPlayingMeta strong, .MusicNowPlayingMeta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.MusicTrackTitle { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.MusicTrackMeta strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; line-height: 20px; font-weight: 400; }
+.MusicTrackMeta > span:not(.MusicTrackTitle) { color: rgba(255,255,255,.45); font-size: 12px; line-height: 16px; }
+.MusicTrackVip { flex: 0 0 auto; padding: 0 4px; border: 1px solid rgba(110,231,183,.7); border-radius: 3px; color: #6ee7b7; font-size: 10px; line-height: 14px; }
+.MusicSongMembership { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; pointer-events: none; font-size: 9px; font-weight: 800; line-height: 16px; }
+.MusicSongMembership--qq-green { min-width: 36px; height: 16px; padding: 0 4px; border-radius: 3px; color: #062d1d; background: #35c78a; }
+.MusicSongMembership--qq-super { min-width: 36px; height: 16px; padding: 0 4px; border-radius: 3px; color: #3d2b00; background: #f0c45c; }
+.MusicSongMembership--netease { width: 16px; height: 16px; border-radius: 50%; color: #ff4054; background: #18181b; }
+.MusicSongMembership--netease.is-super { box-shadow: 0 0 0 1px rgba(255,64,84,.6); }
+.MusicSongMembership--netease .MusicIcon { width: 12px; height: 12px; }
+.MusicSongMembership--kugou { height: 16px; padding: 0 4px; border: 1px solid rgba(255,154,36,.75); border-radius: 3px; color: #fff; background: #f28a16; }
+.MusicTrackActions .MusicIconButton.is-active .MusicIcon, .MusicPlayerControls .MusicIconButton.is-active .MusicIcon { fill: #ff4054; color: #ff4054; stroke-width: 2.4; }
+.MusicTrackAlbum { color: var(--music-muted); font-size: 14px; }
+.MusicTrackTime { color: rgba(255,255,255,.5); font-size: 12px; }
+.MusicTrackActions { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.MusicTrackActions .MusicIconButton { width: 28px; height: 28px; }
+.MusicTrackActions .MusicIcon { width: 16px; height: 16px; }
+.MusicEmptyQueue { padding: 64px 16px; text-align: center; color: rgba(255,255,255,.45); }
+.MusicGuest { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; min-height: 100%; padding: 24px; text-align: center; }
+.MusicGuest > .MusicTextButton { display: none; }
+@media (max-width: 639px) {
+  .MusicGuest > .MusicTextButton { display: inline-flex; }
+}
+.MusicGuestIcon { display: grid; place-items: center; width: 80px; height: 80px; border: 1px solid rgba(255,255,255,.05); border-radius: 24px; background: rgba(255,255,255,.05); backdrop-filter: blur(12px); }
+.MusicGuestIcon .MusicIcon { width: 36px; height: 36px; opacity: .25; }
+.MusicGuestCopy { max-width: 448px; }
+.MusicGuest h1 { font-size: 24px; line-height: 32px; font-weight: 700; opacity: .9; }
+.MusicGuest p { margin-top: 8px; color: rgba(255,255,255,.5); font-size: 14px; line-height: 24px; }
+.MusicProviderButtons { display: flex; flex-direction: column; gap: 14px; width: min(100%, 320px); padding-top: 8px; }
+.MusicProviderButton { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 20px; border: 1px solid rgba(255,255,255,.1); border-radius: 16px; color: #fff; background: rgba(0,0,0,.2); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 25px 50px -12px rgba(0,0,0,.25); font-weight: 700 !important; }
+.MusicProviderButton:disabled { opacity: .4; }
+.MusicProviderBadge { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 12px; font-weight: 900; }
+.MusicProviderBadge[data-provider="netease"] { background: #dc2626; }
+.MusicProviderBadge[data-provider="qq"] { background: #16a34a; }
+.MusicProviderBadge[data-provider="kugou"] { background: #2563eb; }
+.MusicPlayback { position: relative; width: 100%; height: 100%; }
+[data-music-return] { position: absolute; z-index: 2; top: calc(var(--music-titlebar) + 20px); left: 24px; }
+.MusicStage { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
+.MusicEffects { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.MusicEffects canvas { display: block; width: 100%; height: 100%; }
+.MusicPlayback > .MusicPlayerBar { z-index: 4; }
+.MusicQualityDismiss {position:absolute;inset:0;z-index:3;background:transparent}
+.MusicImmersiveHoverZone {position:absolute;bottom:0;left:0;right:0;height:160px;z-index:2;pointer-events:none}
+.MusicRoot.is-immersive .MusicImmersiveHoverZone {pointer-events:auto}
+.MusicRoot.is-immersive [data-music-return] {visibility:hidden;pointer-events:none}
+.MusicRoot.is-immersive:not(.is-immersive-revealed) .MusicPlayerBar {opacity:0;visibility:hidden;pointer-events:none;transform:translate(-50%,24px) scale(.97)}
+.MusicRoot.is-immersive .MusicPlayerBar {transition:opacity .26s,transform .26s}
+.MusicStage[data-visualizer-state="empty"], .MusicStage[data-visualizer-state="error"] { display: grid; place-items: center; padding-bottom: 140px; color: rgba(255,255,255,.5); font-size: 24px; }
+.MusicStage canvas { display: block; }
+.MusicReferenceStage { display: block; border: 0; width: 100%; height: 100%; background: transparent; }
+.MusicPlaybackEmpty { display: grid; place-items: center; height: 70%; padding: 80px 32px; font-size: 24px; color: rgba(255,255,255,.5); }
+/* Keep the original frosted fallback for WebGL/context failure. */
+.MusicPlayerBar { position: absolute; bottom: 32px; left: 50%; width: clamp(980px,68vw,1240px); max-width: calc(100% - 32px); height: clamp(104px,6.2vw,112px); transform: translateX(-50%); border: 1px solid rgba(255,255,255,.15); border-radius: 999px; color: #fff; background: rgba(0,0,0,.2); backdrop-filter: blur(64px); box-shadow: 0 25px 50px -12px rgba(0,0,0,.25); }
+.MusicPlayerBar:has(> [data-music-material-state="active"]) { border-color: transparent; background: transparent; backdrop-filter: none; box-shadow: none; }
+.MusicPlayerBar > .MusicProgressLine { z-index: 2; }
+.MusicPlayerBar > .MusicPlayerLayout { position: relative; z-index: 1; }
+.MusicProgressLine { position: absolute; top: 10px; right: 28px; left: 28px; }
+.MusicProgressLine input { --progress: 0%; appearance: none; width: 100%; height: 16px; margin: 0; padding: 0; background: transparent; cursor: pointer; }
+.MusicProgressLine input::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right,#fff var(--progress),rgba(255,255,255,.2) var(--progress)); }
+.MusicProgressLine input::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%; background: #fff; opacity: 0; box-shadow: 0 1px 5px #00000059; transition: opacity 150ms; }
+.MusicProgressLine:hover input::-webkit-slider-thumb, .MusicProgressLine input:active::-webkit-slider-thumb { opacity: 1; }
+.MusicPlayerLayout { display: grid; grid-template-columns: minmax(140px,1fr) auto minmax(190px,1fr); align-items: center; gap: 12px; height: 100%; padding: 28px 28px 12px; }
+.MusicNowPlaying { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.MusicPlayerArtwork { width: 56px; height: 56px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.2); box-shadow: 0 7px 22px rgba(0,0,0,.22); }
+.MusicNowPlayingMeta strong { font-size: 15px; font-weight: 600; }
+.MusicNowPlayingMeta > span { margin-top: 2px; font-size: 11px; color: rgba(255,255,255,.5); }
+.MusicPlayerControls, .MusicPlayerActions { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.MusicPlayerActions { justify-content: flex-end; min-width: 0; }
+.MusicPlayerControls .MusicIconButton, .MusicPlayerActions .MusicIconButton { color: #fff; width:40px; height:40px; }
+.MusicPlayerControls .MusicIcon { width: 20px; height: 20px; }
+.MusicPlayerActions .MusicIcon { width:20px; height:20px; stroke-width:1.8; }
+.MusicPlayerControls [data-music-action="previous"] .MusicIcon, .MusicPlayerControls [data-music-action="next"] .MusicIcon { fill:currentColor; }
+.MusicPlayerControls [data-music-action="like"].is-active { color:#ff4054; }
+.MusicPlayerControls [data-music-action="like"].is-active .MusicIcon { fill:currentColor; }
+.MusicPlayButton { display: grid; place-items: center; flex: 0 0 56px; width: 56px; height: 56px; margin: 0 8px; padding: 0; border: 0; border-radius: 50%; color: #fff; background: transparent; }
+.MusicPlayButton .MusicIcon { width: 24px; height: 24px; fill: currentColor; }
+.MusicPlayButton:disabled { opacity: .35; }
+.MusicTimeReadout { font: 11px/1.5 ui-monospace, monospace; color: var(--music-muted); white-space: nowrap; }
+.MusicPanelDismiss { position: absolute; inset: 34px 0 0; z-index: 3; border: 0; background: transparent; }
+.MusicPanel { position: absolute; z-index: 5; top: 50px; bottom: 16px; left: 16px; display: flex; flex-direction: column; width: min(500px,calc(100% - 32px)); overflow: hidden; border: 1px solid var(--music-border); border-radius: 16px; background: rgba(0,0,0,.2); backdrop-filter: blur(24px); box-shadow: 0 25px 50px -12px rgba(0,0,0,.25); }
+.MusicPanel > header { display: flex; align-items: center; gap: 4px; padding: 20px 20px 12px; }
+.MusicPanel h2 { margin-right: auto; font-size: 18px; font-weight: 600; }
+.MusicPanelBody { min-height: 0; overflow-y: auto; padding: 12px 16px 16px; }
+.MusicPanel .MusicTrackList { border: 0; border-radius: 0; background: transparent; backdrop-filter: none; }
+.MusicPanel .MusicTableHead { display: none; }
+.MusicPanel .MusicTrackRow { grid-template-columns: minmax(0,1fr) 44px; gap: 8px; padding-inline: 0; }
+.MusicPanel .MusicTrackActions, .MusicPanel .MusicTrackAlbum { display: none; }
+/* UnifiedPanel and the shared historical music-frosted-surface material. */
+.MusicPlayerPanel { position: absolute; right: 32px; bottom: 40px; z-index: 5; width: 320px; max-width: calc(100% - 32px); max-height: calc(100dvh - 96px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; border: 1px solid rgba(255,255,255,.1); border-radius: 16px; color: rgba(255,255,255,.92); background: rgba(0,0,0,.2); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); box-shadow: 0 25px 50px -12px rgba(0,0,0,.25); }
+.MusicPlayerPanel::-webkit-scrollbar { display: none; }
+.MusicPlayerPanelInner { display: flex; flex-direction: column; padding: 20px; }
+.MusicPanelCover { display: flex; align-items: center; justify-content: center; position: relative; flex-shrink: 0; width: 100%; aspect-ratio: 1; overflow: hidden; margin-bottom: 16px; border-radius: 16px; background: #18181b; box-shadow: 0 10px 15px -3px rgb(0 0 0 / .1), 0 4px 6px -4px rgb(0 0 0 / .1); }
+.MusicPanelCover > .MusicIcon { width: 40px; height: 40px; color: rgba(255,255,255,.2); }
+.MusicPanelCover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.MusicPanelTabs { display: flex; flex-shrink: 0; margin-bottom: 16px; padding: 4px; border-radius: 12px; background: rgba(255,255,255,.05); }
+.MusicPanelTabs button { display: flex; align-items: center; justify-content: center; flex: 1; min-width: 0; padding: 8px 0; border: 0; border-radius: 8px; color: inherit; background: transparent; opacity: .4; transition: opacity 150ms, background-color 150ms; }
+.MusicPanelTabs button:hover { opacity: 1; }
+.MusicPanelTabs button[aria-pressed="true"] { opacity: 1; background: rgba(255,255,255,.1); box-shadow: 0 1px 2px rgb(0 0 0 / .05); }
+.MusicPanelTabs .MusicIcon { width: 16px; height: 16px; }
+.MusicPanelContent { min-height: 70px; padding-right: 4px; }
+.MusicPlayerPanel[data-panel-tab="cover"] .MusicPanelContent { min-height: 0; }
+.MusicCoverDetails { margin-top: 16px; text-align: center; }
+.MusicCoverDetails h2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 24px; line-height: 32px; font-weight: 700; }
+.MusicCoverMetadata { margin-top: 4px; font-size: 14px; line-height: 20px; opacity: .6; overflow-wrap: anywhere; }
+.MusicCoverMetadata > p:first-child { font-weight: 500; }
+.MusicCoverMetadata > p + p { margin-top: 4px; opacity: .6; }
+.MusicPanelAccount { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px 0; text-align: center; opacity: .5; }
+.MusicPanelAccount button { padding: 8px 16px; border: 0; border-radius: 999px; background: rgba(255,255,255,.1); color: inherit; font-size: 12px; font-weight: 700; }
+.MusicGlobalSettings { display: flex; flex-direction: column; gap: 16px; }
+.MusicSettingRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; font-size: 10px; font-weight: 700; color: rgba(255,255,255,.6); }
+.MusicQuickControls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.MusicModeProxy { display: none; }
+.MusicVisualizerPicker { position: relative; flex-shrink: 0; }
+.MusicRoot .MusicVisualizerTrigger { min-width: 44px; max-width: 100%; padding: 4px 12px; border: 0; border-radius: 8px; color: #fff; background: rgba(255,255,255,.2); font-size: 10px; font-weight: 700; box-shadow: 0 1px 2px rgb(0 0 0 / .05); }
+.MusicVisualizerTrigger:hover { background: rgba(255,255,255,.3); }
+.MusicEffectTrigger { min-width: 44px; }
+.MusicVisualizerMenu { position: absolute; top: 50%; right: 0; z-index: 20; width: 116px; max-height: 180px; overflow-y: auto; transform: translateY(-50%); padding: 6px; border: 1px solid rgba(255,255,255,.08); border-radius: 18px; color: #fff; background: rgba(0,0,0,.94); box-shadow: 0 22px 60px rgba(0,0,0,.42); }
+.MusicVisualizerMenu::-webkit-scrollbar { width: 5px; }
+.MusicVisualizerMenu::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 999px; background: rgba(255,255,255,.22); background-clip: padding-box; }
+.MusicRoot .MusicVisualizerMenu button { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; min-height: 34px; padding: 8px; border: 0; border-radius: 14px; color: rgba(255,255,255,.84); background: transparent; font-size: 9px; font-weight: 400; text-align: center; overflow-wrap: anywhere; }
+.MusicVisualizerMenu button:hover { background: rgba(255,255,255,.04); }
+.MusicVisualizerMenu button[aria-selected="true"] { min-height: 30px; color: #fff; background: rgba(255,255,255,.12); font-weight: 500; }
+.MusicVisualizerMenu button[aria-selected="true"]::before { position: absolute; left: 8px; width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,.88); box-shadow: 0 0 0 1px rgba(255,255,255,.18); content: ''; }
+.MusicFontControls { max-width: 58%; }
+.MusicFontQuick { position: relative; min-width: 0; }
+.MusicFontQuick > button { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.MusicSettingRow select { min-width: 0; max-width: 100%; padding: 4px 10px; border: 0; border-radius: 8px; background: rgba(255,255,255,.2); color: #fff; font: inherit; color-scheme: dark; }
+.MusicSettingRow option { background: #18181b; }
+.MusicSettingRow [data-music-setting] { flex-shrink: 0; padding: 4px 12px; border: 0; border-radius: 8px; color: #fff; background: rgba(255,255,255,.2); font-size: 10px; font-weight: 700; }
+.MusicFontChange { flex-shrink: 0; padding: 8px 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; color: #fff; background: rgba(0,0,0,.2); font-size: 10px !important; font-weight: 700 !important; }
+.MusicBackgroundActions { display: flex; gap: 8px; margin-top: 8px; }
+.MusicBackgroundActions > [data-music-background-trigger] { flex: 1; min-width: 0; padding: 8px 12px; border: 0; border-radius: 12px; background: rgba(0,0,0,.2); color: #fff; font-size: 10px; font-weight: 700; }
+[data-music-background-name] { max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgba(255,255,255,.45); font-size: 9px; font-weight: 400; }
+[data-music-background-error] { margin-top: 8px !important; color: #fecaca; font-size: 10px; overflow-wrap: anywhere; }
+.MusicColorSettings, .MusicColorGroup { display: flex; flex-direction: column; gap: 8px; }
+.MusicColorRow { height: 40px; padding: 0 12px; border-radius: 12px; background: rgba(0,0,0,.2); color: inherit; }
+.MusicColorRow > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .45; }
+.MusicColorField { display: flex; align-items: center; flex-shrink: 0; gap: 6px; }
+.MusicColorValue { font: 10px ui-monospace, monospace; opacity: .55; }
+.MusicColorField button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; }
+.MusicColorField button:hover { background: rgba(255,255,255,.1); }
+.MusicColorField .MusicIcon { width: 13px; height: 13px; }
+.MusicColorSwatch { position: relative; width: 28px; height: 28px; border: 1px solid rgba(255,255,255,.15); border-radius: 50%; overflow: hidden; }
+.MusicColorSwatch::before { content: ''; position: absolute; inset: 4px; border-radius: 50%; background: var(--swatch); }
+.MusicColorSwatch input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.MusicColorSwatch:focus-within { outline: 2px solid rgba(255,255,255,.8); outline-offset: 2px; }
+.MusicSettings :disabled { opacity: .35; }
+.MusicColorField button:disabled { opacity: 0; pointer-events: none; }
+.MusicPlayerPanel select:focus-visible { outline: 2px solid rgba(255,255,255,.8); outline-offset: 2px; }
+.MusicPlayerStatus { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); font-size: 12px; }
+@media (max-width:1279px) {
+  .MusicRecommendationGrid--featured { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .MusicRecommendationGrid--supply { grid-template-columns: repeat(4,minmax(0,1fr)); }
+}
+@media (max-width:1023px) { .MusicRecommendationGrid--supply { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@media (max-width:900px) {
+  .MusicPlayerLayout { grid-template-columns: minmax(82px,1fr) auto minmax(168px,1fr); padding-inline: 20px; gap: 12px; }
+  .MusicPlayerArtwork { width: 48px; height: 48px; }
+  .MusicNowPlayingMeta, .MusicTimeReadout { display: none; }
+}
+@media (max-width:767px) {
+  .MusicPlayerPanel { right: 16px; bottom: 96px; max-height: min(calc(100dvh - 96px),calc(100% - 130px)); }
+  .MusicRoot { --music-inset: 20px; }
+  .MusicMain { padding-top: calc(var(--music-titlebar) + 16px); }
+  .MusicTableHead, .MusicTrackRow { grid-template-columns: minmax(0,1fr) 40px; gap: 8px; padding-inline: 10px; }
+  .MusicTableHead > :nth-child(2), .MusicTableHead > :nth-child(3), .MusicTrackActions, .MusicTrackAlbum { display: none; }
+  .MusicTrackPlay { gap: 8px; }
+}
+@media (max-width:639px) {
+  .MusicSidebar { display: none; }
+  .MusicRecommendationGrid--featured { grid-template-columns: minmax(0,1fr); }
+  .MusicRecommendationGrid--supply { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .MusicPlayerControls > :first-child { display: none; }
+  .MusicPlayerControls { gap: 2px; }
+  .MusicPlayButton { flex-basis: 40px; width: 40px; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .MusicRoot *, .MusicRoot *::before, .MusicRoot *::after { transition: none !important; animation: none !important; }
+}
+.MusicPagination {display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:16px 0;font-size:13px}
+.MusicLoadMore {display:flex;align-items:center;justify-content:center;gap:8px;min-height:40px;font-size:12px;color:#ffffff80}
+.MusicSongMembership--qq-green,.MusicSongMembership--qq-super {width:36px;height:16px;padding:0;background:none}
+.MusicSongMembership--qq-green img,.MusicSongMembership--qq-super img {display:block;width:100%;height:100%;object-fit:contain}
+.MusicAccountPlatforms {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+.MusicAccountPlatforms select {min-width:112px;background:#242424;color:#fff;border:1px solid #ffffff26;border-radius:6px;padding:6px}
+.MusicCollectionDialog {width:min(360px,calc(100vw - 32px));padding:24px;background:#202020;color:#fff;border:1px solid #555;border-radius:8px}
+.MusicCollectionDialog::backdrop {background:rgba(0,0,0,.4)}
+.MusicCollectionDialog h2 {font-size:18px;margin:0 0 20px}
+.MusicCollectionDialog label {display:grid;gap:10px;font-size:14px}
+.MusicCollectionDialog input,.MusicCollectionDialog select {width:100%;box-sizing:border-box;padding:10px;background:#303030;color:#fff;border:1px solid #666;border-radius:4px}
+.MusicCollectionDialog form>div {display:flex;justify-content:flex-end;gap:12px;margin-top:20px}
+.MusicCollectionDialog button {padding:8px 16px;color:inherit;background:#393939;border:0;border-radius:4px}
+.MusicDesktopSettings {width:100%;height:100%;min-height:0}
+.MusicTopbar .MusicSearchShell {min-width:0}
+.MusicVolumeControl {position:relative;flex:0 0 auto;z-index:3}
+.MusicVolumePopover {position:absolute;bottom:calc(100% + 8px);right:0;display:flex;flex-direction:column;align-items:center;gap:8px;width:56px;padding:12px 8px;z-index:30}
+.MusicVolumeControl .MusicVolumePopover input {width:16px;height:112px;margin:0;writing-mode:vertical-lr;direction:rtl;accent-color:#ff4054}
+.MusicVolumePopover span {font-size:10px;color:#ffffffa6}
+.MusicAudioQuality {display:flex;align-items:center;justify-content:center;min-width:48px;height:40px;padding:0 4px;font-size:11px;font-weight:600;white-space:nowrap;color:#ffffff8c}
+.MusicAudioQualityPicker {position:relative;flex:0 0 auto;z-index:4}
+button.MusicAudioQuality {border:0;background:none;color:white;cursor:pointer}
+button.MusicAudioQuality:disabled {opacity:.55;cursor:default}
+.MusicAudioQualityMenu, .MusicVolumePopover {border:1px solid #fff3;border-radius:8px;background:#0009;box-shadow:0 14px 38px #0006;backdrop-filter:blur(40px)}
+.MusicAudioQualityMenu {position:absolute;right:0;bottom:calc(100% + 8px);width:min(256px,calc(100vw - 24px));max-height:calc(100vh - 160px);overflow:auto;padding:6px;z-index:30}
+.MusicAudioQualityMenu button {display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:44px;padding:8px 12px;border:0;border-radius:6px;background:none;color:#ffffffbf;text-align:left;cursor:pointer}
+.MusicAudioQualityMenu button:hover {background:#ffffff24;color:white}
+.MusicAudioQualityMenu button>span:first-child {min-width:0}
+.MusicQualityName {display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#ffffffe6}
+.MusicAudioQualityMenu small {display:block;margin-top:2px;font-size:10px;color:#ffffff73}
+.MusicQualityCheck .MusicIcon {width:15px;height:15px;stroke-width:2.2}
+.MusicAudioQualityMenu [aria-checked="false"] .MusicQualityCheck {visibility:hidden}
+.MusicQualityMembership {display:inline-flex;height:16px;max-width:48px}
+.MusicQualityMembership img {height:100%;max-width:48px;object-fit:contain}
+.MusicQualityMembership.is-inactive {filter:grayscale(1);opacity:.45}
+.MusicRoot [data-music-settings-toggle] {position:absolute;right:32px;bottom:32px;z-index:6;width:48px;height:48px;background:#0003;backdrop-filter:blur(12px);box-shadow:0 10px 15px -3px #0002;color:#fff9}
+.MusicRoot [data-music-settings-toggle] .MusicIcon {width:20px;height:20px}
+.MusicRailHotspot {position:absolute;left:0;top:120px;bottom:0;width:20px;z-index:7}
+.MusicPlaylistRail {position:absolute;left:0;top:0;bottom:0;width:min(520px,calc(100% - 8px));z-index:7;pointer-events:none}
+.MusicPlaylistRail .MusicQueuePanel {top:16px;bottom:16px;left:16px;pointer-events:auto}
+.MusicPlaylistRail header {align-items:flex-start}
+.MusicPlaylistRail header>div {margin-right:auto}
+.MusicPlaylistRail header p {margin-top:4px;font-size:11px;opacity:.45}
+.MusicRailSearch {position:relative;margin:0 20px 12px;border-radius:50px;background:#0003;flex-shrink:0}
+.MusicRailSearch>.MusicIcon {position:absolute;left:14px;top:13px;width:16px;height:16px;opacity:.45}
+.MusicRailSearch input {width:100%;height:42px;padding:0 40px 0 38px;border:0;border-radius:50px;background:transparent;color:inherit;outline:none}
+.MusicRailSearch>button {position:absolute;right:6px;top:5px}
+.MusicRailTabs {display:flex;margin:0 20px;padding:4px;gap:8px;border:1px solid #ffffff1a;border-radius:8px;background:#ffffff08}
+.MusicRailTabs button {flex:1;padding:8px 12px;border:0;border-radius:6px;background:none;color:#ffffff73;font-size:12px}
+.MusicRailTabs [aria-selected="true"] {background:#ffffff1a;color:white}
+.MusicRailLibrary {display:flex;align-items:center;justify-content:space-between;margin:16px 20px 0;padding:4px 12px;border:1px solid #ffffff1a;border-radius:8px;font-size:12px}
+.MusicPlaylistRail .MusicTrackRow {display:grid;grid-template-columns:minmax(0,1fr) auto;padding:6px 8px;border:0;border-radius:6px}
+.MusicPlaylistRail .MusicTrackActions {display:flex}
+.MusicPlaylistRail .MusicTrackActions .is-active {color:#ff4054}
+.MusicPlaylistRail .MusicTrackActions .is-active .MusicIcon {fill:currentColor}
+.MusicPlaylistRail .MusicTrackRow:hover {background:#ffffff1a}
+.MusicPlaylistRail .MusicTrackNumber, .MusicPlaylistRail .MusicTrackTime {display:none}
+.MusicPlaylistRail .MusicTrackPlay {width:100%;min-height:44px;gap:12px}
+.MusicPlaylistRail .MusicTrackArtwork {width:44px;height:44px;border-radius:6px}
+.MusicRailCollection>button {display:flex;align-items:center;gap:12px;width:100%;padding:6px 8px;border:0;border-radius:8px;background:none;color:inherit;text-align:left}
+.MusicRailCollection>button:hover {background:#ffffff1a}
+.MusicRailCollection strong {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.MusicRailCover {position:relative;display:grid;place-items:center;flex:0 0 48px;height:48px;overflow:hidden;border-radius:6px;background:#ffffff1a}
+.MusicRailCover img {position:absolute;width:100%;height:100%;object-fit:cover}
+@media(min-width:1751px) {
+  .MusicPlayerLayout {grid-template-columns:minmax(180px,1fr) auto minmax(220px,1fr);gap:20px}
+  .MusicPlayerArtwork {width:64px;height:64px}
+}
+@media(max-width:1400px) {.MusicTimeReadout {display:none}}
+@media(max-width:767px) {.MusicRoot [data-music-settings-toggle] {right:16px}}
+/* Below the original desktop chrome width, keep real controls reachable without overlap. */
+@media(max-width:700px) {
+  .MusicPlayerLayout {grid-template-columns:minmax(0,1fr) auto;padding-inline:20px;gap:4px}
+  .MusicPlayerLayout>.MusicNowPlaying {display:none}
+  .MusicPlayerControls, .MusicPlayerActions {gap:2px}
+  .MusicPlayerControls .MusicIconButton, .MusicPlayerActions .MusicIconButton {width:28px}
+  .MusicPlayerControls>.MusicPlayButton {width:40px;flex-basis:40px;margin-inline:0}
+  .MusicRoot[data-screen="player"] [data-music-settings-toggle] {bottom:152px}
+}
+.MusicAudioQualityMenu button:disabled {cursor:not-allowed;color:#ffffff59}
+.MusicAudioQualityMenu button:disabled:hover {background:none}
+.MusicAudioQualityMenu button:disabled small {color:#f8c56b}
+.MusicTrackRow.is-locked .MusicTrackTitle strong,.MusicTrackRow.is-locked .MusicTrackMeta>span:last-child {opacity:.5}
+.MusicTrackRow.is-locked .MusicTrackPlay {cursor:not-allowed}

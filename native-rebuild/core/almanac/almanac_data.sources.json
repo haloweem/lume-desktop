@@ -1,0 +1,30 @@
+{
+  "sourceProject": "lunar-javascript",
+  "sourceVersion": "1.7.7",
+  "license": "MIT",
+  "sourceFiles": [
+    {
+      "file": "lunar-calendar.js",
+      "sha256": "a20464beb83aebce31003f22ec6c0961e687836381c4d0b57d87b42c5da7dfec"
+    },
+    {
+      "file": "vendor/lunar.js",
+      "sha256": "5e6f2c23c669235cdad68681cbb39775b5565e99854a215f843a8cd53db996f1"
+    }
+  ],
+  "range": {
+    "first": "1900-01-01",
+    "last": "2100-12-31",
+    "days": 73414
+  },
+  "compiledArrayBytes": 549655,
+  "generatedSourceSha256": "311cd24cffbb3867911f870e1c513589b86e4df8838c77e9b9fb920d8f79ecb0",
+  "generatedSourceBytes": 1358501,
+  "counts": {
+    "activities": 234,
+    "years": 60,
+    "cycles": 60,
+    "lists": 1231
+  },
+  "policy": "Exact daily original algorithm outputs; lunar date reuses calendar data. No predictions or substitute yi/ji."
+}

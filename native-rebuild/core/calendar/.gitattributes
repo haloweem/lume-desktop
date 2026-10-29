@@ -1,0 +1,3 @@
+# Generator output hashes and byte counts must survive Windows checkouts.
+lunar_data.inc text eol=lf
+lunar_data.sources.json text eol=lf

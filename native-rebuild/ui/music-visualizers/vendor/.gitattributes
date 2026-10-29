@@ -1,0 +1,2 @@
+# Preserve source, license and generated artifact byte hashes on every checkout.
+* -text

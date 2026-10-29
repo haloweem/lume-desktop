@@ -1,0 +1,6 @@
+build-artifacts/
+native-rebuild/build/
+native-rebuild/out/
+native-rebuild/.vs/
+*.user
+*.suo

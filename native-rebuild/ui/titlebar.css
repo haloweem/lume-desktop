@@ -1,0 +1,242 @@
+[data-lume-shared-titlebar] {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 9999;
+  width: 100%;
+  height: 35px;
+  min-height: 35px;
+  display: block;
+  color: rgba(255, 255, 255, 0.82);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  font-size: 14px;
+  line-height: 22.001px;
+  user-select: none;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+[data-lume-shared-titlebar] .lume-titlebar__drag {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  -webkit-app-region: drag;
+}
+[data-lume-shared-titlebar] [data-lume-window-controls-hotspot] {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+[data-lume-shared-titlebar] .lume-titlebar__controls {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 1;
+  height: 35px;
+  display: flex;
+  align-items: stretch;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+[data-lume-shared-titlebar] .lume-titlebar__button {
+  height: 35px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: rgba(255, 255, 255, 0.66);
+  background: transparent;
+  font: inherit;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  line-height: 22.001px;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  transition:
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    background 120ms ease,
+    color 120ms ease;
+}
+[data-lume-shared-titlebar] .lume-titlebar__button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+[data-lume-shared-titlebar] .lume-titlebar__button:focus-visible {
+  outline: 2px solid rgba(79, 146, 255, 0.9);
+  outline-offset: -2px;
+}
+[data-lume-shared-titlebar][data-visible="false"] .lume-titlebar__button {
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account {
+  position: relative;
+  height: 35px;
+}
+[data-lume-shared-titlebar] .lume-titlebar__login {
+  min-width: 70px;
+  max-width: 150px;
+  gap: 7px;
+  padding: 0 11px;
+  display: flex;
+}
+[data-lume-shared-titlebar] .lume-titlebar__avatar-frame {
+  position: relative;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  flex: 0 0 22px;
+  place-items: center;
+  overflow: visible;
+}
+[data-lume-shared-titlebar] .lume-titlebar__avatar-frame--vip {
+  border: 2px solid #ffd25c;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgba(255, 210, 92, 0.28),
+    0 0 8px rgba(255, 184, 52, 0.48);
+}
+[data-lume-shared-titlebar] [data-lume-account-avatar] {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  flex: 0 0 18px;
+  place-items: center;
+}
+[data-lume-shared-titlebar] .lume-titlebar__avatar {
+  width: 18px;
+  height: 18px;
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+}
+[data-lume-shared-titlebar] .lume-titlebar__vip-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  z-index: 1;
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+[data-lume-shared-titlebar] .lume-titlebar__vip-badge img {
+  width: 12px;
+  height: 12px;
+  display: block;
+  object-fit: contain;
+  image-rendering: auto;
+}
+[data-lume-shared-titlebar] [data-lume-account-label] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account-menu {
+  position: absolute;
+  top: 39px;
+  left: 4px;
+  z-index: 2;
+  width: 164px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(24, 26, 30, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+  color: rgba(255, 255, 255, 0.9);
+  -webkit-app-region: no-drag;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account-name {
+  padding: 2px 8px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account-command {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.86);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account-command:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+[data-lume-shared-titlebar] [hidden] {
+  display: none !important;
+}
+[data-lume-shared-titlebar] .lume-titlebar__account-command:focus-visible {
+  outline: 2px solid #65a8ff;
+  outline-offset: -2px;
+}
+[data-lume-shared-titlebar] [aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+[data-lume-shared-titlebar] [data-lume-avatar-fallback] {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+}
+[data-lume-shared-titlebar] [data-lume-avatar-fallback] svg {
+  width: 100%;
+  height: 100%;
+}
+[data-lume-shared-titlebar] .lume-titlebar__launcher,
+[data-lume-shared-titlebar] .lume-titlebar__window {
+  width: 46px;
+  flex: 0 0 46px;
+}
+[data-lume-shared-titlebar] .lume-titlebar__login {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+}
+[data-lume-shared-titlebar] .lume-titlebar__launcher {
+  font-size: 14px;
+}
+[data-lume-shared-titlebar] .lume-titlebar__music[data-active="true"] {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+[data-lume-shared-titlebar] .lume-titlebar__close:hover {
+  background: #c42b3c;
+}
+[data-lume-shared-titlebar] .svg-inline--fa {
+  box-sizing: content-box;
+  display: inline-block;
+  height: 1em;
+  overflow: visible;
+  vertical-align: -0.125em;
+  width: 1em;
+}
+[data-lume-shared-titlebar] .lume-titlebar__window-glyph {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+  font-size: 10px;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-lume-shared-titlebar] .lume-titlebar__button {
+    transition: none;
+  }
+}

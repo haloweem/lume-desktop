@@ -1,0 +1,1 @@
+import{a as o}from"./chunk-TUOPJDC6.js";import{c as r}from"./chunk-7SZRL6FY.js";var e=r(o(),1),n=(0,e.createContext)(null),a=()=>{let t=(0,e.useContext)(n);return(0,e.useLayoutEffect)(()=>{t?.claim()},[t]),(0,e.useCallback)(()=>t?.drawn(),[t])},s=(0,e.createContext)(!1);export{a};

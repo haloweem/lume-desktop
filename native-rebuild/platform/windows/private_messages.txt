@@ -1,0 +1,69 @@
+# Every private window message (WM_APP + N) in Lume, one line per file that
+# writes the literal. lume-private-messages-test checks this list against the
+# sources, so a new message cannot be added without registering it here.
+#
+#   local     handled only by windows or threads the file itself owns. The
+#             same number may be local to several files: their receivers differ.
+#   shared    delivered to windows owned by other files or processes (glass
+#             owners, every desktop widget, the tray). No other file may use it.
+#   reserved  like shared, for a value derived in code (Message+1).
+#
+# value        scope     file
+1            local     platform/windows/material/material_engine.cpp
+21           local     platform/windows/webview_page_window.cpp
+22           local     platform/windows/webview_page_window.cpp
+23           local     platform/windows/webview_page_window.cpp
+24           local     platform/windows/webview_page_window.cpp
+25           local     platform/windows/webview_page_window.cpp
+26           local     platform/windows/webview_page_window.cpp
+27           local     platform/windows/webview_page_window.cpp
+28           local     platform/windows/webview_page_window.cpp
+41           local     platform/windows/application_tray.cpp
+42           shared    platform/windows/lume_window_ids.h
+43           shared    platform/windows/lume_window_ids.h
+44           local     platform/windows/application_tray.cpp
+111          local     apps/shell/wallpaper_session.cpp
+137          local     apps/shell/desktop_icons_session.cpp
+141          local     apps/shell/taskbar_session.cpp
+530          local     platform/windows/calendar/calendar_todo_ui.h
+531          local     platform/windows/calendar/calendar_todo_ui.h
+532          local     platform/windows/calendar/calendar_todo_editor.cpp
+539          local     platform/windows/calendar/calendar_todo_ui.h
+540          local     platform/windows/calendar/calendar_todo_ui.h
+541          local     platform/windows/calendar/calendar_todo_ui.h
+542          local     platform/windows/calendar/calendar_todo_ui.cpp
+0x351        local     apps/shell/application_settings_session.cpp
+0x391        local     platform/windows/reminder/reminder_presenter.cpp
+0x392        local     apps/shell/update_notification_session.cpp
+0x392        local     platform/windows/reminder/local_reminder_runtime.cpp
+0x393        local     platform/windows/reminder/local_reminder_runtime.cpp
+0x3a1        local     apps/shell/account_session.cpp
+0x3a1        local     platform/windows/update_notification/update_presenter.cpp
+0x471        local     platform/windows/clock/native_clock_window.cpp
+0x581        local     platform/windows/calendar/native_calendar_window.cpp
+0x582        local     platform/windows/calendar/native_calendar_window.cpp
+0x583        local     platform/windows/calendar/native_calendar_window.h
+0x5a0        shared    platform/windows/material/material_api.h
+0x620        local     platform/windows/widget_ui/native_widget_window.h
+0x6a4        shared    platform/windows/widget_ui/widget_snap_protocol.h
+0x6b1        local     apps/shell/organizer_session.cpp
+0x6c1        local     platform/windows/organizer/desktop_organizer_source.cpp
+0x6c2        local     platform/windows/organizer/desktop_organizer_source.cpp
+0x6d1        local     platform/windows/music_desktop_controls.cpp
+0x6d1        local     platform/windows/radial/radial_shortcut.h
+0x6d2        local     platform/windows/radial/radial_shortcut.h
+0x6d3        local     platform/windows/radial/radial_shortcut.cpp
+0x6d4        local     platform/windows/radial/radial_shortcut.h
+0x6e1        local     platform/windows/notes/notes_page_window.cpp
+0x6e2        local     platform/windows/dynamic_island/island_window.cpp
+0x6e3        local     platform/windows/dynamic_island/island_window.cpp
+0x6e4        local     platform/windows/dynamic_island/island_window.cpp
+0x6e5        local     platform/windows/dynamic_island/island_window.cpp
+0x7a1        local     platform/windows/dock/launchpad_window.cpp
+0x7a2        local     platform/windows/dock/launchpad_window.cpp
+0x7a5        local     platform/windows/dock/launchpad_window.cpp
+0x7b1        local     apps/shell/dock_session.cpp
+0x7b5        local     apps/shell/dock_session.cpp
+0x7c1        local     platform/windows/dock/dock_window.cpp
+0x7c2        local     platform/windows/dock/dock_desktop_layer.h
+0x6a5        reserved  platform/windows/widget_ui/widget_snap_protocol.h

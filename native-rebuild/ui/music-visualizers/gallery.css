@@ -1,0 +1,66 @@
+/* Gallery composition from VisualizerGallery and the actually referenced MonetLyricsRail. */
+.MusicGallery {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff;
+  background: #293033;
+  font-family: "Inter", "Noto Sans CJK SC", "Noto Sans JP", "Source Han Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+.MusicGallery[hidden] { display: none; }
+.MusicGallery--shared-background { background: transparent; }
+.MusicGallery [hidden] { display: none !important; }
+.MusicGallery *, .MusicGallery *::before, .MusicGallery *::after { box-sizing: border-box; }
+.MusicGalleryBackdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.MusicGalleryInfo { position: absolute; top: clamp(50px,5vh,82px); left: 50%; width: min(84%,980px); transform: translateX(-50%); text-align: center; z-index: 2; }
+.MusicGalleryTitle { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(2rem,5.8vw,5.8rem); font-weight: 760; line-height: 1.05; letter-spacing: 0; text-shadow: 0 2px 7px rgb(0 0 0 / 46%); }
+.MusicGalleryArtist { margin: clamp(8px,1.4vh,15px) 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(1rem,2.1vw,1.8rem); font-weight: 560; line-height: 1.2; letter-spacing: 0; color: rgb(255 255 255 / 88%); text-shadow: 0 1px 4px rgb(0 0 0 / 45%); }
+.MusicGalleryArtist[hidden] { display: none; }
+.MusicGalleryMain { position: absolute; left: clamp(28px,5%,88px); right: clamp(28px,5%,88px); top: clamp(150px,20vh,206px); bottom: 176px; z-index: 2; margin: 0 auto; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,.8fr) minmax(0,1.2fr); align-items: center; gap: clamp(20px,4vw,72px); min-height: 0; min-width: 0; }
+.MusicGalleryArtSection { display: flex; justify-content: center; align-items: center; height: 100%; min-height: 0; min-width: 0; container-type: size; }
+.MusicGalleryArtwork { position: relative; aspect-ratio: 1.38; width: clamp(220px,31vw,500px); max-width: min(100%,138cqh); max-height: min(42vh,100%); }
+.MusicGallerySleeve { position: absolute; top: 4%; bottom: 4%; left: 5%; z-index: 2; aspect-ratio: 1; max-width: 75%; overflow: hidden; border-radius: 8px; border: 1px solid rgb(255 255 255 / 12%); background: #293033; box-shadow: 0 18px 45px rgb(0 0 0 / 34%); }
+.MusicGallerySleeve img, .MusicGalleryDisc img { display: block; height: 100%; width: 100%; object-fit: cover; object-position: center; }
+.MusicGallerySleeve canvas, .MusicGalleryDisc canvas { display: block; height: 100%; width: 100%; }
+.MusicGalleryDisc { position: absolute; right: 2%; top: 50%; z-index: 1; aspect-ratio: 1; width: 68%; overflow: hidden; border-radius: 50%; box-shadow: 0 16px 42px rgb(0 0 0 / 32%); will-change: transform; animation: music-gallery-spin 24s linear infinite; animation-play-state: paused; }
+.MusicGalleryGrooves { position: absolute; inset: 0; border-radius: 50%; opacity: .55; background: repeating-radial-gradient(circle at center,transparent 0 14px,rgb(255 255 255 / 18%) 15px,transparent 16px 30px); }
+.MusicGalleryDiscLabel { position: absolute; top: 50%; left: 50%; width: 18%; height: 18%; transform: translate(-50%,-50%); border-radius: 50%; border: 1px solid rgb(255 255 255 / 25%); background: rgb(255 255 255 / 24%); backdrop-filter: blur(4px); }
+.MusicGalleryDiscHole { position: absolute; top: 50%; left: 50%; width: 4%; height: 4%; transform: translate(-50%,-50%); border-radius: 50%; background: #111617; }
+@keyframes music-gallery-spin { from { transform: translateY(-50%) rotate(0deg); } to { transform: translateY(-50%) rotate(360deg); } }
+.MusicGalleryBoundary { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.MusicGalleryRail { position: relative; height: 100%; max-width: 720px; margin: 0 calc(-1 * var(--gallery-glow)); padding: 0 var(--gallery-glow); overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: none; pointer-events: auto; mask-image: linear-gradient(to bottom,transparent 0%,black 11%,black 88%,transparent 100%); -webkit-mask-image: linear-gradient(to bottom,transparent 0%,black 11%,black 88%,transparent 100%); }
+.MusicGalleryLine { position: absolute; top: 0; left: var(--gallery-glow); right: var(--gallery-glow); min-width: 0; transform-origin: left center; will-change: transform,opacity,filter; cursor: pointer; }
+.MusicGalleryText { min-width: 0; overflow: visible; pointer-events: none; margin: calc(-1 * var(--gallery-glow)); padding-left: var(--gallery-glow); padding-right: var(--gallery-glow); font-size: var(--gallery-font); font-weight: 600; letter-spacing: 0; mask-repeat: no-repeat; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; -webkit-mask-size: 100% 100%; }
+.MusicGalleryTokens { display: block; width: 100%; min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.MusicGalleryWord { position: relative; display: inline-block; max-width: 100%; vertical-align: bottom; white-space: pre-wrap; overflow-wrap: anywhere; }
+.MusicGalleryFill { position: absolute; inset: 0; display: block; pointer-events: none; white-space: pre-wrap; overflow-wrap: anywhere; mask-repeat: no-repeat; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; -webkit-mask-size: 100% 100%; }
+.MusicGalleryFillText { display: block; color: transparent; -webkit-text-fill-color: transparent; background-clip: text; -webkit-background-clip: text; }
+.MusicGalleryEmpty { position: absolute; top: 46%; left: var(--gallery-glow); right: var(--gallery-glow); transform: translateY(-50%); margin: 0; font-size: 24px; font-weight: 600; line-height: 1.3; opacity: .72; overflow-wrap: anywhere; }
+.MusicGalleryEmpty[hidden] { display: none; }
+@media (min-width: 1024px) {
+  .MusicGalleryMain { grid-template-rows: minmax(0,1fr); grid-template-columns: minmax(0,1.08fr) minmax(390px,.92fr); gap: clamp(48px,7vw,112px); }
+  .MusicGalleryArtSection { justify-content: flex-start; padding-left: clamp(24px,4.5vw,72px); }
+  .MusicGalleryArtwork { aspect-ratio: 1.65; width: clamp(340px,40vw,720px); max-width: min(100%,147cqh); max-height: min(44vh,100%); }
+  .MusicGallerySleeve { top: 0; bottom: 0; left: 0; width: 61%; aspect-ratio: auto; }
+  .MusicGalleryDisc { right: 0; }
+}
+@media (max-width: 639px) {
+  .MusicGalleryMain { gap: 20px; grid-template-rows: minmax(0,.65fr) minmax(0,1.35fr); }
+  .MusicGalleryArtwork { width: min(220px,100%); }
+}
+@media (max-height: 600px) {
+  .MusicGalleryInfo { top: 42px; }
+  .MusicGalleryTitle { font-size: 32px; }
+  .MusicGalleryArtist { font-size: 16px; margin-top: 8px; }
+  .MusicGalleryMain { top: 116px; gap: 16px; }
+  .MusicGalleryArtwork { max-width: min(100%,200px,138cqh); }
+}
+@media (max-height: 460px) {
+  .MusicGalleryMain { top: 110px; grid-template-columns: minmax(0,.65fr) minmax(0,1.35fr); grid-template-rows: minmax(0,1fr); gap: 12px; }
+  .MusicGalleryArtSection { padding-left: 0; }
+  .MusicGalleryEmpty { font-size: 18px; }
+}
+@media (prefers-reduced-motion: reduce) { .MusicGalleryDisc { animation-play-state: paused !important; } }

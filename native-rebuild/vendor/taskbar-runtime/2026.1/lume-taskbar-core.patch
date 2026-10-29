@@ -1,0 +1,152 @@
+diff --git a/Common/CppProject.props b/Common/CppProject.props
+index 6324f49..c267872 100644
+--- a/Common/CppProject.props
++++ b/Common/CppProject.props
+@@ -188,10 +188,12 @@
+       <PreprocessorDefinitions>_HIDE_GLOBAL_ASYNC_STATUS;STRICT_TYPED_ITEMIDS;NOMINMAX;_WINDOWS;WIN32_LEAN_AND_MEAN;WINRT_WINDOWS_ABI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+ 
+       <PreprocessorDefinitions>BUILD_TYPE=$(IntBuildType);%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions Condition="'$(LumeTaskbarCore)'=='true'">LUME_TASKBAR_CORE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ClCompile>
+     <ResourceCompile>
+       <NullTerminateStrings>true</NullTerminateStrings>
+       <PreprocessorDefinitions>BUILD_TYPE=$(IntBuildType);%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions Condition="'$(LumeTaskbarCore)'=='true'">LUME_TASKBAR_CORE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+     </ResourceCompile>
+   </ItemDefinitionGroup>
+ 
+@@ -218,4 +220,4 @@
+       <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Core'" />
+     </ItemGroup>
+   </Target>
+-</Project>
+\ No newline at end of file
++</Project>
+diff --git a/Common/appinfo.hpp b/Common/appinfo.hpp
+index 64ad1fe..94e7c03 100644
+--- a/Common/appinfo.hpp
++++ b/Common/appinfo.hpp
+@@ -1,7 +1,9 @@
+ #pragma once
+ #include "util/string_macros.hpp"
+ 
+-#if defined(BUILD_TYPE) && BUILD_TYPE == 0
++#if defined(LUME_TASKBAR_CORE)
++#define UTF8_APP_NAME "Lume Taskbar Core"
++#elif defined(BUILD_TYPE) && BUILD_TYPE == 0
+ #define UTF8_APP_NAME "TranslucentTB"
+ #elif defined(BUILD_TYPE) && BUILD_TYPE == 1
+ #define UTF8_APP_NAME "TranslucentTB (Canary)"
+diff --git a/TranslucentTB/TranslucentTB.vcxproj b/TranslucentTB/TranslucentTB.vcxproj
+index 5a48435..2480da5 100644
+--- a/TranslucentTB/TranslucentTB.vcxproj
++++ b/TranslucentTB/TranslucentTB.vcxproj
+@@ -45,7 +45,7 @@
+   <Target Name="_UnpackagedWin32GenerateAdditionalWinmdManifests" Inputs="@(_UnpackagedWin32WinmdManifest.WinMDPath)" Outputs="@(_UnpackagedWin32WinmdManifest)" DependsOnTargets="_UnpackagedWin32MapWinmdsToManifestFiles">
+     <Message Text="Generating manifest for %(_UnpackagedWin32WinmdManifest.WinMDPath)" Importance="High" />
+     <!-- This target is batched and a new Exec is spawned for each entry in _UnpackagedWin32WinmdManifest. -->
+-    <Exec Command="mt.exe -nologo -winmd:%(_UnpackagedWin32WinmdManifest.WinMDPath) -dll:%(_UnpackagedWin32WinmdManifest.Implementation) -out:%(_UnpackagedWin32WinmdManifest.Identity)" />
++    <Exec Command="mt.exe -nologo -winmd:&quot;%(_UnpackagedWin32WinmdManifest.WinMDPath)&quot; -dll:&quot;%(_UnpackagedWin32WinmdManifest.Implementation)&quot; -out:&quot;%(_UnpackagedWin32WinmdManifest.Identity)&quot;" />
+     <ItemGroup>
+       <!--
+           Emit the generated manifest into the Link inputs.
+@@ -230,4 +230,4 @@
+   <Import Project="..\packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('..\packages\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets')" />
+   <Import Project="..\packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7463\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('..\packages\Microsoft.Windows.SDK.BuildTools.10.0.26100.7463\build\Microsoft.Windows.SDK.BuildTools.targets')" />
+   <Import Project="..\packages\Microsoft.Windows.SDK.CPP.10.0.26100.7463\build\native\Microsoft.Windows.SDK.cpp.targets" Condition="Exists('..\packages\Microsoft.Windows.SDK.CPP.10.0.26100.7463\build\native\Microsoft.Windows.SDK.cpp.targets')" />
+-</Project>
+\ No newline at end of file
++</Project>
+diff --git a/TranslucentTB/application.cpp b/TranslucentTB/application.cpp
+index b39a5f4..82878ad 100644
+--- a/TranslucentTB/application.cpp
++++ b/TranslucentTB/application.cpp
+@@ -114,10 +114,12 @@ Application::Application(HINSTANCE hInst, std::optional<std::filesystem::path> s
+ 		m_Startup.AcquireTask();
+ 	}
+ 
++#ifndef LUME_TASKBAR_CORE
+ 	if (!fileExists)
+ 	{
+ 		CreateWelcomePage();
+ 	}
++#endif
+ }
+ 
+ void Application::OpenDonationPage()
+@@ -180,0 +183,3 @@ winrt::fire_and_forget Application::Shutdown()
++#ifdef LUME_TASKBAR_CORE
++		m_Worker.RestoreTaskbarBeforeShutdown();
++#endif
+diff --git a/TranslucentTB/mainappwindow.cpp b/TranslucentTB/mainappwindow.cpp
+index 8a7132e..46a288d 100644
+--- a/TranslucentTB/mainappwindow.cpp
++++ b/TranslucentTB/mainappwindow.cpp
+@@ -317,7 +317,13 @@ MainAppWindow::MainAppWindow(Application &app, bool hideIconOverride, bool hasPa
+ 	MessageWindow(TRAY_WINDOW, APP_NAME, hInstance, WS_POPUP, WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP),
+ 	TrayContextMenu(TRAY_GUID, MAKEINTRESOURCE(IDI_TRAYWHITEICON), MAKEINTRESOURCE(IDI_TRAYBLACKICON), loader, hasPackageIdentity),
+ 	m_App(app),
+-	m_HideIconOverride(hideIconOverride),
++	m_HideIconOverride(
++#ifdef LUME_TASKBAR_CORE
++		hideIconOverride || true
++#else
++		hideIconOverride
++#endif
++	),
+ 	m_NewInstanceMessage(Window::RegisterMessage(WM_TTBNEWINSTANCESTARTED))
+ {
+ 	RegisterMenuHandlers();
+diff --git a/TranslucentTB/managers/configmanager.cpp b/TranslucentTB/managers/configmanager.cpp
+index 65c1952..4695a8f 100644
+--- a/TranslucentTB/managers/configmanager.cpp
++++ b/TranslucentTB/managers/configmanager.cpp
+@@ -167,6 +167,21 @@ bool ConfigManager::LoadFromFile(FILE *f)
+ 
+ bool ConfigManager::Load(bool firstLoad)
+ {
++#ifdef LUME_TASKBAR_CORE
++	(void)firstLoad;
++	m_Config = { };
++	m_Config.DesktopAppearance = { ACCENT_ENABLE_TRANSPARENTGRADIENT, { 0, 0, 0, 0 }, false, false, 9.0f };
++	m_Config.VisibleWindowAppearance.Enabled = false;
++	m_Config.MaximisedWindowAppearance.Enabled = false;
++	m_Config.StartOpenedAppearance.Enabled = false;
++	m_Config.SearchOpenedAppearance.Enabled = false;
++	m_Config.TaskViewOpenedAppearance.Enabled = false;
++	m_Config.BatterySaverAppearance.Enabled = false;
++	m_Config.HideTray = true;
++	m_Config.DisableSaving = true;
++	m_Config.LogVerbosity = spdlog::level::off;
++	return true;
++#else
+ 	if (const wil::unique_file file { _wfsopen(m_ConfigPath.c_str(), L"rbS", _SH_DENYNO) })
+ 	{
+ 		if (LoadFromFile(file.get()))
+@@ -204,6 +219,7 @@ bool ConfigManager::Load(bool firstLoad)
+ 		m_Config = { };
+ 		return fileExists;
+ 	}
++#endif
+ }
+ 
+ void ConfigManager::Reload()
+diff --git a/TranslucentTB/taskbar/taskbarattributeworker.cpp b/TranslucentTB/taskbar/taskbarattributeworker.cpp
+index 9937b9f..8e52255 100644
+--- a/TranslucentTB/taskbar/taskbarattributeworker.cpp
++++ b/TranslucentTB/taskbar/taskbarattributeworker.cpp
+@@ -1527 +1527 @@ void TaskbarAttributeWorker::ResetState(bool manual)
+-TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
++void TaskbarAttributeWorker::RestoreTaskbarBeforeShutdown()
+@@ -1532,0 +1533,5 @@ TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
++
++TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
++{
++	RestoreTaskbarBeforeShutdown();
++}
+diff --git a/TranslucentTB/taskbar/taskbarattributeworker.hpp b/TranslucentTB/taskbar/taskbarattributeworker.hpp
+index 2a0e80d..2f418a5 100644
+--- a/TranslucentTB/taskbar/taskbarattributeworker.hpp
++++ b/TranslucentTB/taskbar/taskbarattributeworker.hpp
+@@ -285,0 +286 @@ public:
++	void RestoreTaskbarBeforeShutdown();

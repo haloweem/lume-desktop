@@ -1,0 +1,48 @@
+{
+  "formatVersion": 1,
+  "sourceProject": "lunar-javascript",
+  "sourceVersion": "1.7.7",
+  "upstream": "https://github.com/6tail/lunar-javascript",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2018 6tail",
+  "range": {
+    "first": "1900-01-01",
+    "last": "2100-12-31",
+    "days": 73414
+  },
+  "sourceFiles": [
+    {
+      "file": "lunar-calendar.js",
+      "sha256": "a20464beb83aebce31003f22ec6c0961e687836381c4d0b57d87b42c5da7dfec",
+      "bytes": 1804
+    },
+    {
+      "file": "vendor/lunar.js",
+      "sha256": "5e6f2c23c669235cdad68681cbb39775b5565e99854a215f843a8cd53db996f1",
+      "bytes": 444480
+    }
+  ],
+  "generationCommand": "node native-rebuild/tools/generate-lunar-data.mjs --source <original-widgets-directory>",
+  "encoding": "UTF-8 strings; uint16 daily and dictionary indices; uint32 string offsets",
+  "counts": {
+    "strings": 766,
+    "details": 2717,
+    "festivalLists": 54,
+    "holidays": 19
+  },
+  "storage": {
+    "components": {
+      "dailyIndices": 146828,
+      "uniqueDetails": 27170,
+      "stringPool": 10376,
+      "stringOffsets": 3064,
+      "festivalItems": 148,
+      "festivalLists": 216,
+      "holidays": 76
+    },
+    "compiledArrayBytes": 187878,
+    "generatedSourceBytes": 492119,
+    "generatedSourceSha256": "5f1431ac8d9cb7680479b96b28dd1b95a5b0b3c7803d86bd1573c44de616f0e7"
+  },
+  "holidayPolicy": "Only the source snapshot schedules; missing dates remain null, including future years."
+}

@@ -1,0 +1,1523 @@
+{
+  "scope": "static-imports-delay-imports-app-local-exports-and-forwarders",
+  "architectures": {
+    "x64": {
+      "explorerhooks.dll": {
+        "machine": "0x8664",
+        "sha256": "392964D71B809EBF45B49A33D6372586846CDA004F9F561BEC74ED3CA4078BF2",
+        "imports": [
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 105
+          },
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 16
+          }
+        ]
+      },
+      "explorertap.dll": {
+        "machine": "0x8664",
+        "sha256": "86F65A4B341E767B364BF5172E297395672CB859BDCE0422B3D20823A3CD8696",
+        "imports": [
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 14
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 7
+          },
+          {
+            "file": "rpcrt4.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 16
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 103
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          }
+        ]
+      },
+      "lumetaskbarcore.exe": {
+        "machine": "0x8664",
+        "sha256": "096AFD5603F4CB8DF088768AB31C6552A73452E6C51935A60C9A873421D56841",
+        "imports": [
+          {
+            "file": "advapi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "comctl32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "dwmapi.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "gdi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-core-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-errorhandling-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-processthreads-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-core-localization-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-handle-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-libraryloader-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-core-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-psapi-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-2-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-debug-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-file-l2-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-sysinfo-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-io-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-memory-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-file-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-sysinfo-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-version-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-com-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-core-processthreads-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-memory-l1-1-3.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-shcore-scaling-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "shell32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "shlwapi.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 71
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 36
+          },
+          {
+            "file": "ntdll.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "programlog.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 13
+          },
+          {
+            "file": "msvcp140_atomic_wait.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 2
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 37
+          },
+          {
+            "file": "vcruntime140_1.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 1
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 12
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 22
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 10
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-threadpool-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-com-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-appmodel-runtime-l1-1-5.dll",
+            "delayed": true,
+            "kind": "windows",
+            "symbols": 4
+          }
+        ]
+      },
+      "programlog.dll": {
+        "machine": "0x8664",
+        "sha256": "B352DC8EEA5042A1A0FA46FDE9185BF3EDC1DA5A45B458F3126EE8749529EF16",
+        "imports": [
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 32
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 48
+          },
+          {
+            "file": "vcruntime140_1.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 1
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 13
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-time-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 7
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 18
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          }
+        ]
+      },
+      "xaml.dll": {
+        "machine": "0x8664",
+        "sha256": "3AAECBF8347ADC2D217F38448DD73E46B076F0A1414BFA114331F96681144EAC",
+        "imports": [
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 38
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 36
+          },
+          {
+            "file": "vcruntime140_1.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 1
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 13
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 14
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 13
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          }
+        ]
+      },
+      "msvcp140.dll": {
+        "machine": "0x8664",
+        "sha256": "0F885B509A685D2BBFA652FED26B5FB31D88FBDAB0A978C641D1C7B8AA460AA9",
+        "imports": [
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 17
+          },
+          {
+            "file": "vcruntime140_1.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 17
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 19
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 9
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 21
+          },
+          {
+            "file": "api-ms-win-crt-filesystem-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-time-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-crt-environment-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 7
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-utility-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 83
+          }
+        ]
+      },
+      "msvcp140_atomic_wait.dll": {
+        "machine": "0x8664",
+        "sha256": "640B2AEFCED484D0368EEA5BDD06ADDD0658A3A70A49256E560D6923B404A479",
+        "imports": [
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 5
+          },
+          {
+            "file": "vcruntime140_1.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 1
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 11
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "advapi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 32
+          }
+        ]
+      },
+      "vcruntime140.dll": {
+        "machine": "0x8664",
+        "sha256": "D5E4D9A3E835FA679450145D6A7D94E36573A509317111904D9B3712C30D9066",
+        "imports": [
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 34
+          }
+        ]
+      },
+      "vcruntime140_1.dll": {
+        "machine": "0x8664",
+        "sha256": "1F2D41C4AA5DB0BC33EBF7B66D72943A817D7CE6CBE880502A9403823633093F",
+        "imports": [
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 5
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 27
+          }
+        ]
+      }
+    },
+    "arm64": {
+      "explorerhooks.dll": {
+        "machine": "0xAA64",
+        "sha256": "2B97943C32FD9729E2D5021DBD4A1E9AE0156E4180F33893DB85F23DA1EA5CD1",
+        "imports": [
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 97
+          },
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 16
+          }
+        ]
+      },
+      "explorertap.dll": {
+        "machine": "0xAA64",
+        "sha256": "6D2156A1F1A80C862D414A6D27DAD5D78236704EB692BBECD46ECFD7D11E9191",
+        "imports": [
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 14
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 7
+          },
+          {
+            "file": "rpcrt4.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 16
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 96
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          }
+        ]
+      },
+      "lumetaskbarcore.exe": {
+        "machine": "0xAA64",
+        "sha256": "14C5C17BC20897155C821CA43D563DD2410880C4CF2DD0C1C0A392030586900E",
+        "imports": [
+          {
+            "file": "advapi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "comctl32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "dwmapi.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "gdi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-core-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-errorhandling-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-processthreads-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-core-localization-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-handle-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-libraryloader-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-core-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-psapi-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-2-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-debug-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-file-l2-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-sysinfo-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-io-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-memory-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-file-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-sysinfo-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-version-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-com-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-core-processthreads-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-core-memory-l1-1-3.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-shcore-scaling-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "shell32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "shlwapi.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 71
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 31
+          },
+          {
+            "file": "ntdll.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "programlog.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 13
+          },
+          {
+            "file": "msvcp140_atomic_wait.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 2
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 37
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 14
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 22
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 9
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-threadpool-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-com-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-appmodel-runtime-l1-1-5.dll",
+            "delayed": true,
+            "kind": "windows",
+            "symbols": 4
+          }
+        ]
+      },
+      "programlog.dll": {
+        "machine": "0xAA64",
+        "sha256": "4586AD8EB3D3EB31AB87CA2AAD73DD48B96E73FDA48AF75728F4FF51858A0EAE",
+        "imports": [
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 32
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 41
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 15
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-time-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 18
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          }
+        ]
+      },
+      "xaml.dll": {
+        "machine": "0xAA64",
+        "sha256": "0C7B777B3996003585DAA197714B604AE0C034BA795158BE7A6057FEFC90070E",
+        "imports": [
+          {
+            "file": "user32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 38
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 27
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 14
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 14
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 9
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "ole32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "oleaut32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-1.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-core-winrt-error-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          }
+        ]
+      },
+      "msvcp140.dll": {
+        "machine": "0xAA64",
+        "sha256": "045FAEAB0B5710816AE160EA20DAE8495FFC11BB51FECA15D22AAF7FF3752CB3",
+        "imports": [
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 18
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 5
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 16
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 19
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 9
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 21
+          },
+          {
+            "file": "api-ms-win-crt-time-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-crt-filesystem-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 6
+          },
+          {
+            "file": "api-ms-win-crt-environment-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-math-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 8
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-utility-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 63
+          }
+        ]
+      },
+      "msvcp140_atomic_wait.dll": {
+        "machine": "0xAA64",
+        "sha256": "4384E35592B7BE1F0B80718EBA2F779060D73C3E232EB1BFADF8A4CB9B14601F",
+        "imports": [
+          {
+            "file": "msvcp140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 5
+          },
+          {
+            "file": "vcruntime140.dll",
+            "delayed": false,
+            "kind": "app-local",
+            "symbols": 9
+          },
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 11
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-locale-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "advapi32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 24
+          },
+          {
+            "file": "api-ms-win-core-synch-l1-2-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          }
+        ]
+      },
+      "vcruntime140.dll": {
+        "machine": "0xAA64",
+        "sha256": "D8A8513921544569837E400D37CC71302819967AE6DEFA932266A7ECB41DBAF9",
+        "imports": [
+          {
+            "file": "api-ms-win-crt-runtime-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "api-ms-win-crt-string-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 4
+          },
+          {
+            "file": "api-ms-win-crt-heap-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 3
+          },
+          {
+            "file": "api-ms-win-crt-convert-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 1
+          },
+          {
+            "file": "api-ms-win-crt-stdio-l1-1-0.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 2
+          },
+          {
+            "file": "kernel32.dll",
+            "delayed": false,
+            "kind": "windows",
+            "symbols": 27
+          }
+        ]
+      }
+    }
+  },
+  "failures": [],
+  "passed": true
+}

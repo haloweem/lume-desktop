@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "builder": "esbuild",
+  "builderVersion": "0.25.12",
+  "reference": "lume1.0.1/third_party/folia-major/upstream",
+  "sources": {
+    "src/assets/visualizer-effects/rain-window-drop-alpha.png": "b47a0ce3f301530a184b3f61aef521cfc4557e2e2aa0d834a70c5840882afb96",
+    "src/assets/visualizer-effects/rain-window-drop-color.png": "0adcebe3a4ab3a8f71f49ebd98d23531330a74f0d439b7a8ae6307e95c372cfa",
+    "src/components/visualizer/effects/overlayShaders.ts": "f897bc62d60c5cc9082a8f44283000c6d663385504d063d7d38affe64bb9b918",
+    "src/components/visualizer/effects/rainWindowModel.ts": "d5f37f7460748a8016dded96b13f1030cab82ac54389453a7a0d94f113a79c0c",
+    "src/components/visualizer/effects/rainWindowPhysics.js": "17fff90ffa90ba17ee48de3ccc8617ac16967b852e5377e88b2f679f2b8b2d06",
+    "src/components/visualizer/effects/shaders.ts": "85d52133f6b092194cf5fcab135e081ad05e7df1a4f570be6c493cc99e884122",
+    "src/components/visualizer/effects/StarRiverCanvas.tsx": "d7daa70f0158f32783be6cfa66cd580fee29f483f3a89985a5eb700da3e7f64a",
+    "src/components/visualizer/effects/StarRiverParticles.ts": "3b4e05b8c2bb2f3c220bc61af219f9e14da5ec6071b2cca4301a0d8cc5889b86",
+    "src/components/visualizer/effects/starRiverPointShaders.ts": "a09e7ef7d48057a986de51920d86d4d992fca02dae44b5e5ab384a82cda52f45",
+    "src/components/visualizer/effects/VisualizerEffectLayer.tsx": "06491af863e22a2f0bc4fd5bc57eda5639df31c943c546a846f0eeca43fb7d45",
+    "src/components/visualizer/VisualizerShell.tsx": "54613ba934e4419df5e44899ec592a8a8039836fcaeb6ff10b0ab8360d68f84e"
+  },
+  "sharedThree": {
+    "path": "../../music-visualizers/vendor/three.module.js",
+    "sha256": "b193758d8abd29949d5ff3ea2745e56b400a8f9140941cf5f6f22c04ff32e778"
+  },
+  "adaptations": [
+    "Snow: extract ShaderCanvas setup, uniforms, resize and frame loop verbatim; remove React, app frame bridges and unused background decoding. Preserve 30fps, DPR cap 1.5, staticMode=false and transparent overlay shader. Add error propagation and complete GL cleanup.",
+    "Star river: extract StarRiverCanvas fixed-camera mount and unchanged point shaders. Adapt StarRiverParticles to cancel pending cover images on replacement/disposal, preserving Three 0.128 texture defaults and JPEG format selection. Remove React/global compositor bridges; use current.artwork, keep staticMode=false, camera 44deg/16/0.06, DPR cap 1.5 and dt cap 0.08. Add constructor/frame failure cleanup and forceContextLoss. Externalize Three to existing music-visualizers/vendor.",
+    "Rain: preserve physics/shaders and overlay defaults. Shared canvas textures refresh only on compositor frame events/version changes; static backgrounds avoid repeated copies, blur and GPU uploads. Preserve video refresh. Isolate sprite storage, cancel RAF/listeners and release owned canvases/GL on cleanup/failure. Never load backgroundMedia."
+  ],
+  "outputs": {
+    ".gitattributes": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da",
+    "assets/rain-window-drop-alpha.png": "b47a0ce3f301530a184b3f61aef521cfc4557e2e2aa0d834a70c5840882afb96",
+    "assets/rain-window-drop-color.png": "0adcebe3a4ab3a8f71f49ebd98d23531330a74f0d439b7a8ae6307e95c372cfa",
+    "licenses/esbuild-MIT.txt": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+    "licenses/Folia-AGPL-3.0.txt": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e",
+    "licenses/Folia-NOTICE.md": "d403287465ef14b84b6f71cfa8bd2363e648befeeddef138cbc97c01c829a928",
+    "licenses/Mineradio-GPL-3.0.txt": "dcb4416795cc866c8a71742b7a94a200f0351ed94671b5d2330676fc210ff755",
+    "licenses/Three-MIT.txt": "7dddf7c5b8fd10ee654db8857d75d104b5557889aa5a91fc4ca545ea7c07062f",
+    "rain-window.js": "995d36fbfeed87f6b669b6b29cf9494a6020f4fed49e35b4620980951b12c43a",
+    "snow.js": "398938d0ea7a042e27bd323f7f84b897f6c33cbba52b1adda3b03c18e27bf07f",
+    "source/rain-window.native.ts": "ecc79ff61a4f7d3e376a9e5083938db2f981d566923882c235a42d62af08c601",
+    "source/snow.native.ts": "bd5de6be011e8211f1f5c7d1d5d3d2a4d5f76b39edada2a406e69d7a001205a0",
+    "source/star-river.native.ts": "8f45f5edc11791629de8589fa40d7165d55a3f15722b4d8b5b5f322bf5209843",
+    "source/StarRiverParticles.native.ts": "112a2d8fbb474340fb56d7416cc9dc23c33a24c3850e2e4f40250aec8f2f64af",
+    "source/upstream/src/assets/visualizer-effects/rain-window-drop-alpha.png": "b47a0ce3f301530a184b3f61aef521cfc4557e2e2aa0d834a70c5840882afb96",
+    "source/upstream/src/assets/visualizer-effects/rain-window-drop-color.png": "0adcebe3a4ab3a8f71f49ebd98d23531330a74f0d439b7a8ae6307e95c372cfa",
+    "source/upstream/src/components/visualizer/effects/overlayShaders.ts": "f897bc62d60c5cc9082a8f44283000c6d663385504d063d7d38affe64bb9b918",
+    "source/upstream/src/components/visualizer/effects/rainWindowModel.ts": "d5f37f7460748a8016dded96b13f1030cab82ac54389453a7a0d94f113a79c0c",
+    "source/upstream/src/components/visualizer/effects/rainWindowPhysics.js": "17fff90ffa90ba17ee48de3ccc8617ac16967b852e5377e88b2f679f2b8b2d06",
+    "source/upstream/src/components/visualizer/effects/shaders.ts": "85d52133f6b092194cf5fcab135e081ad05e7df1a4f570be6c493cc99e884122",
+    "source/upstream/src/components/visualizer/effects/StarRiverCanvas.tsx": "d7daa70f0158f32783be6cfa66cd580fee29f483f3a89985a5eb700da3e7f64a",
+    "source/upstream/src/components/visualizer/effects/StarRiverParticles.ts": "3b4e05b8c2bb2f3c220bc61af219f9e14da5ec6071b2cca4301a0d8cc5889b86",
+    "source/upstream/src/components/visualizer/effects/starRiverPointShaders.ts": "a09e7ef7d48057a986de51920d86d4d992fca02dae44b5e5ab384a82cda52f45",
+    "source/upstream/src/components/visualizer/effects/VisualizerEffectLayer.tsx": "06491af863e22a2f0bc4fd5bc57eda5639df31c943c546a846f0eeca43fb7d45",
+    "source/upstream/src/components/visualizer/VisualizerShell.tsx": "54613ba934e4419df5e44899ec592a8a8039836fcaeb6ff10b0ab8360d68f84e",
+    "star-river.js": "a001325c974e081781ee2cb470aeb36a041b8d3b8998bc54807b6d588e524783"
+  }
+}

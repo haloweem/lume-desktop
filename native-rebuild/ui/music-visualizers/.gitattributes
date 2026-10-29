@@ -1,0 +1,6 @@
+# Source and generated manifests record exact bytes; do not normalize on checkout.
+* -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+*/source/** -whitespace
+*/licenses/** -whitespace
+# Preserve the extractor's byte-for-byte upstream output, including blank lines.
+vendor/mineradio-stage.js -whitespace

@@ -1,0 +1,6 @@
+add_library(lume-taskbar-core STATIC taskbar_store.cpp taskbar_controller.cpp)
+target_include_directories(lume-taskbar-core PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../..")
+target_compile_features(lume-taskbar-core PUBLIC cxx_std_17)
+if(COMMAND lume_enable_native_warnings)
+  lume_enable_native_warnings(lume-taskbar-core)
+endif()

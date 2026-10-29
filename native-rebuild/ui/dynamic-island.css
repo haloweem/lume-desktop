@@ -1,0 +1,28 @@
+.island-preview {
+  width: 236px;
+  height: 36px;
+  margin: 24px auto 28px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: 1px solid #2a2a2e;
+  border-radius: 18px;
+  background: #000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #f4f4f5;
+  font-size: 12px;
+  font-weight: 500;
+}
+.island-cover { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, #ff7a59, #b45cff); flex: none; }
+.island-title { flex: 1; opacity: .86; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.island-bars { display: flex; align-items: center; gap: 2.5px; height: 18px; margin-right: 4px; }
+.island-bars i { width: 3px; border-radius: 2px; background: #30d158; animation: island-bar 1s ease-in-out infinite; }
+.island-bars i:nth-child(1) { height: 8px; animation-delay: -.2s; }
+.island-bars i:nth-child(2) { height: 16px; animation-delay: -.5s; }
+.island-bars i:nth-child(3) { height: 11px; animation-delay: -.8s; }
+.island-bars i:nth-child(4) { height: 14px; animation-delay: -.35s; }
+@keyframes island-bar { 50% { transform: scaleY(.45); } }
+@media (prefers-reduced-motion: reduce) { .island-bars i { animation: none; } }
+.island-option label { display: flex; flex-direction: column; gap: 2px; }
+.island-option small { font-size: 12px; opacity: .6; font-weight: 400; }

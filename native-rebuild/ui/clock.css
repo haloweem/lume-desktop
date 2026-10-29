@@ -1,0 +1,115 @@
+@font-face {
+  font-family: GeosansLight;
+  src: url("./assets/fonts/GeosansLight.ttf");
+}
+@font-face {
+  font-family: Ruthligos;
+  src: url("./assets/fonts/Ruthligos.ttf");
+}
+@font-face {
+  font-family: Anurati;
+  src: url("./assets/fonts/Anurati.otf");
+}
+@font-face {
+  font-family: Quicksand;
+  src: url("./assets/fonts/Quicksand.otf");
+}
+@font-face {
+  font-family: Allura;
+  src: url("./assets/fonts/Allura.otf");
+}
+@font-face {
+  font-family: Futurist;
+  src: url("./assets/fonts/Futurist Fixed-width.ttf");
+}
+/* Clock source is Rainmeter: positions and point sizes follow Clock.ini (96/72 point conversion). */
+.clock-preview-disclosure {
+  margin: 24px 0;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+}
+.clock-preview-disclosure summary {
+  cursor: pointer;
+}
+.clock-preview {
+  position: relative;
+  max-width: 100%;
+  height: 240px;
+  margin-top: 20px;
+  overflow: hidden;
+  color: #fff;
+}
+.clock-preview > div {
+  position: absolute;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  font-weight: 400;
+  line-height: 1.2;
+}
+.clock-preview.welfare {
+  width: 360px;
+  height: 150px;
+}
+.welfare > div {
+  left: 180px;
+  letter-spacing: 2px;
+}
+.welfare .clock-day {
+  top: 0;
+  font: 93.333px Ruthligos;
+  color: rgba(255, 255, 255, 0.353);
+}
+.welfare .clock-time {
+  top: 50px;
+  font: 53.333px GeosansLight;
+}
+.welfare .clock-date {
+  top: 105px;
+  font: 26.667px GeosansLight;
+}
+.clock-preview.mond {
+  width: 721px;
+  height: 175px;
+}
+.mond > div {
+  left: 360.4px;
+  text-transform: uppercase;
+}
+.mond .clock-day {
+  top: 0;
+  font: 56.533px Anurati;
+  letter-spacing: 20px;
+}
+.mond .clock-date {
+  top: 79.5px;
+  font: 19.787px Quicksand;
+}
+.mond .clock-time {
+  top: 127.2px;
+  font: 19.787px Quicksand;
+}
+.clock-preview.insideDream {
+  width: 520px;
+  height: 225px;
+}
+.insideDream > div {
+  left: 260px;
+}
+.insideDream .clock-day {
+  top: 0;
+  font: 128px Allura;
+}
+.insideDream .clock-date {
+  top: 160px;
+  font: 16px Futurist;
+  color: #a8b5db;
+  text-transform: uppercase;
+  letter-spacing: -2px;
+}
+.insideDream .clock-time {
+  top: 182px;
+  font: 21.333px Futurist;
+  text-transform: uppercase;
+}
+.clock-preview.custom-color > div { color: var(--clock-color); }
+.clock-preview.custom-color.welfare .clock-day { opacity: 0.352941; }

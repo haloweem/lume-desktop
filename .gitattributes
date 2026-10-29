@@ -1,0 +1,14 @@
+# Fixed taskbar payload checksums cover exact bytes, including mixed source
+# line endings. Preserve them through Git clean/smudge on every platform.
+native-rebuild/vendor/taskbar-runtime/** -text
+# Preserve verbatim upstream license formatting and archived diff context.
+native-rebuild/vendor/taskbar-runtime/2026.1/LICENSE.md -whitespace
+native-rebuild/vendor/taskbar-runtime/2026.1/lume-taskbar-core.patch -whitespace
+native-rebuild/licenses/opencc-data-LICENSE.txt -whitespace
+
+# Preserve byte-identical vendored notes editor assets, generated bundle and
+# upstream license text. Reproduction and package hashes cover exact bytes.
+native-rebuild/ui/vendor/notes-math/** -text -whitespace
+native-rebuild/ui/vendor/notes-editor/** -text -whitespace
+# Lumiere provenance hashes cover verbatim upstream sources and shader strings.
+native-rebuild/ui/music-visualizers/lumiere/** -text -whitespace

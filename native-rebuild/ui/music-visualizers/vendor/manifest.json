@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "esbuild": "0.25.12",
+  "three": "0.128.0",
+  "foliaRevision": "fa057895f916d0c2482785a150dce51ad6fc928c",
+  "mineradioRevision": "328a087a14e79d5267a3de54d29108c34ed6cf60",
+  "inputs": [
+    {
+      "path": "src/components/visualizer/mineradio3d/stageRuntime.ts",
+      "sha256": "3ad496d3a46769c20d12822a855b3fc54cb63ab99a68039431a686b7b4076c2a"
+    },
+    {
+      "path": "src/components/visualizer/colorMix.ts",
+      "sha256": "f577a088ad103a23a945184f5bd378a941481e42dc063a220c51c205c0007c96"
+    },
+    {
+      "path": "src/utils/lyrics/graphemeTiming.ts",
+      "sha256": "b5043839fbbb1686a6fba4946a9e917d843f57d368604929e83b5c9e2a8265e5"
+    },
+    {
+      "path": "src/components/visualizer/effects/StarRiverParticles.ts",
+      "sha256": "3b4e05b8c2bb2f3c220bc61af219f9e14da5ec6071b2cca4301a0d8cc5889b86"
+    },
+    {
+      "path": "src/components/visualizer/effects/starRiverPointShaders.ts",
+      "sha256": "a09e7ef7d48057a986de51920d86d4d992fca02dae44b5e5ab384a82cda52f45"
+    },
+    {
+      "path": "src/components/visualizer/effects/definition.ts",
+      "sha256": "9fc123f6aad196ac2481f413ba5c14b236c67cc7029dc611431ff5fe393c0dce"
+    },
+    {
+      "path": "src/services/baseThemes.ts",
+      "sha256": "5d83b212316fb7cea4a217b3c7c9d000794a1588a9005025348834fb2b48fda0"
+    },
+    {
+      "path": "src/types.ts",
+      "sha256": "faa28a5e0d7f6f4913f07128996573714d126af8b6e1e174c328601abed5c752"
+    },
+    {
+      "path": "src/components/visualizer/mineradio3d/VisualizerMineradio3D.tsx",
+      "sha256": "67f5c5fb156f73ed6c2c5a90ddbc34299fb2e8e52697b7ec38db2cd12dd5fb2d"
+    },
+    {
+      "path": "package.json",
+      "sha256": "466972c2817cee72bb3c1e3b51b88909f1106dceee0476d55571108b538f9447"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "2487a9e6b5b94a985668a9e3d0407b4622689b8a272a0fca1ff40d000df7f36e"
+    },
+    {
+      "path": "node_modules/three/build/three.module.js",
+      "sha256": "af527c374b56b8688737a42d7fcea7cb8aaeb57a4e3c6da98b4dffd55bcc3514"
+    },
+    {
+      "path": "node_modules/three/package.json",
+      "sha256": "d853c404a6a0cf1ba73555da027de3198da9c7464a60cfb7e38984e293c4bfbb"
+    }
+  ],
+  "outputs": {
+    ".gitattributes": "bddecbd96d9b6f1c2b3710ef625914ab72eba9d5b5e3ef4c72a1878bab4b3f54",
+    "licenses/esbuild-MIT.txt": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681",
+    "source/src/components/visualizer/mineradio3d/stageRuntime.ts": "3ad496d3a46769c20d12822a855b3fc54cb63ab99a68039431a686b7b4076c2a",
+    "source/src/components/visualizer/colorMix.ts": "f577a088ad103a23a945184f5bd378a941481e42dc063a220c51c205c0007c96",
+    "source/src/utils/lyrics/graphemeTiming.ts": "b5043839fbbb1686a6fba4946a9e917d843f57d368604929e83b5c9e2a8265e5",
+    "source/src/components/visualizer/effects/StarRiverParticles.ts": "3b4e05b8c2bb2f3c220bc61af219f9e14da5ec6071b2cca4301a0d8cc5889b86",
+    "source/src/components/visualizer/effects/starRiverPointShaders.ts": "a09e7ef7d48057a986de51920d86d4d992fca02dae44b5e5ab384a82cda52f45",
+    "source/src/components/visualizer/effects/definition.ts": "9fc123f6aad196ac2481f413ba5c14b236c67cc7029dc611431ff5fe393c0dce",
+    "source/src/services/baseThemes.ts": "5d83b212316fb7cea4a217b3c7c9d000794a1588a9005025348834fb2b48fda0",
+    "source/src/types.ts": "faa28a5e0d7f6f4913f07128996573714d126af8b6e1e174c328601abed5c752",
+    "source/src/components/visualizer/mineradio3d/VisualizerMineradio3D.tsx": "67f5c5fb156f73ed6c2c5a90ddbc34299fb2e8e52697b7ec38db2cd12dd5fb2d",
+    "source/package.json": "466972c2817cee72bb3c1e3b51b88909f1106dceee0476d55571108b538f9447",
+    "source/tsconfig.json": "2487a9e6b5b94a985668a9e3d0407b4622689b8a272a0fca1ff40d000df7f36e",
+    "source/node_modules/three/build/three.module.js": "af527c374b56b8688737a42d7fcea7cb8aaeb57a4e3c6da98b4dffd55bcc3514",
+    "source/node_modules/three/package.json": "d853c404a6a0cf1ba73555da027de3198da9c7464a60cfb7e38984e293c4bfbb",
+    "licenses/Folia-AGPL-3.0.txt": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e",
+    "licenses/Folia-NOTICE.md": "d403287465ef14b84b6f71cfa8bd2363e648befeeddef138cbc97c01c829a928",
+    "licenses/Mineradio-GPL-3.0.txt": "dcb4416795cc866c8a71742b7a94a200f0351ed94671b5d2330676fc210ff755",
+    "licenses/Three-MIT.txt": "7dddf7c5b8fd10ee654db8857d75d104b5557889aa5a91fc4ca545ea7c07062f",
+    "source/stageRuntime.native.ts": "d7385dbe5e4804da93297f1b6cb86c94da69bbe107dbfd1f92ed63c72d3ae1b1",
+    "source/StarRiverParticles.native.ts": "112a2d8fbb474340fb56d7416cc9dc23c33a24c3850e2e4f40250aec8f2f64af",
+    "mineradio-stage.js": "cf1ddc76b31459ea8c24da7a75b57485e406387042b59d3fd2cf96691333eb32",
+    "three.module.js": "b193758d8abd29949d5ff3ea2745e56b400a8f9140941cf5f6f22c04ff32e778",
+    "default-theme.js": "236eba783f8677d903600adee619a89dc4a94727dc9f5db475596456daf0d1b8"
+  }
+}

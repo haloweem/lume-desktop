@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lume-music.local https://lume-wallpaper.local https://static.lumedesktop.com https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com https://p1.music.126.net https://p2.music.126.net https://p3.music.126.net https://p4.music.126.net https://y.gtimg.cn https://y.qq.com https://qpic.y.qq.com https://q1.qlogo.cn https://q2.qlogo.cn https://thirdqq.qlogo.cn https://imge.kugou.com https://imgessl.kugou.com https://img.kgimg.com http://127.0.0.1:*; media-src https://lume-music.local https://lume-wallpaper.local https://static.lumedesktop.com https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com http://127.0.0.1:*; font-src 'self'; connect-src 'self' https://lume-music.local https://lume-fonts.local http://127.0.0.1:*; object-src 'none'; base-uri 'none'"
+    />
+    <title>Lume</title>
+    <link rel="stylesheet" href="reference.css" />
+    <link rel="stylesheet" href="titlebar.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="clock.css" />
+    <link rel="stylesheet" href="calendar.css" />
+    <link rel="stylesheet" href="radial.css" />
+    <link rel="stylesheet" href="dynamic-island.css" />
+    <link rel="stylesheet" href="application-settings.css" />
+    <link rel="stylesheet" href="music.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar" aria-label="Lume 窗口栏"></header>
+      <main id="content"></main>
+      <div id="notice" role="status" hidden></div>
+    </div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+function(lume_enable_native_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /WX /utf-8)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+endfunction()
