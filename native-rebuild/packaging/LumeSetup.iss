@@ -38,6 +38,8 @@ UninstallDisplayIcon={app}\LumeShell.exe
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+; User agreement shown before installing; its last section states the AGPL-3.0 source offer.
+LicenseFile={#SourcePath}LumeUserAgreement.txt
 ArchitecturesAllowed=x64compatible
 PrivilegesRequired=admin
 ChangesAssociations=yes
