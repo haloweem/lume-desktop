@@ -687,7 +687,7 @@ struct DockWindow::Impl {
         const float unit = static_cast<float>(monitorDpi) / 96;
         const float availableWidth = (info.rcWork.right - info.rcWork.left) / unit - 24;
         const float availableHeight = (info.rcWork.bottom - info.rcWork.top) / unit - BarHeight - 40;
-        constexpr float cardWidth = 216, cardHeight = 154, cardGap = 8, margin = 10, header = 28;
+        constexpr float cardWidth = 216, cardHeight = 154, cardGap = 12, margin = 0, header = 0;
         const auto columns = std::min(previewWindows.size(),
             static_cast<std::size_t>(std::max(1, std::min(5, static_cast<int>((availableWidth - margin * 2 + cardGap) / (cardWidth + cardGap))))));
         const auto maxRows = static_cast<std::size_t>(std::max(1, std::min(3,
@@ -701,12 +701,11 @@ struct DockWindow::Impl {
         const float width = margin * 2 + static_cast<float>(columns) * (cardWidth + cardGap) - cardGap;
         const float height = margin * 2 + header + static_cast<float>(rows) * (cardHeight + cardGap) - cardGap;
         if (!previewCanvas->Begin(width, height, monitorDpi)) { HidePreview(); return; }
-        previewCanvas->Rounded({0, 0, width, height}, 12, 0x242428, .97f);
+        // Only the original windows are visible. The transparent host provides
+        // placement/input without adding a panel, card frame, or duplicate title.
         auto title = OrganizerWide(items[previewIndex].name) + L" · " + std::to_wstring(previewWindows.size()) + L" 个窗口";
         if (pages > 1) title += L"  (" + std::to_wstring(previewPage + 1) + L"/" + std::to_wstring(pages) + L"，滚轮切换)";
         SetWindowTextW(preview, title.c_str());
-        previewCanvas->Text(FitText(*previewCanvas, title, width - margin * 2, 12),
-            {margin, 4, width - margin * 2, header}, 12, 0xffffff, .92f);
         const auto pixels = [unit](WidgetRect r) {
             return RECT{static_cast<LONG>(std::lround(r.x * unit)), static_cast<LONG>(std::lround(r.y * unit)),
                 static_cast<LONG>(std::lround((r.x + r.width) * unit)), static_cast<LONG>(std::lround((r.y + r.height) * unit))};
@@ -717,27 +716,29 @@ struct DockWindow::Impl {
             const auto& window = previewWindows[begin + n];
             const WidgetRect card{margin + static_cast<float>(n % columns) * (cardWidth + cardGap),
                 margin + header + static_cast<float>(n / columns) * (cardHeight + cardGap), cardWidth, cardHeight};
-            previewCanvas->Rounded(card, 7, 0xffffff, .08f);
-            const auto caption = window.title.empty() ? L"窗口" : OrganizerWide(window.title);
-            previewCanvas->Text(FitText(*previewCanvas, caption, cardWidth - 16, 12),
-                {card.x + 8, card.y + 2, cardWidth - 16, 24}, 12, 0xffffff, .96f);
             PreviewCard entry{window, pixels(card)};
             const auto snapshot = Snapshot(window.handle);
             SIZE size{};
             if (snapshot) size = {static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)};
             else if (SUCCEEDED(DwmRegisterThumbnail(preview, reinterpret_cast<HWND>(window.handle), &entry.thumbnail)))
                 DwmQueryThumbnailSourceSize(entry.thumbnail, &size);
-            WidgetRect image{card.x + 6, card.y + 30, cardWidth - 12, cardHeight - 36};
+            WidgetRect image = card;
             if (size.cx > 0 && size.cy > 0) {
                 const float fit = std::min(image.width / size.cx, image.height / size.cy);
                 const float w = size.cx * fit, h = size.cy * fit;
-                image = {image.x + (image.width - w) / 2, image.y + (image.height - h) / 2, w, h};
+                image = {image.x + (image.width - w) / 2, image.y + image.height - h, w, h};
+                // DWM paints separately from the layered bitmap. A practically
+                // transparent input surface keeps the thumbnail clickable.
+                previewCanvas->Rounded(image, 0, 0xffffff, 1.f / 255);
+                entry.rect = pixels(image);
                 if (snapshot) previewCanvas->ImageBitmap(snapshot, image);
                 else destinations.push_back({entry.thumbnail, pixels(image)});
             } else {
+                previewCanvas->Rounded(image, 0, 0xffffff, 1.f / 255);
                 if (const auto icon = Icon(items[previewIndex]))
                     previewCanvas->ImageBitmap(icon, {image.x + (image.width - 48) / 2, image.y + 10, 48, 48});
-                previewCanvas->Text(L"点击打开窗口", {image.x, image.y + image.height - 24, image.width, 24},
+                const auto caption = window.title.empty() ? L"点击打开窗口" : OrganizerWide(window.title);
+                previewCanvas->Text(FitText(*previewCanvas, caption, image.width, 12), {image.x, image.y + image.height - 24, image.width, 24},
                     12, 0xffffff, .7f, false, WidgetTextAlign::Center);
             }
             previewCards.push_back(std::move(entry));

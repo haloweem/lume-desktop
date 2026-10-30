@@ -135,7 +135,7 @@ void Scenario(bool visual) {
     Check(IsWindowVisible(popup), "preview stays visible while crossing the gap");
     SendMessageW(popup, WM_MOUSEMOVE, 0, card(1)); Pump(400);
     Check(IsWindowVisible(popup), "entering the preview cancels its dismissal");
-    if (visual) { Pump(12000); }
+    if (visual) { Pump(45000); }  // Allow a screenshot without racing the gallery timeout.
     SendMessageW(popup, WM_LBUTTONDOWN, MK_LBUTTON, card(1));
     SendMessageW(popup, WM_LBUTTONUP, 0, card(1));
     Check(selected == h2, "second card selects the second HWND");
