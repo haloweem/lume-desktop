@@ -661,7 +661,7 @@ Change MoveFromDockCollection(Preferences& value, std::string_view id, std::stri
 bool Movable(const Item& item) {
     return item.kind == Kind::Lume || item.kind == Kind::Pinned || item.kind == Kind::Running;
 }
-bool Removable(const Item& item) { return item.kind == Kind::Pinned || item.kind == Kind::Lume; }
+bool Removable(const Item& item) { return item.kind == Kind::Pinned || item.kind == Kind::Lume || item.kind == Kind::Running; }
 std::string MotionKey(const Item& item) {
     return std::to_string(static_cast<int>(item.kind)) + "|" + item.path +
            (item.window ? "#" + std::to_string(item.window) : std::string{});

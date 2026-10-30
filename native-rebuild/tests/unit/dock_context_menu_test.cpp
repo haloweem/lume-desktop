@@ -72,7 +72,8 @@ void CALLBACK MenuTimer(HWND, UINT, UINT_PTR timer, DWORD) {
         // A settings/heartbeat update dispatches inside the modal message loop
         // and replaces the session's items vector before the command returns.
         Check(drive->session->HandlePage(PageCommand::DockReflectionOn).has_value(), "refresh during menu");
-        PostMessageW(menu, WM_KEYDOWN, VK_HOME, 0);
+        PostMessageW(menu, WM_KEYDOWN, VK_END, 0);
+        PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);  // 移除图标, immediately above 关闭 Dock
         PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
         break;
     case Action::Settings:

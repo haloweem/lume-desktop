@@ -28,6 +28,7 @@ set(lume_acceptance_probe_targets
   lume-dynamic-island-test lume-desktop-dynamic-island-test
   lume-today-todo-session-test lume-desktop-today-todo-test
   lume-dock-context-menu-test
+  lume-dock-interaction-test
   lume-dock-reflection-test
   lume-organizer-desktop-test
   lume-organizer-model-test

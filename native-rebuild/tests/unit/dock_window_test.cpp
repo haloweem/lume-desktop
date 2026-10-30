@@ -183,6 +183,7 @@ int main() {
     }
     const int pitch = centre[3] - centre[2];
     const auto drag = [&](std::size_t index, int pixels) {
+        dock.Show(items, false); Pump(600);
         moved = {99, 99, 99};
         DragBy(dock, index, pixels);
         SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);
@@ -200,10 +201,10 @@ int main() {
     const auto movedMiddleLeft = drag(3, -(pitch * 2 + pitch / 4));
     Check(movedMiddleLeft == std::tuple<std::size_t, std::size_t, std::size_t>{3, 0, 1},
           "middle pinned icon moves one place left across Lume");
-    // A running (unpinned) program dragged between A and B pins it there.
+    // Right-side icons never become pinned by dragging across the separator.
     Check(drag(6, (centre[2] + centre[3]) / 2 - centre[6]) ==
-              std::tuple<std::size_t, std::size_t, std::size_t>{6, 1, 0},
-          "dragging a running program into the pinned area pins it at that slot");
+              std::tuple<std::size_t, std::size_t, std::size_t>{99, 99, 99},
+          "dragging a running program across the separator never changes pinned items");
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);
     Pump(800);
     Check(std::abs(dock.ScaleOf(2) - 1) < .01f, "leaving the dock returns icons to rest");
@@ -322,7 +323,7 @@ int main() {
         bin.Stop();
     }
     {   // Dragging an icon up out of the Dock shows 移除 and removes it on release;
-        // dragging it back in before release keeps it. Running icons never show 移除.
+        // dragging it back in before release keeps it. Running icons request close.
         const std::vector<Item> outItems{{Kind::Launchpad, {}, "Launchpad", false}, {Kind::Pinned, "C:/Apps/a.exe", "A", false, 0},
                                          {Kind::Pinned, "C:/Apps/b.exe", "B", false, 1}, {Kind::Separator, {}, {}, false},
                                          {Kind::Running, "C:/Apps/c.exe", "C", true}};
@@ -362,7 +363,7 @@ int main() {
         dragUp(1, away, true);Pump(400);
         Check(discarded == "C:/Apps/a.exe", "releasing above the Dock removes the icon");
         discarded.clear();
-        Check(!dragUp(4, away, true) && discarded.empty(), "running icons are not removed by dragging out");
+        Check(dragUp(4, away, true) && discarded == "C:/Apps/c.exe", "running drag-out requests close for the correct program");
         Pump(400);
         out.Stop();
     }

@@ -110,6 +110,7 @@ $settingsAccountProbes = @(
   'lume-dynamic-island-test', 'lume-desktop-dynamic-island-test',
   'lume-today-todo-session-test', 'lume-desktop-today-todo-test',
   'lume-dock-context-menu-test',
+  'lume-dock-interaction-test',
   'lume-dock-reflection-test',
   'lume-wallpaper-session-test',
   'lume-taskbar-controller-test', 'lume-taskbar-store-test', 'lume-taskbar-runtime-test', 'lume-taskbar-session-test',

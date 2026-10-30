@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,14 +40,15 @@ struct DockWindowPorts {
     std::function<bool(const std::vector<std::string>& paths, const dock::Item&)> dropOnto;
     // A Dock icon dragged onto such an item (the Recycle Bin): removes the
     // icon from the Dock. Never touches the program or file itself.
-    // Also called when a pinned icon or Lume is dragged out of the Dock and released.
+    // Also called on drag-out: pinned/Lume items are removed, running items close.
     std::function<void(const dock::Item& dragged)> discard;
     // A minimized window whose program is playing music shows the cover
     // instead of the window; null otherwise.
     std::function<std::shared_ptr<const WidgetBitmap>(const dock::Item&)> cover = {};
     // Shared table of icon positions for the minimize animation; tests use their own.
     std::wstring slotsName = {};
-    std::function<void(std::size_t index, POINT screen)> runningHover;
+    std::function<std::vector<dock::ProgramWindow>(const dock::Item&)> windowsFor;
+    std::function<void(std::uint64_t handle)> focusWindow;
 };
 // The Dock: a glass bar at desktop level, positioned in the primary work
 // area (bottom-centre by default), with a transparent icon layer above it so icons can magnify past the
@@ -108,6 +110,9 @@ public:
     bool Removing() const;
     // Testing: the window drawn as a live thumbnail for items[index], if any.
     bool HasThumbnail(std::size_t index) const;
+    // The displayed snapshot can lag the session during a drag. Resolve actions
+    // by this item's identity, never by an index into a newer session snapshot.
+    std::optional<dock::Item> ItemAt(std::size_t index) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

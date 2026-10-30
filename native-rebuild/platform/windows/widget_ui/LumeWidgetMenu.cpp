@@ -967,9 +967,11 @@ UINT LumeWidgetMenu::ShowIslandTodo(HWND owner, POINT position, bool item, bool 
 UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal,
                                   bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem)
 {
-    std::vector<MenuItem> items {
-        { pinned ? L"从 Dock 移除" : L"固定到 Dock", pinned ? 21u : 20u, MenuKind::Root, pinned ? MenuIcon::Close : MenuIcon::Pin },
-    };
+    std::vector<MenuItem> items;
+    if (!pinned)
+        items.push_back({ L"固定到 Dock", 20, MenuKind::Root, MenuIcon::Pin });
+    else if (!dockActions)
+        items.push_back({ L"移除图标", 21, MenuKind::Root, MenuIcon::Close });
     if (canReveal)
         items.push_back({ L"打开所在位置", 22, MenuKind::Root, MenuIcon::Position });
     if (inCollection)
@@ -982,7 +984,7 @@ UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool 
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"从启动台移除", 23, MenuKind::Root, MenuIcon::Close });
     }
-    if (runningItem) {
+    if (runningItem && !dockActions) {
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close });
     }
@@ -996,6 +998,10 @@ UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool 
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"打开设置", 11, MenuKind::Root, MenuIcon::Settings });
         items.push_back({ L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset });
+        if (runningItem)
+            items.push_back({ L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close });
+        else if (pinned)
+            items.push_back({ L"移除图标", 21, MenuKind::Root, MenuIcon::Close });
         items.push_back({ L"关闭 Dock", 1, MenuKind::Root, MenuIcon::Close });
         return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
             none ? kDockMaterialNone : kDockMaterialGlass);

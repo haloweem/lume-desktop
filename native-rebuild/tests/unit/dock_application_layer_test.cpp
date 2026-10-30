@@ -17,7 +17,7 @@ void Check(bool ok, const char* why) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s (Win32=%lu)\n", why, GetLastError()); std::fflush(stderr); std::exit(1); }
 }
 LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
-    if (message == WM_APP + 1) { DestroyWindow(window); PostQuitMessage(0); return 0; }
+    if (message == WM_APP + 1 || message == WM_CLOSE) { DestroyWindow(window); PostQuitMessage(0); return 0; }
     return DefWindowProcW(window, message, w, l);
 }
 HWND Window(const wchar_t* name, const RECT& bounds, DWORD style = WS_POPUP, HWND owner = nullptr) {
@@ -302,7 +302,17 @@ int Scenario() {
     Check(!dock.Visible() && !IsWindow(dock.Handle()), "stop retires windows and event hooks");
     Check(dock.Show(items, true), "restart reattaches layer watcher");
     dock.Stop();
-    PostMessageW(app, WM_APP + 1, 0, 0);
+    ShowWindow(app, SW_MINIMIZE);
+    Check(dock_sources::FocusWindow(reinterpret_cast<std::uint64_t>(app)) && !IsIconic(app),
+          "preview selection restores the selected external window");
+    Check(dock_sources::FocusWindow(reinterpret_cast<std::uint64_t>(app)) && !IsIconic(app),
+          "selecting the same preview again never minimizes it");
+    std::string executable;
+    for (const auto& window : dock_sources::ProgramWindows())
+        if (window.handle == reinterpret_cast<std::uint64_t>(app)) executable = window.executable;
+    Check(!executable.empty() && dock_sources::ProgramWindowsFor(executable).size() == 1,
+          "preview provider enumerates the external program window");
+    Check(dock_sources::CloseProgram(executable), "close-window posts WM_CLOSE to the external application");
     Check(WaitForSingleObject(external.process.hProcess, 1500) == WAIT_OBJECT_0, "fixture exits cleanly");
     DestroyWindow(browser); DestroyWindow(managerGlass); DestroyWindow(manager); DestroyWindow(view); DestroyWindow(host);
     CoUninitialize();

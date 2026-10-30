@@ -26,6 +26,8 @@ std::vector<dock::ProgramWindow> ProgramWindows();
 std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable);
 // Restores and focuses a window; a window already in front is minimized.
 bool ActivateWindow(std::uint64_t handle);
+// Selecting a preview always restores/focuses; it never toggles minimization.
+bool FocusWindow(std::uint64_t handle);
 // True when `path` is the Recycle Bin, or a shortcut to it.
 bool IsRecycleBin(const std::string& path);
 // Moves files and folders to the Recycle Bin with the shell's own progress

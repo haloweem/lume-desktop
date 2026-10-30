@@ -11,6 +11,7 @@
 #include "platform/windows/widget_ui/desktop_level.h"
 #include "core/window/screen_fit.h"
 #include "platform/windows/dock/dock_slots.h"
+#include "platform/windows/dock/dock_sources.h"
 #include <dwmapi.h>
 #include <shellscalingapi.h>
 #include <windowsx.h>
@@ -26,6 +27,7 @@ constexpr const wchar_t* IconClass = lume::window_ids::DockIconsClass;
 constexpr const wchar_t* BarClass = lume::window_ids::DockBarClass;
 constexpr wchar_t GhostClass[] = L"LumeNativeDockDragIcon", PreviewClass[] = L"LumeNativeDockPreview";
 constexpr UINT_PTR PreviewTimer = 0x7c3;
+constexpr UINT_PTR PreviewLeaveTimer = 0x7c4;
 constexpr UINT FrameMessage = WM_APP + 0x7c1;
 constexpr float DragThreshold = 5, DragLift = 12, DragScale = 1.12f;
 // A dragged icon this far (DIPs) beyond the glass is removed when released.
@@ -95,8 +97,12 @@ struct DockWindow::Impl {
     // Reflections cached per icon bitmap (keyed by identity, dropped with it).
     std::map<const WidgetBitmap*, std::pair<std::weak_ptr<const WidgetBitmap>, std::shared_ptr<const WidgetBitmap>>> mirrors;
     HWND preview = nullptr;
-    HTHUMBNAIL previewThumb = nullptr;
-    std::uint64_t previewWindow = 0, pendingPreview = 0;
+    struct PreviewCard { dock::ProgramWindow window; RECT rect{}; HTHUMBNAIL thumbnail = nullptr; };
+    std::vector<PreviewCard> previewCards;
+    std::vector<dock::ProgramWindow> previewWindows;
+    std::size_t pendingPreview = None, previewIndex = None, previewPage = 0, previewPageSize = 1;
+    std::uint64_t previewPressed = 0;
+    std::vector<std::string> runningOrder;
     std::unique_ptr<WidgetCanvas> previewCanvas;
     WidgetBitmap previewBitmap;
     LayeredSurface previewSurface;
@@ -232,52 +238,45 @@ struct DockWindow::Impl {
                           true);  // 回收站, 此电脑 and other shell locations can be pinned too.
         return true;
     }
-    // The visible primary sequence is the launchpad followed by Lume and all
-    // pinned icons. A dragged running icon joins that same sequence while it
-    // is being previewed. Keeping one sequence here makes every movable icon
-    // use the same spring and "make room" behavior.
+    // Only the dragged section participates in insertion. Indices always refer
+    // to the input snapshot; visual reordering never rewrites that snapshot.
     std::vector<std::size_t> Primary(std::size_t skip = None) const {
         std::vector<std::size_t> result;
         const bool movingRunning = dragged != None && dragged < items.size() && items[dragged].kind == dock::Kind::Running;
-        if (order.empty()) {
-            for (std::size_t i = 0; i < items.size(); ++i) {
-                if (i == skip) continue;
-                if (items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned ||
-                    (movingRunning && items[i].kind == dock::Kind::Running))
-                    result.push_back(i);
-            }
-            return result;
-        }
         for (const auto i : order) {
             if (i == skip) continue;
-            if (items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned ||
-                (movingRunning && items[i].kind == dock::Kind::Running))
+            if (movingRunning ? items[i].kind == dock::Kind::Running :
+                items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned)
                 result.push_back(i);
         }
         return result;
     }
-    std::vector<std::size_t> DisplayOrder() const {
-        std::vector<std::size_t> result;
-        result.reserve(items.size());
-        if (dragged == None) {
-            for (std::size_t i = 0; i < items.size(); ++i) result.push_back(i);
-            return result;
-        }
-
-        std::vector<std::size_t> prefix, primary, tail;
+    std::vector<std::size_t> RestOrder() const {
+        std::vector<std::size_t> result, running;
         for (std::size_t i = 0; i < items.size(); ++i) {
-            if (i == dragged) continue;
-            if (items[i].kind == dock::Kind::Launchpad || items[i].kind == dock::Kind::Collection) prefix.push_back(i);
-            else if (items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned)
-                primary.push_back(i);
-            else
-                tail.push_back(i);
+            result.push_back(i);
+            if (items[i].kind == dock::Kind::Running) running.push_back(i);
         }
-        const auto target = std::min(dropSlot, primary.size());
-        primary.insert(primary.begin() + static_cast<std::ptrdiff_t>(target), dragged);
-        result.insert(result.end(), prefix.begin(), prefix.end());
-        result.insert(result.end(), primary.begin(), primary.end());
-        result.insert(result.end(), tail.begin(), tail.end());
+        std::stable_sort(running.begin(), running.end(), [&](auto a, auto b) {
+            return std::find(runningOrder.begin(), runningOrder.end(), Key(items[a])) <
+                   std::find(runningOrder.begin(), runningOrder.end(), Key(items[b]));
+        });
+        std::size_t n = 0;
+        for (auto& i : result) if (items[i].kind == dock::Kind::Running) i = running[n++];
+        return result;
+    }
+    std::vector<std::size_t> DisplayOrder() const {
+        auto result = RestOrder();
+        if (dragged == None) return result;
+        auto primary = Primary(dragged);
+        primary.insert(primary.begin() + static_cast<std::ptrdiff_t>(std::min(dropSlot, primary.size())), dragged);
+        const bool running = items[dragged].kind == dock::Kind::Running;
+        std::size_t n = 0;
+        for (auto& i : result) {
+            const auto kind = items[i].kind;
+            if (running ? kind == dock::Kind::Running : kind == dock::Kind::Pinned || kind == dock::Kind::Lume)
+                i = primary[n++];
+        }
         return result;
     }
     float Spacing() const { return static_cast<float>(look.iconSpacing); }
@@ -387,6 +386,7 @@ struct DockWindow::Impl {
         if (desktopLayer.Covered()) {
             // Hidden under a maximized window: release the glass too.
             hovering = false;
+            HidePreview();
             material.Detach();
             lastMaterial = {};
         } else if (Paint()) desktopLayer.Place();  // The new glass surface joins the pair.
@@ -406,6 +406,9 @@ struct DockWindow::Impl {
             for (std::size_t i = 0; i < items.size(); ++i) screen[Key(items[i])] = barLeft + oldOrigin + Visual(i);
         const float oldLeft = barLeft + oldOrigin;
         items = std::move(next);
+        runningOrder.erase(std::remove_if(runningOrder.begin(), runningOrder.end(), [&](const auto& key) {
+            return std::none_of(items.begin(), items.end(), [&](const auto& item) { return Key(item) == key; });
+        }), runningOrder.end());
         look = nextLook;
         look.iconScale = std::clamp(look.iconScale, 50, 200);
         if (!dock::ValidPosition(look.position)) look.position = dock::DefaultPosition;
@@ -435,8 +438,7 @@ struct DockWindow::Impl {
         }
         const float newOrigin = static_cast<float>(overlayOrigin.x) * 96 / dpi;
         anchor = {visible ? oldLeft - newOrigin : 0.f, 0};
-        order.clear();
-        for (std::size_t i = 0; i < items.size(); ++i) order.push_back(i);
+        order = RestOrder();
         Layout();
         if (!visible) { anchor = {Centered(), 0}; barLeft = Centered(); }
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -499,7 +501,7 @@ struct DockWindow::Impl {
             DrawItem(i);
             if (i == hover && dragged == None && gapSlot == None && items[i].kind != dock::Kind::Separator) labelled = i;
         }
-        if (labelled != None) DrawLabel(labelled);
+        if (labelled != None && previewIndex == None) DrawLabel(labelled);
         if (dragged != None) PaintGhost();
         if (!iconCanvas->Finish(iconBitmap) || !iconSurface.Present(icons, iconBitmap, &overlayOrigin)) {
             visible = false;
@@ -602,80 +604,161 @@ struct DockWindow::Impl {
     std::shared_ptr<const WidgetBitmap> Icon(const dock::Item& item) {
         return ports.icon ? ports.icon(item) : nullptr;
     }
-    // A larger live preview above a minimized window while the pointer rests on it.
+    // A non-modal gallery for both single-window and grouped running icons.
+    // Moving through the gap into the gallery gets a grace period.
     void SyncPreview() {
-        const bool want = hover != None && dragged == None && hover < items.size() && items[hover].kind == dock::Kind::Window;
-        const std::uint64_t target = want ? items[hover].window : 0;
-        if (target && (target == previewWindow || target == pendingPreview)) return;
+        const bool valid = hover < items.size() && dragged == None &&
+            (items[hover].kind == dock::Kind::Window || items[hover].kind == dock::Kind::Running);
+        if (valid && (hover == previewIndex || hover == pendingPreview)) {
+            KillTimer(icons, PreviewLeaveTimer);
+            previewLeaving = false;
+            return;
+        }
+        if (!valid && hover == None && dragged == None && previewIndex != None) {
+            if (!previewLeaving) {
+                previewLeaving = true;
+                SetTimer(icons, PreviewLeaveTimer, 350, nullptr);
+            }
+            return;
+        }
         HidePreview();
-        if (!target || !icons) return;
-        pendingPreview = target;
+        if (!valid || !icons) return;
+        pendingPreview = hover;
         SetTimer(icons, PreviewTimer, 280, nullptr);
     }
+    bool previewLeaving = false;
+    void ReleasePreviewCards() {
+        for (auto& card : previewCards)
+            if (card.thumbnail) DwmUnregisterThumbnail(card.thumbnail);
+        previewCards.clear();
+    }
     void HidePreview() {
-        if (icons) KillTimer(icons, PreviewTimer);
-        pendingPreview = previewWindow = 0;
-        if (previewThumb) { DwmUnregisterThumbnail(previewThumb); previewThumb = nullptr; }
+        if (icons) {
+            KillTimer(icons, PreviewTimer);
+            KillTimer(icons, PreviewLeaveTimer);
+        }
+        pendingPreview = previewIndex = None;
+        previewPressed = 0;
+        previewLeaving = false;
+        ReleasePreviewCards();
+        previewWindows.clear();
         if (preview) ShowWindow(preview, SW_HIDE);
     }
-    void ShowPreview(std::uint64_t handle) {
-        std::size_t index = None;
-        for (std::size_t i = 0; i < items.size(); ++i)
-            if (items[i].kind == dock::Kind::Window && items[i].window == handle) index = i;
-        const auto source = reinterpret_cast<HWND>(handle);
-        if (index == None || !IsWindow(source) || layoutX.size() != items.size()) return;
+    std::uint64_t PreviewHit(POINT point) const {
+        for (const auto& card : previewCards)
+            if (PtInRect(&card.rect, point)) return card.window.handle;
+        return 0;
+    }
+    bool PointerInPreview() const {
+        if (!preview || !IsWindowVisible(preview)) return false;
+        RECT bounds{}; POINT point{};
+        GetWindowRect(preview, &bounds); GetCursorPos(&point);
+        return PtInRect(&bounds, point) != FALSE;
+    }
+    void ShowPreview(std::size_t index) {
+        if (index >= items.size() || layoutX.size() != items.size()) return;
+        HidePreview();
+        const auto& item = items[index];
+        if (item.kind == dock::Kind::Window)
+            previewWindows.push_back({item.path, item.name, item.window, true});
+        else if (ports.windowsFor) previewWindows = ports.windowsFor(item);
+        else previewWindows = dock_sources::ProgramWindowsFor(item.path);
+        previewWindows.erase(std::remove_if(previewWindows.begin(), previewWindows.end(), [](const auto& window) {
+            return !IsWindow(reinterpret_cast<HWND>(window.handle));
+        }), previewWindows.end());
+        if (previewWindows.empty()) return;
         if (!preview) {
             if (!Register(PreviewClass)) return;
-            preview = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
-                                      PreviewClass, L"Lume Dock", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, this);
+            // Accept input: WS_EX_TRANSPARENT would send preview clicks through.
+            preview = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                PreviewClass, L"Lume Dock 窗口预览", WS_POPUP, 0, 0, 1, 1, icons, nullptr, instance, this);
             if (!preview) return;
             previewCanvas = std::make_unique<WidgetCanvas>();
         }
-        // A minimized window shows the snapshot from just before minimizing when
-        // there is one (DWM's image is grey for some apps); otherwise its live thumbnail.
-        const auto snapshot = Snapshot(handle);
-        SIZE sourceSize{};
-        if (snapshot) sourceSize = {static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)};
-        else {
-            if (FAILED(DwmRegisterThumbnail(preview, source, &previewThumb))) { previewThumb = nullptr; return; }
-            DwmQueryThumbnailSourceSize(previewThumb, &sourceSize);
-        }
-        if (sourceSize.cx <= 0 || sourceSize.cy <= 0) { HidePreview(); return; }
-        if (sourceSize.cx <= 0 || sourceSize.cy <= 0) { HidePreview(); return; }
-        // Measured in the monitor's DIPs, independent of the Dock's icon zoom.
-        const float unit = static_cast<float>(monitorDpi) / 96;
-        const float fit = std::min(320.f / sourceSize.cx, 220.f / sourceSize.cy) * unit;
-        const float tw = sourceSize.cx * fit / unit, th = sourceSize.cy * fit / unit;
-        // Just the window, with its title in a small label above: no frame around it.
-        const float title = 24, spacing = 8, width = std::max(tw, 180.f), height = title + spacing + th;
-        if (!previewCanvas->Begin(width, height, monitorDpi)) { HidePreview(); return; }
-        const auto text = FitText(*previewCanvas, OrganizerWide(items[index].name), std::min(width, 300.f) - 20, 12);
-        const float labelWidth = std::min(width, previewCanvas->MeasureText(text, 12) + 20);
-        const WidgetRect label{(width - labelWidth) / 2, 0, labelWidth, title};
-        previewCanvas->Rounded(label, 8, 0x1c1c1e, .78f);
-        previewCanvas->Text(text, label, 12, 0xffffff, .95f, false, WidgetTextAlign::Center);
-        if (snapshot) previewCanvas->ImageBitmap(snapshot, {(width - tw) / 2, title + spacing, tw, th});
-        if (!previewCanvas->Finish(previewBitmap)) { HidePreview(); return; }
-        const float size = IconSize * motion[Key(items[index])].scale.value;
-        const LONG centre = overlayOrigin.x + static_cast<LONG>(std::lround(Px(barLeft + Visual(index) + size / 2)));
-        const LONG w = static_cast<LONG>(std::lround(width * unit)), h = static_cast<LONG>(std::lround(height * unit));
-        MONITORINFO info{};
-        info.cbSize = sizeof(info);
+        previewIndex = index;
+        previewPage = 0;
+        PaintPreview();
+    }
+    void PaintPreview() {
+        if (previewIndex >= items.size() || previewWindows.empty()) { HidePreview(); return; }
+        ReleasePreviewCards();
+        MONITORINFO info{sizeof(info)};
         GetMonitorInfoW(MonitorFromWindow(icons, MONITOR_DEFAULTTOPRIMARY), &info);
-        const POINT origin{std::clamp(centre - w / 2, info.rcWork.left + 8, std::max(info.rcWork.left + 8, info.rcWork.right - w - 8)),
-                           std::max(info.rcWork.top + 8, overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom))) - h -
-                                                             static_cast<LONG>(std::lround(10 * unit)))};
+        const float unit = static_cast<float>(monitorDpi) / 96;
+        const float availableWidth = (info.rcWork.right - info.rcWork.left) / unit - 24;
+        const float availableHeight = (info.rcWork.bottom - info.rcWork.top) / unit - BarHeight - 40;
+        constexpr float cardWidth = 216, cardHeight = 154, cardGap = 8, margin = 10, header = 28;
+        const auto columns = std::min(previewWindows.size(),
+            static_cast<std::size_t>(std::max(1, std::min(5, static_cast<int>((availableWidth - margin * 2 + cardGap) / (cardWidth + cardGap))))));
+        const auto maxRows = static_cast<std::size_t>(std::max(1, std::min(3,
+            static_cast<int>((availableHeight - header - margin * 2 + cardGap) / (cardHeight + cardGap)))));
+        previewPageSize = columns * maxRows;
+        const auto pages = (previewWindows.size() + previewPageSize - 1) / previewPageSize;
+        previewPage = std::min(previewPage, pages - 1);
+        const auto begin = previewPage * previewPageSize;
+        const auto count = std::min(previewPageSize, previewWindows.size() - begin);
+        const auto rows = (count + columns - 1) / columns;
+        const float width = margin * 2 + static_cast<float>(columns) * (cardWidth + cardGap) - cardGap;
+        const float height = margin * 2 + header + static_cast<float>(rows) * (cardHeight + cardGap) - cardGap;
+        if (!previewCanvas->Begin(width, height, monitorDpi)) { HidePreview(); return; }
+        previewCanvas->Rounded({0, 0, width, height}, 12, 0x242428, .97f);
+        auto title = OrganizerWide(items[previewIndex].name) + L" · " + std::to_wstring(previewWindows.size()) + L" 个窗口";
+        if (pages > 1) title += L"  (" + std::to_wstring(previewPage + 1) + L"/" + std::to_wstring(pages) + L"，滚轮切换)";
+        SetWindowTextW(preview, title.c_str());
+        previewCanvas->Text(FitText(*previewCanvas, title, width - margin * 2, 12),
+            {margin, 4, width - margin * 2, header}, 12, 0xffffff, .92f);
+        const auto pixels = [unit](WidgetRect r) {
+            return RECT{static_cast<LONG>(std::lround(r.x * unit)), static_cast<LONG>(std::lround(r.y * unit)),
+                static_cast<LONG>(std::lround((r.x + r.width) * unit)), static_cast<LONG>(std::lround((r.y + r.height) * unit))};
+        };
+        struct Destination { HTHUMBNAIL handle; RECT rect; };
+        std::vector<Destination> destinations;
+        for (std::size_t n = 0; n < count; ++n) {
+            const auto& window = previewWindows[begin + n];
+            const WidgetRect card{margin + static_cast<float>(n % columns) * (cardWidth + cardGap),
+                margin + header + static_cast<float>(n / columns) * (cardHeight + cardGap), cardWidth, cardHeight};
+            previewCanvas->Rounded(card, 7, 0xffffff, .08f);
+            const auto caption = window.title.empty() ? L"窗口" : OrganizerWide(window.title);
+            previewCanvas->Text(FitText(*previewCanvas, caption, cardWidth - 16, 12),
+                {card.x + 8, card.y + 2, cardWidth - 16, 24}, 12, 0xffffff, .96f);
+            PreviewCard entry{window, pixels(card)};
+            const auto snapshot = Snapshot(window.handle);
+            SIZE size{};
+            if (snapshot) size = {static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)};
+            else if (SUCCEEDED(DwmRegisterThumbnail(preview, reinterpret_cast<HWND>(window.handle), &entry.thumbnail)))
+                DwmQueryThumbnailSourceSize(entry.thumbnail, &size);
+            WidgetRect image{card.x + 6, card.y + 30, cardWidth - 12, cardHeight - 36};
+            if (size.cx > 0 && size.cy > 0) {
+                const float fit = std::min(image.width / size.cx, image.height / size.cy);
+                const float w = size.cx * fit, h = size.cy * fit;
+                image = {image.x + (image.width - w) / 2, image.y + (image.height - h) / 2, w, h};
+                if (snapshot) previewCanvas->ImageBitmap(snapshot, image);
+                else destinations.push_back({entry.thumbnail, pixels(image)});
+            } else {
+                if (const auto icon = Icon(items[previewIndex]))
+                    previewCanvas->ImageBitmap(icon, {image.x + (image.width - 48) / 2, image.y + 10, 48, 48});
+                previewCanvas->Text(L"点击打开窗口", {image.x, image.y + image.height - 24, image.width, 24},
+                    12, 0xffffff, .7f, false, WidgetTextAlign::Center);
+            }
+            previewCards.push_back(std::move(entry));
+        }
+        if (!previewCanvas->Finish(previewBitmap)) { HidePreview(); return; }
+        const float size = IconSize * motion[Key(items[previewIndex])].scale.value;
+        const LONG centre = overlayOrigin.x + static_cast<LONG>(std::lround(Px(barLeft + Visual(previewIndex) + size / 2)));
+        const LONG w = static_cast<LONG>(previewBitmap.width), h = static_cast<LONG>(previewBitmap.height);
+        // Above the magnified icon, so moving up does not pass through another icon.
+        const LONG iconTop = overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom + BarHeight - IconBottom - size)));
+        const POINT origin{
+            std::clamp(centre - w / 2, info.rcWork.left + 8, std::max(info.rcWork.left + 8, info.rcWork.right - w - 8)),
+            std::max(info.rcWork.top + 8, std::min(iconTop, overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom)))) - h - 8)};
         if (!previewSurface.Present(preview, previewBitmap, &origin)) { HidePreview(); return; }
-        DWM_THUMBNAIL_PROPERTIES p{};
-        p.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
-        const LONG left = static_cast<LONG>(std::lround((width - tw) / 2 * unit)), top = static_cast<LONG>(std::lround((title + spacing) * unit));
-        p.rcDestination = {left, top, left + static_cast<LONG>(std::lround(tw * unit)), top + static_cast<LONG>(std::lround(th * unit))};
-        p.fVisible = TRUE;
-        p.opacity = 255;
-        p.fSourceClientAreaOnly = FALSE;
-        if (previewThumb) DwmUpdateThumbnailProperties(previewThumb, &p);
+        for (const auto& destination : destinations) {
+            DWM_THUMBNAIL_PROPERTIES p{};
+            p.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
+            p.rcDestination = destination.rect; p.fVisible = TRUE; p.opacity = 255; p.fSourceClientAreaOnly = FALSE;
+            DwmUpdateThumbnailProperties(destination.handle, &p);
+        }
         ShowWindow(preview, SW_SHOWNOACTIVATE);
-        previewWindow = handle;
     }
     // Where a minimized window is drawn (icon-layer DIPs): its shape fitted
     // into the icon's square, standing on the icon baseline.
@@ -782,7 +865,8 @@ struct DockWindow::Impl {
         if (const auto bitmap = Icon(item)) ghostCanvas->ImageBitmap(bitmap, r, removing ? .8f : 1.f);
         else ghostCanvas->Rounded(r, size * .22f, 0xffffff, .14f);
         if (removing) {
-            const std::wstring label = L"\x79fb\x9664";  // 移除
+            const std::wstring label = item.kind == dock::Kind::Running ? L"关闭窗口" : L"移除图标";
+            SetWindowTextW(ghost, label.c_str());
             const float labelWidth = ghostCanvas->MeasureText(label, 12) + 22;
             const WidgetRect pill{(width - labelWidth) / 2, 0, labelWidth, labelHeight};
             ghostCanvas->Rounded(pill, 8, 0x1c1c1e, .78f);
@@ -905,9 +989,8 @@ struct DockWindow::Impl {
     void Drag(float x, float y) {
         dragX = x;
         dragY = y;
-        // Pinned icons and Lume dragged well clear of the glass leave the Dock
-        // on release; the others close up behind them meanwhile.
-        const bool outside = y < Headroom - RemoveDistance || x < barLeft - RemoveDistance ||
+        // Shortcuts leave the Dock; running items request their windows to close.
+        const bool outside = y < Headroom - RemoveDistance || y > Headroom + BarHeight + RemoveDistance || x < barLeft - RemoveDistance ||
                              x > barLeft + barWidth + RemoveDistance;
         const bool nextRemoving = outside && Removable(items[dragged]);
         if (nextRemoving != removing) {
@@ -920,7 +1003,7 @@ struct DockWindow::Impl {
         if (removing) { collectTarget = discardTarget = None; Animate(); return; }
         const auto hit = HitAt(x, y);
         collectTarget = hit != None && items[hit].kind == dock::Kind::Collection &&
-            (items[dragged].kind == dock::Kind::Pinned || items[dragged].kind == dock::Kind::Running) ? hit : None;
+            items[dragged].kind == dock::Kind::Pinned ? hit : None;
         if (collectTarget != None) { discardTarget = None; Animate(); return; }
         // Pinned icons and Lume can be dropped on the Recycle Bin to leave the Dock.
         discardTarget = hit != None && hit != dragged && AcceptsDrop(hit) &&
@@ -941,6 +1024,7 @@ struct DockWindow::Impl {
         const bool removed = removing && Removable(items[from]);
         const bool discard = discardTarget < items.size() || removed;
         const auto discarded = items[from];
+        const auto committedOrder = DisplayOrder();
         collectTarget = None;
         discardTarget = None;
         removing = false;
@@ -965,10 +1049,20 @@ struct DockWindow::Impl {
         const float restTop = Headroom + BarHeight - IconBottom - IconSize * m.scale.value;
         m.lift.value = std::clamp(restTop - (dragY - grabOffsetY * DragScale), -60.f, 600.f);
         if (removed) m.scale.value = 0;
+        if (commit && !discard && items[from].kind == dock::Kind::Running) {
+            runningOrder.clear();
+            for (const auto index : committedOrder)
+                if (index < items.size() && items[index].kind == dock::Kind::Running)
+                    runningOrder.push_back(Key(items[index]));
+        }
         dragged = None;
-        Reorder(DisplayOrder());
+        Reorder(commit && !discard && group.empty() ? committedOrder : RestOrder());
         Animate();
-        if (commit && discard && ports.discard) { ports.discard(discarded); return; }
+        if (commit && discard && ports.discard) {
+            if (hasPending) Show(std::move(pending), pendingLook);
+            ports.discard(discarded);
+            return;
+        }
         if (commit && !group.empty() && ports.collect) {
             if (!ports.collect(sourcePath, group) && hasPending) Show(std::move(pending), pendingLook);
         }
@@ -1077,6 +1171,40 @@ struct DockWindow::Impl {
             if (self->visible) self->RestackVisible();
             return 0;
         }
+        if (hwnd == self->preview) {
+            switch (message) {
+            case WM_MOUSEMOVE: {
+                KillTimer(self->icons, PreviewLeaveTimer);
+                self->previewLeaving = false;
+                TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&track);
+                return 0;
+            }
+            case WM_MOUSELEAVE:
+                self->previewLeaving = true;
+                SetTimer(self->icons, PreviewLeaveTimer, 350, nullptr);
+                return 0;
+            case WM_LBUTTONDOWN:
+                self->previewPressed = self->PreviewHit({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
+                return 0;
+            case WM_LBUTTONUP: {
+                const auto handle = self->PreviewHit({GET_X_LPARAM(l), GET_Y_LPARAM(l)});
+                if (handle && handle == self->previewPressed) {
+                    self->HidePreview();
+                    if (self->ports.focusWindow) self->ports.focusWindow(handle);
+                    else dock_sources::FocusWindow(handle);
+                }
+                return 0;
+            }
+            case WM_MOUSEWHEEL: {
+                if (GET_WHEEL_DELTA_WPARAM(w) < 0) ++self->previewPage;
+                else if (self->previewPage) --self->previewPage;
+                self->PaintPreview();
+                return 0;
+            }
+            }
+            return DefWindowProcW(hwnd, message, w, l);
+        }
         if (hwnd != self->icons) return DefWindowProcW(hwnd, message, w, l);
         if (message == DockDesktopLayer::Message || (message == WM_TIMER && w == DockDesktopLayer::FallbackTimer)) {
             self->desktopLayer.Consumed();
@@ -1087,16 +1215,15 @@ struct DockWindow::Impl {
         case WM_TIMER:
             if (w == PreviewTimer) {
                 KillTimer(hwnd, PreviewTimer);
-                const auto target = std::exchange(self->pendingPreview, 0);
-                // Only if the pointer is still resting on that window.
-                const bool still = self->hover < self->items.size() && self->items[self->hover].window == target && self->hovering;
-                if (target && still && self->visible) {
-                    POINT point{}; GetCursorPos(&point);
-                    const auto index = self->hover;
-                    if (index < self->items.size() && self->items[index].kind == dock::Kind::Running && self->ports.runningHover)
-                        self->ports.runningHover(index, point);
-                    else self->ShowPreview(target);
-                }
+                const auto index = std::exchange(self->pendingPreview, None);
+                if (index < self->items.size() && self->hover == index && self->hovering &&
+                    self->dragged == None && self->visible) self->ShowPreview(index);
+                return 0;
+            }
+            if (w == PreviewLeaveTimer) {
+                KillTimer(hwnd, PreviewLeaveTimer);
+                self->previewLeaving = false;
+                if (!self->PointerInPreview()) self->HidePreview();
                 return 0;
             }
             break;
@@ -1162,6 +1289,7 @@ struct DockWindow::Impl {
             if (w == VK_ESCAPE && self->dragged != None) { ReleaseCapture(); return 0; }
             break;
         case WM_RBUTTONUP: {
+            self->HidePreview();
             POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
             const auto hit = self->HitAt(self->Dip(l, false), self->Dip(l, true));
             ClientToScreen(hwnd, &point);
@@ -1222,6 +1350,9 @@ float DockWindow::ScaleOf(std::size_t index) const {
 }
 float DockWindow::GapOpen() const { return impl_->gap.value; }
 bool DockWindow::Removing() const { return impl_->removing; }
+std::optional<dock::Item> DockWindow::ItemAt(std::size_t index) const {
+    return index < impl_->items.size() ? std::optional<dock::Item>{impl_->items[index]} : std::nullopt;
+}
 bool DockWindow::HasThumbnail(std::size_t index) const {
     if (index >= impl_->items.size() || !impl_->items[index].window) return false;
     const auto found = impl_->thumbnails.find(impl_->items[index].window);

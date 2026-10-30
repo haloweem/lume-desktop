@@ -276,7 +276,7 @@ int main() {
             launchpad{Kind::Launchpad}, collection{Kind::Collection}, windowItem{Kind::Window};
         Check(Movable(lume) && Movable(pinnedItem) && Movable(runningItem) && !Movable(separator) && !Movable(launchpad) &&
               !Movable(collection) && !Movable(windowItem), "movable kinds");
-        Check(Removable(lume) && Removable(pinnedItem) && !Removable(runningItem) && !Removable(separator) &&
+        Check(Removable(lume) && Removable(pinnedItem) && Removable(runningItem) && !Removable(separator) &&
               !Removable(launchpad) && !Removable(collection) && !Removable(windowItem), "removable kinds");
         pinnedItem.path = "C:\\A.exe"; windowItem.path = "C:\\A.exe"; windowItem.window = 42;
         Item other = windowItem; other.window = 43;

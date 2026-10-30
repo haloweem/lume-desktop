@@ -209,6 +209,10 @@ std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable
 }
 
 namespace { bool BringForward(HWND window); }
+bool FocusWindow(std::uint64_t handle) {
+    const auto window = reinterpret_cast<HWND>(handle);
+    return IsWindow(window) && BringForward(window);
+}
 
 bool ActivateWindow(std::uint64_t handle) {
     const auto window = reinterpret_cast<HWND>(handle);

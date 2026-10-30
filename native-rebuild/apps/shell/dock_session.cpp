@@ -127,10 +127,10 @@ struct DockSession::Impl {
         : instance(i), options(std::move(o)), notify(std::move(n)), openManager(std::move(manager)),
           openSettings(std::move(settings)), managerVisible(std::move(visible)), files(f ? *f : local),
           dock(i, DockWindowPorts{[this](const dock::Item& item) { return Icon(item); },
-                                  [this](std::size_t index) { Activate(index); },
-                                  [this](std::size_t index, POINT point) { DockMenu(index, point); },
+                                  [this](std::size_t index) { Activate(ResolveDockItem(index)); },
+                                  [this](std::size_t index, POINT point) { DockMenu(ResolveDockItem(index), point); },
                                   [this](std::size_t index, std::size_t pinnedSlot, std::size_t lumePosition) {
-                                      Place(index, pinnedSlot, lumePosition);
+                                      Place(ResolveDockItem(index), pinnedSlot, lumePosition);
                                   },
                                   [this](const std::vector<std::string>& paths, std::size_t slot) { return DropPaths(paths, slot); },
                                   [this](const std::string& path, const std::string& key) {
@@ -149,17 +149,8 @@ struct DockSession::Impl {
                                   },
                                   [this](const dock::Item& item) { Discard(item); },
                                   [this](const dock::Item& item) { return Cover(item); }, {},
-                                  [this](std::size_t index, POINT point) {
-                                      if (index >= items.size() || items[index].kind != dock::Kind::Running) return;
-                                      const auto windows = dock_sources::ProgramWindowsFor(items[index].path);
-                                      if (windows.size() < 2) return;
-                                      std::vector<LumeWidgetMenu::Action> choices;
-                                      for (std::size_t i = 0; i < windows.size(); ++i)
-                                          choices.push_back({windows[i].title.empty() ? L"窗口" : OrganizerWide(windows[i].title), static_cast<UINT>(100 + i)});
-                                      const auto choice = Menu([&] { return LumeWidgetMenu::ShowItems(dock.Handle(), point, choices, true); });
-                                      if (choice >= 100 && choice < 100 + windows.size())
-                                          dock_sources::ActivateWindow(windows[choice - 100].handle);
-                                  }}),
+                                  [](const dock::Item& item) { return dock_sources::ProgramWindowsFor(item.path); },
+                                  [](std::uint64_t handle) { dock_sources::FocusWindow(handle); }}),
           launchpad(i, LaunchpadPorts{
               [this] {
                   if (!collectionId.empty()) {
@@ -403,6 +394,14 @@ struct DockSession::Impl {
     void ResolveTargets() {
         targets.clear();
         for (const auto& path : prefs.pinned) targets.push_back(dock_sources::ShortcutTarget(path));
+    }
+    std::size_t ResolveDockItem(std::size_t index) const {
+        const auto displayed = dock.ItemAt(index);
+        if (!displayed) return DockWindow::None;
+        const auto key = dock::MotionKey(*displayed);
+        for (std::size_t i = 0; i < items.size(); ++i)
+            if (dock::MotionKey(items[i]) == key) return i;
+        return DockWindow::None;
     }
     void Refresh(bool force = false) {
         if (!ready) return;
