@@ -16,7 +16,9 @@ int main() {
         "tray open command");
     Check(MapTrayCommand(2).value_or(TrayAction::Open) == TrayAction::Exit,
         "tray exit command");
-    Check(!MapTrayCommand(3).has_value(), "removed tray commands are ignored");
+    Check(MapTrayCommand(3).value_or(TrayAction::Open) == TrayAction::ExportDiagnostics,
+        "tray export diagnostics command");
+    Check(!MapTrayCommand(4).has_value(), "unknown tray commands are ignored");
     Check(ParseShellLaunch({}).kind == ShellLaunchKind::Interactive, "empty launch opens manager");
     Check(ParseShellLaunch({L"--tray-only"}).kind == ShellLaunchKind::TrayOnly, "native startup remains hidden");
     Check(ParseShellLaunch({L"-tray-only"}).kind == ShellLaunchKind::TrayOnly, "legacy startup spelling");
