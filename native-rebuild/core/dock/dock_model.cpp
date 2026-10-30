@@ -369,8 +369,8 @@ std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::v
         items.push_back({Kind::Pinned, pinned[i], EntryName(pinned[i]), live, i});
         if (i < targets.size()) items.back().target = targets[i];
     }
-    // A pinned launcher that is not itself running claims one running program
-    // from a subfolder of its install folder, instead of a second icon.
+    // Match launchers to their UI process for activation and the running dot.
+    // This match does not remove the app from the separate running section.
     for (auto& item : items) {
         if (item.kind != Kind::Pinned || item.running) continue;
         const auto target = pathKey(item.target.empty() ? item.path : item.target);
@@ -388,7 +388,7 @@ std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::v
     std::set<std::string> shown;
     for (const auto& app : running) {
         const auto key = pathKey(app.executable);
-        if (key.empty() || claimed.count(key) || !shown.insert(key).second) continue;
+        if (key.empty() || !shown.insert(key).second) continue;
         if (app.asWindows) continue;  // its window thumbnails stand for it
         extra.push_back({Kind::Running, app.executable, app.name.empty() ? EntryName(app.executable) : app.name, true});
     }

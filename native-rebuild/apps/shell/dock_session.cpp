@@ -105,7 +105,6 @@ struct DockSession::Impl {
     dock::TextKey pathKey = dock_sources::PathKey, searchKey = dock_sources::SearchKey;
     dock::Preferences prefs;
     std::vector<std::string> targets;
-    std::set<std::string> groupedTargets;
     std::vector<dock::Item> items;
     std::string load = "fresh", error;
     std::string lumePath;
@@ -393,17 +392,12 @@ struct DockSession::Impl {
     void ResolveTargets() {
         targets.clear();
         for (const auto& path : prefs.pinned) targets.push_back(dock_sources::ShortcutTarget(path));
-        groupedTargets.clear();
-        for (const auto& id : prefs.dockCollections)
-            if (const auto* collection = dock::FindCollection(prefs, id))
-                for (const auto& path : collection->paths) groupedTargets.insert(pathKey(dock_sources::ShortcutTarget(path)));
     }
     void Refresh(bool force = false) {
         if (!ready) return;
         auto running = dock_sources::RunningApps();
-        running.erase(std::remove_if(running.begin(), running.end(), [&](const auto& app) {
-            return groupedTargets.count(pathKey(app.executable)) != 0;
-        }), running.end());
+        // The right side represents open apps independently of pinned shortcuts
+        // and collections on the left.
         auto next = dock::DockItemsFor(prefs, targets, running, pathKey, lumePath);
         // Minimized windows as thumbnails at the end (macOS style) are kept but
         // switched off: running programs show as icons after the separator.
@@ -577,15 +571,15 @@ struct DockSession::Impl {
             launchpad.Hide();
             const auto target = !item.runningProgram.empty() ? item.runningProgram :
                 item.orderIndex < targets.size() ? targets[item.orderIndex] : item.path;
-            if (!item.running || !dock_sources::ActivateProgram(target)) OpenOrganizerTarget(OrganizerWide(item.path));
+            if (!dock_sources::ActivateProgram(target)) OpenOrganizerTarget(OrganizerWide(item.path));
             SetTimer(helper, SettleTimer, 600, nullptr);
             return;
         }
         case dock::Kind::Running:
             launchpad.Hide();
-            // A program whose window cannot be brought forward is started
-            // again, so its own single-instance handling shows it.
-            if (!dock_sources::ActivateProgram(item.path)) OpenOrganizerTarget(OrganizerWide(item.path));
+            // A running entry only switches windows. A stale entry or a focus
+            // refusal must never start another instance.
+            dock_sources::ActivateProgram(item.path);
             SetTimer(helper, SettleTimer, 600, nullptr);
             return;
         case dock::Kind::Window:

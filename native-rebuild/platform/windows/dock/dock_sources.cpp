@@ -54,10 +54,11 @@ std::wstring Description(const std::wstring& path) {
     return {};
 }
 bool TaskbarWindow(HWND window) {
-    if (!IsWindowVisible(window) || GetWindow(window, GW_OWNER)) return false;
+    if (!IsWindowVisible(window)) return false;
     const auto extended = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    if (GetWindow(window, GW_OWNER) && !(extended & WS_EX_APPWINDOW)) return false;
     if ((extended & WS_EX_TOOLWINDOW) && !(extended & WS_EX_APPWINDOW)) return false;
-    if (extended & WS_EX_NOACTIVATE) return false;
+    if ((extended & WS_EX_NOACTIVATE) && !(extended & WS_EX_APPWINDOW)) return false;
     BOOL cloaked = FALSE;
     if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return false;
     if (!GetWindowTextLengthW(window)) return false;

@@ -1,6 +1,7 @@
 // Runs the entire scenario process (including material worker threads) on an
 // isolated desktop. No input-desktop switch or running Lume is involved.
 #include "platform/windows/dock/dock_window.h"
+#include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/widget_ui/desktop_level.h"
 #include <objbase.h>
 #include <cstdio>
@@ -164,6 +165,25 @@ int Scenario() {
           "wait for different-process application");
     DWORD appPid = 0; GetWindowThreadProcessId(app, &appPid);
     Check(appPid == external.process.dwProcessId && appPid != GetCurrentProcessId(), "fixture is a separate process");
+    const auto listed = [&] {
+        for (const auto& window : dock_sources::ProgramWindows())
+            if (window.handle == reinterpret_cast<std::uint64_t>(app)) return true;
+        return false;
+    };
+    Check(listed(), "open taskbar application is enumerated");
+    SetWindowLongPtrW(app, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(host));
+    Check(!listed(), "ordinary owned popup is excluded");
+    SetWindowLongPtrW(app, GWL_EXSTYLE, WS_EX_APPWINDOW | WS_EX_NOACTIVATE);
+    Check(listed(), "explicit taskbar window is included despite owner and noactivate");
+    SetWindowLongPtrW(app, GWL_EXSTYLE, WS_EX_TOOLWINDOW);
+    Check(!listed(), "tool window remains excluded");
+    SetWindowLongPtrW(app, GWL_EXSTYLE, 0);
+    SetWindowLongPtrW(app, GWLP_HWNDPARENT, 0);
+    ShowWindow(app, SW_HIDE);
+    Check(!listed(), "hidden application has no running entry");
+    ShowWindow(app, SW_SHOWMINNOACTIVE);
+    Check(listed(), "minimized application retains its running entry");
+    ShowWindow(app, SW_RESTORE);
     SetWindowPos(app, HWND_BOTTOM, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
     // No Dock.Show or manual restack: WinEvents must repair this order.
     Check(WaitFor([&] { return desktop_level::Above(app, dock.Handle()); }), "application event repairs layer without refresh");

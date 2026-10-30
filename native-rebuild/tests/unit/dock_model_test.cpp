@@ -92,19 +92,20 @@ int main() {
     const std::vector<std::string> targets{"C:\\Program Files\\Chrome\\chrome.exe", "C:\\Apps\\music.exe"};
     const auto dockItems = DockItems(pinned, targets,
         {{"c:\\program files\\chrome\\CHROME.EXE", "Chrome"}, {"C:\\Apps\\editor.exe", "Editor"}, {"C:\\Apps\\editor.exe", "Editor"}}, key);
-    Check(dockItems.size() == 6, "launchpad, Lume, 2 pinned, separator, 1 running");
+    Check(dockItems.size() == 7, "launchpad, Lume, 2 pinned, separator, 2 running");
     Check(dockItems[0].kind == Kind::Launchpad && dockItems[1].kind == Kind::Lume, "fixed first two items");
     Check(dockItems[2].kind == Kind::Pinned && dockItems[2].running && dockItems[2].name == "Chrome", "shortcut target matches running program");
     Check(dockItems[3].kind == Kind::Pinned && !dockItems[3].running, "idle pinned program has no dot");
-    Check(dockItems[4].kind == Kind::Separator && dockItems[5].kind == Kind::Running && dockItems[5].name == "Editor" &&
-          dockItems[5].running, "unpinned running program follows a separator once");
+    Check(dockItems[4].kind == Kind::Separator && dockItems[5].kind == Kind::Running && dockItems[5].name == "Chrome" &&
+          dockItems[6].kind == Kind::Running && dockItems[6].name == "Editor" && dockItems[6].running,
+          "pinned apps also appear on the right, with duplicate windows grouped once");
     Check(DockItems({}, {}, {}, key).size() == 2, "no separator without running extras");
     {   // A launcher whose UI runs from a subfolder under another name keeps one icon.
         const std::vector<std::string> launcher{"C:\\Users\\a\\Desktop\\WeGame.lnk"};
         const std::vector<std::string> launcherTarget{"C:\\Program Files (x86)\\WeGame\\wegame.exe"};
         const auto claimed = DockItems(launcher, launcherTarget,
             {{"C:\\Program Files (x86)\\WeGame\\x64\\wegameui.exe", "WeGame UI"}}, key);
-        Check(claimed.size() == 3 && claimed[2].running &&
+        Check(claimed.size() == 5 && claimed[2].running && claimed[4].kind == Kind::Running &&
               claimed[2].runningProgram == "C:\\Program Files (x86)\\WeGame\\x64\\wegameui.exe",
               "pinned launcher claims its UI program from a subfolder");
         const auto sibling = DockItems(launcher, launcherTarget,
