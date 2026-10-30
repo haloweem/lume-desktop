@@ -20,8 +20,10 @@ std::vector<dock::RunningApp> RunningApps();
 // minimized, and one with several windows cycles to the next. Returns false
 // when the program has no window (the caller starts it instead).
 bool ActivateProgram(const std::string& executable);
+bool CloseProgram(const std::string& executable);
 // Taskbar-style windows in first-seen order, each marked minimized or not.
 std::vector<dock::ProgramWindow> ProgramWindows();
+std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable);
 // Restores and focuses a window; a window already in front is minimized.
 bool ActivateWindow(std::uint64_t handle);
 // True when `path` is the Recycle Bin, or a shortcut to it.

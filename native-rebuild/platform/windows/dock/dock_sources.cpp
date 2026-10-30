@@ -200,6 +200,13 @@ std::vector<dock::ProgramWindow> ProgramWindows() {
     for (auto& entry : ordered) result.push_back(std::move(entry.second));
     return result;
 }
+std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable) {
+    const auto key = PathKey(executable);
+    std::vector<dock::ProgramWindow> result;
+    for (const auto& window : ProgramWindows())
+        if (PathKey(window.executable) == key) result.push_back(window);
+    return result;
+}
 
 namespace { bool BringForward(HWND window); }
 
@@ -249,6 +256,14 @@ bool ActivateProgram(const std::string& executable) {
         target = std::next(current) == mine.end() ? mine.front() : *std::next(current);
     }
     return BringForward(target);
+}
+
+bool CloseProgram(const std::string& executable) {
+    const auto key = PathKey(executable);
+    bool closed = false;
+    for (const auto& window : Windows())
+        if (window.key == key) closed = PostMessageW(window.handle, WM_CLOSE, 0, 0) != FALSE || closed;
+    return closed;
 }
 
 bool IsRecycleBin(const std::string& path) {

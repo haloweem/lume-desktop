@@ -31,7 +31,7 @@ constexpr UINT_PTR SettleTimer = 0x7b2, PollTimer = 0x7b3, PrepareTimer = 0x7b4;
 constexpr bool WindowThumbnails = false;
 // LumeWidgetMenu command codes for the Dock menus.
 enum Command : UINT {
-    Close = 1, NoMaterial = 7, Liquid = 8, Frosted = 9, Reset = 10, Settings = 11,
+    Close = 1, CloseWindow = 24, NoMaterial = 7, Liquid = 8, Frosted = 9, Reset = 10, Settings = 11,
     Pin = 20, Unpin = 21, Reveal = 22, RemoveAdded = 23, AddFiles = 30, AddFolders = 31,
     NewCollectionCommand = 40, RenameCollectionCommand = 40, DeleteCollectionCommand = 41, AddSystemIcon = 46,
     RemoveFromCollectionCommand = 42
@@ -148,7 +148,18 @@ struct DockSession::Impl {
                                       return helper && PostMessageW(helper, RecycleDropped, 0, 0) != FALSE;
                                   },
                                   [this](const dock::Item& item) { Discard(item); },
-                                  [this](const dock::Item& item) { return Cover(item); }}),
+                                  [this](const dock::Item& item) { return Cover(item); }, {},
+                                  [this](std::size_t index, POINT point) {
+                                      if (index >= items.size() || items[index].kind != dock::Kind::Running) return;
+                                      const auto windows = dock_sources::ProgramWindowsFor(items[index].path);
+                                      if (windows.size() < 2) return;
+                                      std::vector<LumeWidgetMenu::Action> choices;
+                                      for (std::size_t i = 0; i < windows.size(); ++i)
+                                          choices.push_back({windows[i].title.empty() ? L"窗口" : OrganizerWide(windows[i].title), static_cast<UINT>(100 + i)});
+                                      const auto choice = Menu([&] { return LumeWidgetMenu::ShowItems(dock.Handle(), point, choices, true); });
+                                      if (choice >= 100 && choice < 100 + windows.size())
+                                          dock_sources::ActivateWindow(windows[choice - 100].handle);
+                                  }}),
           launchpad(i, LaunchpadPorts{
               [this] {
                   if (!collectionId.empty()) {
@@ -597,6 +608,7 @@ struct DockSession::Impl {
         if (item.kind == dock::Kind::Lume) { next.lumeVisible = false; Update(next); }
         else if (item.kind == dock::Kind::Pinned && !item.path.empty() &&
                  dock::Unpin(next, item.path, pathKey) == dock::Change::Changed) Update(next);
+        else if (item.kind == dock::Kind::Running && !item.path.empty()) dock_sources::CloseProgram(item.path);
     }
     // Answered on every drag movement, so the shortcut lookup is cached per path.
     bool RecycleBinItem(const std::string& path) {
@@ -639,7 +651,7 @@ struct DockSession::Impl {
             if (!itemMenu) return LumeWidgetMenu::ShowDock(dock.Handle(), point, prefs.frosted, prefs.transparent);
             const auto& revealPath = item->kind == dock::Kind::Lume ? lumePath : item->path;
             return LumeWidgetMenu::ShowDockItem(dock.Handle(), point, onDock, false, !revealPath.empty(), false,
-                                                true, prefs.frosted, prefs.transparent);
+                                                true, prefs.frosted, prefs.transparent, item->kind == dock::Kind::Running);
         });
         if (stopped || !ready) return;
         auto next = prefs;
@@ -663,6 +675,10 @@ struct DockSession::Impl {
                 const auto path = item->kind == dock::Kind::Lume ? lumePath : item->path;
                 if (!path.empty()) RevealPath(path);
             }
+            break;
+        case CloseWindow:
+            if (item && item->kind == dock::Kind::Running) dock_sources::CloseProgram(item->path);
+            SetTimer(helper, SettleTimer, 600, nullptr);
             break;
         case Liquid: next.frosted = false; next.transparent = false; Update(next); break;
         case Frosted: next.frosted = true; next.transparent = false; Update(next); break;

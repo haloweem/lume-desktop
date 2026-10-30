@@ -238,11 +238,12 @@ struct DockWindow::Impl {
     // use the same spring and "make room" behavior.
     std::vector<std::size_t> Primary(std::size_t skip = None) const {
         std::vector<std::size_t> result;
+        const bool movingRunning = dragged != None && dragged < items.size() && items[dragged].kind == dock::Kind::Running;
         if (order.empty()) {
             for (std::size_t i = 0; i < items.size(); ++i) {
                 if (i == skip) continue;
                 if (items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned ||
-                    (i == dragged && items[i].kind == dock::Kind::Running))
+                    (movingRunning && items[i].kind == dock::Kind::Running))
                     result.push_back(i);
             }
             return result;
@@ -250,7 +251,7 @@ struct DockWindow::Impl {
         for (const auto i : order) {
             if (i == skip) continue;
             if (items[i].kind == dock::Kind::Lume || items[i].kind == dock::Kind::Pinned ||
-                (i == dragged && items[i].kind == dock::Kind::Running))
+                (movingRunning && items[i].kind == dock::Kind::Running))
                 result.push_back(i);
         }
         return result;
@@ -952,7 +953,7 @@ struct DockWindow::Impl {
                 if (item.kind == dock::Kind::Lume) return item.orderIndex;
             return None;
         }();
-        const bool changed = items[from].kind == dock::Kind::Lume
+        const bool changed = items[from].kind == dock::Kind::Running ? false : items[from].kind == dock::Kind::Lume
                                  ? target.lumePosition != originalLume
                                  : items[from].kind == dock::Kind::Pinned
                                        ? target.pinnedSlot != originalPinned || target.lumePosition != originalLume
@@ -1089,7 +1090,13 @@ struct DockWindow::Impl {
                 const auto target = std::exchange(self->pendingPreview, 0);
                 // Only if the pointer is still resting on that window.
                 const bool still = self->hover < self->items.size() && self->items[self->hover].window == target && self->hovering;
-                if (target && still && self->visible) self->ShowPreview(target);
+                if (target && still && self->visible) {
+                    POINT point{}; GetCursorPos(&point);
+                    const auto index = self->hover;
+                    if (index < self->items.size() && self->items[index].kind == dock::Kind::Running && self->ports.runningHover)
+                        self->ports.runningHover(index, point);
+                    else self->ShowPreview(target);
+                }
                 return 0;
             }
             break;

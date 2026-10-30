@@ -965,10 +965,10 @@ UINT LumeWidgetMenu::ShowIslandTodo(HWND owner, POINT position, bool item, bool 
 }
 
 UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal,
-                                  bool inCollection, bool dockActions, bool frosted, bool none)
+                                  bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem)
 {
     std::vector<MenuItem> items {
-        { pinned ? L"从 Dock 删除" : L"固定到 Dock", pinned ? 21u : 20u, MenuKind::Root, pinned ? MenuIcon::Close : MenuIcon::Pin },
+        { pinned ? L"从 Dock 移除" : L"固定到 Dock", pinned ? 21u : 20u, MenuKind::Root, pinned ? MenuIcon::Close : MenuIcon::Pin },
     };
     if (canReveal)
         items.push_back({ L"打开所在位置", 22, MenuKind::Root, MenuIcon::Position });
@@ -981,6 +981,10 @@ UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool 
     {
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"从启动台移除", 23, MenuKind::Root, MenuIcon::Close });
+    }
+    if (runningItem) {
+        items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
+        items.push_back({ L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close });
     }
     if (dockActions)
     {

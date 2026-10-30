@@ -29,7 +29,8 @@ public:
     // Dock or launchpad item: 20 pin, 21 unpin, 22 open location, 23 remove from launchpad.
     // `canReveal` is false for virtual entries such as the Lume manager item.
     static UINT ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal = true,
-                             bool inCollection = false, bool dockActions = false, bool frosted = false, bool none = false);
+                             bool inCollection = false, bool dockActions = false, bool frosted = false, bool none = false,
+                             bool runningItem = false);
     // Launchpad add button: a single "add files" entry plus "new collection",
     // followed by a small file/folder choice for the add entry.
     static UINT ShowLaunchpadAdd(HWND owner, POINT position);

@@ -46,6 +46,7 @@ struct DockWindowPorts {
     std::function<std::shared_ptr<const WidgetBitmap>(const dock::Item&)> cover = {};
     // Shared table of icon positions for the minimize animation; tests use their own.
     std::wstring slotsName = {};
+    std::function<void(std::size_t index, POINT screen)> runningHover;
 };
 // The Dock: a glass bar at desktop level, positioned in the primary work
 // area (bottom-centre by default), with a transparent icon layer above it so icons can magnify past the
