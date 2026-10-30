@@ -112,7 +112,7 @@ std::string Upper(std::string text) {
 Json Request(const HttpTransport& transport, std::string url, const Cancellation& cancel, bool direct = false) {
     Check(cancel);
     HttpRequest request{std::move(url),
-        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.0.8 (desktop weather)"}},
+        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.0.9 (desktop weather)"}},
         12000, LocationMaxBytes};
     request.direct = direct;
     auto reply = transport(request, cancel);

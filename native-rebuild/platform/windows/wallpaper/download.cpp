@@ -401,7 +401,7 @@ TransferResult Transfer(std::string urlText, const std::atomic<bool>& cancel, bo
     std::optional<ByteRange> range = std::nullopt) {
     auto url = ParseUrl(urlText, loopback);
     if (!url) return {false, false, 0, 0, "WALLPAPER_DOWNLOAD_URL_INVALID"};
-    Internet session(WinHttpOpen(L"Lume/1.0.8 (Windows wallpaper)",
+    Internet session(WinHttpOpen(L"Lume/1.0.9 (Windows wallpaper)",
         url->local ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
     if (!session.value) return {false, true, 0, 0, "WALLPAPER_HTTP_SESSION"};

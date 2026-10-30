@@ -2,6 +2,7 @@
 #include "core/dynamic_island/island_model.h"
 #include "core/widget/widget_preferences.h"
 #include "core/calendar/calendar_date.h"
+#include "core/performance/performance_metrics.h"
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include <windows.h>
 #include <functional>
@@ -22,7 +23,7 @@ enum class IslandSize { Small, Standard, Large };
 // Pages of the expanded island; the mouse wheel moves between them.
 // Reminder lists the reminders shown in this session, once there is one.
 // Weather shows the weather component's current reading (it never fetches).
-// Performance reuses the performance widget's view and samples only while open.
+// Performance reuses the widget's view with samples kept warm while enabled.
 enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance };
 struct IslandTodo {
     std::string id;
@@ -97,6 +98,8 @@ public:
     bool Shown() const;
     // Copy the actual composed foreground for rendering verification.
     WidgetBitmap Frame() const;
+    // Latest sample used by the performance page, including while collapsed.
+    std::optional<performance::Snapshot> PerformanceReading() const;
     // Verification: completes running animations immediately.
     void Settle();
 private:

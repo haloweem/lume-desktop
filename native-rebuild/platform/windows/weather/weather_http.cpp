@@ -172,7 +172,7 @@ weather::HttpResponse WeatherHttp::Get(const weather::HttpRequest& request, cons
             headers += Wide(h.first) + L": " + Wide(h.second) + L"\r\n";
         }
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(request.timeoutMs);
-        Handle session(WinHttpOpen(L"Lume/1.0.8 (Windows desktop weather)",
+        Handle session(WinHttpOpen(L"Lume/1.0.9 (Windows desktop weather)",
             url->local || request.direct ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
         if (!session.value) return {};

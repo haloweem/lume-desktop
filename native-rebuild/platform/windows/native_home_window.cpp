@@ -260,7 +260,7 @@ void NativeHomeWindow::Draw(HWND window, HDC dc) {
             Text(dc, descriptions[static_cast<std::size_t>(i)], desc, 13, kMuted);
         }
         RECT foot{42, client.bottom - 54, client.right - 42, client.bottom - 24};
-        Text(dc, L"Lume 1.0.8 · 界面预览", foot, 11, RGB(112, 120, 131));
+        Text(dc, L"Lume 1.0.9 · 界面预览", foot, 11, RGB(112, 120, 131));
     } else if (state.page == ui::HomePage::DesktopBeauty) {
         RECT title{42, 110, client.right - 42, 152};
         Text(dc, L"桌面美化", title, 27, kText);

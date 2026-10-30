@@ -531,7 +531,7 @@ int main(int argc, char** argv) {
 
     Fixture disabledUpdates;
     Check(disabledUpdates.service.Load() && disabledUpdates.service.BeginCheck(), "load compatible update fixture");
-    disabledUpdates.service.FinishCheck({{"available", "1.0.8", 0}, {}});
+    disabledUpdates.service.FinishCheck({{"available", "1.0.9", 0}, {}});
     Check(disabledUpdates.service.State().update.status == "available",
           "compatible release remains available for the native downloader");
     disabledUpdates.service.UnsupportedUpdate();

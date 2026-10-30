@@ -79,7 +79,7 @@ const diagnostics = {
   },
   buildReport: options => buildDiagnosticReport({
     ...options,
-    version: "1.0.8",
+    version: "1.0.9",
     events: diagnosticsRecorder.list(),
     health: diagnosticsRecorder.health(),
     native: diagnosticsRecorder.native(),

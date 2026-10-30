@@ -5,7 +5,7 @@
 #error OutputDir must be supplied by package-original-pages.ps1
 #endif
 #ifndef OutputBaseFilename
-#define OutputBaseFilename "LumeSetup-1.0.8"
+#define OutputBaseFilename "LumeSetup-1.0.9"
 #endif
 #ifndef IconFile
 #error IconFile must be supplied by package-original-pages.ps1
@@ -20,7 +20,7 @@
 [Setup]
 AppId={{8B29B016-65A4-4F35-8F0A-F6D7B9C10101}
 AppName=Lume
-AppVersion=1.0.8
+AppVersion=1.0.9
 AppPublisher=Lume
 AppPublisherURL=https://lumedesktop.com/
 AppSupportURL=https://lumedesktop.com/
@@ -47,11 +47,11 @@ CloseApplications=no
 RestartApplications=no
 LanguageDetectionMethod=uilanguage
 ShowLanguageDialog=yes
-VersionInfoVersion=1.0.8
+VersionInfoVersion=1.0.9
 VersionInfoCompany=Lume
 VersionInfoDescription=Lume Setup
 VersionInfoProductName=Lume
-VersionInfoProductVersion=1.0.8
+VersionInfoProductVersion=1.0.9
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "{#SourcePath}\installer-languages\ChineseSimplified.isl"

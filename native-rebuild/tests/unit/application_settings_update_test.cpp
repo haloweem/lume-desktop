@@ -9,8 +9,8 @@ void Check(bool ok, const char* reason) {
 }
 }
 int main() {
-    Check(std::string(CurrentVersion) == "1.0.8", "new workspace identifies the 1.0.8 release");
-    Check(CompareVersions(CurrentVersion,"1.0.3.3")==1,"1.0.8 supersedes four-segment 1.0.3.3");
+    Check(std::string(CurrentVersion) == "1.0.9", "new workspace identifies the 1.0.9 release");
+    Check(CompareVersions(CurrentVersion,"1.0.3.3")==1,"1.0.9 supersedes four-segment 1.0.3.3");
     Check(CompareVersions("1.0.3.2", "1.0.2.1") == 1, "release is newer than the accepted baseline");
     Check(CompareVersions("1.0.3.2", "1.0.3") == 1, "fourth version segment identifies the patch release");
     Check(CompareVersions("1.0.2.2", "1.0.2.1") == 1, "compare the fourth version segment");
@@ -19,7 +19,7 @@ int main() {
     Check(CompareVersions("1.10.0", "1.9.99") == 1, "numeric not lexical version comparison");
     for (const auto* bad : {"", "1", "1.", "1..2", "1.2.3.4.5", "1.2-beta", "-1.2", " 1.2", "1.2e2", "999999999999999999999.0"})
         Check(!CompareVersions(bad, CurrentVersion), "reject malformed or overflowing versions");
-    Check(EvaluateManifest(R"({"version":"1.0.8"})").update.status == "current", "current native version does not require an installer");
+    Check(EvaluateManifest(R"({"version":"1.0.9"})").update.status == "current", "current native version does not require an installer");
     Check(EvaluateManifest(R"({"version":"1.0.2.1"})").update.status == "current", "accepted previous native version does not require an installer");
     Check(EvaluateManifest(R"({"version":"1.0.1","downloads":{}})").update.status == "current",
           "older official Electron manifest is current, without requiring irrelevant native download fields");
@@ -34,10 +34,10 @@ int main() {
         R"({"version":"1.0.10","runtime":["native-win32"],"channel":"native-verification"})",
         R"({"version":"1.0.10","runtime":"native-win32","channel":1})"
     }) Check(EvaluateManifest(body).update.status == "incompatible", "new version requires explicit string identity, never a coerced one");
-    const std::string valid = R"({"version":"1.0.8","runtime":"native-win32","channel":"native-verification","downloadUrl":"https://www.lumedesktop.com/LumeSetup-1.0.8.exe","sha256":")" +
+    const std::string valid = R"({"version":"1.0.9","runtime":"native-win32","channel":"native-verification","downloadUrl":"https://www.lumedesktop.com/LumeSetup-1.0.9.exe","sha256":")" +
         std::string(64, 'a') + R"(","size":1024})";
     const auto release = EvaluateManifest(valid, "1.0.7");
-    Check(release.update.status == "available" && release.update.version == "1.0.8" && release.error.empty() && release.installer.size == 1024,
+    Check(release.update.status == "available" && release.update.version == "1.0.9" && release.error.empty() && release.installer.size == 1024,
           "valid native metadata exposes a verified download descriptor");
     for (const auto* bad : {"https://lumedesktop.com.evil.test/x.exe", "http://lumedesktop.com/x.exe",
                             "https://user@lumedesktop.com/x.exe", "https://lumedesktop.com:443/x.exe",

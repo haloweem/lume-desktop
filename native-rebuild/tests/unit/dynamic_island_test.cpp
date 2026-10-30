@@ -197,12 +197,24 @@ void Scenario(){
         window.SetWeather({});window.Settle();
         SaveFrame(window.Frame(),L"weather-off.png");
         window.SetWeather(weather);window.Settle();
+        const auto warmDeadline=GetTickCount64()+6000;
+        while ((!window.PerformanceReading() || !window.PerformanceReading()->cpu) &&
+               GetTickCount64()<warmDeadline) Pump(20);
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,
+              "performance rates are ready before opening their page");
+        const auto warmStamp=window.PerformanceReading()->monotonicMillis;
         SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
         Check(window.Page()==IslandPage::Performance,"wheel moves to the performance page");
-        {   // The page samples while open; give the 1 s sampler two readings.
-            const auto until=GetTickCount64()+2500;
-            while(GetTickCount64()<until){MSG m{};while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}Sleep(10);}
-            window.Settle();
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu &&
+              window.PerformanceReading()->monotonicMillis>=warmStamp,"first frame retains warm rates");
+        window.Expand(false);
+        Pump(1200);
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu &&
+              window.PerformanceReading()->monotonicMillis>warmStamp,"collapsed island keeps rates current");
+        window.Expand(true);window.Settle();
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,"reopening keeps rates");
+        for(int i=0;i<6&&window.Page()!=IslandPage::Performance;++i){
+            SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
         }
         SaveFrame(window.Frame(),L"performance.png");
         SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();

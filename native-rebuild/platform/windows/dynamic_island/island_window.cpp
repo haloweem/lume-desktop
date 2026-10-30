@@ -206,7 +206,7 @@ struct IslandWindow::Impl {
     calendar::Date month = Today(), selected = Today(), today = Today();
     IslandTodoSource todos;
     dynamic_island::Weather weather;  // Projection of the weather component.
-    // The performance page samples only while it is open: the worker posts
+    // Keep samples warm for the window's lifetime: the worker posts
     // here, and the UI thread reads the latest snapshot.
     std::atomic<HWND> performanceTarget{nullptr};
     PerformanceMonitor performance{[this] {
@@ -1180,6 +1180,7 @@ struct IslandWindow::Impl {
         canvas = std::make_unique<WidgetCanvas>();
         if (!display.topmost) SetPropW(hwnd, lume::window_ids::DesktopWidgetProp, reinterpret_cast<HANDLE>(1));
         if (!SetTimer(hwnd, TickTimer, 1000, nullptr)) { Stop(); return false; }
+        SyncPerformance();
         // Taskbar-button flashes of chat programs (best effort).
         RegisterShellHookWindow(hwnd);
         active = this;
@@ -1196,10 +1197,9 @@ struct IslandWindow::Impl {
         Animate();
         return true;
     }
-    // Samples once a second while the performance page is open; stopping
-    // joins the worker, so no notification outlives the window.
+    // Rates need consecutive samples. Keep them warm across page changes.
     void SyncPerformance() {
-        const bool want = hwnd && expanded && page == IslandPage::Performance;
+        const bool want = hwnd != nullptr;
         if (want && !performance.Running()) {
             performanceTarget = hwnd;
             performanceSample.reset();
@@ -1213,7 +1213,11 @@ struct IslandWindow::Impl {
     }
     void Stop() {
         expanded = false;
-        SyncPerformance();
+        // Join before destroying the HWND; late posted messages are ignored.
+        performanceTarget = nullptr;
+        performance.Stop();
+        performanceSample.reset();
+        performanceFailed = false;
         StopClock();
         WatchOutside(false);
         DetachGlass();
@@ -1444,7 +1448,7 @@ struct IslandWindow::Impl {
         switch (message) {
         case ForegroundMessage: self->CheckForeground(); return 0;
         case PerformanceMessage:
-            if (!self->performanceTarget.load()) return 0;  // a late sample after the page closed
+            if (!self->performanceTarget.load()) return 0;  // a late sample after shutdown
             self->performanceSample = self->performance.Latest();
             self->performanceFailed = !self->performanceSample && !self->performance.Running();
             if (self->visible && self->expanded && self->page == IslandPage::Performance) self->Place();
@@ -1553,6 +1557,7 @@ struct IslandWindow::Impl {
 };
 IslandWindow::IslandWindow(HINSTANCE i, Act act) : impl_(std::make_unique<Impl>(i, std::move(act))) {}
 IslandWindow::~IslandWindow() = default;
+std::optional<performance::Snapshot> IslandWindow::PerformanceReading() const { return impl_->performanceSample; }
 bool IslandWindow::Start(const widget::Preferences& p, const IslandDisplay& d) { return impl_->Start(p, d); }
 void IslandWindow::Stop() { impl_->Stop(); }
 bool IslandWindow::SetDisplay(const IslandDisplay& d) {

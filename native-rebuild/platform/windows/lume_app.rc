@@ -2,8 +2,8 @@
 IDI_LUME_APP ICON "../../packaging/lume.ico"
 
 1 VERSIONINFO
- FILEVERSION 1,0,8,0
- PRODUCTVERSION 1,0,8,0
+ FILEVERSION 1,0,9,0
+ PRODUCTVERSION 1,0,9,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -16,9 +16,9 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "Lume"
    VALUE "FileDescription", "Lume"
-   VALUE "FileVersion", "1.0.8"
+   VALUE "FileVersion", "1.0.9"
    VALUE "ProductName", "Lume"
-   VALUE "ProductVersion", "1.0.8"
+   VALUE "ProductVersion", "1.0.9"
   END
  END
  BLOCK "VarFileInfo"

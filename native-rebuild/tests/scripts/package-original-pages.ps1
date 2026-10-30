@@ -47,7 +47,7 @@ $packageRoot = Join-Path $repoRoot ('build-artifacts\native-rebuild\package-orig
 $stage = Join-Path $packageRoot 'stage'
 $outputRoot = Join-Path $packageRoot 'output'
 $extractRoot = Join-Path $packageRoot 'extracted'
-$outputName = 'LumeSetup-1.0.8.exe'
+$outputName = 'LumeSetup-1.0.9.exe'
 $output = Join-Path $OutputDirectory $outputName
 # LUME_ISCC / LUME_INNOUNP select other installs of Inno Setup 6 and innounp.
 $iscc = if ($env:LUME_ISCC) { $env:LUME_ISCC } else { Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe' }
@@ -570,13 +570,13 @@ Complete-PackagePhase 'acceptance-probes'
 $previousHash = $null
 if (Test-Path -LiteralPath $output -PathType Leaf) {
     $previousHash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
-    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.0.8.exe'
+    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.0.9.exe'
     Copy-Item -LiteralPath $output -Destination $previous
     if ((Get-FileHash -LiteralPath $previous -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous installer backup verification failed' }
 }
 foreach ($suffix in @('.sha256.txt', '.验收说明.txt')) {
     if (Test-Path -LiteralPath ($output + $suffix) -PathType Leaf) {
-        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.0.8.exe' + $suffix))
+        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.0.9.exe' + $suffix))
     }
 }
 # Prepare and verify on the destination volume, then replace the installer in
