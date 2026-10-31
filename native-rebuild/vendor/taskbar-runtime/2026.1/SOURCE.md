@@ -47,3 +47,12 @@ The application-local Microsoft Visual C++ runtime dependency is documented
 separately in `MSVC-RUNTIME-SOURCES.md`. Those signed Microsoft DLLs remain
 unmodified and retain Microsoft's distribution terms; they are not part of
 the GPL-licensed core sources.
+
+Portable startup also requires the current user's registered Microsoft.VCLibs.140.00
+(14.0.33519.0 or later) and Microsoft.UI.Xaml.2.8 (8.2310.30001.0 or later).
+The core already adds these installed frameworks to its dynamic package graph.
+Lume ships the original signed AppX packages under each architecture's
+`frameworks/` directory and deploys missing frameworks on the taskbar worker,
+for the current user, before starting the core. See `FRAMEWORKS-SOURCES.md`.
+Existing healthy newer packages are retained. No Store/network connection is
+required, and the core itself remains the same pinned upstream build.

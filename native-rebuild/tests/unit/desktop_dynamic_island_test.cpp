@@ -11,19 +11,22 @@ HWND Island(){HWND found=nullptr;EnumThreadWindows(GetCurrentThreadId(),[](HWND 
 },reinterpret_cast<LPARAM>(&found));return found;}
 struct Probe {
     shell::DesktopApplication* app=nullptr;
-    bool enabled=false,locked=false,expanded=false;
+    bool enabled=false,locked=false;
+    std::string material;
     HWND island=nullptr;
     unsigned stage=0,ready=0;
     ULONGLONG deadline=0,closed=0;
     void Message(const std::wstring& text){
         if(text.find(L"\"type\":\"dynamicIsland-state\"")==std::wstring::npos)return;
         const auto state=nlohmann::json::parse(text);enabled=state.value("enabled",false);
-        locked=state.value("locked",false);expanded=state.value("expanded",false);
+        locked=state.value("locked",false);material=state.value("material",std::string{});
     }
     void Tick(){
-        if(GetTickCount64()>deadline){Check(false,"real manager lifecycle deadline");app->Exit();return;}
-        // Without playback the island still expands onto its calendar page.
-        if(stage==0&&app->ManagerReady()&&enabled&&locked&&expanded){
+        if(GetTickCount64()>deadline){
+            std::cerr<<"state: enabled="<<enabled<<" material="<<material<<'\n';
+            Check(false,"real manager lifecycle deadline");app->Exit();return;
+        }
+        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"){
             ++ready;
             Check(Island()!=nullptr,"real settings page creates island window");
             if(ready==1)island=Island();else Check(Island()==island,"reopen retains same native session");
@@ -49,15 +52,20 @@ int main(){
     options.dynamicIslandPreferencesPath=(root/L"island.json").u8string();
     Probe probe;options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let enable=false,expand=false;
+      let enable=false,material=false;
       const act=()=>{
         const section=document.querySelector('[data-settings-scope="dynamicIsland"]');
         if(!section)return;
+        if(!material){
+          const select=section.querySelector('#dynamicIsland-material');
+          if(!select||select.disabled||select.getAttribute('aria-disabled')==='true')return;
+          const option=select.nextElementSibling?.querySelector('[data-select-value="frosted-glass"]');
+          if(!option)return;
+          material=true;select.click();option.click();return;
+        }
         const toggle=section.querySelector('[data-action="dynamicIsland-toggle"]');
         if(!toggle||toggle.disabled||toggle.getAttribute('aria-disabled')==='true')return;
         if(toggle.getAttribute('aria-checked')!=='true'){if(!enable){enable=true;toggle.click();}return;}
-        const expanded=section.querySelector('[data-action="dynamicIsland-expand"]');
-        if(expanded&&!expand){expand=true;expanded.click();}
       };
       const observer=new MutationObserver(act);observer.observe(document.querySelector('#content'),{subtree:true,attributes:true,childList:true});act();
       window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true});

@@ -139,7 +139,8 @@ struct TaskbarRuntime::Impl {
             if (!ok) {
                 // Six bounded retries, then only a new request or shell event can retry.
                 ++failures;
-                due = failures <= 6 ? GetTickCount64() + (std::min)(30000ULL, 1000ULL << (failures - 1)) : 0;
+                due = state.error != taskbar::Error::FrameworkInstall && failures <= 6
+                    ? GetTickCount64() + (std::min)(30000ULL, 1000ULL << (failures - 1)) : 0;
                 settle = false;
             } else {
                 failures = 0;
@@ -170,8 +171,16 @@ struct TaskbarRuntime::Impl {
                     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                         TranslateMessage(&message); DispatchMessageW(&message);
                     }
-                    if (watch.Consume()) {
-                        failures = 0; settle = false;
+                    const auto change = watch.Consume();
+                    // A failing core's error dialog and exit generate window
+                    // events themselves. Those events must not restart its
+                    // backoff or turn the bounded retries into a tight loop.
+                    // Missing framework deployment requires an explicit request.
+                    if (change != TaskbarWatch::Change::None &&
+                        state.error != taskbar::Error::FrameworkInstall &&
+                        (!failures || change == TaskbarWatch::Change::Environment)) {
+                        if (change == TaskbarWatch::Change::Environment) failures = 0;
+                        settle = false;
                         const auto after = GetTickCount64();
                         if (!due || due > after + 50) due = after + 50;
                     }

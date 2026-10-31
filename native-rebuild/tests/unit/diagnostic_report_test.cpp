@@ -7,6 +7,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 using namespace lume;
 namespace fs = std::filesystem;
@@ -19,6 +20,69 @@ std::string Read(const fs::path& file) {
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 bool Has(const std::string& zip, const std::string& name) { return zip.find(name) != std::string::npos; }
+
+// Suspended copies only: these fixtures never execute application code or
+// touch Explorer. A second suspended process represents another Lume owner.
+struct ProcessFixture {
+    HANDLE process = nullptr;
+    ~ProcessFixture() {
+        if (process) { TerminateProcess(process, 0); WaitForSingleObject(process, 3000); CloseHandle(process); }
+    }
+    bool Start(const fs::path& executable, HANDLE parent = nullptr) {
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = parent ? sizeof(startup) : sizeof(STARTUPINFOW);
+        std::vector<unsigned char> attributes;
+        if (parent) {
+            SIZE_T size = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+            attributes.resize(size);
+            startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+            if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &size)) return false;
+            if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                    &parent, sizeof(parent), nullptr, nullptr)) {
+                DeleteProcThreadAttributeList(startup.lpAttributeList); return false;
+            }
+        }
+        PROCESS_INFORMATION child{};
+        std::wstring command = L"\"" + executable.wstring() + L"\"";
+        const bool ok = CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
+            CREATE_SUSPENDED | CREATE_NO_WINDOW | (parent ? EXTENDED_STARTUPINFO_PRESENT : 0),
+            nullptr, executable.parent_path().c_str(), &startup.StartupInfo, &child) != FALSE;
+        if (parent) DeleteProcThreadAttributeList(startup.lpAttributeList);
+        if (ok) { process = child.hProcess; CloseHandle(child.hThread); }
+        return ok;
+    }
+};
+void CoreOwnershipRegression(const fs::path& root) {
+    wchar_t executable[32768]{};
+    Check(GetModuleFileNameW(nullptr, executable, 32768) != 0, "locate suspended self-check fixture");
+    const auto install = root / L"install";
+    const auto cache = root / L"native-taskbar-runtime" / L"2026.1" / L"x64" / L"LumeTaskbarCore.exe";
+    const auto installed = install / L"taskbar-runtime" / L"x64" / L"LumeTaskbarCore.exe";
+    for (const auto& path : {cache, installed}) {
+        fs::create_directories(path.parent_path());
+        fs::copy_file(executable, path, fs::copy_options::overwrite_existing);
+    }
+    const auto detail = [&] {
+        for (const auto& check : shell::RunSelfChecks(install)) if (check.id == "taskbar") return check.detail;
+        return std::string{};
+    };
+    {
+        ProcessFixture own;
+        Check(own.Start(cache), "start current owner's cached core fixture");
+        Check(detail().find(cache.u8string()) == std::string::npos,
+              "current owner's core in native-taskbar-runtime is not a conflicting installation");
+    }
+    ProcessFixture otherOwner;
+    Check(otherOwner.Start(executable), "start other owner fixture");
+    if (!otherOwner.process) return;
+    for (const auto& path : {cache, installed}) {
+        ProcessFixture foreign;
+        Check(foreign.Start(path, otherOwner.process), "start other owner's core fixture");
+        Check(detail().find(path.u8string()) != std::string::npos,
+              "another owner's core conflicts even when it uses our cache or install path");
+    }
+}
 }
 
 int main() {
@@ -76,6 +140,8 @@ int main() {
         Check(check.status != shell::CheckStatus::Ok || check.id == "gpu-decode", "an empty install folder is never reported OK");
     Check(!shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostic-report","action":"delete"})"), "unknown action");
     Check(!shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostics","action":"create"})"), "other scope");
+
+    CoreOwnershipRegression(root);
 
     std::error_code ignored;
     if (GetEnvironmentVariableW(L"LUME_KEEP_REPORT", nullptr, 0)) std::cout << result.path.u8string() << '\n' << text << '\n';

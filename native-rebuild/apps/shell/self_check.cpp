@@ -1,5 +1,6 @@
 #include "apps/shell/self_check.h"
 #include "platform/windows/text_util.h"
+#include "platform/windows/taskbar/taskbar_frameworks.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -184,12 +185,40 @@ SelfCheck GpuDecode() {
 
 // What keeps Lume's transparent taskbar from working: another tool already
 // styling the taskbar, a core from another Lume copy, a missing core file.
+bool OwnCore(const PROCESSENTRY32W& entry, HANDLE process) {
+    if (entry.th32ParentProcessID != GetCurrentProcessId()) return false;
+    FILETIME ownerCreated{}, childCreated{}, exited{}, kernel{}, user{};
+    // The core is staged into the data directory before launch. Its path is
+    // shared by installations and cannot establish process ownership. Check
+    // creation times as well so a recycled parent PID cannot look like ours.
+    return GetProcessTimes(GetCurrentProcess(), &ownerCreated, &exited, &kernel, &user) &&
+        GetProcessTimes(process, &childCreated, &exited, &kernel, &user) &&
+        CompareFileTime(&childCreated, &ownerCreated) >= 0;
+}
 SelfCheck Taskbar(const fs::path& install) {
     SelfCheck check{"taskbar", CheckStatus::Ok, "透明任务栏", "未发现冲突", {}};
     const auto core = install / L"taskbar-runtime" / fs::u8path(Arch()) / L"LumeTaskbarCore.exe";
     std::error_code error;
     std::vector<std::string> problems;
-    if (Build() >= 22000 && !fs::is_regular_file(core, error)) problems.push_back("缺少 LumeTaskbarCore.exe");
+    std::string unknownFramework;
+    bool missingFramework = false;
+    const bool windows11 = Build() >= 22000;
+    const bool missingCore = windows11 && !fs::is_regular_file(core, error);
+    if (missingCore) problems.push_back("缺少 LumeTaskbarCore.exe");
+    if (windows11) {
+        using namespace platform::windows;
+        const auto frameworks = QueryTaskbarFrameworks(std::string(Arch()) == "arm64");
+        if (frameworks.hresult < 0) {
+            std::ostringstream code; code << "0x" << std::hex << static_cast<std::uint32_t>(frameworks.hresult);
+            unknownFramework = "无法检查当前用户的任务栏框架（" + code.str() + "）";
+        } else {
+            if (frameworks.vclibsVersion < TaskbarVCLibsMinimum)
+                problems.push_back("缺少可用的 Microsoft.VCLibs.140.00（14.0.33519.0 或更高版本，" + std::string(Arch()) + "）");
+            if (frameworks.winuiVersion < TaskbarWinUIMinimum)
+                problems.push_back("缺少可用的 Microsoft.UI.Xaml.2.8（8.2310.30001.0 或更高版本，" + std::string(Arch()) + "）");
+            missingFramework = !frameworks.Ready();
+        }
+    }
     // Only tools that certainly restyle the taskbar; a guess would send users
     // after the wrong program.
     static constexpr std::array<const wchar_t*, 3> rivals{L"translucenttb.exe", L"roundedtb.exe", L"taskbarx.exe"};
@@ -199,18 +228,18 @@ SelfCheck Taskbar(const fs::path& install) {
     if (snapshot != INVALID_HANDLE_VALUE) {
         PROCESSENTRY32W entry{};
         entry.dwSize = sizeof(entry);
-        const auto ours = Lower(core.wstring());
         for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
             listed = true;
             const auto name = Lower(entry.szExeFile);
             for (const auto rival : rivals) if (name.find(rival) != std::wstring::npos) found.insert(Utf8(entry.szExeFile));
             if (name == L"lumetaskbarcore.exe") {
-                // A core started by another Lume copy (old install path) holds the taskbar.
-                wchar_t path[MAX_PATH]{};
-                DWORD size = MAX_PATH;
+                // Another instance can use exactly the same cache or install
+                // path. Only a verified child of this process is ours.
+                wchar_t path[32768]{};
+                DWORD size = 32768;
                 const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
                 if (process) {
-                    if (QueryFullProcessImageNameW(process, 0, path, &size) && Lower(path) != ours)
+                    if (!OwnCore(entry, process) && QueryFullProcessImageNameW(process, 0, path, &size))
                         found.insert("另一份 Lume 的任务栏核心（" + Utf8(path) + "）");
                     CloseHandle(process);
                 }
@@ -221,12 +250,17 @@ SelfCheck Taskbar(const fs::path& install) {
     for (const auto& item : found) problems.push_back("正在运行 " + item);
     // StartAllBack / ExplorerPatcher replace the taskbar without a process of
     // their own: their DLLs show in the diagnostic report's Explorer modules.
-    if (!problems.empty()) {
-        check.status = CheckStatus::Problem;
+    if (!problems.empty() || !unknownFramework.empty()) {
+        check.status = problems.empty() ? CheckStatus::Unknown : CheckStatus::Problem;
         check.detail.clear();
         for (const auto& item : problems) check.detail += (check.detail.empty() ? "" : "；") + item;
-        check.fix = "同时只能有一个程序修改任务栏：退出上面列出的程序（或其开机启动）后，在 Lume 中重新打开透明任务栏。"
-                    "缺少文件时请把 Lume 安装目录加入安全软件信任区后重新安装。";
+        if (!unknownFramework.empty()) check.detail += (check.detail.empty() ? "" : "；") + unknownFramework;
+        if (missingFramework || !unknownFramework.empty())
+            check.fix += "请重新启用透明任务栏，Lume 会自动补齐所需框架；若仍失败，请导出诊断报告。";
+        if (!found.empty())
+            check.fix += "同时只能有一个程序修改任务栏：退出上面列出的程序（或其开机启动）后，重新打开透明任务栏。";
+        if (missingCore)
+            check.fix += "请把 Lume 安装目录加入安全软件信任区后重新安装，以恢复缺少的核心文件。";
     } else if (!listed) {
         check.status = CheckStatus::Unknown;
         check.detail = "无法列出正在运行的程序";

@@ -48,3 +48,4 @@ Lume 客户端整体按 AGPL-3.0 发布（见 `LICENSE`）。其中包含的第�
 |---|---|
 | WebView2 SDK（构建时从 nuget.org 下载） | Microsoft WebView2 SDK 许可 |
 | Visual C++ 运行库（`vendor/taskbar-runtime/`） | Visual C++ 可再分发组件许可，见 `MSVC-RUNTIME-LICENSE.docx` |
+| Microsoft.VCLibs.140.00 与 Microsoft.UI.Xaml.2.8 框架（`vendor/taskbar-runtime/2026.1/*/frameworks/`） | 微软原始签名 AppX，按当前用户补齐任务栏启动依赖；来源和哈希见 `FRAMEWORKS-SOURCES.md`，WinUI 许可见 `WINUI-LICENSE.txt` |

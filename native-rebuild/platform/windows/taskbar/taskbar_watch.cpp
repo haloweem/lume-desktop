@@ -30,32 +30,38 @@ void TaskbarWatch::Stop() {
     if (objects_) { UnhookWinEvent(objects_); objects_ = nullptr; }
     if (window_) { DestroyWindow(window_); window_ = nullptr; }
     if (current_ == this) current_ = nullptr;
-    dirty_ = false;
+    change_ = Change::None;
 }
-bool TaskbarWatch::Consume() { const bool dirty = dirty_; dirty_ = false; return dirty; }
+TaskbarWatch::Change TaskbarWatch::Consume() { const auto change = change_; change_ = Change::None; return change; }
 LRESULT CALLBACK TaskbarWatch::WindowProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     auto* self = reinterpret_cast<TaskbarWatch*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         self = static_cast<TaskbarWatch*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
-    if (self && (message == self->taskbarCreated_ || message == WM_DISPLAYCHANGE ||
-                 message == WM_THEMECHANGED || message == WM_SETTINGCHANGE || message == WM_DWMCOMPOSITIONCHANGED))
-        self->dirty_ = true;
+    if (self) {
+        if (message == self->taskbarCreated_ || message == WM_DISPLAYCHANGE || message == WM_DWMCOMPOSITIONCHANGED)
+            self->change_ = Change::Environment;
+        else if ((message == WM_THEMECHANGED || message == WM_SETTINGCHANGE) && self->change_ == Change::None)
+            self->change_ = Change::Appearance;
+    }
     return DefWindowProcW(window, message, w, l);
 }
 void CALLBACK TaskbarWatch::EventProc(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG, DWORD, DWORD) {
     if (!current_) return;
-    if (event == EVENT_SYSTEM_FOREGROUND) { current_->dirty_ = true; return; }
+    const auto changed = [] {
+        if (current_->change_ == Change::None) current_->change_ = Change::Appearance;
+    };
+    if (event == EVENT_SYSTEM_FOREGROUND) { changed(); return; }
     if (object != OBJID_WINDOW || !window) return;
     const auto root = GetAncestor(window, GA_ROOT);
     if ((event == EVENT_OBJECT_LOCATIONCHANGE || event == EVENT_OBJECT_STATECHANGE) &&
         (root ? root : window) == GetForegroundWindow()) {
-        current_->dirty_ = true; return;
+        changed(); return;
     }
     wchar_t name[64]{};
     if (GetClassNameW(root ? root : window, name, 64) &&
         (!wcscmp(name, L"Shell_TrayWnd") || !wcscmp(name, L"Shell_SecondaryTrayWnd")))
-        current_->dirty_ = true;
+        changed();
 }
 }  // namespace lume::platform::windows

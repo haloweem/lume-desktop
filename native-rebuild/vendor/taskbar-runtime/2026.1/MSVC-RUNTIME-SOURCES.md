@@ -50,6 +50,11 @@ taskbar payload.
 
 ## Dependency boundary and verification
 
+This PE import audit covers application-local DLL loading only. It does not
+detect the portable core's runtime-created AppX dependencies. Those require
+registered VCLibs and WinUI frameworks in addition to these DLLs; the offline
+packages and their provenance are documented in `FRAMEWORKS-SOURCES.md`.
+
 `MSVC-RUNTIME-DEPENDENCIES.json` records a read-only PE audit of **every** EXE
 and DLL in both architecture directories. The audit follows normal imports,
 delay imports, imported app-local symbol names/ordinals, and export forwarders.

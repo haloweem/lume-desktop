@@ -90,6 +90,18 @@ void TestExactVersionedCommands() {
         Expect(ParsePageCommand(std::wstring(message) + std::wstring(1,L'\0')) == PageCommand::Invalid, "calendar NUL rejected");
         Expect(lume::ui::ParsePageJson(L" \"" + std::wstring(message) + L"\"") == PageCommand::Invalid, "calendar noncanonical JSON rejected");
     }
+    const std::pair<std::wstring_view, PageCommand> islandMaterials[] = {
+        {L"v1|dynamicIsland|material|none", PageCommand::IslandMaterialNone},
+        {L"v1|dynamicIsland|material|liquid-glass", PageCommand::IslandMaterialLiquid},
+        {L"v1|dynamicIsland|material|frosted-glass", PageCommand::IslandMaterialFrosted},
+    };
+    for (const auto& item : islandMaterials) {
+        Expect(ParsePageCommand(item.first) == item.second, "dynamic island material command fits protocol bounds");
+        Expect(lume::ui::ParsePageJson(L"\"" + std::wstring(item.first) + L"\"") == item.second,
+               "dynamic island material command is accepted from canonical WebView JSON");
+        Expect(ParsePageCommand(std::wstring(item.first) + L"|extra") == PageCommand::Invalid,
+               "dynamic island material command still rejects trailing fields");
+    }
     for (auto message : {L"v1|calendar|theme|Split", L"v1|calendar|enabled|TRUE", L"v1|Calendar|reset", L"v1|calendar|textcolor", L"v1|calendar|textColor|#ffffff", L"v1|calendar|material|Frosted-glass", L"v1|calendar|theme|unknown"})
         Expect(ParsePageCommand(message) == PageCommand::Invalid, "calendar unknown spelling rejected");
     struct Case { std::wstring_view message; PageCommand command; };

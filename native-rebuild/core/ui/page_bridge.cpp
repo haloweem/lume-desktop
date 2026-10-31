@@ -27,7 +27,7 @@ PageCommand ParsePageJson(std::wstring_view json) noexcept {
 
 PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     // The longest supported v1 message bounds work before any character access.
-    constexpr std::wstring_view longestMessage = L"v1|performance|material|frosted-glass";
+    constexpr std::wstring_view longestMessage = L"v1|dynamicIsland|material|frosted-glass";
     if (message.empty() || message.size() > longestMessage.size()) {
         return PageCommand::Invalid;
     }

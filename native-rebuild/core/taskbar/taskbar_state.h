@@ -20,7 +20,7 @@ enum class Error {
     None, Load, Save, Busy, Unsupported, MissingPayload, PayloadIntegrity, Conflict,
     Discover, ReadAppearance, ApplyAppearance, ReadAutoHide, ApplyAutoHide,
     CoreStart, CoreExited, CoreStop, Cancelled, Recovery, Watch, SystemEffectsDisabled,
-    ReadVisibility, ApplyVisibility
+    ReadVisibility, ApplyVisibility, FrameworkInstall
 };
 const char* ErrorName(Error);
 const char* ModeName(Mode);

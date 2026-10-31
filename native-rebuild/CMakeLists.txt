@@ -67,7 +67,7 @@ set(lume_acceptance_probe_targets
   lume-organizer-session-test lume-organizer-icons-test lume-organizer-icon-host-test
   lume-organizer-interaction-test lume-organizer-motion-test lume-organizer-drop-target-test lume-widget-menu-native-test
   lume-desktop-icons-runtime-test lume-desktop-icons-session-test
-  lume-taskbar-controller-test lume-taskbar-store-test lume-taskbar-runtime-test lume-taskbar-session-test lume-taskbar-payload-test
+  lume-taskbar-controller-test lume-taskbar-store-test lume-taskbar-runtime-test lume-taskbar-session-test lume-taskbar-payload-test lume-taskbar-frameworks-test
   lume-minimize-animation-test lume-minimize-animation-runtime-test lume-minimize-animation-session-test
   lume-desktop-taskbar-test)
 # lume-desktop-minimize-test drives the minimize card, hidden while

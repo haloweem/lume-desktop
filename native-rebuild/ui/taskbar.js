@@ -19,6 +19,7 @@ const errors=()=>({
   'read-visibility':t('无法读取任务栏原始显示状态，尚未完全隐藏','Could not read the original taskbar visibility. Complete hiding has not been applied.'),
   'apply-visibility':t('任务栏完全隐藏失败，请重试','Could not completely hide the taskbar. Please try again.'),
   'core-start':t('任务栏透明服务启动失败，请检查安装文件','Could not start the taskbar transparency service. Check the installation files.'),
+  'framework-install':t('任务栏所需的 Windows 框架安装失败，请重新启用功能；若仍失败，请导出问题反馈报告','Could not install the Windows frameworks required by the taskbar. Enable the feature again; if it still fails, export a diagnostic report.'),
   'core-exited':t('任务栏透明服务意外退出，效果尚未恢复','The taskbar transparency service exited unexpectedly. Appearance has not been restored.'),
   'core-stop':t('任务栏透明服务尚未停止，请再次关闭功能重试','The taskbar transparency service has not stopped. Try disabling it again.'),
   cancelled:t('任务栏操作已取消，尚未确认应用结果','Taskbar operation cancelled. Application is not confirmed.'),

@@ -1,5 +1,6 @@
 #include "platform/windows/taskbar/taskbar_port.h"
 #include "platform/windows/taskbar/taskbar_core_process.h"
+#include "platform/windows/taskbar/taskbar_frameworks.h"
 #include "platform/windows/taskbar/taskbar_visibility.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -66,8 +67,15 @@ struct WindowsTaskbarPort::Impl {
         core = std::make_unique<TaskbarCoreProcess>(cancel, [this](bool recovery, TaskbarCoreLaunch& launch) {
             if (Conflict()) return Error::Conflict;
             std::atomic_bool recoveryCancellation{false};
-            return StageTaskbarPayload(paths, mode == taskbar::Mode::Windows11Arm64,
-                                       recovery ? recoveryCancellation : cancel, launch.executable);
+            const auto& cancellation = recovery ? recoveryCancellation : cancel;
+            const bool arm64 = mode == taskbar::Mode::Windows11Arm64;
+            const auto staged = StageTaskbarPayload(paths, arm64, cancellation, launch.executable);
+            if (staged != Error::None) return staged;
+            // An already-installed core must still restore Explorer during
+            // shutdown. Missing-framework deployment, however, is cancellable:
+            // closing Lume must not begin or wait for a new installation.
+            if (recovery && QueryTaskbarFrameworks(arm64).Ready()) return Error::None;
+            return EnsureTaskbarFrameworks(launch.executable.parent_path() / L"frameworks", arm64, cancel);
         });
     }
     ~Impl() {
@@ -111,6 +119,10 @@ struct WindowsTaskbarPort::Impl {
                 std::filesystem::path executable;
                 const auto error = StageTaskbarPayload(paths, arm64, cancel, executable);
                 if (error != Error::None) return fail(error);
+                // Framework installation runs on the taskbar worker for the
+                // actual launch user, before any appearance/recovery mutation.
+                const auto frameworks = EnsureTaskbarFrameworks(executable.parent_path() / L"frameworks", arm64, cancel);
+                if (frameworks != Error::None) return fail(frameworks);
             }
         }
         return Error::None;

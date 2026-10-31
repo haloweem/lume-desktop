@@ -28,6 +28,7 @@ const char* ErrorName(Error error) {
         case Error::SystemEffectsDisabled: return "system-effects-disabled";
         case Error::ReadVisibility: return "read-visibility";
         case Error::ApplyVisibility: return "apply-visibility";
+        case Error::FrameworkInstall: return "framework-install";
     }
     return "unknown";
 }

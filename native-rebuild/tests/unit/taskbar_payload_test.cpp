@@ -65,6 +65,14 @@ int main(int count, char** args) {
           fs::file_size(dll) == fs::file_size(source / L"x64/ExplorerHooks.dll"), "damaged staged dependency repaired from verified source");
     for (const auto* name : {L"msvcp140.dll", L"msvcp140_atomic_wait.dll", L"vcruntime140.dll", L"vcruntime140_1.dll"})
         Check(fs::is_regular_file(executable.parent_path() / name), "x64 staging carries each required Microsoft runtime");
+    for (const auto* name : {L"VCLibs.appx", L"Microsoft.UI.Xaml.2.8.appx"}) {
+        const auto staged = executable.parent_path() / L"frameworks" / name;
+        Check(fs::is_regular_file(staged), "x64 staging carries offline framework packages");
+        { std::ofstream corrupt(staged, std::ios::binary | std::ios::app); corrupt << "tampered"; }
+        Check(StageTaskbarPayload(paths, false, cancelled, executable) == lume::taskbar::Error::None &&
+              fs::file_size(staged) == fs::file_size(source / L"x64/frameworks" / name),
+              "tampered cached framework is repaired before deployment");
+    }
     const auto runtime = executable.parent_path() / L"msvcp140.dll";
     { std::ofstream corrupt(runtime, std::ios::binary | std::ios::app); corrupt << "corrupt-runtime"; }
     Check(StageTaskbarPayload(paths, false, cancelled, executable) == lume::taskbar::Error::None &&
@@ -75,6 +83,9 @@ int main(int count, char** args) {
           fs::is_regular_file(arm64Executable), "ARM64 dependencies stage without executing ARM64 code");
     for (const auto* name : {L"msvcp140.dll", L"msvcp140_atomic_wait.dll", L"vcruntime140.dll"})
         Check(fs::is_regular_file(arm64Executable.parent_path() / name), "ARM64 staging carries each required Microsoft runtime");
+    for (const auto* name : {L"VCLibs.appx", L"Microsoft.UI.Xaml.2.8.appx"})
+        Check(fs::is_regular_file(arm64Executable.parent_path() / L"frameworks" / name),
+              "ARM64 staging carries native framework packages");
     Check(!fs::exists(arm64Executable.parent_path() / L"vcruntime140_1.dll"),
           "ARM64 dependency closure does not include an unused runtime");
 #if defined(_M_ARM64) || defined(__aarch64__)

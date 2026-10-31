@@ -3,11 +3,13 @@ if(NOT DEFINED TASKBAR_SOURCE OR NOT DEFINED TASKBAR_DESTINATION)
 endif()
 set(payload_files
   LICENSE.md NOTICE.md SOURCE.md lume-taskbar-core.patch settings.json SHA256SUMS.txt
-  MSVC-RUNTIME-LICENSE.docx MSVC-RUNTIME-SOURCES.md MSVC-RUNTIME-DEPENDENCIES.json)
+  MSVC-RUNTIME-LICENSE.docx MSVC-RUNTIME-SOURCES.md MSVC-RUNTIME-DEPENDENCIES.json
+  FRAMEWORKS-SOURCES.md WINUI-LICENSE.txt)
 foreach(architecture x64 arm64)
   foreach(file LumeTaskbarCore.exe ExplorerHooks.dll ExplorerTAP.dll ProgramLog.dll Xaml.dll
                resources.pri Assets/SplashScreen.jpeg Assets/SplashScreen.scale-400.jpeg
-               msvcp140.dll msvcp140_atomic_wait.dll vcruntime140.dll)
+               msvcp140.dll msvcp140_atomic_wait.dll vcruntime140.dll
+               frameworks/VCLibs.appx frameworks/Microsoft.UI.Xaml.2.8.appx)
     list(APPEND payload_files "${architecture}/${file}")
   endforeach()
 endforeach()

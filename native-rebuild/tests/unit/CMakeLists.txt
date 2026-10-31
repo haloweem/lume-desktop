@@ -1376,7 +1376,7 @@ add_test(NAME lume-diagnostic-operations-test COMMAND lume-diagnostic-operations
 add_executable(lume-diagnostic-report-test diagnostic_report_test.cpp ${PROJECT_SOURCE_DIR}/apps/shell/diagnostic_report.cpp ${PROJECT_SOURCE_DIR}/apps/shell/self_check.cpp ${PROJECT_SOURCE_DIR}/apps/shell/resource_snapshot.cpp)
 target_compile_definitions(lume-diagnostic-report-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_include_directories(lume-diagnostic-report-test PRIVATE ${PROJECT_SOURCE_DIR})
-target_link_libraries(lume-diagnostic-report-test PRIVATE lume-platform-windows psapi dxgi d3d11 bcrypt shcore wevtapi version shell32 ole32)
+target_link_libraries(lume-diagnostic-report-test PRIVATE lume-taskbar-windows lume-platform-windows psapi dxgi d3d11 bcrypt shcore wevtapi version shell32 ole32)
 lume_enable_native_warnings(lume-diagnostic-report-test)
 add_test(NAME lume-diagnostic-report-test COMMAND lume-diagnostic-report-test)
 

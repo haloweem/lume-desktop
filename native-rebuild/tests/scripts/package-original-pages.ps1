@@ -114,6 +114,7 @@ $settingsAccountProbes = @(
   'lume-dock-reflection-test',
   'lume-wallpaper-session-test',
   'lume-taskbar-controller-test', 'lume-taskbar-store-test', 'lume-taskbar-runtime-test', 'lume-taskbar-session-test',
+  'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test',
   'lume-organizer-desktop-test', 'lume-organizer-icons-test', 'lume-organizer-model-test',
   'lume-dock-application-layer-test',
   'lume-launchpad-collection-test',
@@ -154,7 +155,7 @@ $acceptanceProbes = @(
   'lume-organizer-session-test', 'lume-organizer-icons-test', 'lume-organizer-icon-host-test',
   'lume-organizer-interaction-test', 'lume-organizer-motion-test', 'lume-organizer-drop-target-test', 'lume-widget-menu-native-test',
   'lume-desktop-icons-runtime-test', 'lume-desktop-icons-session-test',
-  'lume-taskbar-runtime-test', 'lume-taskbar-session-test', 'lume-taskbar-payload-test',
+  'lume-taskbar-runtime-test', 'lume-taskbar-session-test',
   'lume-minimize-animation-test', 'lume-minimize-animation-runtime-test', 'lume-minimize-animation-session-test',
   'lume-desktop-taskbar-test', 'minimize-runtime-test32'
   # lume-desktop-minimize-test drives the minimize card, hidden for now; restore
@@ -287,11 +288,13 @@ $runtimeNotice | Set-Content -LiteralPath (Join-Path $stage 'wallpaper-runtime\V
 # Keep the narrowly pinned taskbar dependency complete without copying a stale
 # build directory or allowing extra executables into the installer.
 $taskbarFiles = @('LICENSE.md', 'NOTICE.md', 'SOURCE.md', 'lume-taskbar-core.patch', 'settings.json', 'SHA256SUMS.txt',
-    'MSVC-RUNTIME-LICENSE.docx', 'MSVC-RUNTIME-SOURCES.md', 'MSVC-RUNTIME-DEPENDENCIES.json')
+    'MSVC-RUNTIME-LICENSE.docx', 'MSVC-RUNTIME-SOURCES.md', 'MSVC-RUNTIME-DEPENDENCIES.json',
+    'FRAMEWORKS-SOURCES.md', 'WINUI-LICENSE.txt')
 foreach ($architecture in @('x64', 'arm64')) {
     foreach ($file in @('LumeTaskbarCore.exe', 'ExplorerHooks.dll', 'ExplorerTAP.dll', 'ProgramLog.dll',
         'Xaml.dll', 'resources.pri', 'Assets/SplashScreen.jpeg', 'Assets/SplashScreen.scale-400.jpeg',
-        'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll')) {
+        'msvcp140.dll', 'msvcp140_atomic_wait.dll', 'vcruntime140.dll',
+        'frameworks/VCLibs.appx', 'frameworks/Microsoft.UI.Xaml.2.8.appx')) {
         $taskbarFiles += "$architecture/$file"
     }
     if ($architecture -eq 'x64') { $taskbarFiles += 'x64/vcruntime140_1.dll' }
@@ -488,7 +491,8 @@ foreach ($run in $acceptanceRuns) {
     $cacheKey = Get-PackageTextHash ($policyHash + '|' + $probeHashes[$name] + '|' + $logName + '|' + $context)
     $cachePath = Join-Path $cacheRoot ($cacheKey + '.json')
     $alwaysRun = $name -in @('lume-installer-shutdown-test', 'lume-update-presenter-test',
-        'lume-widget-layer-stress-test', 'lume-music-system-fonts-test')
+        'lume-widget-layer-stress-test', 'lume-music-system-fonts-test',
+        'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test')
     # Quick: a build to try out. Packaging, unpack, payload hashes and the
     # install/update probes above still run; the isolated regressions do not.
     if ($VerificationMode -eq 'Quick' -and -not $alwaysRun) {

@@ -48,7 +48,7 @@ test('taskbar state validates the asynchronous schema without saved/result field
   assert.equal(validHostMessage({version:1,type:'navigate',page:'taskbar'}),true);
   for(const error of ['load','save','busy','unsupported','missing-payload','payload-integrity','conflict',
     'discover','read-appearance','apply-appearance','read-auto-hide','apply-auto-hide','core-start',
-    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility'])
+    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install'])
     assert.equal(validHostMessage(taskbarMessage({error})),true,error);
   for(const fields of [{enabled:1},{applying:'false'},{pendingRecovery:null},{taskbars:-1},{taskbars:1.5},{taskbars:33},
     {revision:-1},{revision:Number.MAX_SAFE_INTEGER+1},{mode:'unknown'},{loadStatus:'recovered'},

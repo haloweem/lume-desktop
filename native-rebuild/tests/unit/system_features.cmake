@@ -22,7 +22,7 @@ add_dependencies(lume-desktop-minimize-test lume-ui-assets lume-material-dll Lum
 add_test(NAME lume-desktop-minimize-test COMMAND lume-desktop-minimize-test)
 set_tests_properties(lume-desktop-minimize-test PROPERTIES RUN_SERIAL TRUE TIMEOUT 65)
 
-foreach(kind controller store runtime session payload port visibility)
+foreach(kind controller store runtime session payload frameworks port visibility)
   set(target "lume-taskbar-${kind}-test")
   add_executable(${target} "taskbar_${kind}_test.cpp")
   target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)

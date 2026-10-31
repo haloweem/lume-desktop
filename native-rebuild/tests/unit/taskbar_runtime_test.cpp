@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -168,6 +169,7 @@ public:
 struct Shared {
     std::atomic_int acquired{0}, applied{0}, released{0}, active{0}, starts{0}, stops{0};
     std::atomic_bool autoHide{false}, blockStart{false}, failAutoHide{false};
+    std::atomic<Error> startError{Error::None};
 };
 class Port final : public ITaskbarPort {
 public:
@@ -191,6 +193,7 @@ public:
         while (shared.blockStart && !cancel) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         --shared.active;
         if (cancel) return Error::Cancelled;
+        if (shared.startError != Error::None) return shared.startError.load();
         core = true; return Error::None;
     }
     bool CoreAlive() const override { return core; }
@@ -224,6 +227,59 @@ template<class Predicate> bool Wait(Predicate p, int milliseconds = 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return true;
+}
+HWND CurrentWatchWindow() {
+    HWND found = nullptr;
+    EnumWindows([](HWND window, LPARAM out) -> BOOL {
+        DWORD process = 0; GetWindowThreadProcessId(window, &process);
+        wchar_t name[64]{}; GetClassNameW(window, name, 64);
+        if (process == GetCurrentProcessId() && !std::wcscmp(name, L"LumeTaskbarWatch")) {
+            *reinterpret_cast<HWND*>(out) = window; return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&found));
+    return found;
+}
+void AppearanceEvents(HWND watch, DWORD duration) {
+    for (const auto until = GetTickCount64() + duration; GetTickCount64() < until;) {
+        PostMessageW(watch, WM_THEMECHANGED, 0, 0);
+        Sleep(10);
+    }
+}
+void RetryRegression(const TaskbarPaths& paths) {
+    Preferences on; on.enabled = true; on.autoHideTaskbar = true;
+    {
+        Files files; Shared state; state.startError = Error::CoreExited;
+        TaskbarRuntime runtime(paths, {}, &files,
+            [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
+        Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }),
+              "first failed core start settles");
+        const auto watch = CurrentWatchWindow(); Check(watch != nullptr, "locate this fixture's watcher");
+        AppearanceEvents(watch, 400);
+        Check(state.starts == 1, "appearance events cannot accelerate the first failed-start retry");
+        Check(Wait([&] { return state.starts == 2; }, 1800), "failed start retries after its backoff");
+        AppearanceEvents(watch, 400);
+        Check(state.starts == 2, "appearance events cannot reset the increasing retry delay");
+        PostMessageW(watch, RegisterWindowMessageW(L"TaskbarCreated"), 0, 0);
+        Check(Wait([&] { return state.starts == 3; }, 700), "Explorer restart notification permits an immediate retry");
+        Check(runtime.Shutdown() && !state.autoHide, "failed startup still restores independent auto-hide ownership");
+    }
+    {
+        Files files; Shared state; state.startError = Error::FrameworkInstall;
+        TaskbarRuntime runtime(paths, {}, &files,
+            [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
+        Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }),
+              "framework installation failure settles");
+        const auto watch = CurrentWatchWindow(); Check(watch != nullptr, "locate framework failure watcher");
+        PostMessageW(watch, RegisterWindowMessageW(L"TaskbarCreated"), 0, 0);
+        AppearanceEvents(watch, 1250);
+        Check(state.starts == 1, "framework failure waits for explicit retry despite timer and shell events");
+        state.startError = Error::None;
+        Check(runtime.Apply(on) && Wait([&] { return runtime.Snapshot().state.running; }),
+              "explicit user retry can start after the framework is repaired");
+        Check(state.starts == 2 && runtime.Shutdown() && !state.autoHide,
+              "framework retry succeeds once and retains normal shutdown recovery");
+    }
 }
 struct Resources { DWORD handles = 0, gdi = 0, user = 0, threads = 0; SIZE_T commit = 0; };
 LRESULT CALLBACK RejectWatchWindow(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -397,6 +453,7 @@ int main(int count, char** args) {
         Check(UnregisterClassW(rejected.lpszClassName, rejected.hInstance) != 0,
               "remove isolated watcher failure fixture");
     }
+    RetryRegression(paths);
     TaskbarRuntime runtime(paths, [&] { ++notifications; }, &files,
         [&](const auto&, const auto& cancel) { return std::make_unique<Port>(shared, cancel); });
     Check(runtime.Restore() && !runtime.Snapshot().worker && shared.acquired == 0, "disabled module allocates no worker or system lease");
