@@ -80,6 +80,8 @@ dynamic_island::Weather IslandWeather(const platform::windows::WeatherReading& r
     next.city=platform::windows::WeatherText(snapshot.cityName);
     next.condition=platform::windows::WeatherText(snapshot.condition);
     next.temperature=static_cast<int>(std::floor(snapshot.temperature+.5));
+    next.humidity=snapshot.humidity;
+    next.windSpeed=snapshot.windSpeed;
     next.code=snapshot.weatherCode;
     next.isDay=snapshot.isDay;
     if(!snapshot.forecast.empty()){

@@ -196,6 +196,7 @@ struct DesktopApplication::State {
             value.externalSetPlaying=[this](bool playing){systemMedia.SetPlaying(playing);};
         }
         value.openSettings=[this]{Open(ManagerPage::DynamicIsland);};
+        value.openLaunchpad=[this]{if(!dock.ToggleLaunchpad())Open(ManagerPage::Dock);};
         // Same store as the calendar and today todo widgets: reads go to it on
         // demand and toggles dispatch through it, so every view stays in sync.
         value.todos.forDay=[this](calendar::Date day){return exiting?std::vector<platform::windows::IslandTodo>{}:islandTodos.ForDay(day);};

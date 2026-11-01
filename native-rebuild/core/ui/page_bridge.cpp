@@ -33,6 +33,10 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     }
     struct NumericCommand { std::wstring_view prefix; int minimum,maximum; PageCommand first; };
     constexpr NumericCommand numericCommands[] {
+        {L"v1|dynamicIsland|leftWidget|",0,static_cast<int>(dynamic_island::MiniWidget::Count)-1,PageCommand::IslandLeftWidgetFirst},
+        {L"v1|dynamicIsland|rightWidget|",0,static_cast<int>(dynamic_island::MiniWidget::Count)-1,PageCommand::IslandRightWidgetFirst},
+        {L"v1|dynamicIsland|card|",0,static_cast<int>(dynamic_island::ExpandedWidget::Count)*4-1,PageCommand::IslandCardFirst},
+        {L"v1|dynamicIsland|cardMove|",0,static_cast<int>(dynamic_island::ExpandedWidget::Count)*static_cast<int>(dynamic_island::ExpandedWidget::Count)-1,PageCommand::IslandCardMoveFirst},
         {L"v1|minimize|durationMs|",50,2000,PageCommand::MinimizeDurationFirst},
         {L"v1|minimize|unhideDurationMs|",0,5000,PageCommand::MinimizeUnhideDurationFirst},
         {L"v1|radial|shortcut|",1,4095,PageCommand::RadialShortcutFirst},
@@ -105,6 +109,14 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dynamicIsland|material|none",PageCommand::IslandMaterialNone},
         {L"v1|dynamicIsland|material|liquid-glass",PageCommand::IslandMaterialLiquid},
         {L"v1|dynamicIsland|material|frosted-glass",PageCommand::IslandMaterialFrosted},
+        {L"v1|dynamicIsland|customIcons|true",PageCommand::IslandCustomIconsOn},
+        {L"v1|dynamicIsland|customIcons|false",PageCommand::IslandCustomIconsOff},
+        {L"v1|dynamicIsland|overview|true",PageCommand::IslandOverviewOn},
+        {L"v1|dynamicIsland|overview|false",PageCommand::IslandOverviewOff},
+        {L"v1|dynamicIsland|leftStyle|circle",PageCommand::IslandLeftCircle},
+        {L"v1|dynamicIsland|leftStyle|capsule",PageCommand::IslandLeftCapsule},
+        {L"v1|dynamicIsland|rightStyle|circle",PageCommand::IslandRightCircle},
+        {L"v1|dynamicIsland|rightStyle|capsule",PageCommand::IslandRightCapsule},
         {L"v1|todayTodo|enabled|true",PageCommand::TodayTodoEnable},
         {L"v1|todayTodo|enabled|false",PageCommand::TodayTodoDisable},
         {L"v1|todayTodo|material|liquid-glass",PageCommand::TodayTodoLiquidGlass},

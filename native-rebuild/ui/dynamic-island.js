@@ -1,14 +1,17 @@
 import {toggle} from './dom.js';
 import {settingsFrame,settingsSelect,syncSettingsSelect,syncSettingsControlBusy} from './settings-frame.js';
 import {t} from './localization.js';
+import {validIslandCustomization,islandCustomizationSettings,syncIslandCustomization} from './island-customization.js';
+export {validIslandCustomizationCommand} from './island-customization.js';
 
 export function validIslandState(m) {
   const keys=['version','type','enabled','running','locked','expanded','focusing','finished','remaining',
     'hideFullscreen','topmost','hover','autoHide','size','material','loadStatus','error','result','saved'];
-  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length &&
+  const extra=m&&typeof m==='object'&&Object.hasOwn(m,'customization')?1:0;
+  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+extra &&
     keys.every(key=>Object.hasOwn(m,key)) && m.version===1 && m.type==='dynamicIsland-state' &&
     ['enabled','running','locked','expanded','focusing','finished','saved','hideFullscreen','topmost','hover','autoHide'].every(key=>typeof m[key]==='boolean') &&
-    islandSizes.includes(m.size) && islandMaterials.includes(m.material) &&
+    islandSizes.includes(m.size) && islandMaterials.includes(m.material) && (!extra||validIslandCustomization(m.customization)) &&
     Number.isInteger(m.remaining) && m.remaining>=0 && m.remaining<=1500 &&
     ['fresh','loaded','recovered','failed'].includes(m.loadStatus) && ['','runtime','save','rollback'].includes(m.error) &&
     ['snapshot','applied'].includes(m.result) && (!m.running || m.enabled) &&
@@ -40,12 +43,13 @@ export function islandPage(state,tab='settings') {
   const p=state.dynamicIsland,disabled=busy(state);
   const button=(action,label,inactive=false)=>`<button type="button" class="reset" data-action="dynamicIsland-${action}" ${inactive?'disabled':''}>${label}</button>`;
   const body=tab==='settings' ?
+    islandCustomizationSettings(state)+
     `<div class="setting-row"><label for="dynamicIsland-material">${t('材质','Material')}</label>${settingsSelect('dynamicIsland-material',t('材质','Material'),p.material,materialOptions(),disabled)}</div>`+
     `<div class="setting-row"><label for="dynamicIsland-size">${t('大小','Size')}</label>${settingsSelect('dynamicIsland-size',t('大小','Size'),p.size,sizeOptions(),disabled)}</div>`+
     displayToggles().map(([action,key,label,hint])=>`<div class="setting-row island-option"><label>${label}<small>${hint}</small></label>${toggle(p[key],label,`dynamicIsland-${action}`,disabled)}</div>`).join('')+
     `<div class="reset-row">${button('reset',t('恢复默认设置','Restore defaults'),disabled)}</div>` :
-    `<div class="settings-details"><h3>${t('功能说明','About the island')}</h3><p>${t('胶囊固定在顶部中央，点击展开或收起；展开后鼠标离开几秒会自动收起。','The capsule stays centered at the top and expands or collapses when clicked; it collapses a few seconds after the pointer leaves.')}</p><p>${t('默认在全屏程序和游戏前台时完全隐藏，不抢焦点。','By default it hides completely in front of fullscreen apps and games and never takes focus.')}</p><p>${t('展开后点击其他任意位置即收起；右键胶囊可切换材质。','When expanded, clicking anywhere else collapses it; right-click the capsule to change the material.')}</p><p>${t('播放音乐时显示封面、歌曲、歌手、进度和节奏频谱，并提供切歌与播放控制。','When music is playing, it shows the cover, track, artist, progress and beat spectrum with playback controls.')}</p></div>`;
-  return settingsFrame({title:t('灵动岛','Dynamic Island'),description:t('音乐播放信息与控制','Music playback information and controls'),
+    `<div class="settings-details"><h3>${t('功能说明','About the island')}</h3><p>${t('左右显示可分别挑选信息或趣味样式，并选择圆形或胶囊外观；选择后自动启用。','Choose information or animated accents independently for the left and right displays, then select a circle or capsule shape. A choice enables that display.')}</p><p>${t('展开面板可启用日历、天气、音乐歌词、系统信息、待办、提醒、专注计时、快捷启动和快捷操作，并调整顺序。','Choose which expanded-panel widgets appear, including calendar, weather, music and lyrics, system information, to-dos, reminders, focus timer, quick launch and quick actions. You can change their order.')}</p><p>${t('胶囊固定在顶部中央，点击展开或收起；展开后点击其他位置或鼠标离开几秒会自动收起。','The capsule stays centered at the top and expands or collapses when clicked. Clicking elsewhere or moving the pointer away for a few seconds collapses it.')}</p><p>${t('全屏程序和游戏前台时默认隐藏；右键胶囊可切换材质。','It hides by default in front of fullscreen apps and games. Right-click the capsule to change its material.')}</p><p>${t('播放音乐时显示封面、歌曲、歌手、进度和节奏频谱，并提供切歌与播放控制。','When music is playing, it shows the cover, track, artist, progress and beat spectrum with playback controls.')}</p></div>`;
+  return settingsFrame({title:t('灵动岛','Dynamic Island'),description:t('自定义左右显示与展开组件','Customize displays and expanded widgets'),
     tab,body,status:islandStatus(state),error:state.dynamicIslandStatus==='error',scope:'dynamicIsland',backLabel:t('返回桌面美化','Back to desktop styles')});
 }
 export function syncIslandControls(root,state) {
@@ -67,6 +71,7 @@ export function syncIslandControls(root,state) {
   });
   syncSettingsSelect(root,'dynamicIsland-size',p.size,sizeOptions(),disabled,true);
   syncSettingsSelect(root,'dynamicIsland-material',p.material,materialOptions(),disabled,true);
+  syncIslandCustomization(root,state,disabled);
   const status=root.querySelector('[data-settings-scope="dynamicIsland"] .status');
   if(status){status.textContent=islandStatus(state);status.hidden=!status.textContent;status.setAttribute('role',state.dynamicIslandStatus==='error'?'alert':'status');}
 }

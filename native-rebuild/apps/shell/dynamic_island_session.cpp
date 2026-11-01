@@ -52,7 +52,7 @@ struct DynamicIslandSession::Impl {
     static const char* SizeName(IslandSize size){return size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";}
     void LoadDisplay() {
         std::string text;const auto path=DisplayPath();
-        if(path.empty()||!files.Exists(path)||!files.ReadBounded(path,4096,text))return;
+        if(path.empty()||!files.Exists(path)||!files.ReadBounded(path,8192,text))return;
         const auto json=nlohmann::json::parse(text,nullptr,false);
         if(!json.is_object()||json.value("version",0)!=1)return;
         const auto flag=[&](const char* key,bool& out){const auto it=json.find(key);if(it!=json.end()&&it->is_boolean())out=it->get<bool>();};
@@ -66,12 +66,15 @@ struct DynamicIslandSession::Impl {
         if(material=="liquid-glass")display.material=IslandMaterial::Liquid;
         else if(material=="frosted-glass")display.material=IslandMaterial::Frosted;
         else if(material=="none")display.material=IslandMaterial::None;
+        if(const auto it=json.find("customization");it!=json.end())
+            if(const auto parsed=dynamic_island::ParseCustomization(it->dump()))display.customization=*parsed;
     }
     bool SaveDisplay(const IslandDisplay& next) {
         const auto path=DisplayPath();if(path.empty())return true;
         const auto text=nlohmann::json{{"version",1},{"hideFullscreen",next.hideFullscreen},
             {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
-            {"material",MaterialName(next.material)}}.dump();
+            {"material",MaterialName(next.material)},
+            {"customization",nlohmann::json::parse(dynamic_island::SerializeCustomization(next.customization))}}.dump();
         const auto temporary=path+".tmp";
         if(files.Write(temporary,text)&&files.Rename(temporary,path))return true;
         files.Remove(temporary);return false;
@@ -100,6 +103,7 @@ struct DynamicIslandSession::Impl {
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
             {"material",MaterialName(display.material)},
+            {"customization",nlohmann::json::parse(dynamic_island::SerializeCustomization(display.customization))},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
         return std::wstring(json.begin(),json.end());
@@ -143,6 +147,8 @@ struct DynamicIslandSession::Impl {
         switch(action) {
         case Action::ExpansionChanged:RefreshWeather();Notify();return;
         case Action::Tick:{
+            const bool wasFinished=model.Finished();
+            if(model.Tick(Now())){Paint();if(model.Finished()&&!wasFinished)Notify();}
             // Lume Music has priority; otherwise follow the current Windows media
             // session every second so position, track and state stay current.
             if((model.Playback().available&&!external)||!options.externalMedia)return;
@@ -162,7 +168,9 @@ struct DynamicIslandSession::Impl {
         }
         case Action::ToggleMessages:{auto value=display;value.messages=!value.messages;if(CommitDisplay(value))Paint();Notify();return;}
         case Action::Reset:{if(const auto reply=HandlePage(ui::PageCommand::IslandReset);reply&&options.notify)options.notify(*reply);return;}
-        case Action::Focus:case Action::CancelFocus:return;
+        case Action::Focus:model.StartFocus(Now());Paint();Notify();return;
+        case Action::CancelFocus:model.CancelFocus();Paint();Notify();return;
+        case Action::Launchpad:if(options.openLaunchpad)options.openLaunchpad();return;
         default:{
             if(!prefs.enabled)return;
             const bool toggle=action==Action::Toggle&&model.Playback().available;
@@ -182,6 +190,39 @@ struct DynamicIslandSession::Impl {
         if(stopped)return {};
         using ui::PageCommand;
         auto next=prefs;
+        auto customization=display;bool customize=false;
+        const auto raw=static_cast<int>(command);
+        const auto ranged=[&](PageCommand first,PageCommand last){return raw>=static_cast<int>(first)&&raw<=static_cast<int>(last);};
+        if(ranged(PageCommand::IslandLeftWidgetFirst,PageCommand::IslandLeftWidgetLast)){
+            customization.customization.left.widget=static_cast<dynamic_island::MiniWidget>(raw-static_cast<int>(PageCommand::IslandLeftWidgetFirst));
+            customization.customization.customIcons=true;customize=true;
+        }else if(ranged(PageCommand::IslandRightWidgetFirst,PageCommand::IslandRightWidgetLast)){
+            customization.customization.right.widget=static_cast<dynamic_island::MiniWidget>(raw-static_cast<int>(PageCommand::IslandRightWidgetFirst));
+            customization.customization.customIcons=true;customize=true;
+        }else if(ranged(PageCommand::IslandCardMoveFirst,PageCommand::IslandCardMoveLast)){
+            const auto value=raw-static_cast<int>(PageCommand::IslandCardMoveFirst);
+            const auto source=static_cast<std::size_t>(value/static_cast<int>(dynamic_island::ExpandedWidget::Count));
+            const auto target=static_cast<std::size_t>(value%static_cast<int>(dynamic_island::ExpandedWidget::Count));
+            if(source>=static_cast<std::size_t>(dynamic_island::ExpandedWidget::Count))return State(true,false);
+            customize=customization.customization.MoveTo(static_cast<dynamic_island::ExpandedWidget>(source),target);
+            if(!customize)return State(true,false);
+        }else if(ranged(PageCommand::IslandCardFirst,PageCommand::IslandCardLast)){
+            const auto value=raw-static_cast<int>(PageCommand::IslandCardFirst);
+            const auto card=static_cast<dynamic_island::ExpandedWidget>(value/4);const auto action=value%4;
+            if(action<2)customization.customization.enabled[static_cast<std::size_t>(card)]=action==0;
+            else customization.customization.Move(card,action==2?-1:1);customize=true;
+        }else switch(command){
+            case PageCommand::IslandCustomIconsOn:customization.customization.customIcons=true;customize=true;break;
+            case PageCommand::IslandCustomIconsOff:customization.customization.customIcons=false;customize=true;break;
+            case PageCommand::IslandOverviewOn:customization.customization.overview=true;customize=true;break;
+            case PageCommand::IslandOverviewOff:customization.customization.overview=false;customize=true;break;
+            case PageCommand::IslandLeftCircle:customization.customization.left.style=dynamic_island::MiniStyle::Circle;customize=true;break;
+            case PageCommand::IslandLeftCapsule:customization.customization.left.style=dynamic_island::MiniStyle::Capsule;customize=true;break;
+            case PageCommand::IslandRightCircle:customization.customization.right.style=dynamic_island::MiniStyle::Circle;customize=true;break;
+            case PageCommand::IslandRightCapsule:customization.customization.right.style=dynamic_island::MiniStyle::Capsule;customize=true;break;
+            default:break;
+        }
+        if(customize){const bool saved=CommitDisplay(customization);if(saved){load=widget::LoadState::Loaded;Paint();}return State(true,saved);}
         switch(command) {
         case PageCommand::Ready:return State();
         case PageCommand::IslandEnable:next.enabled=true;break;
@@ -221,7 +262,8 @@ struct DynamicIslandSession::Impl {
         }
         case PageCommand::IslandExpand:case PageCommand::IslandCollapse:
             window.Expand(command==PageCommand::IslandExpand);return State(true);
-        case PageCommand::IslandFocus:case PageCommand::IslandStopFocus:return {};
+        case PageCommand::IslandFocus:Action(dynamic_island::Action::Focus);return State(true);
+        case PageCommand::IslandStopFocus:Action(dynamic_island::Action::CancelFocus);return State(true);
         default:return {};
         }
         const bool saved=Commit(next);return State(true,saved);

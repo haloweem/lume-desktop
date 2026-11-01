@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,7 @@ struct Media {
     LyricCues lyrics;
 };
 enum class Action { Toggle, Previous, Next, Focus, CancelFocus, Settings, Close, Tick, ExpansionChanged,
-                    MaterialNone, MaterialLiquid, MaterialFrosted, Reset, WeatherSettings, ToggleMessages };
+                    MaterialNone, MaterialLiquid, MaterialFrosted, Reset, WeatherSettings, ToggleMessages, Launchpad };
 
 // Current weather as the island needs it: a bounded projection of the weather
 // component's reading. The island never fetches, locates or stores weather.
@@ -38,6 +39,7 @@ struct Weather {
     std::wstring city;       // display name, may already include the district
     std::wstring condition;  // provider condition text
     int temperature = 0;
+    std::optional<double> humidity,windSpeed;
     bool hasRange = false;   // today's forecast range is known
     int high = 0, low = 0;
     int code = 999;          // WMO weather code, for the glyph

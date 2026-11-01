@@ -14,7 +14,7 @@ import {validMusicDesktopCommand,validMusicDesktopMessage} from './music-desktop
 import {validNotesCommand,validNotesMessage} from './notes.js';
 import {validRadialShortcut,validRadialState} from './radial.js';
 import {validDockState} from './dock.js';
-import {validIslandState} from './dynamic-island.js';
+import {validIslandState,validIslandCustomizationCommand} from './dynamic-island.js';
 const styles = ["welfare", "mond", "insideDream"];
 const themes = ["spacious", "split", "todo"];
 const materials = ["liquid-glass", "frosted-glass"];
@@ -587,7 +587,8 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
         (kind === 'dynamicIsland' && ((parts.length===2 && ['reset','expand','collapse','focus','stopFocus'].includes(action)) ||
           (parts.length===3 && ((['enabled','locked','hideFullscreen','topmost','hover','autoHide'].includes(action) && typeof value==='boolean') ||
             (action==='size' && ['small','standard','large'].includes(value)) ||
-            (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)))))) ||
+            (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)) ||
+            validIslandCustomizationCommand(action,value))))) ||
         (kind === "ready" && parts.length === 1) ||
         (kind === 'radial' && ((parts.length===2 && action==='reset') ||
           (parts.length===3 && ((['enabled','capture'].includes(action) && typeof value==='boolean') ||

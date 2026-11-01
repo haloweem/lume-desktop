@@ -1,4 +1,5 @@
 import {enterMusic, leaveMusic} from "./music-navigation.js";
+import {defaultIslandCustomization} from './island-customization.js';
 
 const emptyWallpaperEngagement = (revision = -1) => ({
   revision,id:"",status:"idle",likes:null,downloads:null,liked:false,canLike:false,busy:false,error:"",
@@ -65,7 +66,7 @@ export const initialState = () => ({
   dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
   dockStatus:"loading",dockError:"",dockLoadStatus:"fresh",dockMaterialStatus:"inactive",
   dynamicIsland:{enabled:false,running:false,locked:false,expanded:false,focusing:false,finished:false,remaining:0,
-    hideFullscreen:true,topmost:true,hover:false,autoHide:true,size:'standard',material:'none'},
+    hideFullscreen:true,topmost:true,hover:false,autoHide:true,size:'standard',material:'none',customization:defaultIslandCustomization()},
   dynamicIslandStatus:"loading",dynamicIslandError:"",dynamicIslandLoadStatus:"fresh",
   wallpaper:{revision:-1,status:"idle",error:"",loadStatus:"fresh",playerAvailable:false,
     catalogStatus:"idle",catalogError:"",catalog:[],library:[],likedIds:[],displays:[],
@@ -240,7 +241,7 @@ export function reduce(state, event) {
         const {enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material}=m;
         const failed=!!m.error||m.loadStatus==='failed';
         const pending=state.dynamicIslandStatus==='saving'&&m.result==='snapshot'&&!failed;
-        return {...state,dynamicIsland:{enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material},
+        return {...state,dynamicIsland:{enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material,customization:m.customization||defaultIslandCustomization()},
           dynamicIslandError:m.error,dynamicIslandLoadStatus:m.loadStatus,
           dynamicIslandStatus:pending?'saving':failed?'error':m.saved?'saved':m.loadStatus==='recovered'?'recovered':'idle'};
       }

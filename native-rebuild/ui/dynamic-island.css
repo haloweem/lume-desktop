@@ -1,2 +1,39 @@
 .island-option label { display: flex; flex-direction: column; gap: 2px; }
 .island-option small { font-size: 12px; opacity: .6; font-weight: 400; }
+.island-customization{margin-bottom:22px}
+.island-slots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:12px}
+.island-slot,.island-expanded-library{border:1px solid rgba(128,128,128,.18);border-radius:16px;padding:14px;background:rgba(128,128,128,.025);min-width:0}
+.island-slot header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.island-slot h3,.island-expanded-library h3{font-size:14px;margin:0;font-weight:600}
+.island-clear{font-size:11px!important;padding:5px 9px!important}
+.island-style-picker{display:flex;gap:3px;width:max-content;margin:12px 0;padding:3px;border-radius:9px;background:rgba(128,128,128,.1)}
+.island-style-picker button{border:0;background:transparent;color:inherit;border-radius:6px;padding:5px 13px;font:inherit;font-size:12px;cursor:pointer}
+.island-style-picker button[aria-pressed=true]{background:rgba(128,128,128,.18);font-weight:600}
+.island-mini-gallery{max-height:380px;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+.island-mini-gallery h4{font-size:11px;opacity:.6;font-weight:500;margin:12px 0 5px}
+.island-mini-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:7px 3px}
+.island-mini-choice{border:1px solid transparent;border-radius:10px;background:transparent;color:inherit;display:flex;flex-direction:column;align-items:center;gap:6px;padding:7px 2px;min-width:0;cursor:pointer}
+.island-mini-choice:hover{background:rgba(128,128,128,.09)}
+.island-mini-choice[aria-pressed=true]{background:rgba(10,132,255,.08);border-color:#0a84ff}
+.island-mini-preview{background:#07090c;color:#fff;display:flex;align-items:center;justify-content:center;flex:none;font-size:11px;font-weight:600;line-height:1;box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}
+.island-mini-preview.circle{width:44px;height:44px;border-radius:50%}
+.island-mini-preview.capsule{width:67px;height:30px;margin:7px 0;border-radius:18px}
+.island-mini-preview.mini-system span,.island-mini-preview[data-mini$=Progress] span{border-bottom:2px solid #40c484;padding-bottom:3px}
+.island-mini-preview.mini-fun{font-size:21px}
+.island-mini-preview.mini-weather{color:#ffca55}
+.island-mini-label{font-size:10px;line-height:1.25;text-align:center;max-width:100%;overflow-wrap:anywhere}
+.island-sample-note{font-size:11px;line-height:1.6;opacity:.55;margin:9px 2px 16px}
+.island-expanded-library>p{font-size:11px;opacity:.55;line-height:1.5;margin:7px 0 12px}
+.island-expanded-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.island-card-option{min-width:0;border:1px solid rgba(128,128,128,.17);border-radius:12px;padding:11px;background:rgba(128,128,128,.035)}
+.island-card-option[draggable=true]{cursor:grab}
+.island-card-heading{display:flex;align-items:center;gap:6px}
+.island-card-heading h4{font-size:12px;margin:0;flex:1;font-weight:600}
+.island-card-grip{opacity:.4;font-size:16px}
+.island-card-heading .switch{flex:none;transform:scale(.8);transform-origin:right center}
+.island-card-option>p{font-size:10px;line-height:1.5;opacity:.55;margin:8px 0;min-height:30px}
+.island-card-order{display:flex;justify-content:flex-end;gap:5px}
+.island-card-order button{border:0;border-radius:6px;background:rgba(128,128,128,.1);color:inherit;padding:2px 9px;cursor:pointer}
+.island-customization button:disabled{cursor:default;opacity:.45}
+.island-customization button:focus-visible{outline:2px solid #0a84ff;outline-offset:2px}
+@media(max-width:760px){.island-slots{grid-template-columns:1fr}.island-mini-gallery{max-height:280px}.island-expanded-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}

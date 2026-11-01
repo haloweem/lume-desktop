@@ -4,6 +4,9 @@
 
 ## 代码
 
+- `island_customization.*`：左右显示位、稳定组件标识、展开组件开关与顺序的有界配置；`platform/windows/dynamic_island/island_mini_widgets.*`：信息与原创趣味图形原生绘制。
+- 设置新增左右独立选择、圆形/胶囊、单侧清除和展开组件管理；拖动排序使用单条原子命令保存，失败保留确认状态。30 种可选内容以当前本机/共享数据为准，缺失值显示横线。工作台可并排查看组件并点击详情；可全部关闭进入安全空态。快捷启动复用 Dock 启动台，快捷操作提供已有设置和日历等入口。
+
 - `core/dynamic_island/island_model.*`：有界媒体快照与单调时钟专注计时，无 Windows、音乐会话或 WebView 依赖。
 - `platform/windows/dynamic_island/island_window.*`：独立 layered HWND、WidgetCanvas/DirectWrite、弹簧动画、分页内容、输入与材质。
 - `platform/windows/dynamic_island/system_media_session.*`：Windows 系统媒体会话（QQ 音乐等）的后台读取。

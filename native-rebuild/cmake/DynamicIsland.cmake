@@ -1,7 +1,9 @@
 add_library(lume-dynamic-island STATIC
   core/dynamic_island/island_model.cpp
+  core/dynamic_island/island_customization.cpp
   apps/shell/dynamic_island_session.cpp
   platform/windows/dynamic_island/island_window.cpp
+  platform/windows/dynamic_island/island_mini_widgets.cpp
   platform/windows/dynamic_island/island_weather_page.cpp
   platform/windows/dynamic_island/system_media_session.cpp
   platform/windows/dynamic_island/player_position.cpp)

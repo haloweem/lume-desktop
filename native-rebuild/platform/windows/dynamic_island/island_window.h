@@ -1,5 +1,6 @@
 #pragma once
 #include "core/dynamic_island/island_model.h"
+#include "core/dynamic_island/island_customization.h"
 #include "core/widget/widget_preferences.h"
 #include "core/calendar/calendar_date.h"
 #include "core/performance/performance_metrics.h"
@@ -24,7 +25,7 @@ enum class IslandSize { Small, Standard, Large };
 // Reminder lists the reminders shown in this session, once there is one.
 // Weather shows the weather component's current reading (it never fetches).
 // Performance reuses the widget's view with samples kept warm while enabled.
-enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance };
+enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance, Focus, Launchpad, Actions, Overview, Empty };
 struct IslandTodo {
     std::string id;
     std::wstring title, time;
@@ -57,11 +58,12 @@ struct IslandDisplay {
     bool messages = true;        // Show new QQ / WeChat / ... messages (their taskbar button flashing).
     IslandSize size = IslandSize::Standard;
     IslandMaterial material = IslandMaterial::None;
+    dynamic_island::Customization customization;
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
     return a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.size == b.size && a.material == b.material &&
-           a.autoHide == b.autoHide && a.messages == b.messages;
+           a.autoHide == b.autoHide && a.messages == b.messages && a.customization == b.customization;
 }
 inline bool operator!=(const IslandDisplay& a, const IslandDisplay& b) { return !(a == b); }
 

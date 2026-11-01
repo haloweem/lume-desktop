@@ -1,4 +1,5 @@
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/dynamic_island/island_mini_widgets.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/text_util.h"
 #include "platform/windows/dynamic_island/island_weather_page.h"
@@ -188,6 +189,9 @@ struct IslandWindow::Impl {
     widget::Preferences prefs;
     IslandDisplay display;
     IslandPresentation view;
+    IslandMiniData miniData;
+    std::size_t overviewOffset=0;
+    std::vector<std::pair<WidgetRect,dynamic_island::ExpandedWidget>> overviewCards;
     std::unique_ptr<WidgetCanvas> canvas;
     LayeredSurface surface;
     WidgetBitmap bitmap;
@@ -245,17 +249,43 @@ struct IslandWindow::Impl {
     bool HasMedia() const { return view.media.available; }
     bool Glass() const { return display.material != IslandMaterial::None; }
     bool Wanted() const { return !suppressed; }  // The idle pill always shows.
+    float CanvasW()const{return display.customization.overview||width.x>CanvasWidth?960.f:CanvasWidth;}
+    float CanvasH()const{return display.customization.overview||height.x>CanvasHeight?260.f:CanvasHeight;}
+    float WorkspaceWidth()const{
+        MONITORINFO info{sizeof(info)};
+        if(!GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&info))return PageWidth;
+        return (std::min)(888.f,(std::max)(220.f,(info.rcWork.right-info.rcWork.left)*96.f/CanvasDpi()-24));
+    }
+    static IslandPage PageFor(dynamic_island::ExpandedWidget card){
+        using C=dynamic_island::ExpandedWidget;
+        switch(card){case C::Music:return IslandPage::Music;case C::Calendar:return IslandPage::Calendar;
+        case C::Weather:return IslandPage::Weather;case C::Performance:return IslandPage::Performance;
+        case C::Todo:return IslandPage::Todo;case C::Reminder:return IslandPage::Reminder;
+        case C::Focus:return IslandPage::Focus;case C::Launchpad:return IslandPage::Launchpad;
+        case C::Actions:return IslandPage::Actions;default:return IslandPage::Empty;}
+    }
 
     void Targets() {
-        if ((!HasMedia() && page == IslandPage::Music) || (reminders.empty() && page == IslandPage::Reminder)) page = IslandPage::Calendar;
+        const auto available=Pages();
+        if(std::find(available.begin(),available.end(),page)==available.end()){
+            page=available.front();
+            if(page==IslandPage::Todo)LoadTodos();
+            else if(page==IslandPage::Overview)LoadOverviewTodos();
+        }
         // Media drops out briefly between tracks or while a player restarts its
         // session. The Calendar page above is only a fallback: once media is back
         // the island shows music again unless the user picked a page since it opened.
-        else if (HasMedia() && page == IslandPage::Calendar && !pageChosen) page = IslandPage::Music;
+        else if (HasMedia() && page == IslandPage::Calendar && !pageChosen&&!display.customization.overview&&
+                 display.customization.Enabled(dynamic_island::ExpandedWidget::Music)) page = IslandPage::Music;
         if (notice && !expanded) { width.target = NoticeWidth; height.target = NoticeHeight; }
+        else if(expanded&&page==IslandPage::Overview){width.target=WorkspaceWidth();height.target=224;}
         else if (expanded && page == IslandPage::Music) { width.target = ExpandedWidth; height.target = ExpandedHeight; }
         else if (expanded) { width.target = PageWidth; height.target = PageHeight; }
-        else if (HasMedia()) {
+        else if(display.customization.customIcons){
+            const float sides=IslandMiniWidth(display.customization.left)+IslandMiniWidth(display.customization.right);
+            width.target=(HasMedia()?156.f:72.f)+sides+(hovered?HoverGrowWidth:0);
+            height.target=CompactHeight+(hovered?HoverGrowHeight:0);
+        }else if (HasMedia()) {
             width.target = CompactWidth + (hovered ? HoverGrowWidth : 0);
             height.target = CompactHeight + (hovered ? HoverGrowHeight : 0);
         } else {
@@ -415,8 +445,10 @@ struct IslandWindow::Impl {
     // Playback bars are drawn on the compact capsule and the music page only;
     // the repaint timer runs just while they are visible.
     bool BarsShown() const {
-        return visible && !suppressed && view.media.playing && !notice && tuck.target < 1 &&
-               (!expanded || page == IslandPage::Music);
+        const auto& c=display.customization;
+        const bool miniMotion=c.customIcons&&!expanded&&(dynamic_island::Animated(c.left.widget)||dynamic_island::Animated(c.right.widget));
+        return visible && !suppressed && !notice && tuck.target < 1 &&
+               (miniMotion||(view.media.playing&&(!expanded || page == IslandPage::Music)));
     }
     void Pulse() {
         if (!hwnd) return;
@@ -474,7 +506,7 @@ struct IslandWindow::Impl {
         keyframes.clear();
         keyframes.reserve(trajectory.size());
         for (const auto& m : trajectory) {
-            const float w = std::clamp(m.x[0], 1.f, CanvasWidth), h = std::clamp(m.x[1], 1.f, CanvasHeight);
+            const float w = std::clamp(m.x[0], 1.f, CanvasW()), h = std::clamp(m.x[1], 1.f, CanvasH());
             const float tucked = static_cast<float>(info.rcMonitor.top + Px(TuckedSliver)) - h * px;
             const float y = shown + (tucked - shown) * std::clamp(m.x[3], 0.f, 1.2f);
             LumeMaterialKeyframe k{};
@@ -636,6 +668,18 @@ struct IslandWindow::Impl {
         else if (!Rolling() && fastBars) { fastBars = false; Pulse(); }
     }
     void Compact(float w, float h, float alpha) {
+        if(display.customization.customIcons&&alpha>.01f){
+            const auto& c=display.customization;
+            const float left=IslandMiniWidth(c.left),right=IslandMiniWidth(c.right),top=(h-28)/2;
+            DrawIslandMiniWidget(*canvas,c.left,{5,top,left,28},miniData,view,weather,performanceSample,alpha);
+            DrawIslandMiniWidget(*canvas,c.right,{w-right-5,top,right,28},miniData,view,weather,performanceSample,alpha);
+            const float x=left+(left?12.f:10.f),space=(std::max)(0.f,w-x-right-(right?12.f:10.f));
+            wchar_t liveClock[16]{};swprintf_s(liveClock,L"%02u:%02u",miniData.time.wHour,miniData.time.wMinute);
+            const auto text=HasMedia()?(ShowLyric()?std::wstring{}:view.media.title):std::wstring(liveClock);
+            if(HasMedia()&&ShowLyric())Lyric({x,(h-18)/2,space,18},12,0xffffff,alpha);
+            else canvas->Text(FitWeightedText(*canvas,text,space,12,WidgetTextWeight::Medium),{x,(h-18)/2,space,18},12,0xffffff,alpha,WidgetTextWeight::Medium,WidgetTextAlign::Center);
+            return;
+        }
         if (alpha <= .01f || !HasMedia()) return;
         const float art = h - 12, pad = (h - art) / 2;
         FadeImage(cover, {pad + 2, pad, art, art}, art * .3f, alpha);
@@ -819,12 +863,15 @@ struct IslandWindow::Impl {
     }
     std::vector<IslandPage> Pages() const {
         std::vector<IslandPage> pages;
-        if (HasMedia()) pages.push_back(IslandPage::Music);
-        pages.push_back(IslandPage::Calendar);
-        pages.push_back(IslandPage::Weather);
-        pages.push_back(IslandPage::Performance);
-        pages.push_back(IslandPage::Todo);
-        if (!reminders.empty()) pages.push_back(IslandPage::Reminder);
+        const auto& c=display.customization;
+        if(c.overview)pages.push_back(IslandPage::Overview);
+        for(const auto card:c.order){
+            if(!c.Enabled(card))continue;
+            if(card==dynamic_island::ExpandedWidget::Music&&!HasMedia())continue;
+            if(card==dynamic_island::ExpandedWidget::Reminder&&reminders.empty())continue;
+            pages.push_back(PageFor(card));
+        }
+        if(pages.empty())pages.push_back(IslandPage::Empty);
         return pages;
     }
     void Dots(float w, float h, float alpha) {
@@ -1020,6 +1067,7 @@ struct IslandWindow::Impl {
             c.Text(L"还有 " + std::to_wstring(reminders.size() - rows) + L" 条提醒", {22, 177, w - 44, 14}, 10.5f, 0xffffff,
                    .45f * alpha);
     }
+    void LoadOverviewTodos(){today=Today();selected=today;LoadTodos();}
     void SetPage(IslandPage next, int direction = 0) {
         pageChosen = true;
         if (next == page) return;
@@ -1030,7 +1078,8 @@ struct IslandWindow::Impl {
         }
         pageDirection = direction;
         page = next;
-        if (page == IslandPage::Todo) LoadTodos();
+        if(page==IslandPage::Overview)LoadOverviewTodos();
+        else if(page==IslandPage::Todo)LoadTodos();
         SyncPerformance();
         pageFade.Snap(0);
         pageFade.target = 1;
@@ -1057,11 +1106,111 @@ struct IslandWindow::Impl {
         month = {total / 12, total % 12 + 1, 1};
         Place();
     }
+    std::wstring CardTitle(dynamic_island::ExpandedWidget card)const{
+        static const wchar_t* zh[]={L"音乐歌词",L"日历",L"天气",L"系统信息",L"待办事项",L"提醒",L"番茄钟",L"快捷启动",L"快捷操作"};
+        static const wchar_t* en[]={L"Music",L"Calendar",L"Weather",L"System",L"To-dos",L"Reminders",L"Focus",L"Quick launch",L"Quick actions"};
+        const auto index=static_cast<std::size_t>(card);return view.english?en[index]:zh[index];
+    }
+    std::wstring FocusText()const{
+        if(view.finished)return view.english?L"Done":L"完成";
+        const unsigned seconds=view.focusing?view.remaining:1500;wchar_t text[24]{};
+        swprintf_s(text,L"%02u:%02u",seconds/60,seconds%60);return text;
+    }
+    void SmallButton(WidgetRect rect,const std::wstring& text,float alpha,std::uint32_t color=0xffffff){
+        canvas->Rounded(rect,rect.height/2,color,.12f*alpha);
+        canvas->Text(text,rect,11,color,alpha,WidgetTextWeight::Medium,WidgetTextAlign::Center);
+    }
+    void FocusPage(float w,float,float alpha){
+        auto& c=*canvas;c.Text(view.english?L"Focus timer":L"番茄钟",{22,16,w-44,22},16,0xffffff,alpha,true);
+        const float cx=w/2,cy=94;c.AnnularSector(cx,cy,38,42,0,360,0xffffff,.12f*alpha);
+        if(view.focusing)c.AnnularSector(cx,cy,38,42,0,(1-view.remaining/1500.f)*360,0xff9f0a,alpha);
+        c.Text(FocusText(),{cx-65,cy-18,130,36},27,0xffffff,alpha,true,WidgetTextAlign::Center);
+        SmallButton({cx-63,151,126,32},view.focusing?(view.english?L"End focus":L"结束专注"):(view.english?L"Start 25 minutes":L"开始 25 分钟"),alpha,0xff9f0a);
+    }
+    void UtilityPage(float w,float,float alpha,bool actions){
+        auto& c=*canvas;c.Text(actions?(view.english?L"Quick actions":L"快捷操作"):(view.english?L"Quick launch":L"快捷启动"),{22,16,w-44,23},16,0xffffff,alpha,true);
+        if(actions){
+            const float cell=(w-54)/2;
+            const std::wstring labels[]={view.english?L"Calendar":L"打开日历",view.english?L"Weather settings":L"天气设置",
+                view.english?L"Island settings":L"灵动岛设置",view.focusing?(view.english?L"End focus":L"结束专注"):(view.english?L"Start focus":L"开始专注")};
+            for(int i=0;i<4;++i)SmallButton({22+(cell+10)*(i%2),63+52.f*(i/2),cell,38},labels[i],alpha);
+        }else{
+            for(int i=0;i<4;++i)c.Rounded({w/2-71+39.f*i,61,26,26},7,i%2?0x6b95ff:0x62c6d7,alpha*.8f);
+            c.Text(view.english?L"Uses the Dock launchpad; enable Dock first.":L"使用 Dock 启动台；请先开启 Dock。",{20,105,w-40,20},11,0xffffff,.55f*alpha,false,WidgetTextAlign::Center);
+            SmallButton({w/2-69,145,138,34},view.english?L"Open launchpad":L"打开启动台",alpha,Blue);
+        }
+    }
+    void EmptyPage(float w,float h,float alpha){
+        canvas->Text(view.english?L"No widgets selected":L"尚未添加展开组件",{18,45,w-36,28},16,0xffffff,alpha,true,WidgetTextAlign::Center);
+        canvas->Text(view.english?L"Choose widgets in island settings.":L"在设置中添加需要的小组件。",{18,84,w-36,22},11,0xffffff,alpha*.55f,false,WidgetTextAlign::Center);
+        SmallButton({w/2-66,h-73,132,32},view.english?L"Choose widgets":L"选择小组件",alpha,Blue);
+    }
+    std::vector<dynamic_island::ExpandedWidget> WorkspaceCards()const{
+        std::vector<dynamic_island::ExpandedWidget> result;
+        for(const auto card:display.customization.order)if(display.customization.Enabled(card))result.push_back(card);
+        return result;
+    }
+    void OverviewPage(float w,float h,float alpha){
+        using C=dynamic_island::ExpandedWidget;auto& c=*canvas;overviewCards.clear();const auto cards=WorkspaceCards();
+        if(cards.empty()){EmptyPage(w,h,alpha);return;}
+        const std::size_t columns=w>=700?3:w>=450?2:1;
+        overviewOffset=(std::min)(overviewOffset,(cards.size()-1)/columns*columns);
+        c.Text(view.english?L"Workspace":L"工作台",{18,12,w-150,22},14,0xffffff,alpha,true);
+        SmallButton({w-116,11,27,22},L"‹",alpha);SmallButton({w-83,11,27,22},L"›",alpha);
+        SmallButton({w-49,11,32,22},view.english?L"⚙":L"设置",alpha);
+        const float cell=(w-32-10*static_cast<float>(columns-1))/static_cast<float>(columns);
+        for(std::size_t i=0;i<columns&&overviewOffset+i<cards.size();++i){
+            const auto card=cards[overviewOffset+i];const WidgetRect r{16+(cell+10)*static_cast<float>(i),43,cell,h-67};
+            overviewCards.emplace_back(r,card);c.Rounded(r,14,0xffffff,.065f*alpha);
+            c.Text(CardTitle(card),{r.x+13,r.y+11,r.width-26,20},12,0xffffff,alpha*.72f,true);
+            std::wstring primary,secondary;
+            switch(card){
+            case C::Music:
+                primary=HasMedia()?view.media.title:(view.english?L"No music playing":L"播放音乐后显示");
+                secondary=HasMedia()?view.media.artist:L"";
+                if(cover)FadeImage(cover,{r.x+13,r.y+39,40,40},9,alpha);
+                break;
+            case C::Calendar:{
+                wchar_t dateText[96]{},timeText[16]{};
+                GetDateFormatEx(view.english?L"en-US":L"zh-CN",DATE_LONGDATE,&miniData.time,nullptr,dateText,96,nullptr);
+                swprintf_s(timeText,L"%02u:%02u",miniData.time.wHour,miniData.time.wMinute);
+                primary=dateText;secondary=timeText;break;}
+            case C::Weather:
+                primary=weather.available?std::to_wstring(weather.temperature)+L"°  "+weather.condition:(view.english?L"Weather unavailable":L"正在等待天气数据");
+                secondary=weather.city;break;
+            case C::Performance:
+                primary=L"CPU "+(performanceSample&&performanceSample->cpu?std::to_wstring(static_cast<int>(std::lround(*performanceSample->cpu)))+L"%":L"—");
+                secondary=(view.english?L"Memory  ":L"内存  ")+(performanceSample&&performanceSample->memory?std::to_wstring(static_cast<int>(std::lround(*performanceSample->memory)))+L"%":L"—");break;
+            case C::Todo:
+                primary=todoRows.empty()?(view.english?L"No tasks for today":L"今天暂无待办"):todoRows.front().title;
+                secondary=std::to_wstring(todoRows.size())+(view.english?L" tasks":L" 项待办");break;
+            case C::Reminder:
+                primary=reminders.empty()?(view.english?L"No reminders yet":L"暂无收到的提醒"):reminders.front().title;
+                secondary=std::to_wstring(reminders.size())+(view.english?L" reminders":L" 条提醒");break;
+            case C::Focus:primary=FocusText();secondary=view.english?L"One thing at a time":L"专注做好一件事";break;
+            case C::Launchpad:primary=view.english?L"Your desktop apps":L"常用应用，随手打开";secondary=view.english?L"Uses the Dock launchpad":L"使用 Dock 启动台";break;
+            case C::Actions:primary=view.english?L"Calendar · Weather · Settings":L"日历 · 天气 · 设置";secondary=view.english?L"Frequently used shortcuts":L"常用操作入口";break;
+            default:break;
+            }
+            const float textX=r.x+(card==C::Music&&cover?62.f:13.f),textWidth=r.width-(textX-r.x)-13;
+            c.Text(FitWeightedText(c,primary,textWidth,card==C::Focus?24.f:13.f,WidgetTextWeight::Semibold),
+                {textX,r.y+40,textWidth,32},card==C::Focus?24.f:13.f,0xffffff,alpha,WidgetTextWeight::Semibold);
+            c.Text(FitWeightedText(c,secondary,r.width-26,11,WidgetTextWeight::Normal),{r.x+13,r.y+82,r.width-26,20},11,0xffffff,alpha*.5f);
+            if(card==C::Music&&HasMedia()){
+                const float y=r.y+r.height-30;
+                SmallButton({r.x+13,y,34,23},L"‹",alpha);SmallButton({r.x+54,y,42,23},view.media.playing?L"Ⅱ":L"▶",alpha);SmallButton({r.x+103,y,34,23},L"›",alpha);
+            }else if(card==C::Focus)SmallButton({r.x+13,r.y+r.height-31,r.width-26,24},view.focusing?(view.english?L"End focus":L"结束专注"):(view.english?L"Start focus":L"开始专注"),alpha,0xff9f0a);
+            else SmallButton({r.x+13,r.y+r.height-31,r.width-26,24},view.english?L"Open":L"打开",alpha);
+        }
+        const auto pages=(cards.size()+columns-1)/columns;
+        c.Text(std::to_wstring(overviewOffset/columns+1)+L" / "+std::to_wstring(pages),{w/2-35,h-20,70,16},10,0xffffff,.42f*alpha,false,WidgetTextAlign::Center);
+    }
     bool Draw() {
-        const float w = std::clamp(width.x, 1.f, CanvasWidth), h = std::clamp(height.x, 1.f, CanvasHeight);
+        const float w = std::clamp(width.x, 1.f, CanvasW()), h = std::clamp(height.x, 1.f, CanvasH());
         drawnWidth = w;
         drawnHeight = h;
-        if (!canvas->Begin(CanvasWidth, CanvasHeight, CanvasDpi())) return false;
+        if (!canvas->Begin(CanvasW(), CanvasH(), CanvasDpi())) return false;
+        if(!miniData.time.wYear)miniData.Refresh(display.customization);
         if (view.media.artwork != coverKey) {
             coverKey = view.media.artwork;
             cover = DecodeArtwork(coverKey);
@@ -1091,10 +1240,15 @@ struct IslandWindow::Impl {
         case IslandPage::Performance: DrawPerformance(*canvas, w, h, performanceSample, performanceFailed, content); break;
         case IslandPage::Todo: TodoPage(w, h, content); break;
         case IslandPage::Reminder: ReminderPage(w, h, content); break;
+        case IslandPage::Focus:FocusPage(w,h,content);break;
+        case IslandPage::Launchpad:UtilityPage(w,h,content,false);break;
+        case IslandPage::Actions:UtilityPage(w,h,content,true);break;
+        case IslandPage::Overview:OverviewPage(w,h,content);break;
+        case IslandPage::Empty:EmptyPage(w,h,content);break;
         }
         canvas->Offset(0, 0);
         canvas->PopClip();
-        if (e > .9f) Dots(w, h, content);
+        if (e > .9f&&page!=IslandPage::Overview) Dots(w, h, content);
         return canvas->Finish(bitmap);
     }
 
@@ -1255,9 +1409,10 @@ struct IslandWindow::Impl {
     void Expand(bool next, bool byHover = false) {
         if (!hwnd || expanded == next) return;
         expanded = next;
-        if (next) { today = Today(); if (page != IslandPage::Calendar) month = {today.year, today.month, 1}; pageFade.Snap(1); }
+        if (next) { today = Today(); if(display.customization.overview)page=IslandPage::Overview; if (page != IslandPage::Calendar) month = {today.year, today.month, 1}; pageFade.Snap(1); }
         else { month = {today.year, today.month, 1}; selected = today; pageChosen = false; if (HasMedia()) page = IslandPage::Music; }
         if (next && page == IslandPage::Todo) LoadTodos();
+        if(next&&page==IslandPage::Overview){selected=today;LoadTodos();}
         hoverExpanded = next && byHover;
         SyncPerformance();
         WatchOutside(next);
@@ -1275,6 +1430,35 @@ struct IslandWindow::Impl {
         if (x < 0 || x >= width.x || y < 0 || y >= height.x) return -1;
         if (notice && !expanded) return 400;
         if (!expanded || Expansion() < .9f) return 0;
+        if(y>=height.x-14&&page!=IslandPage::Overview){
+            const auto pages=Pages();float dotX=width.x/2-(static_cast<float>(pages.size())*10+6)/2;
+            for(std::size_t i=0;i<pages.size();++i){const float dot=pages[i]==page?14.f:5.f;
+                if(x>=dotX-2&&x<dotX+dot+3)return 900+static_cast<int>(i);dotX+=dot+5;}
+        }
+        if(page==IslandPage::Overview){
+            if(WorkspaceCards().empty())return y>=130?760:299;
+            if(y<36){if(x>=width.x-52)return 760;if(x>=width.x-87)return 771;if(x>=width.x-120)return 770;return 299;}
+            for(const auto& entry:overviewCards){const auto& r=entry.first;const auto card=entry.second;
+                if(x<r.x||x>=r.x+r.width||y<r.y||y>=r.y+r.height)continue;
+                using C=dynamic_island::ExpandedWidget;
+                if(card==C::Music&&!HasMedia())return 299;
+                if(card==C::Reminder&&reminders.empty())return 299;
+                if(y>=r.y+r.height-34){
+                    if(card==C::Music){if(x<r.x+50)return 1;if(x<r.x+101)return 2;if(x<r.x+145)return 3;}
+                    if(card==C::Focus)return view.focusing?701:700;
+                    if(card==C::Launchpad)return 702;
+                }
+                return 800+static_cast<int>(card);
+            }return 299;
+        }
+        if(page==IslandPage::Empty)return y>=height.x-80?760:299;
+        if(page==IslandPage::Focus)return y>=145&&y<190&&x>=width.x/2-70&&x<=width.x/2+70?(view.focusing?701:700):299;
+        if(page==IslandPage::Launchpad)return y>=140&&y<185?702:299;
+        if(page==IslandPage::Actions){
+            if(y>=63&&y<101)return x<width.x/2?703:704;
+            if(y>=115&&y<153)return x<width.x/2?705:706;
+            return 299;
+        }
         if (page == IslandPage::Calendar) {
             for (int i = 0; i < 4; ++i) {
                 const auto r = NavButton(i, width.x);
@@ -1313,6 +1497,28 @@ struct IslandWindow::Impl {
         return y < 104 ? 0 : -1;
     }
     void Click(int hit) {
+        if(hit>=900&&hit<920){const auto pages=Pages();const auto i=static_cast<std::size_t>(hit-900);if(i<pages.size())SetPage(pages[i]);return;}
+        if(hit>=800&&hit<800+static_cast<int>(dynamic_island::ExpandedWidget::Count)){
+            const auto card=static_cast<dynamic_island::ExpandedWidget>(hit-800);
+            if(display.customization.Enabled(card))SetPage(PageFor(card));return;
+        }
+        if(hit==770||hit==771){
+            const auto cards=WorkspaceCards();if(cards.empty())return;
+            const std::size_t columns=width.x>=700?3:width.x>=450?2:1;
+            if(hit==771)overviewOffset=overviewOffset+columns<cards.size()?overviewOffset+columns:0;
+            else overviewOffset=overviewOffset>=columns?overviewOffset-columns:(cards.size()-1)/columns*columns;
+            Place();return;
+        }
+        if(hit==760){if(act)act(dynamic_island::Action::Settings);return;}
+        if(hit>=700&&hit<=706){
+            using A=dynamic_island::Action;
+            if(hit==703){if(todos.openCalendar)todos.openCalendar();return;}
+            if(!act)return;
+            if(hit==702){Expand(false);act(A::Launchpad);}
+            else if(hit==700)act(A::Focus);else if(hit==701)act(A::CancelFocus);
+            else if(hit==704)act(A::WeatherSettings);else if(hit==705)act(A::Settings);
+            else act(view.focusing?A::CancelFocus:A::Focus);return;
+        }
         if (hit == 400 && notice && notice->target) {
             const auto target = notice->target;
             DismissNotice();
@@ -1451,7 +1657,8 @@ struct IslandWindow::Impl {
             if (!self->performanceTarget.load()) return 0;  // a late sample after shutdown
             self->performanceSample = self->performance.Latest();
             self->performanceFailed = !self->performanceSample && !self->performance.Running();
-            if (self->visible && self->expanded && self->page == IslandPage::Performance) self->Place();
+            if (self->visible&&!self->suppressed&&self->tuck.target<1 && ((self->expanded&&(self->page==IslandPage::Performance||self->page==IslandPage::Overview))||
+                (!self->expanded&&self->display.customization.customIcons))) self->Place();
             return 0;
         case FrameMessage:
             self->clock.Consumed();
@@ -1473,6 +1680,7 @@ struct IslandWindow::Impl {
             switch (w) {
             case TickTimer:
                 self->CheckForeground();
+                self->miniData.Refresh(self->display.customization);
                 if (const auto now = Today(); now != self->today) {
                     self->today = now;
                     if (!self->expanded) self->month = {now.year, now.month, 1}, self->selected = now;
@@ -1482,6 +1690,8 @@ struct IslandWindow::Impl {
                 if (self->visible && self->display.topmost)
                     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 if (self->act) self->act(dynamic_island::Action::Tick);
+                if(self->visible&&!self->suppressed&&self->tuck.target<1&&
+                   (self->display.customization.customIcons||(self->expanded&&self->page==IslandPage::Overview)))self->Place();
                 return 0;
             case AnimationTimer: self->Frame(); return 0;
             case BarsTimer:
@@ -1571,7 +1781,18 @@ bool IslandWindow::SetDisplay(const IslandDisplay& d) {
         else impl_->display = previous;
         return false;
     }
+    if(impl_->expanded){
+        if(d.customization.overview){impl_->page=IslandPage::Overview;impl_->LoadOverviewTodos();}
+        else if(impl_->page==IslandPage::Overview){
+            const auto pages=impl_->Pages();impl_->page=pages.front();
+            if(impl_->page==IslandPage::Todo)impl_->LoadTodos();
+        }
+        impl_->pageChosen=true;
+    }
     if (startAutoHide) impl_->Activity();  // Stay out briefly, then tuck.
+    impl_->miniData.Refresh(d.customization);
+    impl_->Pulse();
+    impl_->Animate();
     return true;
 }
 void IslandWindow::Update(IslandPresentation view) {
@@ -1594,7 +1815,8 @@ void IslandWindow::SetWeather(dynamic_island::Weather value) {
     if (impl_->hwnd && impl_->visible && impl_->expanded) impl_->Place();
 }
 void IslandWindow::RefreshTodos() {
-    if (impl_->page == IslandPage::Todo) impl_->LoadTodos();
+    if(impl_->page==IslandPage::Overview)impl_->LoadOverviewTodos();
+    else if (impl_->page == IslandPage::Todo) impl_->LoadTodos();
     if (impl_->hwnd && impl_->visible && impl_->expanded) impl_->Place();
 }
 IslandPage IslandWindow::Page() const { return impl_->page; }

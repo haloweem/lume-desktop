@@ -21,6 +21,7 @@ struct DynamicIslandSessionOptions {
     std::function<void(dynamic_island::Action)> externalControl;
     std::function<void(bool playing)> externalSetPlaying;
     std::function<void()> openSettings;
+    std::function<void()> openLaunchpad;
     std::function<std::uint64_t()> monotonicMillis;
     // The calendar todo store shared with the calendar and today todo widgets.
     platform::windows::IslandTodoSource todos;

@@ -39,6 +39,7 @@ import { minimizePage, minimizeNotice, syncMinimizeControls } from "./minimize.j
 import { radialPage, radialNotice, syncRadialControls, mountRadialShortcut } from "./radial.js";
 import { dockPage, dockNotice, syncDockControls } from "./dock.js";
 import { islandPage, islandStatus, syncIslandControls } from './dynamic-island.js';
+import {mountIslandCustomization} from './island-customization.js';
 import {
   selectedWallpaper,
   selectedWallpaperEngagement,
@@ -177,6 +178,7 @@ const radialShortcut=mountRadialShortcut(content,{
 });
 // A per-style key such as "pulse.barWidth" becomes v1|spectrum|pulse|barWidth|N.
 const unmountRanges=mountSettingsRanges(content,(scope,key,value)=>request(scope,...key.split('.'),value));
+const unmountIslandCustomization=mountIslandCustomization(content,(action,value)=>request('dynamicIsland',action,value));
 function notify(title) {
   showNotice(t(`${title}暂未接入`,`${title} is not yet available`));
 }
@@ -943,6 +945,9 @@ content.addEventListener("click", (event) => {
     if(action==='toggle')request('dynamicIsland','enabled',!state.dynamicIsland.enabled);
     else if(action==='lock')request('dynamicIsland','locked',!state.dynamicIsland.locked);
     else if(['hideFullscreen','topmost','hover','autoHide'].includes(action))request('dynamicIsland',action,!state.dynamicIsland[action]);
+    else if(['customIcons','overview'].includes(action))request('dynamicIsland',action,!state.dynamicIsland.customization[action]);
+    else if(['leftWidget','rightWidget','card','cardMove'].includes(action))request('dynamicIsland',action,Number(button.dataset.value));
+    else if(['leftStyle','rightStyle'].includes(action))request('dynamicIsland',action,button.dataset.value);
     else if(['reset','expand','collapse','focus','stopFocus'].includes(action))request('dynamicIsland',action);
   }
   else if (button.dataset.action === "dock-toggle") request("dock","enabled",!state.dock.enabled);
@@ -1243,6 +1248,7 @@ window.addEventListener("beforeunload", () => {
   musicDesktopController?.dispose();
   unmountSelect();
   unmountRanges();
+  unmountIslandCustomization();
   radialShortcut.dispose();
   clockTimer.dispose();
   carouselTimer.dispose();
