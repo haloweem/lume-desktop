@@ -6,17 +6,18 @@ import path from "node:path";
 import {pathToFileURL} from "node:url";
 
 const enabled=process.env.LUME_UI_BROWSER_TESTS==="1";
-test("scrollbars render original dimensions without system arrow buttons", {skip:!enabled}, async()=>{
+test("settings scrollbars match wallpaper dimensions without system arrow buttons", {skip:!enabled}, async()=>{
   const playwrightDirectory=process.env.LUME_PLAYWRIGHT_DIR ||
     path.join(homedir(),".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
   const {chromium}=await import(pathToFileURL(path.join(playwrightDirectory,"index.mjs")).href);
   const browser=await chromium.launch({headless:true,ignoreDefaultArgs:["--hide-scrollbars"],
     ...(process.env.LUME_BROWSER_EXECUTABLE?{executablePath:process.env.LUME_BROWSER_EXECUTABLE}:{})});
   try {
-    const page=await browser.newPage({viewport:{width:760,height:540}});
-    const css=await readFile(new URL("../app.css",import.meta.url),"utf8");
+    const page=await browser.newPage({viewport:{width:760,height:810}});
+    const css=(await Promise.all(["app.css","application-settings.css"].map(name=>readFile(new URL(`../${name}`,import.meta.url),"utf8")))).join("\n");
     const surfaces=["settings","CardGrid","wallpaper-grid","wallpaper-detail-target-menu",
-      "wallpaper-info-sidebar","wallpaper-info-meta"];
+      "wallpaper-info-sidebar","wallpaper-info-meta","application-settings__nav",
+      "application-settings__panel","application-settings__legal-text"];
     await page.setContent(`<style>${css}
       body {display:grid;grid-template-columns:repeat(3,220px);gap:16px;padding:16px;align-content:start}
       [data-scrollbar-surface] {position:relative!important;inset:auto!important;display:block!important;
@@ -40,12 +41,12 @@ test("scrollbars render original dimensions without system arrow buttons", {skip
       await page.screenshot({path:path.join(process.env.LUME_UI_SCREENSHOT_DIR,"scrollbar-surfaces.png")});
     }
     for(const surface of rendered) {
-      const wallpaper=surface.name==="wallpaper-grid";
+      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name.startsWith("application-settings__");
       assert.equal(surface.width,wallpaper?4:10,`${surface.name} rendered vertical gutter`);
       assert.equal(surface.height,wallpaper?4:10,`${surface.name} rendered horizontal gutter`);
     }
     for(const surface of rendered) {
-      const wallpaper=surface.name==="wallpaper-grid";
+      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name.startsWith("application-settings__");
       assert.equal(surface.buttons,"none",`${surface.name} has no system arrows`);
       assert.equal(surface.track,wallpaper?"rgba(0, 0, 0, 0)":"rgba(8, 10, 14, 0.55)");
       assert.equal(surface.thumb,wallpaper?"rgba(255, 255, 255, 0.14)":"rgba(96, 108, 124, 0.72)");

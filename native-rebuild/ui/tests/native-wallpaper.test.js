@@ -319,13 +319,13 @@ test("sidebar artwork is absolute centered cover and small metadata wraps withou
 
 test("wallpaper and desktop beauty scroll containers use the original per-surface scrollbars", async () => {
   const css=await readFile(new URL("../app.css",import.meta.url),"utf8");
-  assert.match(css,/:where\([^)]*\.settings[^)]*\)\s*\{[^}]*scrollbar-width:\s*thin[^}]*scrollbar-color:\s*rgba\(96,\s*108,\s*124,\s*0\.72\)\s+rgba\(8,\s*10,\s*14,\s*0\.55\)/s);
-  assert.match(css,/:where\([^)]*\.settings[^)]*\)::?-webkit-scrollbar\s*\{[^}]*width:\s*10px[^}]*height:\s*10px/s);
-  assert.match(css,/:where\([^)]*\.settings[^)]*\)::?-webkit-scrollbar-track\s*\{[^}]*background:\s*rgba\(8,\s*10,\s*14,\s*0\.55\)/s);
-  assert.match(css,/:where\([^)]*\.settings[^)]*\)::?-webkit-scrollbar-thumb\s*\{[^}]*min-height:\s*36px[^}]*border:\s*2px\s+solid\s+rgba\(8,\s*10,\s*14,\s*0\.55\)[^}]*background:\s*rgba\(96,\s*108,\s*124,\s*0\.72\)/s);
-  assert.match(css,/\.wallpaper-grid\s*\{[^}]*scrollbar-width:\s*thin[^}]*scrollbar-color:\s*rgba\(255,\s*255,\s*255,\s*0\.14\)\s+transparent/s);
-  assert.match(css,/\.wallpaper-grid::-webkit-scrollbar\s*\{[^}]*width:\s*4px/s);
-  assert.match(css,/\.wallpaper-grid::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*rgba\(255,\s*255,\s*255,\s*0\.14\)/s);
+  assert.match(css,/:where\([^)]*\.CardGrid[^)]*\)\s*\{[^}]*scrollbar-width:\s*thin[^}]*scrollbar-color:\s*rgba\(96,\s*108,\s*124,\s*0\.72\)\s+rgba\(8,\s*10,\s*14,\s*0\.55\)/s);
+  assert.match(css,/:where\([^)]*\.CardGrid[^)]*\)::?-webkit-scrollbar\s*\{[^}]*width:\s*10px[^}]*height:\s*10px/s);
+  assert.match(css,/:where\([^)]*\.CardGrid[^)]*\)::?-webkit-scrollbar-track\s*\{[^}]*background:\s*rgba\(8,\s*10,\s*14,\s*0\.55\)/s);
+  assert.match(css,/:where\([^)]*\.CardGrid[^)]*\)::?-webkit-scrollbar-thumb\s*\{[^}]*min-height:\s*36px[^}]*border:\s*2px\s+solid\s+rgba\(8,\s*10,\s*14,\s*0\.55\)[^}]*background:\s*rgba\(96,\s*108,\s*124,\s*0\.72\)/s);
+  assert.match(css,/:is\([^)]*\.wallpaper-grid[^)]*\)\s*\{[^}]*scrollbar-width:\s*thin[^}]*scrollbar-color:\s*rgba\(255,\s*255,\s*255,\s*0\.14\)\s+transparent/s);
+  assert.match(css,/:is\([^)]*\.wallpaper-grid[^)]*\)::-webkit-scrollbar\s*\{[^}]*width:\s*4px/s);
+  assert.match(css,/:is\([^)]*\.wallpaper-grid[^)]*\)::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*rgba\(255,\s*255,\s*255,\s*0\.14\)/s);
   assert.match(css,/:where\([^)]*\.CardGrid[^)]*\)/s);
 });
 
