@@ -41,22 +41,22 @@ test('native acknowledgement settles requests while preserving confirmed prefere
   assert.equal(state.dynamicIslandStatus,'error');assert.equal(state.dynamicIsland.enabled,true);
   assert.equal(reduce(state,{type:'unavailable',scope:'all'}).dynamicIslandStatus,'unavailable');
 });
-test('island settings include lock, expansion, timer and accurate details in both languages',()=>{
+test('island settings show only display preferences and accurate details in both languages',()=>{
   const state={...initialState(),dynamicIslandStatus:'idle'};
   for(const language of ['zh-CN','en']){
     setLanguage(language);
     const settings=islandPage(state);
     assert.doesNotMatch(settings,/dynamicIsland-lock/);
-    assert.match(settings,/data-action="dynamicIsland-expand" disabled/);
+    assert.doesNotMatch(settings,/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview|正在播放|Now playing/);
     assert.doesNotMatch(settings,/dynamicIsland-focus|25-minute|专注/);
     assert.match(islandPage(state,'details'),/音乐|music/i);
   }
   setLanguage('zh-CN');
   assert.equal(reduce(state,{type:'navigate',view:'dynamicIsland'}).view,'dynamicIsland');
   const active={...state,dynamicIsland:{...state.dynamicIsland,enabled:true,expanded:true}};
-  assert.match(islandPage(active),/data-action="dynamicIsland-collapse"/);
+  assert.doesNotMatch(islandPage(active),/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview/);
   assert.doesNotMatch(islandPage(active),/dynamicIsland-hideIdle/);
-  for(const action of ['autoHide','hideFullscreen','topmost','hover'])assert.match(islandPage(active),new RegExp(`data-action="dynamicIsland-${action}"`));
+  for(const action of ['autoHide','hideFullscreen','topmost'])assert.match(islandPage(active),new RegExp(`data-action="dynamicIsland-${action}"`));
   assert.match(islandPage(active),/id="dynamicIsland-size"/);
   assert.match(islandPage(active),/id="dynamicIsland-material"/);
   const updated=reduce(state,{type:'host',message:snapshot({hover:true,size:'small',topmost:false})});
