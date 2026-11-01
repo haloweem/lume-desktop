@@ -298,6 +298,26 @@ int main() {
           "pinned drag past B keeps the primary preview order");
     dock.Stop();
     Check(!dock.Handle() && !dock.BarHandle(), "stop destroys both windows");
+    {
+        const std::vector<Item> trayItems{{Kind::Launchpad, {}, "Launchpad", false},
+            {Kind::Lume, {}, "Lume", true, 0}, {Kind::Separator, {}, {}, false},
+            {Kind::SystemTray, {}, "System status", false}};
+        std::size_t trayActivated = DockWindow::None;
+        DockWindowPorts trayPorts;
+        trayPorts.activate = [&](std::size_t index) { trayActivated = index; };
+        DockWindow trayDock(GetModuleHandleW(nullptr), trayPorts);
+        Check(trayDock.Show(trayItems, false), "system status Dock shows");Pump(500);
+        const RECT tray = trayDock.IconBounds(3);
+        RECT layer{};GetWindowRect(trayDock.Handle(), &layer);
+        const LPARAM rightSide = MAKELPARAM(tray.right - layer.left - MulDiv(18, static_cast<int>(GetDpiForWindow(trayDock.Handle())), 96),
+            (tray.top + tray.bottom) / 2 - layer.top);
+        SendMessageW(trayDock.Handle(), WM_MOUSEMOVE, 0, rightSide);Pump(300);
+        Check(trayDock.ScaleOf(3) == 1.f, "system status capsule does not magnify like an app icon");
+        SendMessageW(trayDock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, rightSide);
+        SendMessageW(trayDock.Handle(), WM_LBUTTONUP, 0, rightSide);
+        Check(trayActivated == 3, "the far edge of the full-width system status capsule is clickable");
+        trayDock.Stop();
+    }
     {   // The Recycle Bin: files dropped on it go to dropOnto; a Dock icon dragged onto it is discarded.
         const std::string binPath = "C:/Lume/bin.lnk";
         const std::vector<Item> binItems{{Kind::Launchpad, {}, "Launchpad", false}, {Kind::Lume, {}, "Lume", true, 0},

@@ -1,3 +1,5 @@
+#include <winsock2.h>
+#include <iptypes.h>
 #include "apps/shell/dock_session.h"
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/dock/dock_window.h"
@@ -11,15 +13,23 @@
 #include "vendor/nlohmann/json.hpp"
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <shellapi.h>
+#include <iphlpapi.h>
+#include <imm.h>
+#include <mmdeviceapi.h>
+#include <endpointvolume.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <wrl/client.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cwctype>
 #include <filesystem>
 #include <map>
 #include <set>
 #include <utility>
+#include <vector>
 
 namespace lume::shell {
 using namespace platform::windows;
@@ -34,7 +44,7 @@ enum Command : UINT {
     Close = 1, CloseWindow = 24, NoMaterial = 7, Liquid = 8, Frosted = 9, Reset = 10, Settings = 11,
     Pin = 20, Unpin = 21, Reveal = 22, RemoveAdded = 23, AddFiles = 30, AddFolders = 31,
     NewCollectionCommand = 40, RenameCollectionCommand = 40, DeleteCollectionCommand = 41, AddSystemIcon = 46,
-    RemoveFromCollectionCommand = 42
+    RemoveFromCollectionCommand = 42, SystemTrayCommand = 47
 };
 const char* MaterialStatus(WidgetMaterialState state) {
     switch (state) {
@@ -92,6 +102,130 @@ bool SameItems(const std::vector<dock::Item>& a, const std::vector<dock::Item>& 
                x.orderIndex == y.orderIndex && x.previewPaths == y.previewPaths && x.window == y.window;
     });
 }
+DockSystemTrayStatus SystemTrayStatus() {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t clock[8]{}, date[8]{};
+    swprintf_s(clock, L"%02u:%02u", now.wHour, now.wMinute);
+    swprintf_s(date, L"%02u/%02u", now.wMonth, now.wDay);
+    SYSTEM_POWER_STATUS power{};
+    std::wstring battery = L"--";
+    if (GetSystemPowerStatus(&power)) {
+        if (power.BatteryLifePercent != 255) {
+            battery = std::to_wstring(power.BatteryLifePercent) + L"%";
+            if (power.BatteryFlag & BATTERY_FLAG_CHARGING) battery += L"+";
+        } else if (power.ACLineStatus == 1) {
+            battery = L"AC";
+        }
+    }
+
+    std::wstring network = L"离线";
+    ULONG bytes = 16 * 1024;
+    std::vector<unsigned char> adaptersBuffer(bytes);
+    auto* adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(adaptersBuffer.data());
+    ULONG result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+        GAA_FLAG_SKIP_DNS_SERVER, nullptr, adapters, &bytes);
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        adaptersBuffer.resize(bytes);
+        adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(adaptersBuffer.data());
+        result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+            GAA_FLAG_SKIP_DNS_SERVER, nullptr, adapters, &bytes);
+    }
+    if (result == NO_ERROR) {
+        bool wifi = false, ethernet = false;
+        for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+            if (adapter->OperStatus != IfOperStatusUp || !adapter->FirstUnicastAddress) continue;
+            if (adapter->IfType == IF_TYPE_IEEE80211) wifi = true;
+            else if (adapter->IfType == IF_TYPE_ETHERNET_CSMACD) ethernet = true;
+        }
+        if (wifi) network = L"Wi-Fi";
+        else if (ethernet) network = L"以太网";
+    }
+
+    std::wstring volume = L"--";
+    const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninitialize = SUCCEEDED(apartment);
+    if (SUCCEEDED(apartment) || apartment == RPC_E_CHANGED_MODE) {
+        Microsoft::WRL::ComPtr<IMMDeviceEnumerator> devices;
+        Microsoft::WRL::ComPtr<IMMDevice> device;
+        Microsoft::WRL::ComPtr<IAudioEndpointVolume> endpoint;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&devices))) &&
+            SUCCEEDED(devices->GetDefaultAudioEndpoint(eRender, eMultimedia, &device)) &&
+            SUCCEEDED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+                                       reinterpret_cast<void**>(endpoint.GetAddressOf())))) {
+            BOOL muted = FALSE;
+            float level = 0;
+            if (SUCCEEDED(endpoint->GetMute(&muted)) && muted) volume = L"静音";
+            else if (SUCCEEDED(endpoint->GetMasterVolumeLevelScalar(&level)))
+                volume = std::to_wstring(static_cast<int>(std::lround(level * 100))) + L"%";
+        }
+    }
+    if (uninitialize) CoUninitialize();
+
+    std::wstring input = L"--";
+    const HWND foreground = GetForegroundWindow();
+    if (foreground) {
+        const DWORD thread = GetWindowThreadProcessId(foreground, nullptr);
+        const HKL layout = GetKeyboardLayout(thread);
+        const LANGID language = LOWORD(reinterpret_cast<ULONG_PTR>(layout));
+        switch (PRIMARYLANGID(language)) {
+        case LANG_CHINESE: {
+            const HWND ime = ImmGetDefaultIMEWnd(foreground);
+            DWORD_PTR open = 0;
+            constexpr WPARAM ImeGetOpenStatus = 0x0005;
+            const bool isOpen = ime && SendMessageTimeoutW(ime, WM_IME_CONTROL, ImeGetOpenStatus, 0,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &open) && open;
+            input = isOpen ? L"中" : L"英";
+            break;
+        }
+        case LANG_JAPANESE: input = L"日"; break;
+        case LANG_KOREAN: input = L"한"; break;
+        case LANG_ENGLISH: input = L"EN"; break;
+        default: {
+            wchar_t abbreviation[8]{};
+            if (GetLocaleInfoW(MAKELCID(language, SORT_DEFAULT), LOCALE_SISO639LANGNAME,
+                               abbreviation, static_cast<int>(std::size(abbreviation)))) {
+                for (auto& character : abbreviation) {
+                    if (!character) break;
+                    character = static_cast<wchar_t>(towupper(character));
+                }
+                input = abbreviation;
+            }
+            break;
+        }
+        }
+    }
+    return {clock, date, battery, network, volume, input, L"入口"};
+}
+void OpenSystemSettings(const wchar_t* uri) {
+    ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
+}
+void SendWindowsShortcut(WORD keyCode) {
+    INPUT keys[4]{};
+    for (auto& key : keys) key.type = INPUT_KEYBOARD;
+    keys[0].ki.wVk = VK_LWIN;
+    keys[1].ki.wVk = keyCode;
+    keys[2].ki.wVk = keyCode; keys[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    keys[3].ki.wVk = VK_LWIN; keys[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(static_cast<UINT>(std::size(keys)), keys, sizeof(INPUT));
+}
+void OpenQuickSettings() { SendWindowsShortcut('A'); }
+UINT ShowSystemTrayMenu(HWND owner, POINT point) {
+    const std::vector<LumeWidgetMenu::Action> actions{{L"网络与 Wi-Fi", 100}, {L"声音", 101}, {L"蓝牙", 102},
+        {L"输入法", 103}, {L"电源与电池", 104}, {L"日期和时间", 105}};
+    return Menu([&] { return LumeWidgetMenu::ShowItems(owner, point, actions, true); });
+}
+void OpenSystemTraySetting(UINT command) {
+    switch (command) {
+    case 100: OpenSystemSettings(L"ms-settings:network-status"); break;
+    case 101: OpenSystemSettings(L"ms-settings:sound"); break;
+    case 102: OpenSystemSettings(L"ms-settings:bluetooth"); break;
+    case 103: OpenSystemSettings(L"ms-settings:typing"); break;
+    case 104: OpenSystemSettings(L"ms-settings:powersleep"); break;
+    case 105: OpenSystemSettings(L"ms-settings:dateandtime"); break;
+    default: break;
+    }
+}
 }  // namespace
 
 struct DockSession::Impl {
@@ -116,6 +250,7 @@ struct DockSession::Impl {
     // Cover of the music playing elsewhere, polled at most once a second.
     std::optional<NowPlaying> playing;
     ULONGLONG playingCheckedAt = 0;
+    DockSystemTrayStatus trayStatus;
     unsigned iconPixels = 0;
     OrganizerIconCache icons;
     DockWindow dock;
@@ -150,7 +285,8 @@ struct DockSession::Impl {
                                   [this](const dock::Item& item) { Discard(item); },
                                   [this](const dock::Item& item) { return Cover(item); }, {},
                                   [](const dock::Item& item) { return dock_sources::ProgramWindowsFor(item.path); },
-                                  [](std::uint64_t handle) { dock_sources::FocusWindow(handle); }}),
+                                  [](std::uint64_t handle) { dock_sources::FocusWindow(handle); },
+                                  [this] { return trayStatus; }}),
           launchpad(i, LaunchpadPorts{
               [this] {
                   if (!collectionId.empty()) {
@@ -340,12 +476,14 @@ struct DockSession::Impl {
         std::size_t missingIcons=0;
         for(const auto& item:items)
             if(item.kind!=dock::Kind::Launchpad&&item.kind!=dock::Kind::Separator&&item.kind!=dock::Kind::Collection&&
+               item.kind!=dock::Kind::SystemTray&&
                !icons.Find(OrganizerWide(item.kind==dock::Kind::Lume?lumePath:item.path)))++missingIcons;
         const auto text = nlohmann::json{{"version", 1}, {"type", "dock-state"}, {"enabled", prefs.enabled},
             {"running", Running()}, {"visibleItems", items.size()}, {"layersVisible", dock.LayersVisible()},
             {"missingIcons",missingIcons}, {"iconCachePaths",icons.CachedPaths()},
             {"material", prefs.transparent ? "none" : prefs.frosted ? "frosted-glass" : "liquid-glass"},
             {"reflection", prefs.reflection}, {"iconScale", prefs.iconScale},
+            {"systemTray", dock::SystemTrayAvailable && prefs.systemTray},
             {"launchpadScale",prefs.launchpadScale},{"launchpadIconScale",prefs.launchpadIconScale},
             {"position", prefs.position}, {"bottomOffset", prefs.bottomOffset}, {"iconSpacing", prefs.iconSpacing},
             {"pinned", prefs.pinned.size()}, {"added", prefs.added.size()},
@@ -405,6 +543,9 @@ struct DockSession::Impl {
     }
     void Refresh(bool force = false) {
         if (!ready) return;
+        if constexpr (dock::SystemTrayAvailable) {
+            if (prefs.systemTray) trayStatus = SystemTrayStatus();
+        }
         auto running = dock_sources::RunningApps();
         // The right side represents open apps independently of pinned shortcuts
         // and collections on the left.
@@ -422,7 +563,12 @@ struct DockSession::Impl {
         // Explorer can hide one of the two layered Dock windows while
         // restarting its desktop host. Keep refreshing in that state so the
         // Dock re-shows and restacks instead of waiting for a process restart.
-        if (!force && SameItems(next, items) && dock.LayersVisible()) return;
+        if (!force && SameItems(next, items) && dock.LayersVisible()) {
+            if constexpr (dock::SystemTrayAvailable) {
+                if (prefs.systemTray) dock.Paint();
+            }
+            return;
+        }
         items = std::move(next);
         if (!dock.Show(items, Look(prefs))) { error = "runtime"; return; }
         UpdateIcons();
@@ -572,6 +718,17 @@ struct DockSession::Impl {
         if (item.kind != dock::Kind::Collection) collectionPopup.Hide();
         switch (item.kind) {
         case dock::Kind::Collection: ShowCollection(item.path.substr(11)); return;
+        case dock::Kind::SystemTray: {
+            POINT point{};
+            RECT bounds = dock.IconBounds(index);
+            GetCursorPos(&point);
+            const float position = bounds.right > bounds.left
+                ? static_cast<float>(point.x - bounds.left) / (bounds.right - bounds.left) : 0.f;
+            if (position < 1.f / 6.f) SendWindowsShortcut('N');
+            else if (position >= 4.f / 6.f && position < 5.f / 6.f) SendWindowsShortcut(VK_SPACE);
+            else OpenQuickSettings();
+            return;
+        }
         case dock::Kind::Launchpad: ToggleLaunchpad(); return;
         case dock::Kind::Lume:
             launchpad.Hide();
@@ -644,19 +801,27 @@ struct DockSession::Impl {
         // Keep the clicked item's value alive until its command is handled.
         const auto item = index < items.size() ? std::optional<dock::Item>{items[index]} : std::nullopt;
         if (item && item->kind == dock::Kind::Collection) { CollectionMenu(item->path.substr(11), dock.Handle(), point); return; }
+        if (item && item->kind == dock::Kind::SystemTray) {
+            OpenSystemTraySetting(ShowSystemTrayMenu(dock.Handle(), point));
+            return;
+        }
         const bool itemMenu = item && item->kind != dock::Kind::Launchpad && item->kind != dock::Kind::Separator;
         const bool onDock = item && (item->kind == dock::Kind::Pinned || item->kind == dock::Kind::Lume);
         const UINT command = Menu([&] {
-            if (!itemMenu) return LumeWidgetMenu::ShowDock(dock.Handle(), point, prefs.frosted, prefs.transparent);
+            if (!itemMenu) return LumeWidgetMenu::ShowDock(dock.Handle(), point, prefs.frosted, prefs.transparent, prefs.systemTray);
             const auto& revealPath = item->kind == dock::Kind::Lume ? lumePath : item->path;
             return LumeWidgetMenu::ShowDockItem(dock.Handle(), point, onDock, false, !revealPath.empty(), false,
-                                                true, prefs.frosted, prefs.transparent, item->kind == dock::Kind::Running);
+                                                true, prefs.frosted, prefs.transparent, item->kind == dock::Kind::Running,
+                                                prefs.systemTray);
         });
         if (stopped || !ready) return;
         auto next = prefs;
         switch (command) {
         case NewCollectionCommand: CreateNewCollection(true); break;
         case AddSystemIcon: AddShellLocation(point); break;
+        case SystemTrayCommand:
+            if constexpr (dock::SystemTrayAvailable) { next.systemTray = !next.systemTray; Update(next); }
+            break;
         case Pin:
             if (item && !item->path.empty() && dock::Pin(next, item->path, pathKey) == dock::Change::Changed) Update(next);
             break;
@@ -945,6 +1110,11 @@ struct DockSession::Impl {
             case PageCommand::DockNoMaterial: next.transparent = true; break;
             case PageCommand::DockReflectionOn: next.reflection = true; break;
             case PageCommand::DockReflectionOff: next.reflection = false; break;
+            case PageCommand::DockSystemTrayOn:
+                if constexpr (dock::SystemTrayAvailable) next.systemTray = true;
+                else return State(false, false);
+                break;
+            case PageCommand::DockSystemTrayOff: next.systemTray = false; break;
             case PageCommand::DockReset: ResetLook(next); break;
             default: return {};
             }

@@ -71,6 +71,7 @@ enum class PageCommand {
     RadialShortcutLast = RadialShortcutFirst + 4094,
     DockEnable, DockDisable, DockLiquidGlass, DockFrostedGlass, DockReset,
     DockNoMaterial, DockReflectionOn, DockReflectionOff,
+    DockSystemTrayOn, DockSystemTrayOff,
     DockIconScaleFirst,
     DockIconScaleLast = DockIconScaleFirst + 70,
     DockPositionFirst,

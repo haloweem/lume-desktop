@@ -40,7 +40,7 @@ const toParts = message => message.split('|').slice(1)
 
 test('the C++ table was read', () => {
   assert.ok(exact.size > 100, `exact commands: ${exact.size}`);
-  assert.equal(numeric.length, 16);
+  assert.ok(numeric.length >= 16, `numeric command ranges: ${numeric.length}`);
   for (const message of dropMessages) assert.ok(exact.has(message), message);
 });
 

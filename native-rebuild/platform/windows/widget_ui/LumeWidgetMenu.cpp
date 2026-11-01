@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 #include "platform/windows/lume_window_ids.h"
 #include "LumeWidgetMenu.h"
+#include "core/dock/dock_model.h"
 #include "platform/windows/widget_ui/direct_write_text.h"
 #include "platform/windows/widget_ui/icon_art.h"
 #include "platform/windows/widget_ui/windows_theme.h"
@@ -915,7 +916,7 @@ UINT LumeWidgetMenu::ShowNotes(HWND owner, POINT position, bool frosted, bool lo
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false);
 }
 
-UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool none)
+UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool none, bool systemTray)
 {
     std::vector<MenuItem> items {
         { L"新建收纳", 40, MenuKind::Root, MenuIcon::Create },
@@ -926,6 +927,8 @@ UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool non
         { L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset },
         { L"关闭 Dock", 1, MenuKind::Root, MenuIcon::Close }
     };
+    if constexpr (lume::dock::SystemTrayAvailable)
+        items.insert(items.begin() + 2, { systemTray ? L"隐藏系统托盘" : L"显示系统托盘", 47, MenuKind::Root, MenuIcon::Center });
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
         none ? kDockMaterialNone : kDockMaterialGlass);
 }
@@ -965,7 +968,7 @@ UINT LumeWidgetMenu::ShowIslandTodo(HWND owner, POINT position, bool item, bool 
 }
 
 UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal,
-                                  bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem)
+                                  bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem, bool systemTray)
 {
     std::vector<MenuItem> items;
     if (!pinned)
@@ -994,6 +997,8 @@ UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool 
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"新建收纳", 40, MenuKind::Root, MenuIcon::Create });
         items.push_back({ L"添加系统图标", 46, MenuKind::Root, MenuIcon::Create });
+        if constexpr (lume::dock::SystemTrayAvailable)
+            items.push_back({ systemTray ? L"隐藏系统托盘" : L"显示系统托盘", 47, MenuKind::Root, MenuIcon::Center });
         items.push_back({ L"材质设置", 0, MenuKind::Material, MenuIcon::Material });
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"打开设置", 11, MenuKind::Root, MenuIcon::Settings });

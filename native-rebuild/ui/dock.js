@@ -3,6 +3,9 @@ import {settingsFrame,settingsSelect,syncSettingsSelect,syncSettingsControlBusy}
 import {t} from './localization.js';
 import {settingsRange,syncSettingsRange} from './settings-range.js';
 
+// Paused together with dock::SystemTrayAvailable; keep implementation for later development.
+const systemTrayAvailable=false;
+
 const materials=()=>[['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')],['none',t('无','None')]];
 export const dockIconScales=Array.from({length:71},(_,index)=>50+index);
 export const dockPositions=Array.from({length:101},(_,index)=>index);
@@ -18,13 +21,13 @@ const rangeControl=(id,label,value,min,max,unit,disabled)=>{
 const inRange=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 
 export function validDockState(message) {
-  const keys=['version','type','enabled','running','material','reflection','iconScale','position','bottomOffset','iconSpacing','pinned','added',
+  const keys=['version','type','enabled','running','material','reflection','systemTray','iconScale','position','bottomOffset','iconSpacing','pinned','added',
     'materialStatus','loadStatus','error','result','saved'];
   const optional=['visibleItems','layersVisible','missingIcons','iconCachePaths','launchpadScale','launchpadIconScale'];
   return !!message&&typeof message==='object'&&!Array.isArray(message)&&
     keys.every(key=>Object.hasOwn(message,key))&&Object.keys(message).every(key=>keys.includes(key)||optional.includes(key))&&
     message.version===1&&message.type==='dock-state'&&
-    ['enabled','running','saved','reflection'].every(key=>typeof message[key]==='boolean')&&
+    ['enabled','running','saved','reflection','systemTray'].every(key=>typeof message[key]==='boolean')&&
     ['liquid-glass','frosted-glass','none'].includes(message.material)&&inRange(message.iconScale,50,120)&&
     (message.launchpadScale===undefined||inRange(message.launchpadScale,60,140))&&
     (message.launchpadIconScale===undefined||inRange(message.launchpadIconScale,50,120))&&
@@ -77,6 +80,7 @@ export function dockPage(state,tab='settings') {
     `<div class="setting-row"><div><label>${t('图标位置','Icon position')}</label><p class="setting-help">${t('调整 Dock 距屏幕底部的高度，每次 1 px','Raise the Dock from the bottom in 1 px steps')}</p></div>${rangeControl('dock-bottom-offset',t('距底部上移','Move up from the bottom'),state.dock.bottomOffset??0,0,160,' px',disabled)}</div>`+
     `<div class="setting-row"><div><label>${t('图标间距','Icon spacing')}</label><p class="setting-help">${t('按 1 px 微调图标之间的距离','Adjust the gap in 1 px steps')}</p></div>${rangeControl('dock-icon-spacing',t('图标间距','Icon spacing'),state.dock.iconSpacing??10,4,24,' px',disabled)}</div>`+
     `<div class="setting-row"><div><label>${t('图标倒影','Icon reflection')}</label><p class="setting-help">${t('在 Dock 图标下方显示镜面倒影','Show a mirrored reflection under the Dock icons')}</p></div>${toggle(state.dock.reflection,t('图标倒影','Icon reflection'),'dock-reflection',disabled)}</div>`+
+    (systemTrayAvailable?`<div class="setting-row"><div><label>${t('系统托盘','System tray')}</label><p class="setting-help">${t('在 Dock 右侧显示系统状态，点击打开 Windows 快捷设置','Show system status at the right of the Dock; click to open Windows quick settings')}</p></div>${toggle(state.dock.systemTray,t('系统托盘','System tray'),'dock-system-tray',disabled)}</div>`:'')+
     `<div class="setting-row">${rangeControl('dock-launchpad-scale',t('启动台大小','Launchpad size'),state.dock.launchpadScale??100,60,140,'%',disabled)}</div>`+
     `<div class="setting-row">${rangeControl('dock-launchpad-icon-scale',t('启动台图标大小','Launchpad icon size'),state.dock.launchpadIconScale??100,50,120,'%',disabled)}</div>`+
     `<div class="setting-row"><label>${t('项目','Items')}</label><span class="dock-summary" data-dock-summary>${h(summary)}</span></div>`+
@@ -109,6 +113,10 @@ export function syncDockControls(root,state) {
   root.querySelectorAll('[data-action="dock-reflection"]').forEach(button=>{
     button.classList.toggle('checked',state.dock.reflection);
     button.setAttribute('aria-checked',String(state.dock.reflection));syncSettingsControlBusy(button,disabled);
+  });
+  root.querySelectorAll('[data-action="dock-system-tray"]').forEach(button=>{
+    button.classList.toggle('checked',state.dock.systemTray);
+    button.setAttribute('aria-checked',String(state.dock.systemTray));syncSettingsControlBusy(button,disabled);
   });
   const reset=root.querySelector('[data-action="dock-reset"]');if(reset)syncSettingsControlBusy(reset,disabled);
   const summary=root.querySelector('[data-dock-summary]');

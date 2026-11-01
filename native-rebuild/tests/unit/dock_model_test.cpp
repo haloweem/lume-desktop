@@ -133,6 +133,25 @@ int main() {
     Check(DockItems(pinned, targets, {}, key, false, 0).size() == 3 &&
           DockItems(pinned, targets, {}, key, false, 0)[1].kind == Kind::Pinned,
           "Lume can be hidden without removing pinned items");
+    {
+        Preferences tray;
+        tray.systemTray = true;
+        const auto withTray = DockItems({}, {}, {}, key, true, 0, {}, true);
+        Check(withTray.size() == 4 && withTray[2].kind == Kind::Separator &&
+              withTray[3].kind == Kind::SystemTray && withTray.back().name == "系统快捷设置",
+              "system tray stays at the far right behind a separator");
+        Check(!Movable(withTray.back()) && !Removable(withTray.back()),
+              "system tray is fixed and cannot be removed by dragging");
+        std::string encoded;
+        Preferences reopened;
+        Check(Encode(tray, encoded) && Decode(encoded, reopened, key) && reopened.systemTray,
+              "system tray visibility survives save and restart");
+        Check(!SystemTrayAvailable && DockItemsFor(reopened, {}, {}, key).size() == 2,
+              "paused system tray stays absent even when saved preferences enable it");
+        tray.systemTray = false;
+        Check(DockItemsFor(tray, {}, {}, key).size() == 2,
+              "system tray is absent when its preference is disabled");
+    }
 
     // Pin, unpin, add, remove and validation.
     Preferences prefs;
@@ -221,6 +240,10 @@ int main() {
     Check(lume::ui::ParsePageCommand(L"v1|dock|launchpadScale|60")==PageCommand::DockLaunchpadScaleFirst&&
         lume::ui::ParsePageCommand(L"v1|dock|launchpadIconScale|120")==PageCommand::DockLaunchpadIconScaleLast&&
         lume::ui::ParsePageCommand(L"v1|dock|launchpadIconScale|121")==PageCommand::Invalid,"launchpad numeric commands enforce separate bounds");
+    Check(lume::ui::ParsePageCommand(L"v1|dock|systemTray|true")==PageCommand::DockSystemTrayOn&&
+          lume::ui::ParsePageCommand(L"v1|dock|systemTray|false")==PageCommand::DockSystemTrayOff&&
+          lume::ui::ParsePageCommand(L"v1|dock|systemTray|True")==PageCommand::Invalid,
+          "system tray setting uses the exact persisted preference protocol");
 
     {
         Preferences grouped;

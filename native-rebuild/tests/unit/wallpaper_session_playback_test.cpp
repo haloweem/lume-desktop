@@ -8,6 +8,7 @@
 #include <tlhelp32.h>
 #include <winioctl.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -368,16 +369,98 @@ void BalancedRestore(const fs::path& executable,const fs::path& video,const fs::
         "balanced fixture cleans only its own complete process tree and windows");
     evidence["balanced_restore"].push_back(std::move(record));
 }
+void WatchdogRecovery(const fs::path& executable,const fs::path& video,const fs::path& base,
+                      std::uint64_t display,HWND parent) {
+    for(const std::string scenario:{"resume-during-recovery","still-covered","manual-pause","playing"}) {
+        const auto root=base/scenario;
+        fs::create_directories(root);
+        std::string first,second;
+        Expect(Setup(root,video,display,first,second),"seed isolated watchdog media and preferences");
+        if(first.empty())continue;
+        std::atomic<bool> armed{false},entered{false},release{false};
+        lume::shell::WallpaperSessionOptions options;
+        options.root=root.u8string();options.executable=executable.wstring();
+        options.verification=true;options.verificationParent=parent;
+        options.verificationPrivateBytes=[&](std::uint64_t) -> std::uint64_t {
+            if(!armed.exchange(false))return 0;
+            entered=true;
+            const auto end=GetTickCount64()+5000;
+            while(!release&&GetTickCount64()<end)Sleep(1);
+            return (scenario=="playing"?2048ull:1024ull)<<20;
+        };
+        Session session(GetModuleHandleW(nullptr),options,[](const std::wstring&){});
+        Expect(session.Restore(),"watchdog session starts asynchronously");
+        Expect(Wait([&]{return HasScreenState(session,display,"paused");}),"watchdog fixture restores manual pause");
+        if(scenario!="manual-pause") {
+            Send(session,Action::Resume,display);
+            Expect(Wait([&]{return HasScreenState(session,display,"playing");}),"watchdog fixture starts playback");
+        }
+        Send(session,Action::Fit,display,{},false);
+        Expect(Wait([&]{return Screen(session,display).value("fit",std::string{})=="contain";}),
+            "watchdog fixture records non-default fit");
+        const auto hidden=SessionWindow();
+        Expect(hidden!=nullptr,"watchdog fixture locates only its own event window");
+        const bool automatic=scenario=="resume-during-recovery"||scenario=="still-covered";
+        if(automatic) {
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMSUSPEND,0);
+            Expect(Wait([&]{return Screen(session,display).value("autoPaused",false);}),
+                "automatic pause is tracked before memory protection");
+        }
+        const auto before=EmbeddedPlayers(parent);
+        const auto saved=State(session);
+        armed=true;SendMessageW(hidden,WM_DISPLAYCHANGE,0,0);
+        Expect(Wait([&]{return entered.load();}),"memory protection reaches controlled threshold sample");
+        if(scenario=="resume-during-recovery")
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+        release=true;
+        Expect(Wait([&]{const auto current=EmbeddedPlayers(parent);return current.size()==1&&current!=before&&
+            State(session).value("revision",std::uint64_t{0})>saved.value("revision",std::uint64_t{0});}),
+            "unchanged memory threshold restarts exactly one owned player");
+        const auto after=EmbeddedPlayers(parent);
+        Probe probe;
+        Expect(after.size()==1&&probe.Open(after.front()),"watchdog probe connects to replacement mpv");
+        if(scenario=="still-covered") {
+            Expect(Screen(session,display).value("autoPaused",false)&&probe.Property("pause")==Json(true),
+                "recovery keeps automatic pause tracked while coverage remains");
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+        } else if(scenario=="manual-pause") {
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+            Pump(2200);
+            Expect(HasScreenState(session,display,"paused")&&probe.Property("pause")==Json(true),
+                "watchdog and automatic resume never override manual pause");
+        }
+        const bool shouldPlay=scenario!="manual-pause";
+        if(shouldPlay) {
+            Expect(Wait([&]{return probe.Property("pause")==Json(false);},6000),
+                "returning to desktop resumes actual mpv after watchdog recovery");
+            Expect(HasScreenState(session,display,"playing")&&!Screen(session,display).value("autoPaused",true),
+                "public state agrees with resumed player");
+        }
+        const auto timeBefore=probe.Property("time-pos");Pump(400);
+        const auto timeAfter=probe.Property("time-pos");
+        Expect(timeBefore.is_number()&&timeAfter.is_number()&&((timeBefore!=timeAfter)==shouldPlay),
+            "real video timeline follows automatic versus manual pause policy");
+        Expect(probe.Property("panscan")==Json(0.0)&&probe.Property("volume")==Json(0.0),
+            "memory recovery preserves fit and volume");
+        evidence["watchdog"].push_back({{"scenario",scenario},{"beforePids",before},{"afterPids",after},
+            {"snapshot",Screen(session,display)},{"actualPause",probe.Property("pause")},
+            {"timeBefore",timeBefore},{"timeAfter",timeAfter}});
+        probe.Close();session.Shutdown();
+        Expect(Wait([]{return OwnedProcesses().empty();},2000)&&GetWindow(parent,GW_CHILD)==nullptr,
+            "watchdog fixture cleans up its player and windows");
+    }
+}
 }
 int main(int argc,char** argv) {
     if(argc!=4&&argc!=5) {
-        std::cerr<<"Usage: wallpaper-session-playback-test mpv.exe fixture-video.mp4 output-directory [resource-phase-seconds|--balanced-regression]\n";return 2;
+        std::cerr<<"Usage: wallpaper-session-playback-test mpv.exe fixture-video.mp4 output-directory [resource-phase-seconds|--balanced-regression|--watchdog-regression]\n";return 2;
     }
     const auto executable=fs::absolute(fs::u8path(argv[1]));
     const auto video=fs::absolute(fs::u8path(argv[2]));
     const auto output=fs::absolute(fs::u8path(argv[3]));
     const bool balancedRegression=argc==5&&std::string(argv[4])=="--balanced-regression";
-    if(argc==5&&!balancedRegression) {
+    const bool watchdogRegression=argc==5&&std::string(argv[4])=="--watchdog-regression";
+    if(argc==5&&!balancedRegression&&!watchdogRegression) {
         const auto seconds=std::strtoul(argv[4],nullptr,10);
         if(seconds<3||seconds>30)return 2;
         resourceHoldMs=static_cast<DWORD>(seconds*1000);
@@ -403,6 +486,16 @@ int main(int argc,char** argv) {
     evidence["executable"]=executable.u8string();evidence["fixture"]=video.u8string();
     evidence["root_pid"]=GetCurrentProcessId();
     evidence["scope"]="owned 640x360 off-screen parent, real session and player descendants; not desktop/compositor acceptance";
+    if(watchdogRegression) {
+        WatchdogRecovery(executable,video,root,display,parent);
+        DestroyWindow(parent);
+        evidence["residual-pids"]=OwnedProcesses();
+        for(const auto& item:ownedHandles)CloseHandle(item.second);
+        ownedHandles.clear();
+        evidence["failures"]=failures;
+        std::ofstream(output/L"watchdog-recovery-evidence.json")<<evidence.dump(2);
+        return failures?1:0;
+    }
     if(balancedRegression) {
         BalancedRestore(executable,video,root,displays,parent,true,"none");
         BalancedRestore(executable,video,root,displays,parent,true,"media");

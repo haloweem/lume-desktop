@@ -220,6 +220,8 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dock|material|none", PageCommand::DockNoMaterial},
         {L"v1|dock|reflection|true", PageCommand::DockReflectionOn},
         {L"v1|dock|reflection|false", PageCommand::DockReflectionOff},
+        {L"v1|dock|systemTray|true", PageCommand::DockSystemTrayOn},
+        {L"v1|dock|systemTray|false", PageCommand::DockSystemTrayOff},
     };
     // Exact string_view equality also rejects embedded NUL and other controls.
     for (const auto& entry : commands) {

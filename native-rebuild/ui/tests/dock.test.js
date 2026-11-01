@@ -7,7 +7,7 @@ import {catalog,card,home,search} from '../pages.js';
 import {setLanguage} from '../localization.js';
 import {dockPage,dockStatus,validDockState} from '../dock.js';
 
-const snapshot=(fields={})=>({version:1,type:'dock-state',enabled:false,running:false,material:'liquid-glass',reflection:false,iconScale:100,
+const snapshot=(fields={})=>({version:1,type:'dock-state',enabled:false,running:false,material:'liquid-glass',reflection:false,systemTray:false,iconScale:100,
   position:50,bottomOffset:0,iconSpacing:10,
   pinned:0,added:0,materialStatus:'inactive',loadStatus:'fresh',error:'',result:'snapshot',saved:false,...fields});
 
@@ -64,7 +64,7 @@ test('dock state reducer tracks saving, results and errors',()=>{
   let state=reduce(initialState(),{type:'request',scope:'dock',key:'enabled',value:true});
   assert.equal(state.dockStatus,'saving');
   state=reduce(state,{type:'host',message:snapshot({enabled:true,running:true,pinned:2,result:'applied',saved:true,loadStatus:'loaded'})});
-  assert.equal(state.dockStatus,'saved');assert.deepEqual(state.dock,{enabled:true,running:true,material:'liquid-glass',reflection:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:2,added:0});
+  assert.equal(state.dockStatus,'saved');assert.deepEqual(state.dock,{enabled:true,running:true,material:'liquid-glass',reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:2,added:0});
   state=reduce(state,{type:'host',message:snapshot({error:'limit'})});
   assert.equal(state.dockStatus,'error');assert.match(dockStatus(state),/上限/);
   assert.equal(reduce(initialState(),{type:'unavailable',scope:'all'}).dockStatus,'unavailable');
@@ -77,6 +77,8 @@ test('Dock settings page renders material, counts and details',()=>{
   assert.match(settings,/id="dock-material"/);
   assert.match(settings,/已固定 4 项，启动台已添加 1 项/);
   assert.match(settings,/data-action="dock-reset"/);
+  assert.doesNotMatch(settings,/data-action="dock-system-tray"/);
+  assert.doesNotMatch(dockPage({...state,dock:{...state.dock,systemTray:true}},'settings'),/data-action="dock-system-tray"/);
   assert.match(dockPage(state,'details'),/启动台显示桌面上的图标/);
 });
 test('dock offers no material, icon reflection and icon size',()=>{

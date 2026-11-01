@@ -19,6 +19,9 @@ struct WallpaperSessionOptions {
     std::function<void(std::string id,std::string sourceUrl)> downloadCompleted;
     // UI-thread admission; completion is delivered on that same UI thread.
     std::function<void(std::string id,std::string sourceUrl,std::function<void(std::string)> completed)> authorizeDownload;
+    // Actor-thread memory probe for isolated watchdog tests only. Ignored unless
+    // verification and an owned verificationParent are both supplied.
+    std::function<std::uint64_t(std::uint64_t display)> verificationPrivateBytes;
 };
 class WallpaperSession final {
 public:

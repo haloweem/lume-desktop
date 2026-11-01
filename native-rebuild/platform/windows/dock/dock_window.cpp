@@ -35,7 +35,16 @@ constexpr float RemoveDistance = 36;
 // A minimized window's thumbnail: at most this share of the icon height, and
 // its program's icon as a badge on the lower-right corner.
 constexpr float ThumbnailHeight = .82f, BadgeSize = .44f;
-float ItemWidth(const dock::Item& item) { return item.kind == dock::Kind::Separator ? 1.f : DockWindow::IconSize; }
+float ItemWidth(const dock::Item& item) {
+    if (item.kind == dock::Kind::Separator) return 1.f;
+    if (item.kind == dock::Kind::SystemTray) return DockWindow::SystemTrayWidth;
+    return DockWindow::IconSize;
+}
+float ItemWidth(const dock::Item& item, float scale) {
+    if (item.kind == dock::Kind::Separator) return 1.f;
+    if (item.kind == dock::Kind::SystemTray) return DockWindow::SystemTrayWidth;
+    return DockWindow::IconSize * scale;
+}
 using dock::Movable;
 using dock::Removable;
 const auto Key = dock::MotionKey;
@@ -56,6 +65,8 @@ float DockWindow::Width(const std::vector<dock::Item>& items, float spacing) {
 WidgetRect DockWindow::Slot(const std::vector<dock::Item>& items, std::size_t index, float spacing) {
     float x = Padding;
     for (std::size_t i = 0; i < index && i < items.size(); ++i) x += ItemWidth(items[i]) + spacing;
+    if (index < items.size() && items[index].kind == dock::Kind::SystemTray)
+        return {x, 22.f, ItemWidth(items[index]), BarHeight - 44.f};
     return {x, BarHeight - IconBottom - IconSize, index < items.size() ? ItemWidth(items[index]) : 0.f, IconSize};
 }
 std::size_t DockWindow::Hit(const std::vector<dock::Item>& items, float x, float y) {
@@ -63,6 +74,7 @@ std::size_t DockWindow::Hit(const std::vector<dock::Item>& items, float x, float
     for (std::size_t i = 0; i < items.size(); ++i) {
         if (items[i].kind == dock::Kind::Separator) continue;
         const auto slot = Slot(items, i);
+        if (items[i].kind == dock::Kind::SystemTray && (y < slot.y || y >= slot.y + slot.height)) continue;
         if (x >= slot.x - Gap / 2 && x < slot.x + slot.width + Gap / 2) return i;
     }
     return None;
@@ -291,7 +303,8 @@ struct DockWindow::Impl {
         for (std::size_t n = 0; n < order.size(); ++n) {
             const auto i = order[n];
             const auto kind = items[i].kind;
-            const bool pastPinned = kind == dock::Kind::Separator || kind == dock::Kind::Running || kind == dock::Kind::Window;
+            const bool pastPinned = kind == dock::Kind::Separator || kind == dock::Kind::Running ||
+                                    kind == dock::Kind::Window || kind == dock::Kind::SystemTray;
             const bool gapAtLume = kind == dock::Kind::Lume && items[i].orderIndex == lastGapSlot;
             if (!gapPlaced && ((kind == dock::Kind::Pinned && pinned == lastGapSlot) || gapAtLume || pastPinned)) {
                 x += GapWidth();
@@ -299,7 +312,7 @@ struct DockWindow::Impl {
             }
             if (kind == dock::Kind::Pinned) ++pinned;
             const float scale = motion[Key(items[i])].scale.value;
-            const float width = kind == dock::Kind::Separator ? 1.f : IconSize * scale;
+            const float width = ItemWidth(items[i], scale);
             layoutX[i] = x;
             // An icon dragged out shrinks its slot away, spacing included.
             x += width + (i == dragged && removing ? Spacing() * std::min(1.f, scale) : Spacing());
@@ -317,7 +330,7 @@ struct DockWindow::Impl {
             const float restWidth = ItemWidth(items[i]);
             const auto found = motion.find(Key(items[i]));
             const float scale = found == motion.end() ? 1.f : found->second.scale.value;
-            const float width = items[i].kind == dock::Kind::Separator ? 1.f : IconSize * scale;
+            const float width = ItemWidth(items[i], scale);
             const float ax = layoutX[i];
             if (q < ax) return restX - (ax - q);
             if (q < ax + width + Spacing() || n + 1 == order.size()) return restX + (q - ax) / (width + Spacing()) * (restWidth + Spacing());
@@ -476,7 +489,8 @@ struct DockWindow::Impl {
             const auto slot = Slot(rest, n, Spacing());
             float target = 1;
             if (i == dragged) target = removing ? 0.f : DragScale;
-            else if (hovering && dragged == None && gapSlot == None && items[i].kind != dock::Kind::Separator)
+            else if (hovering && dragged == None && gapSlot == None && items[i].kind != dock::Kind::Separator &&
+                     items[i].kind != dock::Kind::SystemTray)
                 target = Magnification(std::abs(pointerRest - (slot.x + slot.width / 2)), Spacing());
             moving |= m.scale.Step(target, dt, MagnifyOmega, MagnifyZeta, .0005f, reducedMotion);
             moving |= m.offset.Step(0, dt, SlideOmega, SlideZeta, .05f, reducedMotion);
@@ -543,6 +557,23 @@ struct DockWindow::Impl {
     void DrawItem(std::size_t i) {
         const auto& item = items[i];
         auto& m = motion[Key(item)];
+        if (item.kind == dock::Kind::SystemTray) {
+            const float left = barLeft + Visual(i), top = Headroom + 22, height = BarHeight - 44;
+            iconCanvas->Rounded({left, top, SystemTrayWidth, height}, height / 2, 0x17191d, frosted ? .62f : .7f);
+            const auto status = ports.systemTray ? ports.systemTray() : DockSystemTrayStatus{};
+            const std::wstring labels[] = {status.date, L"电量", L"网络", L"音量", L"输入法", L"蓝牙"};
+            const std::wstring values[] = {status.time, status.battery, status.network, status.volume,
+                                           status.input, status.bluetooth};
+            const float section = SystemTrayWidth / 6.f;
+            for (std::size_t n = 0; n < std::size(values); ++n) {
+                if (n) iconCanvas->Line(left + section * n, top + 9, left + section * n, top + height - 9, 0xffffff, .17f, 1);
+                const float x = left + section * n + 3;
+                iconCanvas->Text(labels[n], {x, top + 6, section - 6, 16}, 9, 0xffffff, .68f, false, WidgetTextAlign::Center);
+                iconCanvas->Text(values[n], {x, top + 25, section - 6, 22}, static_cast<float>(n == 4 ? 10 : 11),
+                                 0xffffff, .96f, true, WidgetTextAlign::Center);
+            }
+            return;
+        }
         const float bottom = Headroom + BarHeight - IconBottom;
         if (item.kind == dock::Kind::Separator) {
             const float x = barLeft + Visual(i);
@@ -911,9 +942,11 @@ struct DockWindow::Impl {
             return None;
         for (const auto i : order) {
             if (items[i].kind == dock::Kind::Separator) continue;
-            const float size = IconSize * motion[Key(items[i])].scale.value;
             const float left = barLeft + Visual(i);
-            if (x >= left - Spacing() / 2 && x < left + size + Spacing() / 2) return i;
+            const float width = ItemWidth(items[i], motion[Key(items[i])].scale.value);
+            const float top = items[i].kind == dock::Kind::SystemTray ? Headroom + 22 : Headroom - IconSize * (MaxScale - 1);
+            const float bottom = items[i].kind == dock::Kind::SystemTray ? Headroom + BarHeight - 22 : Headroom + BarHeight;
+            if (y >= top && y <= bottom && x >= left - Spacing() / 2 && x < left + width + Spacing() / 2) return i;
         }
         return None;
     }
@@ -1364,6 +1397,12 @@ bool DockWindow::HasThumbnail(std::size_t index) const {
 RECT DockWindow::IconBounds(std::size_t index) const {
     auto& s = *impl_;
     if (index >= s.items.size() || s.layoutX.size() != s.items.size()) return {};
+    if (s.items[index].kind == dock::Kind::SystemTray) {
+        const float left = s.barLeft + s.Visual(index), top = Headroom + 22, bottom = Headroom + BarHeight - 22;
+        return {s.overlayOrigin.x + static_cast<LONG>(s.Px(left)), s.overlayOrigin.y + static_cast<LONG>(s.Px(top)),
+                s.overlayOrigin.x + static_cast<LONG>(s.Px(left + SystemTrayWidth)),
+                s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom))};
+    }
     const float size = IconSize * s.motion[Key(s.items[index])].scale.value;
     const float left = s.barLeft + s.Visual(index), bottom = Headroom + BarHeight - IconBottom;
     return {s.overlayOrigin.x + static_cast<LONG>(s.Px(left)), s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom - size)),

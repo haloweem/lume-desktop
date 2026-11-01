@@ -157,7 +157,20 @@ void DockDesktopLayer::Place() {
         HWND above = GetWindow(host, GW_HWNDPREV);
         while (above && (above == icons_ || above == bar_ || desktop_level::InDesktopLayer(above)))
             above = GetWindow(above, GW_HWNDPREV);
-        if (above) anchor = above;
+        // Inserting after a topmost taskbar/overlay promotes an unowned
+        // window into its topmost band. The next idle sweep then demotes
+        // icons and bar separately, briefly leaving the glass above icons,
+        // before promoting them again. Stay in the normal band instead.
+        if (above && !(GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST)) anchor = above;
+    }
+    // When lowering the group below an application, move the background and
+    // its worker-owned glass first. Lowering icons first exposes the glass
+    // above them until the later calls finish (and can capture the icons).
+    // Raising the group retains the opposite order below: icons, bar, glass.
+    if (anchor != HWND_TOP && anchor != HWND_BOTTOM && desktop_level::Above(icons_, anchor)) {
+        desktop_level::PlacementScope placement(bar_);
+        if (SetWindowPos(bar_, anchor, 0, 0, 0, 0, Flags | SWP_SHOWWINDOW))
+            desktop_level::KeepOwnedGlassBelow(bar_);
     }
     {
         desktop_level::PlacementScope placement(icons_);

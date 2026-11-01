@@ -85,7 +85,33 @@ int main() {
     runtime.failNext = true;
     Expect(!controller.Handle({ActionType::SelectStyle,2}), "surface failure surfaced");
     Expect(controller.Snapshot().style == "mond" && runtime.style == Style::Mond, "failed surface change restores previous style");
+    for (int style = 0; style < 3; ++style) {
+        Expect(controller.Handle({ActionType::SelectStyle,style}) &&
+               controller.Handle({ActionType::Color,0x123456 + style,style * 64}),
+               "customize every style including fully transparent text");
+    }
+    Expect(controller.Handle({ActionType::SelectStyle,1}), "reset from a nondefault style");
+    failSave = true;
+    Expect(!controller.Handle({ActionType::Reset}) && runtime.style == Style::Mond &&
+           runtime.appearance.customColor && runtime.appearance.alpha == 64 &&
+           persisted.clock.profiles[0].customColor && persisted.clock.profiles[2].alpha == 128,
+           "failed reset save preserves all colors and restores the live appearance");
+    failSave = false;
+    runtime.failNext = true;
+    Expect(!controller.Handle({ActionType::Reset}) && runtime.appearance.customColor &&
+           controller.Snapshot().style == "mond", "failed reset render preserves the customized state");
     Expect(controller.Handle({ActionType::Reset}) && runtime.running && controller.Snapshot().style == "welfare", "original reset keeps enabled and selects welfare");
+    for (std::size_t i = 0; i < DefaultProfiles().size(); ++i) {
+        const auto defaults = DefaultProfiles()[i];
+        const auto& profile = controller.Snapshot().profiles[i];
+        Expect(profile.color == defaults.color && profile.alpha == defaults.alpha &&
+               profile.customColor == defaults.customColor &&
+               persisted.clock.profiles[i].color == defaults.color &&
+               persisted.clock.profiles[i].alpha == defaults.alpha && !persisted.clock.profiles[i].customColor,
+               "reset restores and saves default colors and opacity for every style");
+    }
+    Expect(!runtime.appearance.customColor && runtime.appearance.alpha == 255,
+           "reset immediately removes the custom tint from the runtime");
     Expect(runtime.appearance.x == 420 && runtime.appearance.y == 260, "reset style keeps current position");
     Expect(controller.Snapshot().profiles[1].scale == 170, "original reset preserves skin appearance");
     Expect(controller.Handle({ActionType::Center}) && runtime.centers == 1, "center delegated to display-aware runtime");

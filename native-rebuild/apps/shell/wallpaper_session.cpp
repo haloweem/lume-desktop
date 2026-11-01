@@ -815,7 +815,9 @@ struct WallpaperSession::Impl {
             // (users saw 15 GB overnight). Restart the player once it is clearly
             // past normal use: while hidden past the soft limit, at once past the
             // hard one. Start keeps media, pause, volume and fit.
-            if(const auto bytes=controller->PrivateBytes(pref.display)){
+            const auto bytes=options.verification&&options.verificationParent&&options.verificationPrivateBytes?
+                options.verificationPrivateBytes(pref.display):controller->PrivateBytes(pref.display);
+            if(bytes){
                 lastPrivate[pref.display]=bytes;
                 const bool hidden=locked||sleeping||pref.paused||automaticPause.count(pref.display);
                 if(bytes>=(hidden?MpvSoftMemoryLimit:MpvHardMemoryLimit)){
@@ -823,7 +825,10 @@ struct WallpaperSession::Impl {
                         " MB private, restarting ("+(hidden?"hidden":"visible")+")");
                 }
                 if(bytes>=(hidden?MpvSoftMemoryLimit:MpvHardMemoryLimit)&&controller->Recover(pref.display)){
-                    automaticPause.erase(pref.display);changed=true;continue;
+                    // Recover preserves the player's pause state. Keep its automatic
+                    // ownership too, so the next poll can resume it even when the
+                    // covering app, lock or display-off condition ended mid-restart.
+                    changed=true;continue;
                 }
             }
             if(!pref.paused&&shouldPause&&!automaticPause.count(pref.display)) {

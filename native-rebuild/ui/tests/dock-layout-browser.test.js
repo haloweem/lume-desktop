@@ -14,7 +14,7 @@ test('Dock layout controls work through the real page and native protocol',{
         await page.addInitScript(()=>{
           const listeners=new Set();
           const state={version:1,type:'dock-state',enabled:true,running:true,material:'liquid-glass',
-            reflection:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,pinned:11,added:0,
+            reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,pinned:11,added:0,
             launchpadScale:100,launchpadIconScale:100,
             materialStatus:'native-ready',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
           const emit=data=>listeners.forEach(listener=>listener({data}));

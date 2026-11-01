@@ -594,7 +594,7 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='material' && materials.includes(value)) ||
             (action==='shortcut' && validRadialShortcut(value)))))) ||
         (kind === 'dock' && ((parts.length===2 && action==='reset') ||
-          (parts.length===3 && ((['enabled','reflection'].includes(action) && typeof value==='boolean') ||
+          (parts.length===3 && ((['enabled','reflection','systemTray'].includes(action) && typeof value==='boolean') ||
             (action==='iconScale' && integerIn(value,50,120)) ||
             (action==='launchpadScale' && integerIn(value,60,140)) ||
             (action==='launchpadIconScale' && integerIn(value,50,120)) ||

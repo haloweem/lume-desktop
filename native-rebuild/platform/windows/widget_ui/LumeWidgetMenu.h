@@ -19,9 +19,9 @@ public:
     // 50 edit, 51 delete, 52 new task, 53 new checklist; other widget commands unchanged.
     static UINT ShowTodayTodo(HWND, POINT, bool item, bool writable, bool canCreate, bool frosted, bool locked, bool solid = false);
     static UINT ShowNotes(HWND owner, POINT position, bool frosted, bool locked);
-    // Dock background: 40 new collection, 46 add a system icon, 8/9 material, 11 settings, 10 reset, 1 close.
+    // Dock background: 40 new collection, 46 add a system icon, 47 system tray, 8/9 material, 11 settings, 10 reset, 1 close.
     // Material submenu adds "无" (command 7) for a Dock without glass.
-    static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false);
+    static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false, bool systemTray = false);
     // Dynamic island: 8/9 material, 7 none, 2 expand/collapse, 11 settings, 10 reset, 1 close.
     static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages = true);
     // Island todo page: 50 edit, 51 delete (when a row is under the pointer), 52 new, then ShowIsland items.
@@ -30,7 +30,7 @@ public:
     // `canReveal` is false for virtual entries such as the Lume manager item.
     static UINT ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal = true,
                              bool inCollection = false, bool dockActions = false, bool frosted = false, bool none = false,
-                             bool runningItem = false);
+                             bool runningItem = false, bool systemTray = false);
     // Launchpad add button: a single "add files" entry plus "new collection",
     // followed by a small file/folder choice for the add entry.
     static UINT ShowLaunchpadAdd(HWND owner, POINT position);

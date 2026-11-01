@@ -37,6 +37,319 @@ index 64ad1fe..94e7c03 100644
  #define UTF8_APP_NAME "TranslucentTB"
  #elif defined(BUILD_TYPE) && BUILD_TYPE == 1
  #define UTF8_APP_NAME "TranslucentTB (Canary)"
+diff --git a/ExplorerTAP/taskbarappearanceservice.cpp b/ExplorerTAP/taskbarappearanceservice.cpp
+index a96b181..7e02687 100644
+--- a/ExplorerTAP/taskbarappearanceservice.cpp
++++ b/ExplorerTAP/taskbarappearanceservice.cpp
+@@ -1,6 +1,8 @@
+ #include "taskbarappearanceservice.hpp"
+ #include <RpcProxy.h>
+ #include <shellapi.h>
++#include <utility>
++#include <vector>
+ #include <wil/cppwinrt_helpers.h>
+ #include <winrt/Windows.Management.Deployment.h>
+ 
+@@ -38,34 +40,10 @@ HRESULT TaskbarAppearanceService::SetTaskbarAppearance(HWND taskbar, TaskbarBrus
+ {
+ 	if (const auto info = GetTaskbarInfo(taskbar))
+ 	{
+-		if (info->background.control && info->background.originalFill)
+-		{
+-			const winrt::Windows::UI::Color tint = Util::Color::FromABGR(color);
+-			wux::Media::Brush newBrush = nullptr;
+-			if (brush == Acrylic)
+-			{
+-				wux::Media::AcrylicBrush acrylicBrush;
+-				// on the taskbar, using Backdrop instead of HostBackdrop
+-				// makes the effect still show what's behind, but also not disable itself
+-				// when the window isn't active
+-				// this is because it sources what's behind the XAML, and the taskbar window
+-				// is transparent so what's behind is actually the content behind the window
+-				// (it doesn't need to poke a hole like HostBackdrop)
+-				acrylicBrush.BackgroundSource(wux::Media::AcrylicBackgroundSource::Backdrop);
+-				acrylicBrush.TintColor(tint);
+-
+-				newBrush = std::move(acrylicBrush);
+-			}
+-			else if (brush == SolidColor)
+-			{
+-				wux::Media::SolidColorBrush solidBrush;
+-				solidBrush.Color(tint);
+-
+-				newBrush = std::move(solidBrush);
+-			}
+-
+-			info->background.control.Fill(newBrush);
+-		}
++		auto state = info->background;
++		state->requested = AppearanceRequest { brush, color, std::nullopt };
++		++state->revision;
++		TryApplyBackground(state);
+ 	}
+ 
+ 	return S_OK;
+@@ -79,19 +57,10 @@ HRESULT TaskbarAppearanceService::SetTaskbarBlur(HWND taskbar, UINT color, FLOAT
+ {
+ 	if (const auto info = GetTaskbarInfo(taskbar))
+ 	{
+-		if (info->background.control && info->background.originalFill)
+-		{
+-			const winrt::Windows::UI::Color tint = Util::Color::FromABGR(color);
+-			const wfn::float4 tintHdr = {
+-				tint.R / 255.0f,
+-				tint.G / 255.0f,
+-				tint.B / 255.0f,
+-				tint.A / 255.0f
+-			};
+-
+-			auto compositor = wuxh::ElementCompositionPreview::GetElementVisual(info->background.control).Compositor();
+-			info->background.control.Fill(winrt::make<XamlBlurBrush>(std::move(compositor), blurAmount, tintHdr));
+-		}
++		auto state = info->background;
++		state->requested = AppearanceRequest { SolidColor, color, blurAmount };
++		++state->revision;
++		TryApplyBackground(state);
+ 	}
+ 
+ 	return S_OK;
+@@ -103,13 +72,11 @@ catch (...)
+ 
+ HRESULT TaskbarAppearanceService::ReturnTaskbarToDefaultAppearance(HWND taskbar) try
+ {
+-	for (const auto& [handle, info] : m_Taskbars)
++	if (const auto info = GetTaskbarInfo(taskbar))
+ 	{
+-		if (GetAncestor(info.window, GA_PARENT) == taskbar)
+-		{
+-			RestoreDefaultControlFill(info.background);
+-			break;
+-		}
++		info->background->requested.reset();
++		++info->background->revision;
++		RestoreDefaultControlFill(*info->background);
+ 	}
+ 
+ 	return S_OK;
+@@ -152,9 +119,17 @@ catch (...)
+ 
+ HRESULT TaskbarAppearanceService::RestoreAllTaskbarsToDefault() try
+ {
++	std::vector<TaskbarInfo> taskbars;
++	taskbars.reserve(m_Taskbars.size());
+ 	for (const auto& [handle, info] : m_Taskbars)
+ 	{
+-		RestoreDefaultControlFill(info.background);
++		taskbars.push_back(info);
++		info.background->requested.reset();
++		++info.background->revision;
++	}
++	for (const auto& info : taskbars)
++	{
++		RestoreDefaultControlFill(*info.background);
+ 		RestoreDefaultControlFill(info.border);
+ 	}
+ 
+@@ -230,15 +205,29 @@ catch (...)
+ 
+ void TaskbarAppearanceService::RegisterTaskbar(InstanceHandle frameHandle, HWND window)
+ {
+-	m_Taskbars.insert_or_assign(frameHandle, TaskbarInfo { { }, { }, window });
++	std::shared_ptr<BackgroundState> previous;
++	if (const auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end()) previous = it->second.background;
++	m_Taskbars.insert_or_assign(frameHandle, TaskbarInfo { std::make_shared<BackgroundState>(), { }, window });
++	if (previous) CancelBackground(previous);
+ }
+ 
+ void TaskbarAppearanceService::RegisterTaskbarBackground(InstanceHandle frameHandle, wux::Shapes::Shape element)
+ {
+ 	if (const auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end())
+ 	{
+-		it->second.background.control = element;
+-		it->second.background.originalFill = element.Fill();
++		auto previous = it->second.background;
++		if (previous->control == element)
++		{
++			WatchBackgroundFill(previous);
++			TryApplyBackground(previous);
++			return;
++		}
++		auto current = std::make_shared<BackgroundState>();
++		current->control = element;
++		current->requested = previous->requested;
++		it->second.background = current;
++		CancelBackground(previous);
++		WatchBackgroundFill(current);
+ 	}
+ }
+ 
+@@ -253,7 +242,12 @@ void TaskbarAppearanceService::RegisterTaskbarBorder(InstanceHandle frameHandle,
+ 
+ void TaskbarAppearanceService::UnregisterTaskbar(InstanceHandle frameHandle)
+ {
+-	m_Taskbars.erase(frameHandle);
++	if (const auto it = m_Taskbars.find(frameHandle); it != m_Taskbars.end())
++	{
++		auto previous = it->second.background;
++		m_Taskbars.erase(it);
++		CancelBackground(previous);
++	}
+ }
+ 
+ TaskbarAppearanceService::~TaskbarAppearanceService()
+@@ -273,6 +267,9 @@ TaskbarAppearanceService::~TaskbarAppearanceService()
+ 
+ 	m_Process.reset();
+ 
++	std::vector<std::shared_ptr<BackgroundState>> backgrounds;
++	for (const auto& [handle, info] : m_Taskbars) backgrounds.push_back(info.background);
++	for (const auto& state : backgrounds) CancelBackground(state);
+ 	winrt::check_hresult(RestoreAllTaskbarsToDefault());
+ 	winrt::check_hresult(RevokeActiveObject(m_RegisterCookie, nullptr));
+ }
+@@ -334,6 +331,93 @@ std::optional<TaskbarAppearanceService::TaskbarInfo> TaskbarAppearanceService::G
+ 	return std::nullopt;
+ }
+ 
++void TaskbarAppearanceService::StopWatchingFill(const std::shared_ptr<BackgroundState>& state) noexcept
++{
++	if (const auto token = std::exchange(state->fillToken, std::nullopt); token && state->control)
++	{
++		try { state->control.UnregisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), *token); }
++		catch (...) { } // A stale notification is guarded by active/originalFill and weak ownership.
++	}
++}
++
++void TaskbarAppearanceService::CancelBackground(const std::shared_ptr<BackgroundState>& state) noexcept
++{
++	state->active = false;
++	state->requested.reset();
++	++state->revision;
++	StopWatchingFill(state);
++}
++
++void TaskbarAppearanceService::TryApplyBackground(const std::shared_ptr<BackgroundState>& state)
++{
++	if (!state->active || !state->control) return;
++	if (!state->originalFill)
++	{
++		auto original = state->control.Fill();
++		if (!state->active || !original) return;
++		state->originalFill = std::move(original);
++		StopWatchingFill(state);
++	}
++	if (!state->active || !state->requested) return;
++	const auto request = *state->requested;
++	const auto revision = state->revision;
++	auto brush = CreateBackgroundBrush(state->control, request);
++	if (state->active && state->requested && state->revision == revision) state->control.Fill(brush);
++}
++
++void TaskbarAppearanceService::WatchBackgroundFill(const std::shared_ptr<BackgroundState>& state)
++{
++	if (!state->active || !state->control || state->originalFill || state->fillToken) return;
++	const auto weakSelf = get_weak();
++	const std::weak_ptr<BackgroundState> weakState = state;
++	auto control = state->control;
++	const auto token = control.RegisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(),
++		[weakSelf, weakState](auto&&, auto&&) noexcept
++		{
++			try
++			{
++				if (const auto self = weakSelf.get())
++					if (const auto current = weakState.lock(); current && current->active && !current->originalFill)
++						self->TryApplyBackground(current);
++			}
++			catch (...) { } // Do not let deferred initialization throw into Explorer.
++		});
++	// Registration may reenter; do not attach a token to a retired or already captured state.
++	if (state->active && !state->originalFill) state->fillToken = token;
++	else
++	{
++		try { control.UnregisterPropertyChangedCallback(wux::Shapes::Shape::FillProperty(), token); }
++		catch (...) { }
++	}
++	TryApplyBackground(state); // Reading after subscription closes the initialization race.
++}
++
++wux::Media::Brush TaskbarAppearanceService::CreateBackgroundBrush(const wux::Shapes::Shape& control, const AppearanceRequest& request)
++{
++	const winrt::Windows::UI::Color tint = Util::Color::FromABGR(request.color);
++	if (request.blurAmount)
++	{
++		const wfn::float4 tintHdr = { tint.R / 255.0f, tint.G / 255.0f, tint.B / 255.0f, tint.A / 255.0f };
++		auto compositor = wuxh::ElementCompositionPreview::GetElementVisual(control).Compositor();
++		return winrt::make<XamlBlurBrush>(std::move(compositor), *request.blurAmount, tintHdr);
++	}
++	if (request.brush == Acrylic)
++	{
++		wux::Media::AcrylicBrush brush;
++		// Backdrop retains the effect while the transparent taskbar window is inactive.
++		brush.BackgroundSource(wux::Media::AcrylicBackgroundSource::Backdrop);
++		brush.TintColor(tint);
++		return brush;
++	}
++	if (request.brush == SolidColor)
++	{
++		wux::Media::SolidColorBrush brush;
++		brush.Color(tint);
++		return brush;
++	}
++	return nullptr;
++}
++
+ void TaskbarAppearanceService::RestoreDefaultControlFill(const ControlInfo<wux::Shapes::Shape> &info)
+ {
+ 	if (info.control && info.originalFill)
+diff --git a/ExplorerTAP/taskbarappearanceservice.hpp b/ExplorerTAP/taskbarappearanceservice.hpp
+index 5ca70ea..24c181e 100644
+--- a/ExplorerTAP/taskbarappearanceservice.hpp
++++ b/ExplorerTAP/taskbarappearanceservice.hpp
+@@ -1,4 +1,6 @@
+ #pragma once
++#include <cstdint>
++#include <memory>
+ #include <optional>
+ #include <unordered_map>
+ #include <xamlOM.h>
+@@ -57,15 +59,36 @@ private:
+ 		wux::Media::Brush originalFill = nullptr;
+ 	};
+ 
++	struct AppearanceRequest
++	{
++		TaskbarBrush brush;
++		UINT color;
++		std::optional<FLOAT> blurAmount;
++	};
++
++	struct BackgroundState : ControlInfo<wux::Shapes::Shape>
++	{
++		std::optional<AppearanceRequest> requested;
++		std::optional<int64_t> fillToken;
++		uint64_t revision = 0;
++		bool active = true;
++	};
++
+ 	struct TaskbarInfo
+ 	{
+-		ControlInfo<wux::Shapes::Shape> background, border;
++		std::shared_ptr<BackgroundState> background = std::make_shared<BackgroundState>();
++		ControlInfo<wux::Shapes::Shape> border;
+ 		HWND window;
+ 	};
+ 
+ 	winrt::fire_and_forget OnProcessDied();
+ 	void OnPackageUninstalling(const wam::PackageCatalog &catalog, const wam::PackageUninstallingEventArgs &args);
+ 	std::optional<TaskbarInfo> GetTaskbarInfo(HWND taskbar);
++	void WatchBackgroundFill(const std::shared_ptr<BackgroundState>& state);
++	static void StopWatchingFill(const std::shared_ptr<BackgroundState>& state) noexcept;
++	static void CancelBackground(const std::shared_ptr<BackgroundState>& state) noexcept;
++	static void TryApplyBackground(const std::shared_ptr<BackgroundState>& state);
++	static wux::Media::Brush CreateBackgroundBrush(const wux::Shapes::Shape& control, const AppearanceRequest& request);
+ 
+ 	static void RestoreDefaultControlFill(const ControlInfo<wux::Shapes::Shape> &info);
+ 	static void NTAPI ProcessWaitCallback(void *parameter, BOOLEAN timedOut);
 diff --git a/TranslucentTB/TranslucentTB.vcxproj b/TranslucentTB/TranslucentTB.vcxproj
 index 5a48435..2480da5 100644
 --- a/TranslucentTB/TranslucentTB.vcxproj
@@ -58,7 +371,7 @@ index 5a48435..2480da5 100644
 \ No newline at end of file
 +</Project>
 diff --git a/TranslucentTB/application.cpp b/TranslucentTB/application.cpp
-index b39a5f4..82878ad 100644
+index b39a5f4..b16c343 100644
 --- a/TranslucentTB/application.cpp
 +++ b/TranslucentTB/application.cpp
 @@ -114,10 +114,12 @@ Application::Application(HINSTANCE hInst, std::optional<std::filesystem::path> s
@@ -74,10 +387,16 @@ index b39a5f4..82878ad 100644
  }
  
  void Application::OpenDonationPage()
-@@ -180,0 +183,3 @@ winrt::fire_and_forget Application::Shutdown()
+@@ -178,6 +180,9 @@ winrt::fire_and_forget Application::Shutdown()
+ 	if (!m_ShuttingDown)
+ 	{
+ 		m_ShuttingDown = true;
 +#ifdef LUME_TASKBAR_CORE
 +		m_Worker.RestoreTaskbarBeforeShutdown();
 +#endif
+ 		const bool hasWelcomePage = m_WelcomePage != nullptr;
+ 
+ 		bool canExit = true;
 diff --git a/TranslucentTB/mainappwindow.cpp b/TranslucentTB/mainappwindow.cpp
 index 8a7132e..46a288d 100644
 --- a/TranslucentTB/mainappwindow.cpp
@@ -135,10 +454,17 @@ diff --git a/TranslucentTB/taskbar/taskbarattributeworker.cpp b/TranslucentTB/ta
 index 9937b9f..8e52255 100644
 --- a/TranslucentTB/taskbar/taskbarattributeworker.cpp
 +++ b/TranslucentTB/taskbar/taskbarattributeworker.cpp
-@@ -1527 +1527 @@ void TaskbarAttributeWorker::ResetState(bool manual)
+@@ -1524,9 +1524,14 @@ void TaskbarAttributeWorker::ResetState(bool manual)
+ 	}
+ }
+ 
 -TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
 +void TaskbarAttributeWorker::RestoreTaskbarBeforeShutdown()
-@@ -1532,0 +1533,5 @@ TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
+ {
+ 	m_disableAttributeRefreshReply = true;
+ 	UnregisterSearchCallbacks();
+ 	ReturnToStock();
+ }
 +
 +TaskbarAttributeWorker::~TaskbarAttributeWorker() noexcept(false)
 +{
@@ -148,5 +474,11 @@ diff --git a/TranslucentTB/taskbar/taskbarattributeworker.hpp b/TranslucentTB/ta
 index 2a0e80d..2f418a5 100644
 --- a/TranslucentTB/taskbar/taskbarattributeworker.hpp
 +++ b/TranslucentTB/taskbar/taskbarattributeworker.hpp
-@@ -285,0 +286 @@ public:
+@@ -283,6 +283,7 @@ public:
+ 
+ 	void DumpState();
+ 	void ResetState(bool manual = false);
 +	void RestoreTaskbarBeforeShutdown();
+ 
+ 	TaskbarType GetType() noexcept
+ 	{

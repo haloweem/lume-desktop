@@ -210,7 +210,19 @@ void VerifyRestart(const std::filesystem::path& path,const std::string& expected
     LocalSettingsFileStore files;std::string actual;
     Check(files.Read(path.string()+".restored",actual)&&actual==expected,"all style preferences survive actual process restart");
 }
-void Run() {
+void VerifyReset(clock::ClockController& controller) {
+    const HWND beforeReset = Clock();
+    const auto reset = ui::ClockActionForPage(ui::PageCommand::ClockReset);
+    Check(reset.has_value() && controller.Handle(*reset), "settings reset applies to the real clock runtime");
+    Check(Clock() == beforeReset && controller.Running(), "reset redraws the existing clock surface");
+    for (const auto& profile : controller.Snapshot().profiles)
+        Check(profile.color == 0xffffff && profile.alpha == 255 && !profile.customColor,
+              "settings reset clears all style color and opacity overrides");
+    Check(ui::ClockPageState(controller).find(L"\"customColor\":false") != std::wstring::npos &&
+          ui::ClockPageState(controller).find(L"\"alpha\":255") != std::wstring::npos,
+          "reset acknowledgement reports the default appearance to settings");
+}
+void Run(bool resetOnly) {
     const auto output=std::getenv("LUME_CLOCK_PROBE_OUTPUT");
     const auto directory=(output?std::filesystem::path(output):Executable().parent_path()/"clock-interaction-artifacts")/std::to_string(GetCurrentProcessId());
     std::filesystem::create_directories(directory);
@@ -233,6 +245,22 @@ void Run() {
     clock::ClockController controller(preferences.clock,runtime,saveClock);active=&controller;
     Check(controller.Restore()&&!controller.Running(),"initial disabled state");
     Check(controller.Handle({clock::ActionType::Enable,1}),"enable native clock");
+    if (resetOnly) {
+        for (int style=0;style<3;++style) {
+            Check(controller.Handle({clock::ActionType::SelectStyle,style}), "select style for reset probe");
+            Check(controller.Handle({clock::ActionType::Color,0x123456+style,style*64}), "customize native clock color and opacity");
+            Check(controller.Snapshot().Active().customColor && controller.Snapshot().Active().alpha==style*64,
+                  "custom appearance reaches the native runtime before reset");
+        }
+        VerifyReset(controller);
+        const auto saved=store.Load(path.string());
+        const auto expected=Encoded(preferences,controller.Snapshot());
+        Check(Encoded(saved,saved.clock)==expected, "reset defaults are persisted on disk");
+        controller.Shutdown();Check(!Clock(), "reset probe releases native surface");
+        VerifyRestart(path,expected);
+        std::cout<<"PASS settings reset: all styles, color and opacity, live runtime, disk persistence, fresh-process restart. Evidence: "<<directory.string()<<'\n';
+        return;
+    }
     const auto beforeFailedSave=Encoded(preferences,controller.Snapshot());
     const auto blockedTemporary=std::filesystem::path(path.string()+".tmp");
     Check(std::filesystem::create_directory(blockedTemporary),"block only the test preferences temporary file");
@@ -293,6 +321,7 @@ void Run() {
         std::cout<<"PASS style "<<clock::StyleName(static_cast<clock::Style>(style))<<": menus, cancel/confirm, scale bounds, locks, drag lifecycle, center, settings route\n";
     }
     Check(callbackOk,"all native actions accepted by controller");
+    VerifyReset(controller);
     const auto saved=store.Load(path.string());
     Check(saved.schemaVersion==3&&saved.widgets.empty(),"clock transactions preserve the existing schema 3 format");
     const auto expected=Encoded(preferences,controller.Snapshot());controller.Shutdown();Check(!Clock(),"shutdown destroys native surface");
@@ -310,6 +339,6 @@ void Run() {
 }
 int main(int argc,char** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    try {if(argc==3&&std::string(argv[1])=="--restore")return RestoreChild(argv[2]);Run();return 0;}
+    try {if(argc==3&&std::string(argv[1])=="--restore")return RestoreChild(argv[2]);Run(argc==2&&std::string(argv[1])=="--reset-only");return 0;}
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

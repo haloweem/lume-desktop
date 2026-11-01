@@ -62,7 +62,7 @@ export const initialState = () => ({
   minimizeStatus:"loading",minimizeError:"",minimizeLoadStatus:"fresh",
   radial:{enabled:false,running:false,visible:false,material:"liquid-glass",shortcutCode:9},
   radialStatus:"loading",radialError:"",radialLoadStatus:"fresh",radialMaterialStatus:"inactive",
-  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
+  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
   dockStatus:"loading",dockError:"",dockLoadStatus:"fresh",dockMaterialStatus:"inactive",
   dynamicIsland:{enabled:false,running:false,locked:false,expanded:false,focusing:false,finished:false,remaining:0,
     hideFullscreen:true,topmost:true,hover:false,autoHide:true,size:'standard',material:'none'},
@@ -247,8 +247,8 @@ export function reduce(state, event) {
       if(m.type==="dock-state") {
         const failed=!!m.error||m.loadStatus==="failed";
         const pending=state.dockStatus==="saving"&&m.result==="snapshot"&&!failed;
-        const {enabled,running,material,reflection,iconScale,position,bottomOffset,iconSpacing,pinned,added}=m;
-        return {...state,dock:{enabled,running,material,reflection,iconScale,position,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
+        const {enabled,running,material,reflection,systemTray,iconScale,position,bottomOffset,iconSpacing,pinned,added}=m;
+        return {...state,dock:{enabled,running,material,reflection,systemTray,iconScale,position,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
           dockError:m.error,dockLoadStatus:m.loadStatus,dockMaterialStatus:m.materialStatus,
           dockStatus:pending?"saving":failed?"error":m.saved?"saved":m.loadStatus==="recovered"?"recovered":"idle"};
       }

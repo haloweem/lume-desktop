@@ -948,6 +948,7 @@ content.addEventListener("click", (event) => {
   else if (button.dataset.action === "dock-toggle") request("dock","enabled",!state.dock.enabled);
   else if (button.dataset.action === "dock-reset") request("dock","reset");
   else if (button.dataset.action === "dock-reflection") request("dock","reflection",!state.dock.reflection);
+  else if (button.dataset.action === "dock-system-tray") request("dock","systemTray",!state.dock.systemTray);
   else if (button.dataset.action === "music-toggle")
     ensureMusicDesktopController().then(controller=>{
       controller.setEnabled(!musicDesktopState.enabled);

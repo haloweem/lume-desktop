@@ -4,6 +4,7 @@
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/widget_ui/desktop_level.h"
 #include <objbase.h>
+#include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -98,6 +99,83 @@ HWND Surface(HWND owner) {
         return TRUE;
     }, reinterpret_cast<LPARAM>(&search));
     return search.surface;
+}
+struct IdleOrder {
+    HWND icons, bar;
+    unsigned changes = 0, inversions = 0;
+    static LRESULT CALLBACK Observe(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
+        const LRESULT result = DefSubclassProc(window, message, w, l);
+        if (message == WM_WINDOWPOSCHANGED) {
+            auto& self = *reinterpret_cast<IdleOrder*>(data);
+            ++self.changes;
+            const HWND glass = Surface(self.bar);
+            if (desktop_level::Above(self.bar, self.icons) ||
+                (glass && IsWindowVisible(glass) && desktop_level::Above(glass, self.icons))) {
+                ++self.inversions;
+                if (self.inversions <= 6) {
+                    const auto* p = reinterpret_cast<WINDOWPOS*>(l);
+                    wchar_t after[80]{};
+                    GetClassNameW(p->hwndInsertAfter, after, 80);
+                    std::printf("inversion: changed=%s flags=%x after=%p barAbove=%d glassAbove=%d\n",
+                        window == self.icons ? "icons" : "bar", p->flags, p->hwndInsertAfter,
+                        desktop_level::Above(self.bar, self.icons), desktop_level::Above(glass, self.icons));
+                    std::wprintf(L"  anchor=%ls\n", after);
+                }
+            }
+        }
+        return result;
+    }
+};
+int LiveIdle(bool fixture, bool frosted = false) {
+    Check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "initialize idle probe COM");
+    const HWND previousForeground = GetForegroundWindow();
+    MONITORINFO info{}; info.cbSize = sizeof(info);
+    GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info);
+    const HWND host = fixture ? Window(L"LumeProbeIdleDesktop", info.rcWork) : desktop_level::Host();
+    const HWND view = fixture ? Window(L"SHELLDLL_DefView", {0, 0, 1, 1}, WS_CHILD, host) : nullptr;
+    if (fixture) { ShowWindow(host, SW_SHOW); SetForegroundWindow(host); }
+    Check(WaitFor([&] { return desktop_level::IsDesktopForegroundWindow(GetForegroundWindow(), host); }, fixture ? 30000 : 0),
+        "activate desktop before starting live idle probe");
+    desktop_level::Watcher watcher;
+    Check(watcher.Start(GetModuleHandleW(nullptr)), "start idle desktop watcher");
+    desktop_level::Watcher::ForegroundChanged(host);
+    DockWindow dock(GetModuleHandleW(nullptr), {});
+    Check(dock.Show({{Kind::Launchpad, {}, "Launchpad", false}, {Kind::Lume, {}, "Lume", false}}, frosted), "show idle Dock");
+    const bool ready = WaitFor([&] { auto glass = Surface(dock.BarHandle()); return glass && IsWindowVisible(glass); }, 5000);
+    if (!ready) {
+        std::printf("idle startup: material=%d iconsVisible=%d barVisible=%d desktop=%d\n",
+            static_cast<int>(dock.MaterialState()), IsWindowVisible(dock.Handle()), IsWindowVisible(dock.BarHandle()),
+            desktop_level::DesktopForeground(host));
+        EnumWindows([](HWND w, LPARAM) -> BOOL {
+            if (!IsWindowVisible(w)) return TRUE;
+            wchar_t name[128]{}; GetClassNameW(w, name, 128);
+            std::wprintf(L"visible: %ls zoomed=%d\n", name, IsZoomed(w)); return TRUE;
+        }, 0);
+    }
+    Check(ready, "idle glass becomes visible");
+    Pump(500);
+    IdleOrder order{dock.Handle(), dock.BarHandle()};
+    SetWindowSubclass(order.icons, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&order));
+    SetWindowSubclass(order.bar, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&order));
+    unsigned samples = 0, unstable = 0;
+    const auto until = GetTickCount64() + 8000;
+    do {
+        Pump(5);
+        ++samples;
+        const HWND glass = Surface(order.bar);
+        if (!IsWindowVisible(order.icons) || !IsWindowVisible(order.bar) || !IsWindowVisible(glass) ||
+            !desktop_level::Above(order.icons, order.bar) || !desktop_level::Above(order.bar, glass)) ++unstable;
+    } while (GetTickCount64() < until);
+    RemoveWindowSubclass(order.icons, IdleOrder::Observe, 1);
+    RemoveWindowSubclass(order.bar, IdleOrder::Observe, 1);
+    std::printf("idle Dock: frosted=%d window changes=%u transient inversions=%u samples=%u unstable=%u\n",
+        frosted, order.changes, order.inversions, samples, unstable);
+    watcher.Stop(); dock.Stop();
+    if (fixture) { DestroyWindow(view); DestroyWindow(host); if (IsWindow(previousForeground)) SetForegroundWindow(previousForeground); }
+    CoUninitialize();
+    Check(order.inversions == 0, "idle restacking never places material above icons");
+    Check(unstable == 0, "live material and icons remain visible and ordered while idle");
+    return 0;
 }
 // Explicit live probe for the material renderer; inactive isolated desktops
 // cannot reliably produce WGC frames. No Explorer or existing app is moved.
@@ -248,6 +326,38 @@ int Scenario() {
     Check(WaitFor([&] { return IsWindowVisible(dock.Handle()) && desktop_level::Above(dock.BarHandle(), host); }),
           "desktop activation restores both Dock layers above raised host");
     Check(desktop_level::Above(dock.Handle(), dock.BarHandle()), "Show Desktop preserves Dock pair order");
+    // A taskbar/overlay can be the first non-Lume window above the desktop.
+    // Inserting after its HWND would silently promote the Dock to topmost;
+    // the next idle sweep demotes each layer separately and exposes glass.
+    HWND topmost = Window(L"LumeProbeTopmostOverlay", {0, 0, 100, 40});
+    SetWindowPos(topmost, HWND_TOPMOST, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
+    IdleOrder idle{dock.Handle(), dock.BarHandle()};
+    SetWindowSubclass(idle.icons, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&idle));
+    SetWindowSubclass(idle.bar, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&idle));
+    for (int cycle = 0; cycle < 20; ++cycle) {
+        SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
+        Check(!(GetWindowLongPtrW(dock.Handle(), GWL_EXSTYLE) & WS_EX_TOPMOST) &&
+              !(GetWindowLongPtrW(dock.BarHandle(), GWL_EXSTYLE) & WS_EX_TOPMOST),
+              "idle desktop restack never inherits overlay topmost band");
+        Check(desktop_level::Above(dock.BarHandle(), host), "idle Dock stays above desktop");
+    }
+    DestroyWindow(topmost);
+    // Also exercise a downward repair: an application can reinsert itself
+    // below the entire Dock group without activating or moving the pointer.
+    HWND lower = Window(L"LumeProbeLoweredApplication", {0, 0, 100, 40});
+    for (int cycle = 0; cycle < 10; ++cycle) {
+        SetWindowPos(lower, HWND_BOTTOM, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
+        desktop_level::Watcher::ForegroundChanged(lower);
+        SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
+        Check(desktop_level::Above(lower, dock.Handle()), "lowered application remains a ceiling");
+        ShowWindow(lower, SW_HIDE);
+        desktop_level::Watcher::ForegroundChanged(host);
+        SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
+    }
+    DestroyWindow(lower);
+    RemoveWindowSubclass(idle.icons, IdleOrder::Observe, 1);
+    RemoveWindowSubclass(idle.bar, IdleOrder::Observe, 1);
+    Check(idle.inversions == 0, "idle and downward restacks never cross icon and glass layers");
     ShowWindow(browser, SW_SHOWMAXIMIZED);
     SetWindowPos(browser, host, 0, 0, 0, 0, flags);
     SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
@@ -326,6 +436,9 @@ int Scenario() {
 int wmain(int argc, wchar_t** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (argc > 1 && wcscmp(argv[1], L"--live-material") == 0) return LiveMaterial();
+    if (argc > 1 && wcscmp(argv[1], L"--live-idle") == 0) return LiveIdle(false);
+    if (argc > 1 && wcscmp(argv[1], L"--live-idle-fixture") == 0) return LiveIdle(true);
+    if (argc > 1 && wcscmp(argv[1], L"--live-idle-frosted") == 0) return LiveIdle(true, true);
     if (argc > 1 && wcscmp(argv[1], L"--application") == 0) {
         Window(L"LumeProbeExternalApplication", {0, 0, 800, 600}, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
         MSG message{};

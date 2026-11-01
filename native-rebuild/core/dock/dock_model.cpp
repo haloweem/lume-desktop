@@ -168,6 +168,7 @@ bool Encode(const Preferences& value, std::string& output) {
             collections.push_back({{"id", collection.id}, {"title", collection.title}, {"paths", collection.paths}});
         auto text = Json{{"version", 1}, {"enabled", value.enabled}, {"frosted", value.frosted},
                          {"transparent", value.transparent}, {"reflection", value.reflection},
+                         {"systemTray", value.systemTray},
                          {"iconScale", value.iconScale},
                          {"launchpadScale",value.launchpadScale},{"launchpadIconScale",value.launchpadIconScale},
                          {"position", value.position}, {"bottomOffset", value.bottomOffset}, {"iconSpacing", value.iconSpacing},
@@ -192,7 +193,7 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
         std::size_t optional = ordered ? 1 : 0;
         optional += hasCollections ? 1 : 0;
         optional += json.contains("dockCollections") ? 1 : 0;
-        for (const auto* key : {"transparent", "reflection", "iconScale", "position", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
+        for (const auto* key : {"transparent", "reflection", "systemTray", "iconScale", "position", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
                                 "lumeVisible", "lumePosition"})
             optional += json.contains(key) ? 1 : 0;
         if (json.size() != 5u + optional || !json.contains("version") || json.at("version") != 1 ||
@@ -200,10 +201,11 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
         Preferences value;
         value.enabled = json.at("enabled").get<bool>();
         value.frosted = json.at("frosted").get<bool>();
-        for (const auto* key : {"transparent", "reflection"})
+        for (const auto* key : {"transparent", "reflection", "systemTray"})
             if (json.contains(key) && !json.at(key).is_boolean()) return false;
         if (json.contains("transparent")) value.transparent = json.at("transparent").get<bool>();
         if (json.contains("reflection")) value.reflection = json.at("reflection").get<bool>();
+        if (json.contains("systemTray")) value.systemTray = json.at("systemTray").get<bool>();
         if (json.contains("iconScale")) {
             if (!json.at("iconScale").is_number_integer()||json.at("iconScale")<50||json.at("iconScale")>140) return false;
             value.iconScale = std::min(120,json.at("iconScale").get<int>());
@@ -353,7 +355,7 @@ std::vector<Entry> PageItems(const std::vector<Entry>& items, int page) {
 
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            bool lumeVisible, int lumePosition, std::string_view lumePath) {
+                            bool lumeVisible, int lumePosition, std::string_view lumePath, bool systemTray) {
     std::vector<Item> items{{Kind::Launchpad, {}, "\xe5\x90\xaf\xe5\x8a\xa8\xe5\x8f\xb0", false}};
     const auto lumeSlot = std::clamp(lumePosition, 0, static_cast<int>(pinned.size()));
     const auto addLume = [&] {
@@ -396,6 +398,10 @@ std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::v
         items.push_back({Kind::Separator, {}, {}, false});
         items.insert(items.end(), extra.begin(), extra.end());
     }
+    if (systemTray) {
+        if (!items.empty() && items.back().kind != Kind::Separator) items.push_back({Kind::Separator, {}, {}, false});
+        items.push_back({Kind::SystemTray, {}, "系统快捷设置", false});
+    }
     return items;
 }
 
@@ -423,7 +429,8 @@ void AppendWindows(std::vector<Item>& items, const std::vector<ProgramWindow>& w
 std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
                             std::string_view lumePath) {
-    auto items = DockItems(prefs.pinned, targets, running, pathKey, prefs.lumeVisible, prefs.lumePosition, lumePath);
+    auto items = DockItems(prefs.pinned, targets, running, pathKey, prefs.lumeVisible, prefs.lumePosition, lumePath,
+                           SystemTrayAvailable && prefs.systemTray);
     std::vector<Item> groups;
     for (const auto& id : prefs.dockCollections) {
         const auto* collection = FindCollection(prefs, id);

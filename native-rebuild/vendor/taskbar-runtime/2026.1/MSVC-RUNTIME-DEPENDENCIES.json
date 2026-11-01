@@ -28,7 +28,7 @@
       },
       "explorertap.dll": {
         "machine": "0x8664",
-        "sha256": "86F65A4B341E767B364BF5172E297395672CB859BDCE0422B3D20823A3CD8696",
+        "sha256": "A042741AEB3D631C743A7A819AC15ACDB4C3B1614ADCDAFE8EE945A81198B164",
         "imports": [
           {
             "file": "ole32.dll",
@@ -816,7 +816,7 @@
       },
       "explorertap.dll": {
         "machine": "0xAA64",
-        "sha256": "6D2156A1F1A80C862D414A6D27DAD5D78236704EB692BBECD46ECFD7D11E9191",
+        "sha256": "B8F16BCC0039A0567B6F401232FBD091681555EC0F9FC831E55A91D05F98E167",
         "imports": [
           {
             "file": "ole32.dll",

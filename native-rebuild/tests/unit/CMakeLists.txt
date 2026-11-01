@@ -754,6 +754,8 @@ lume_enable_native_warnings(lume-clock-interaction-test)
 add_dependencies(lume-clock-interaction-test lume-ui-assets)
 add_test(NAME lume-clock-interaction-test COMMAND lume-clock-interaction-test)
 set_tests_properties(lume-clock-interaction-test PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+add_test(NAME lume-clock-reset-test COMMAND lume-clock-interaction-test --reset-only)
+set_tests_properties(lume-clock-reset-test PROPERTIES TIMEOUT 25 RUN_SERIAL TRUE)
 
 add_executable(lume-clock-controller-test clock_controller_test.cpp)
 target_link_libraries(lume-clock-controller-test PRIVATE lume-core)

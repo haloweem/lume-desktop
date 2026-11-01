@@ -34,6 +34,14 @@ bool ClockController::Handle(Action action) {
         if (action.value != 0 && action.value != 1) return false;
         p.locked = action.value != 0; break;
     case ActionType::Reset:
+        // Clear every style's tint so switching styles cannot bring an old
+        // color/opacity back. Geometry and locking retain their existing behavior.
+        for (std::size_t i = 0; i < next.profiles.size(); ++i) {
+            const auto defaults = DefaultProfiles()[i];
+            next.profiles[i].color = defaults.color;
+            next.profiles[i].alpha = defaults.alpha;
+            next.profiles[i].customColor = defaults.customColor;
+        }
         next.style = "welfare";
         next.Active().x = state_.Active().x;
         next.Active().y = state_.Active().y;

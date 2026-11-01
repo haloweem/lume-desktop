@@ -13,8 +13,11 @@ as `Lume Taskbar Core`, forces a transparent desktop taskbar configuration,
 disables all state-specific appearance overrides, hides the tray icon, disables
 configuration saving and logging, suppresses the upstream welcome window, and
 restores the stock taskbar synchronously when shutdown begins instead of waiting
-for XAML teardown or the process-death fallback. The normal upstream build
-remains unchanged when the define is absent.
+for XAML teardown or the process-death fallback. These core configuration changes
+remain gated by the build define. ExplorerTAP also retains the latest appearance
+request while a taskbar frame's XAML background Fill initializes, saves the first
+non-null original brush before applying it, and cancels callbacks on replacement
+or removal. This is frame-local and does not change the COM ABI or TAP API version 4.
 
 After the build, `tools/brand-taskbar-core.ps1` replaces every icon group in
 `LumeTaskbarCore.exe` (x64 and arm64) with `packaging/lume.ico`, so the process
@@ -38,6 +41,11 @@ no longer shows the TranslucentTB artwork. Only icon resources change.
 The build used MSBuild 17.14.40, MSVC 14.44.35207, Windows SDK 10.0.26100.0,
 and vcpkg commit `84bab45d415d22042bd0b9081aea57f362da3f35`.
 
+ExplorerTAP was rebuilt from `ExplorerTAP/ExplorerTAP.vcxproj` for x64 and
+ARM64 with MSBuild 17.14.33 and MSVC 14.44.35207, using the pinned SDK,
+Detours and WIL dependencies above and the upstream static CRT setting. Only
+ExplorerTAP.dll changed; the taskbar core executable was not rebuilt.
+
 `resources.pri` and the two splash assets are unmodified files from the
 TranslucentTB 2026.1 portable payload. `settings.json` is retained for runtime
 inventory compatibility, but a `LUME_TASKBAR_CORE` build ignores external
@@ -55,4 +63,4 @@ Lume ships the original signed AppX packages under each architecture's
 `frameworks/` directory and deploys missing frameworks on the taskbar worker,
 for the current user, before starting the core. See `FRAMEWORKS-SOURCES.md`.
 Existing healthy newer packages are retained. No Store/network connection is
-required, and the core itself remains the same pinned upstream build.
+required, and the core executable remains the same pinned upstream build.

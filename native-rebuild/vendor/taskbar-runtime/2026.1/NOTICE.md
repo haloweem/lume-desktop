@@ -14,5 +14,10 @@ in `lume-taskbar-core.patch`. The Lume build uses a fixed transparent taskbar
 configuration and exposes no independent tray or welcome interface. Lume
 manages the core lifetime through `LumeTaskbarHelper.exe`.
 
+ExplorerTAP retains appearance requests until a taskbar frame's XAML background
+Fill is ready, then saves the original brush before applying the request. This
+frame-local fix preserves the public COM ABI and TAP API version 4; only the x64
+and ARM64 ExplorerTAP DLLs changed.
+
 Complete source and reproducible build instructions are documented in
 `SOURCE.md`. Lume's integration source is part of the Lume source repository.

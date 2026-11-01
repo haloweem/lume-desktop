@@ -7,6 +7,9 @@
 #include <vector>
 
 namespace lume::dock {
+// Paused product feature. Keep saved preferences and implementation for later development.
+// Re-enable together with systemTrayAvailable in ui/dock.js.
+inline constexpr bool SystemTrayAvailable = false;
 inline constexpr std::size_t MaxPinned = 32, MaxAdded = 200, MaxOrder = 1000,
                                  MaxPreferencesBytes = 512 * 1024, MaxCollections = 32;
 inline constexpr int Columns = 7, Rows = 3, PageSize = Columns * Rows;
@@ -33,6 +36,7 @@ struct Preferences {
     bool frosted = false;
     bool transparent = false;  // no material: a fully transparent bar ("无")
     bool reflection = false;   // mirrored icons below the row
+    bool systemTray = false;   // compact Windows status area at the right edge
     int iconScale = DefaultIconScale;
     int position = DefaultPosition;  // horizontal percentage of available desktop space
     int bottomOffset = DefaultBottomOffset;  // extra distance above the default bottom margin, in DIPs
@@ -78,7 +82,7 @@ std::vector<Entry> Filter(const std::vector<Entry>&, std::string_view query, con
 int PageCount(std::size_t items);
 std::vector<Entry> PageItems(const std::vector<Entry>&, int page);
 
-enum class Kind { Launchpad, Lume, Pinned, Running, Separator, Collection, Window };
+enum class Kind { Launchpad, Lume, Pinned, Running, Separator, Collection, Window, SystemTray };
 struct RunningApp {
     std::string executable, name;
     bool asWindows = false;  // shown as its window thumbnails instead of a running icon
@@ -119,7 +123,7 @@ void AppendWindows(std::vector<Item>&, const std::vector<ProgramWindow>&);
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
                             bool lumeVisible = true, int lumePosition = 0,
-                            std::string_view lumePath = {});
+                            std::string_view lumePath = {}, bool systemTray = false);
 std::vector<Item> DockItemsFor(const Preferences&, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
                             std::string_view lumePath = {});

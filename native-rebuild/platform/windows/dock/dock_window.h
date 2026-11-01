@@ -21,6 +21,15 @@ struct DockAppearance {
     int bottomOffset = dock::DefaultBottomOffset;
     int iconSpacing = dock::DefaultIconSpacing;
 };
+struct DockSystemTrayStatus {
+    std::wstring time;
+    std::wstring date;
+    std::wstring battery;
+    std::wstring network;
+    std::wstring volume;
+    std::wstring input;
+    std::wstring bluetooth;
+};
 struct DockWindowPorts {
     std::function<std::shared_ptr<const WidgetBitmap>(const dock::Item&)> icon;
     std::function<void(std::size_t index)> activate;
@@ -49,6 +58,7 @@ struct DockWindowPorts {
     std::wstring slotsName = {};
     std::function<std::vector<dock::ProgramWindow>(const dock::Item&)> windowsFor;
     std::function<void(std::uint64_t handle)> focusWindow;
+    std::function<DockSystemTrayStatus()> systemTray;
 };
 // The Dock: a glass bar at desktop level, positioned in the primary work
 // area (bottom-centre by default), with a transparent icon layer above it so icons can magnify past the
@@ -61,7 +71,7 @@ public:
     // (BarHeight = IconSize + 2 * IconBottom) and Padding on each side.
     static constexpr float BarHeight = 100, Headroom = 72, IconSize = 58, Gap = 10, Padding = 24,
                            CornerRadius = 34, BottomMargin = 10, IconBottom = 21, MaxScale = 1.5f,
-                           ExtraWidth = 200;
+                           ExtraWidth = 200, SystemTrayWidth = 330;
     // Magnification reaches two icons on each side and none beyond.
     static constexpr float Reach = 2.8f;
     static constexpr std::size_t None = static_cast<std::size_t>(-1);
