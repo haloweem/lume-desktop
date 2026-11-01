@@ -218,6 +218,9 @@ struct OrganizerSession::Impl {
             for(std::size_t i=0;i<c->items.size();++i)
                 if(interaction.IsSelected(c->items[i].id))view.selection.push_back(i);
         }
+        void ClearSelection(){
+            interaction.Clear();view.selected.reset();view.selection.clear();hover.reset();titleFocused=false;
+        }
         void SelectFocus(std::size_t index,bool control=false,bool shift=false,bool preserve=false){
             const auto* c=Collection();if(!c||index>=c->items.size())return;
             interaction.Select(ItemIds(true),c->items[index].id,control,shift,preserve);
@@ -607,10 +610,12 @@ struct OrganizerSession::Impl {
         void CheckLostFocus(){
             if(stopping||owner.applying||menu)return;
             const auto focus=GetFocus();
-            if(focus==window.Handle()||focus==editor||(editor&&IsChild(editor,focus)))return;
+            if(focus==window.Handle()||(editor&&(focus==editor||IsChild(editor,focus))))return;
+            ClearSelection();pointer.reset();
             if(view.temporaryExpanded){
                 CloseSearch();FinishTitle(true);view.temporaryExpanded=false;view.scroll=0;Configure();
             }else if(view.searchOpen)CloseSearch();  // clicked elsewhere, e.g. the desktop
+            window.Paint();
         }
         // Lifted-tab feedback: a small card that follows the cursor and says
         // what releasing here will do. 0 reorder, 1 drag out, 2 detach, 3 merge.
@@ -824,7 +829,9 @@ struct OrganizerSession::Impl {
                 const auto b=window.Bounds();
                 const float x=static_cast<float>(GET_X_LPARAM(l))*scale,y=static_cast<float>(GET_Y_LPARAM(l))*scale;
                 auto hit=HitOrganizer(static_cast<float>(b.width),static_cast<float>(b.height),*Collection(),x,y,view);
-                if(hit.kind==OrganizerHit::Kind::None&&(Collapsed()||y<Layout().header.height))hit={OrganizerHit::Kind::Header,0};
+                // Every empty margin can drag the window, including its sides
+                // and footer. Route them through the same click/drag handling.
+                if(hit.kind==OrganizerHit::Kind::None&&(Collapsed()||!InViewport({x,y})))hit={OrganizerHit::Kind::Header,0};
                 return hit;
             };
             if(message==WM_SETTINGCHANGE){RefreshMotionSettings();window.Paint();return {};}
@@ -916,7 +923,12 @@ struct OrganizerSession::Impl {
             if(message==WM_LBUTTONDOWN){
                 FinishTitle(true);
                 const auto hit=hitAt();
+                if(hit.kind==OrganizerHit::Kind::Header||hit.kind==OrganizerHit::Kind::Title||hit.kind==OrganizerHit::Kind::Tab){
+                    ClearSelection();
+                    if(view.searchOpen)CloseSearch();
+                }
                 if(hit.kind==OrganizerHit::Kind::None&&view.searchOpen){
+                    ClearSelection();
                     CloseSearch();
                     SetFocus(hwnd);
                     return 0;
@@ -940,7 +952,7 @@ struct OrganizerSession::Impl {
                 if(InViewport(point)&&!Collapsed()){
                     pressPoint={GET_X_LPARAM(l),GET_Y_LPARAM(l)};pointer=point;dragging=false;lastClick=0;
                     marqueeBase=(w&MK_CONTROL)?interaction.Selected():std::vector<std::string>{};
-                    if(!(w&MK_CONTROL)){interaction.Clear();view.selected.reset();SyncSelection();}
+                    if(!(w&MK_CONTROL))ClearSelection();
                     marqueeStartScroll=view.scroll;
                     marquee=WidgetRect{point.x,point.y,0,0};SetCapture(hwnd);SetFocus(hwnd);window.Paint();return 0;
                 }

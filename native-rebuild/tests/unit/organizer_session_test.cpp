@@ -400,9 +400,96 @@ int BatchDrop(){
     Expect(!session.Running()&&OrganizerIconCache::ActiveWorkers()==0,"bulk organizer stops its window and extraction worker");
     session.Shutdown();return 0;
 }
+int SelectionDismiss(){
+    using ui::PageCommand;using namespace platform::windows;
+    Files files;unsigned opened=0;
+    wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
+    const auto directory=std::filesystem::path(executable).parent_path()/"organizer-fixtures"/std::to_wstring(GetCurrentProcessId());
+    std::filesystem::create_directories(directory);
+    const auto first=directory/"first.txt",second=directory/"second.txt";
+    std::ofstream(first)<<"first";std::ofstream(second)<<"second";
+    shell::OrganizerSession session(GetModuleHandleW(nullptr),"selection-dismiss.json",{},[]{},&files,
+        [&](HWND,const std::wstring&){++opened;return true;});
+    session.HandlePage(PageCommand::OrganizerEnable);
+    Expect(session.AddPaths({first.u8string(),second.u8string()}),"dismiss fixtures added");
+    const auto hwnd=session.Handle();
+    const auto layout=LayoutOrganizer(420,392,session.Snapshot().collections.front());
+    const auto select=[&]{
+        Click(hwnd,layout.cells[0].bounds);
+        const auto point=Point(hwnd,layout.cells[1].bounds);
+        SendMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON|MK_CONTROL,point);
+        SendMessageW(hwnd,WM_LBUTTONUP,MK_CONTROL,point);
+    };
+    const auto expectCleared=[&]{
+        const auto before=opened,writes=files.writes;
+        SendMessageW(hwnd,WM_KEYDOWN,VK_SPACE,0);
+        Expect(opened==before,"dismissed highlight has no keyboard-focused item");
+        SendMessageW(hwnd,WM_KEYDOWN,VK_DELETE,0);
+        Expect(session.Snapshot().collections.front().items.size()==2&&files.writes==writes,
+            "dismissed multi-selection cannot delete references or persist a change");
+    };
+    struct DragProbe {
+        WNDPROC previous=nullptr;bool moved=false;
+        static LRESULT CALLBACK Procedure(HWND hwnd,UINT message,WPARAM w,LPARAM l){
+            auto& probe=*reinterpret_cast<DragProbe*>(GetPropW(hwnd,L"LumeDismissDragProbe"));
+            // Observe entry into the real move path without moving the user's desktop.
+            if(message==WM_NCLBUTTONDOWN&&w==HTCAPTION){probe.moved=true;return 0;}
+            return CallWindowProcW(probe.previous,hwnd,message,w,l);
+        }
+    } probe;
+    SetPropW(hwnd,L"LumeDismissDragProbe",&probe);
+    probe.previous=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(DragProbe::Procedure)));
+    // Covers the header, title, gap, body, footer and both draggable side margins.
+    for(const auto area:{WidgetRect{230,12,0,0},WidgetRect{20,35,0,0},layout.title,
+                         WidgetRect{230,60,0,0},WidgetRect{230,280,0,0},WidgetRect{230,375,0,0},
+                         WidgetRect{12,210,0,0},WidgetRect{408,210,0,0}}){
+        select();Click(hwnd,area);Pump();expectCleared();
+        select();Click(hwnd,layout.search);Pump();
+        auto editor=Editor(hwnd);Expect(editor&&GetFocus()==editor,"search keeps its own editor focused");
+        SetWindowTextW(editor,L"first");
+        Click(hwnd,area);Pump();
+        Expect(!Editor(hwnd),"clicking header or blank body closes search");expectCleared();
+        Click(hwnd,layout.search);Pump();editor=Editor(hwnd);
+        Expect(editor&&GetWindowTextLengthW(editor)==0,"reopened search has no stale filter");
+        SendMessageW(editor,WM_KEYDOWN,VK_ESCAPE,0);Pump();
+    }
+    for(const auto area:{WidgetRect{230,12,0,0},WidgetRect{230,375,0,0},
+                         WidgetRect{12,210,0,0},WidgetRect{408,210,0,0}}){
+        select();Click(hwnd,layout.search);Pump();probe.moved=false;
+        SendMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON,Point(hwnd,area));
+        SendMessageW(hwnd,WM_MOUSEMOVE,MK_LBUTTON,Point(hwnd,{area.x+20,area.y+20,0,0}));
+        SendMessageW(hwnd,WM_LBUTTONUP,0,Point(hwnd,area));Pump();
+        Expect(probe.moved&&GetCapture()!=hwnd&&!Editor(hwnd),
+            "all empty margins still enter window dragging after dismissing search");
+        expectCleared();
+    }
+    SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(probe.previous));
+    RemovePropW(hwnd,L"LumeDismissDragProbe");
+    select();Click(hwnd,layout.search);Pump();
+    auto editor=Editor(hwnd);Expect(editor!=nullptr,"internal focus opens search");
+    SendMessageW(editor,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(8,8));
+    SendMessageW(editor,WM_LBUTTONUP,0,MAKELPARAM(8,8));Pump();
+    Expect(Editor(hwnd)==editor,"clicking inside search does not dismiss it");
+    SendMessageW(editor,WM_KEYDOWN,VK_ESCAPE,0);Pump();
+    const auto before=opened;SendMessageW(hwnd,WM_KEYDOWN,VK_SPACE,0);
+    Expect(opened==before+1,"moving focus into search preserves icon selection");
+    // No focused HWND is what this thread sees when focus leaves for another process.
+    select();SetFocus(nullptr);Pump();expectCleared();
+    select();Click(hwnd,layout.search);Pump();SetFocus(nullptr);Pump();
+    Expect(!Editor(hwnd),"external focus closes search");expectCleared();
+    SendMessageW(hwnd,WM_LBUTTONDBLCLK,MK_LBUTTON,Point(hwnd,layout.title));Pump();
+    editor=Editor(hwnd);Expect(editor!=nullptr,"title rename survives internal focus transfer");
+    SetWindowTextW(editor,L"renamed");SendMessageW(editor,WM_KEYDOWN,VK_RETURN,0);Pump();
+    Expect(session.Snapshot().collections.front().title=="renamed","title rename still commits");
+    session.Shutdown();
+    std::filesystem::remove(first);std::filesystem::remove(second);
+    std::filesystem::remove(directory);
+    return 0;
+}
 int main(int argc,char** argv){
     using ui::PageCommand;using namespace platform::windows;
     Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM");
+    if(argc==2&&std::string(argv[1])=="--selection-dismiss"){const auto result=SelectionDismiss();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--material-unavailable"){
         const auto result=MaterialUnavailable();CoUninitialize();return result;
     }
@@ -414,7 +501,7 @@ int main(int argc,char** argv){
     }
     if(argc==2&&std::string(argv[1])=="--grouped-close"){const auto result=GroupedClose();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--batch-drop"){const auto result=BatchDrop();CoUninitialize();return result;}
-    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop]");
+    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop|--selection-dismiss]");
     Expect(OrganizerPathKey(u8"C:\\ÉCOLE.TXT")==OrganizerPathKey(u8"c:\\école.txt"),"Unicode path identity");
     Expect(OrganizerSearchKey(u8"ＡＢＣ　报告")=="abc "+std::string(u8"报告"),"NFKC search matching");
     {

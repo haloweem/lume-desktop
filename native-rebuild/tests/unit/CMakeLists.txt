@@ -409,6 +409,8 @@ add_test(NAME lume-organizer-session-test COMMAND lume-organizer-session-test)
 set_tests_properties(lume-organizer-session-test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 add_test(NAME lume-organizer-editor-material-test COMMAND lume-organizer-session-test --editor-material)
 set_tests_properties(lume-organizer-editor-material-test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+add_test(NAME lume-organizer-selection-dismiss-test COMMAND lume-organizer-session-test --selection-dismiss)
+set_tests_properties(lume-organizer-selection-dismiss-test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 add_executable(lume-desktop-organizer-test desktop_organizer_test.cpp)
 target_compile_definitions(lume-desktop-organizer-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
