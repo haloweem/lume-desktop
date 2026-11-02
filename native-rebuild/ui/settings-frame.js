@@ -1,9 +1,20 @@
 import {escapeHTML as h,back} from './dom.js';
 import {t} from './localization.js';
+import {lumeIcon} from './lume-icons.js';
 
 // Shared original DesktopWidgetDetails / ModDetailsFrame layout. No service ownership.
-export function settingsFrame({title,description,tab,body,status='',error=false,scope='',backLabel=t('返回组件列表','Back to widgets')}) {
-  return `<div class="settings" data-settings-scope="${h(scope)}"><div class="settings-card"><div class="settings-head">${back(backLabel)}<div><h3>${h(title)}</h3><p>${h(description)}</p></div></div><div class="settings-tabs" role="tablist">${['settings','details'].map((key,index)=>`<button role="tab" aria-selected="${tab===key}" data-tab="${key}">${index?t('详情','Details'):t('设置','Settings')}</button>`).join('')}</div><div class="settings-body" role="region" aria-label="${h(title)}${tab==='settings'?t('设置',' settings'):t('详情',' details')}">${body}</div><p role="${error?'alert':'status'}" class="status ${error?'error':''}" ${status?'':'hidden'}>${h(status)}</p></div></div>`;
+export function settingsFrame({title,description,tab,body,status='',error=false,scope='',backLabel=t('返回组件列表','Back to widgets'),variant=''}) {
+  const island=variant==='island';
+  const navigation=island?`<aside class="settings-side-nav" aria-label="${t('灵动岛页面','Dynamic Island pages')}">
+    <button type="button" class="settings-side-nav__back lume-icon-button" data-action="back" aria-label="${h(backLabel)}" title="${h(backLabel)}">${lumeIcon('back')}</button>
+    <nav class="settings-side-nav__links" role="tablist">
+      ${[['home',t('首页','Home')],['music',t('音乐','Music')],['todo',t('待办','To-do')],['quick-launch',t('快捷启动','Quick launch')],['clock',t('时钟','Clock')],['notifications',t('通知','Notifications')],['settings',t('设置','Settings')],['details',t('详情','Details')]].map(([key,label])=>
+        `<button type="button" role="tab" aria-label="${h(label)}" title="${h(label)}" aria-selected="${tab===key}" data-tab="${key}">${lumeIcon(key,{selected:tab===key})}</button>`).join('')}
+    </nav>
+  </aside>`:'';
+  const tabs=island?'':`<div class="settings-tabs" role="tablist">${['settings','details'].map((key,index)=>`<button role="tab" aria-selected="${tab===key}" data-tab="${key}">${index?t('详情','Details'):t('设置','Settings')}</button>`).join('')}</div>`;
+  const regionLabel=tab==='settings'?t('设置',' settings'):tab==='home'?t('主页',' home'):t('详情',' details');
+  return `<div class="settings${island?' settings--island':''}" data-settings-scope="${h(scope)}">${navigation}<div class="settings-card"><div class="settings-head">${back(backLabel)}<div><h3>${h(title)}</h3><p>${h(description)}</p></div></div>${tabs}<div class="settings-body" role="region" aria-label="${h(title)}${regionLabel}">${body}</div><p role="${error?'alert':'status'}" class="status ${error?'error':''}" ${status?'':'hidden'}>${h(status)}</p></div></div>`;
 }
 
 export function settingsSelect(id,label,value,options,disabled=false) {

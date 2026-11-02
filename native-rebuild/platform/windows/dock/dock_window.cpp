@@ -29,6 +29,7 @@ constexpr wchar_t GhostClass[] = L"LumeNativeDockDragIcon", PreviewClass[] = L"L
 constexpr UINT_PTR PreviewTimer = 0x7c3;
 constexpr UINT_PTR PreviewLeaveTimer = 0x7c4;
 constexpr UINT FrameMessage = WM_APP + 0x7c1;
+constexpr double MinFrameInterval = 1.0 / 90.0;
 constexpr float DragThreshold = 5, DragLift = 12, DragScale = 1.12f;
 // A dragged icon this far (DIPs) beyond the glass is removed when released.
 constexpr float RemoveDistance = 36;
@@ -504,6 +505,10 @@ struct DockWindow::Impl {
     }
     bool Paint() {
         if (!icons || !visible || !iconCanvas) return false;
+        if (look.reflection) {
+            for (auto it = mirrors.begin(); it != mirrors.end();)
+                it = it->second.first.expired() ? mirrors.erase(it) : std::next(it);
+        }
         const float height = Headroom + BarHeight + BottomMargin;
         if (!iconCanvas->Begin(overlayWidth, height, dpi)) { visible = false; return false; }
         // A near-transparent body over the bar keeps it hit-testable; the
@@ -916,8 +921,6 @@ struct DockWindow::Impl {
     // The icon flipped upside down, fading out over its upper half, as on a
     // glossy shelf. Built once per icon bitmap.
     std::shared_ptr<const WidgetBitmap> Mirror(const std::shared_ptr<const WidgetBitmap>& source) {
-        for (auto it = mirrors.begin(); it != mirrors.end();)
-            it = it->second.first.expired() ? mirrors.erase(it) : std::next(it);
         const auto found = mirrors.find(source.get());
         if (found != mirrors.end()) return found->second.second;
         auto result=std::make_shared<const WidgetBitmap>(MakeDockReflection(*source));
@@ -1264,13 +1267,16 @@ struct DockWindow::Impl {
         case FrameMessage: {
             self->clock.Consumed();
             if (!self->visible) { self->clock.Pause(); return 0; }
+            // The bitmap path does a software draw, readback and layered-window
+            // update. On high-refresh displays, skip surplus vblanks.
+            if (AnimationSeconds() - self->lastFrame < MinFrameInterval) return 0;
             const bool moving = self->Step();
             self->Paint();
             // An open drop gap only needs frames while it springs; DragHover
             // restarts the clock when the slot changes. Keeping it running
             // repainted the whole Dock at the display rate for as long as a
             // launchpad item hovered, on the thread that also moves that item.
-            if (!moving && !self->hovering && self->dragged == None) self->clock.Pause();
+            if (!moving && self->dragged == None) self->clock.Pause();
             return 0;
         }
         case WM_MOUSEMOVE: {

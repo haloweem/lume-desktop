@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdio>
 #include <string>
+#include <string_view>
 
 // Diagnoses dropped animation frames on the UI thread, where the Dock, the
 // launchpad, the island and every desktop widget share one message loop.
@@ -25,6 +26,7 @@ inline std::array<Dispatch, 64> recent{};
 inline std::size_t next = 0;
 inline std::wstring logPath;  // empty: no log
 inline void SetLogPath(std::wstring path) { logPath = std::move(path); }
+inline bool HasLogPath() { return !logPath.empty(); }
 // Dispatches one message, remembering it when it took more than 6 ms.
 inline void Run(const MSG& message) {
     const double start = Now();
@@ -40,14 +42,30 @@ inline void Run(const MSG& message) {
 }
 // Appends one line: what the animation was, its dropped-frame gaps (offset
 // and length in ms from `start`) and the slow dispatches since `start`.
-inline void Report(const char* what, double start, double refreshMs, const std::string& gaps) {
-    if (logPath.empty() || gaps.empty()) return;
+inline void Report(const char* what, double start, double refreshMs, const std::string& gaps,
+                   std::string_view details = {}) {
+    if (logPath.empty() || (gaps.empty() && details.empty())) return;
+    constexpr ULONGLONG MaxTraceBytes = 1ull << 20;
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (GetFileAttributesExW(logPath.c_str(), GetFileExInfoStandard, &info)) {
+        const ULONGLONG bytes = (static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+        if (bytes >= MaxTraceBytes) {
+            std::wstring previous = logPath;
+            const auto extension = previous.rfind(L".log");
+            if (extension != std::wstring::npos) previous.replace(extension, 4, L".1.log");
+            else previous += L".1";
+            if (!MoveFileExW(logPath.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING)) return;
+        }
+    }
     FILE* file = _wfopen(logPath.c_str(), L"ab");
     if (!file) return;
     SYSTEMTIME time{};
     GetLocalTime(&time);
-    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u %s refresh=%.1fms gaps:%s | slow:", time.wYear, time.wMonth, time.wDay,
-                 time.wHour, time.wMinute, time.wSecond, what, refreshMs, gaps.c_str());
+    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u %s refresh=%.1fms pid=%lu tid=%lu", time.wYear, time.wMonth, time.wDay,
+                 time.wHour, time.wMinute, time.wSecond, what, refreshMs, GetCurrentProcessId(), GetCurrentThreadId());
+    if (!details.empty()) std::fprintf(file, " %.*s", static_cast<int>(details.size()), details.data());
+    if (!gaps.empty()) std::fprintf(file, " gaps:%s", gaps.c_str());
+    std::fputs(" | slow:", file);
     for (std::size_t i = 0; i < recent.size(); ++i) {
         const auto& d = recent[(next + i) % recent.size()];
         if (d.ms <= 0 || d.at < start - 50) continue;

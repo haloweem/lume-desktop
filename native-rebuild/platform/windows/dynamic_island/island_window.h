@@ -1,6 +1,5 @@
 #pragma once
 #include "core/dynamic_island/island_model.h"
-#include "core/dynamic_island/island_customization.h"
 #include "core/widget/widget_preferences.h"
 #include "core/calendar/calendar_date.h"
 #include "core/performance/performance_metrics.h"
@@ -21,11 +20,12 @@ struct IslandPresentation {
     bool focusing = false, finished = false, english = false;
 };
 enum class IslandSize { Small, Standard, Large };
+enum class IslandShape { Standard, Capsule };
 // Pages of the expanded island; the mouse wheel moves between them.
 // Reminder lists the reminders shown in this session, once there is one.
 // Weather shows the weather component's current reading (it never fetches).
 // Performance reuses the widget's view with samples kept warm while enabled.
-enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance, Focus, Launchpad, Actions, Overview, Empty };
+enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance };
 struct IslandTodo {
     std::string id;
     std::wstring title, time;
@@ -58,14 +58,22 @@ struct IslandDisplay {
     bool messages = true;        // Show new QQ / WeChat / ... messages (their taskbar button flashing).
     IslandSize size = IslandSize::Standard;
     IslandMaterial material = IslandMaterial::None;
-    dynamic_island::Customization customization;
+    IslandShape shape = IslandShape::Capsule;
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
     return a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.size == b.size && a.material == b.material &&
-           a.autoHide == b.autoHide && a.messages == b.messages && a.customization == b.customization;
+           a.autoHide == b.autoHide && a.messages == b.messages && a.shape == b.shape;
 }
 inline bool operator!=(const IslandDisplay& a, const IslandDisplay& b) { return !(a == b); }
+struct IslandPreviewFrame {
+    WidgetBitmap pixels;
+    unsigned width=0,height=0;
+    float cornerRadius=0;
+    float shapeMix=0,topOffset=0;
+    bool animating=false;
+    std::uint32_t accent=0;
+};
 
 // UI-thread window. Owns only drawing, input and short-lived animation timers.
 // It never activates, hooks the mouse only while expanded (to collapse on an
@@ -100,6 +108,9 @@ public:
     bool Shown() const;
     // Copy the actual composed foreground for rendering verification.
     WidgetBitmap Frame() const;
+    // Same drawing code, isolated canvas: no HWND, timers, hooks or live state changes.
+    IslandPreviewFrame Preview(const IslandDisplay&,bool expanded,float advanceSeconds=0);
+    void ReleasePreview();
     // Latest sample used by the performance page, including while collapsed.
     std::optional<performance::Snapshot> PerformanceReading() const;
     // Verification: completes running animations immediately.

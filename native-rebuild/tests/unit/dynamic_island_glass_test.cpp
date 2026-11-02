@@ -40,6 +40,10 @@ void Material(IslandMaterial material,bool topmost,const char* reason){
     // The capsule changes size when expanded; the glass must stay.
     window.Expand(true);Pump(900);
     Check(GlassShown(window.Handle()),"glass stays when expanded");
+    display.shape=platform::windows::IslandShape::Standard;
+    Check(window.SetDisplay(display),"attached shape applies while glass is running");Pump(500);
+    Check(GlassShown(window.Handle()),"glass stays when switching to attached shape");
+    window.Expand(false);Pump(500);Check(GlassShown(window.Handle()),"attached compact glass stays visible");
     window.Stop();
 }
 // Choosing a glass in settings or the menu while the island is running.

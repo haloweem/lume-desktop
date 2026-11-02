@@ -94,6 +94,12 @@ void TestExactVersionedCommands() {
         {L"v1|dynamicIsland|material|none", PageCommand::IslandMaterialNone},
         {L"v1|dynamicIsland|material|liquid-glass", PageCommand::IslandMaterialLiquid},
         {L"v1|dynamicIsland|material|frosted-glass", PageCommand::IslandMaterialFrosted},
+        {L"v1|dynamicIsland|shape|standard", PageCommand::IslandShapeStandard},
+        {L"v1|dynamicIsland|shape|capsule", PageCommand::IslandShapeCapsule},
+        {L"v1|dynamicIsland|resetAppearance", PageCommand::IslandResetAppearance},
+        {L"v1|dynamicIsland|preview|compact", PageCommand::IslandPreviewCompact},
+        {L"v1|dynamicIsland|preview|expanded", PageCommand::IslandPreviewExpanded},
+        {L"v1|dynamicIsland|preview|stop", PageCommand::IslandPreviewStop},
     };
     for (const auto& item : islandMaterials) {
         Expect(ParsePageCommand(item.first) == item.second, "dynamic island material command fits protocol bounds");

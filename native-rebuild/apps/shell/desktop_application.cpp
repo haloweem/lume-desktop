@@ -196,7 +196,12 @@ struct DesktopApplication::State {
             value.externalSetPlaying=[this](bool playing){systemMedia.SetPlaying(playing);};
         }
         value.openSettings=[this]{Open(ManagerPage::DynamicIsland);};
-        value.openLaunchpad=[this]{if(!dock.ToggleLaunchpad())Open(ManagerPage::Dock);};
+        value.previewWallpaper=[] {
+            wchar_t executable[32768]{};
+            const auto length=GetModuleFileNameW(nullptr,executable,32768);
+            if(!length||length>=32768)return std::wstring{};
+            return (std::filesystem::path(executable).parent_path()/L"ui/assets/island-preview/forest.jpg").wstring();
+        };
         // Same store as the calendar and today todo widgets: reads go to it on
         // demand and toggles dispatch through it, so every view stays in sync.
         value.todos.forDay=[this](calendar::Date day){return exiting?std::vector<platform::windows::IslandTodo>{}:islandTodos.ForDay(day);};
@@ -400,6 +405,7 @@ struct DesktopApplication::State {
             }
         });
         window.ConfigureVisibility([this](bool visible){
+            if(!visible)dynamicIsland.ReleasePreview();
             if(!visible){radial.CancelCapture();musicAccounts.CancelActive();musicOnline.Cancel();musicLibrary.SetVisible(false);musicFonts.Cancel();musicBackground.CancelActive();musicBackground.SetVisible(false);}
             if(visible && ready && !exiting) {PostCurrentState();updateNotifications.RetryPresentation();}
         });
@@ -1001,7 +1007,7 @@ struct DesktopApplication::State {
                 musicOnline.Cancel();
                 musicLibrary.SetVisible(false);
                 musicFonts.Cancel();musicBackground.CancelActive();musicBackground.SetVisible(false);
-                visible=false;ready=false;radial.CancelCapture();calendar.CancelEditor();dock.Refresh();
+                visible=false;ready=false;dynamicIsland.ReleasePreview();radial.CancelCapture();calendar.CancelEditor();dock.Refresh();
                 ui::WallpaperPageCommand releasePreview;releasePreview.action=ui::WallpaperAction::EndPreview;
                 wallpaper.HandlePage(releasePreview);
                 account.HandleWallpaper({ui::WallpaperAction::EndStats});
@@ -1011,9 +1017,9 @@ struct DesktopApplication::State {
             // Exit must let GetMessage consume the quit, including a native
             // editor's repost. PostQuitMessage is synthesized only after pending
             // messages, so a filtered PeekMessage is not a reliable drain.
-            // Dropped animation frames are traced beside diagnostics.json.
-            if(const auto slash=options.diagnosticsPath.find_last_of("\\/");slash!=std::string::npos)
-                lume::platform::windows::ui_stall::SetLogPath(lume::text::Wide(options.diagnosticsPath.substr(0,slash+1)+"launchpad-frames.log"));
+            // Opening and drag summaries share the bounded diagnostic frame log.
+            if(const auto directory=lume::platform::windows::diag::Directory();!directory.empty())
+                lume::platform::windows::ui_stall::SetLogPath((directory/L"launchpad-frames.log").wstring());
             while((!exiting||awaitingQuit)&&!opening&&(options.startHidden||clock.Running()||calendar.Running()||performance.Handle()||spectrum.Handle()||todayTodo.Handle()||almanac.Handle()||weather.Handle()||organizer.Handle()||radial.Running()||dock.Running()||dock.Snapshot().enabled||dynamicIsland.Running()||desktopIcons.Running()||desktopIcons.HasRecovery()||taskbar.HasWork()||
                 (taskbar.Preferences().enabled&&taskbar.Preferences().transparentTaskbar)||minimize.Running()||wallpaper.HasWork()||reminders.HasWork()||applicationSettings.HasWork()||account.HasWork()||music.HasWork()||musicAccounts.HasWork()||musicOnline.HasWork()||musicLibrary.HasWork()||musicDesktop.Running()||notes.Active()||musicBackground.HasWork()||updateNotifications.HasWork())&&trayAvailable){
                 MSG message{};const int got=GetMessageW(&message,nullptr,0,0);

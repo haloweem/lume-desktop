@@ -43,6 +43,29 @@ float roundedDistance(float2 p, float2 halfSize, float radius) {
   float2 q = abs(p) - halfSize + radius;
   return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 }
+float islandDistance(float2 p,float2 size,float shoulder,float radius) {
+  float bounds=max(max(-p.x,p.x-size.x),max(-p.y,p.y-size.y));
+  if(p.y<shoulder) {
+    if(p.x<shoulder)return max(bounds,shoulder-length(p-float2(0,shoulder)));
+    if(p.x>size.x-shoulder)return max(bounds,shoulder-length(p-float2(size.x,shoulder)));
+    return bounds;
+  }
+  if(p.y>size.y-radius) {
+    if(p.x<shoulder+radius)return max(bounds,length(p-float2(shoulder+radius,size.y-radius))-radius);
+    if(p.x>size.x-shoulder-radius)return max(bounds,length(p-float2(size.x-shoulder-radius,size.y-radius))-radius);
+  }
+  return max(bounds,max(shoulder-p.x,p.x-size.x+shoulder));
+}
+float islandMorphDistance(float2 p,float2 size,float shoulder,float radius,float capsuleRadius,float mix) {
+  return lerp(roundedDistance(p-size*.5,size*.5,capsuleRadius),islandDistance(p,size,shoulder,radius),mix);
+}
+float islandCoverage(float2 p,float2 size,float shoulder,float radius,float capsuleRadius,float mix,float distance) {
+  if(abs(distance)>=.708)return distance<0?1:0;
+  float coverage=0;
+  [unroll]for(int y=0;y<8;++y)[unroll]for(int x=0;x<8;++x)
+    coverage+=islandMorphDistance(p+(float2(x,y)+.5)/8-.5,size,shoulder,radius,capsuleRadius,mix)<=0?1:0;
+  return coverage/64;
+}
 float roundedPixelCoverage(float2 p, float2 halfSize, float radius, float distance) {
   // Actual coverage of one physical pixel, matching the shared liquid pane.
   // Work is limited to the boundary; no supersized offscreen surface.
@@ -96,6 +119,14 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   }
   float mask = roundedPixelCoverage(p, effect.z < 0.0 ? lensSize * 0.5 : float2(radius, radius),
       effect.z < 0.0 ? min(-effect.z, radius) : radius, -inside);
+  if(optical.y<-.5) {
+    float2 islandPoint=p+lensSize*.5;
+    float shoulder=min(10*dpi,lensSize.y*.25),bottomRadius=min(28*dpi,lensSize.y*.25);
+    float mix=saturate(-optical.y-1),capsuleRadius=min(-effect.z,radius);
+    float distance=islandMorphDistance(islandPoint,lensSize,shoulder,bottomRadius,capsuleRadius,mix);
+    inside=-distance;
+    mask=islandCoverage(islandPoint,lensSize,shoulder,bottomRadius,capsuleRadius,mix,distance);
+  }
   if (optical.x > 0.0) {
     float outerRadius = radius - 8.0 * dpi;
     inside = min(outerRadius - radial, radial - optical.x);
@@ -105,6 +136,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   }
   float shadow = exp(-max(shadowDistance, 0.0) / (1.9 * scale)) * 0.17
       * smoothstep(-0.65, 0.8, p.y / radius) * (1.0 - mask);
+  if(optical.y<-.5)shadow=0;
   if (optical.x > 0.0) shadow = 0.0;
   if (mask <= 0.0) return float4(0, 0, 0, shadow);
   float edge = 1.0 - smoothstep(0.0, 6.5 * scale, inside);

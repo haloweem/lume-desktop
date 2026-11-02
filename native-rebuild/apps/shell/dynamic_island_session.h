@@ -21,7 +21,6 @@ struct DynamicIslandSessionOptions {
     std::function<void(dynamic_island::Action)> externalControl;
     std::function<void(bool playing)> externalSetPlaying;
     std::function<void()> openSettings;
-    std::function<void()> openLaunchpad;
     std::function<std::uint64_t()> monotonicMillis;
     // The calendar todo store shared with the calendar and today todo widgets.
     platform::windows::IslandTodoSource todos;
@@ -30,6 +29,8 @@ struct DynamicIslandSessionOptions {
     std::function<dynamic_island::Weather()> weather;
     std::function<void()> openWeatherSettings;
     std::function<void(bool)> weatherActive;
+    // Bundled Forest sample background; independent of the user's desktop.
+    std::function<std::wstring()> previewWallpaper;
 };
 
 class DynamicIslandSession final {
@@ -45,6 +46,7 @@ public:
     void RefreshTodos();
     // Re-reads the weather component and repaints the weather page.
     void RefreshWeather();
+    void ReleasePreview();
     bool ShowNotice(const std::string& taskId,const std::wstring& title,const std::wstring& time);
     const widget::Preferences& Snapshot() const;
     void Shutdown();

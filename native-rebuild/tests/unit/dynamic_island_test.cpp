@@ -1,5 +1,6 @@
 #include "apps/shell/dynamic_island_session.h"
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/dynamic_island/island_preview.h"
 #include "vendor/nlohmann/json.hpp"
 #include <objbase.h>
 #include <gdiplus.h>
@@ -86,6 +87,14 @@ void Scenario(){
         Click(hwnd,186,128);Check(controls==1&&last==dynamic_island::Action::Toggle,"real play pause button routes narrow control");
         Click(hwnd,114,128);Click(hwnd,258,128);Check(controls==3&&last==dynamic_island::Action::Next,"previous next route controls");
         Check(State(session)["hideFullscreen"]==true&&State(session)["size"]=="standard","default display options");
+        Check(State(session)["shape"]=="capsule","legacy preferences retain floating capsule by default");
+        session.HandlePage(PageCommand::IslandShapeStandard);Pump(900);
+        {RECT at{};GetWindowRect(session.Handle(),&at);MONITORINFO monitor{sizeof(monitor)};
+         GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitor);
+         Check(State(session)["shape"]=="standard"&&at.top==monitor.rcMonitor.top,"attached shape applies at the actual screen top");}
+        {files.fail=true;const auto saved=files.values["island-display.json"];
+         session.HandlePage(PageCommand::IslandShapeCapsule);Pump(900);
+         Check(State(session)["shape"]=="standard"&&State(session)["error"]=="save"&&files.values["island-display.json"]==saved,"failed shape save rolls back native shape and file");files.fail=false;}
         session.HandlePage(PageCommand::IslandSizeLarge);session.HandlePage(PageCommand::IslandHoverOn);
         Check(State(session)["size"]=="large"&&State(session)["hover"]==true&&files.values.count("island-display.json"),"display options persisted beside preferences");
         {   files.fail=true;const auto saved=files.values["island-display.json"];
@@ -117,12 +126,35 @@ void Scenario(){
         shell::DynamicIslandSession restored(GetModuleHandleW(nullptr),options,&files);
         Check(restored.Restore()&&restored.Running()&&restored.Snapshot().locked,"enabled and locked survive restart");
         Check(State(restored)["topmost"]==true&&State(restored)["hover"]==false&&
-              State(restored)["autoHide"]==false&&State(restored)["material"]=="none",
+              State(restored)["autoHide"]==false&&State(restored)["material"]=="none"&&State(restored)["shape"]=="standard",
               "display options including unchecked auto-hide survive restart");restored.Shutdown();
         files.values["broken.json"]="bad data";options.preferencesPath="broken.json";
         shell::DynamicIslandSession broken(GetModuleHandleW(nullptr),options,&files);
         Check(broken.Restore()&&!broken.Running()&&files.values["broken.json"]=="bad data","corrupt data not overwritten on read");
         broken.HandlePage(PageCommand::IslandEnable);Check(files.values["broken.json.corrupt"]=="bad data"&&broken.Running(),"explicit save isolates corrupt file");
+    }
+    {
+        Files legacyFiles;
+        auto legacyOptions=options;legacyOptions.preferencesPath="legacy.json";
+        const auto display=nlohmann::json{{"version",1},{"topmost",false},{"autoHide",false},
+            {"size","large"},{"material","liquid-glass"},
+            {"customization",{{"customIcons",true},{"overview",true},{"left",{{"widget","clock"},{"style","capsule"}}}}}}.dump()+std::string(4500,' ');
+        legacyFiles.values["legacy-display.json"]=display;
+        shell::DynamicIslandSession legacy(GetModuleHandleW(nullptr),legacyOptions,&legacyFiles);
+        Check(legacy.Restore()&&!legacy.Running(),"legacy side/workspace settings never activate a disabled island");
+        const auto state=State(legacy);
+        Check(!state.contains("customization")&&state["size"]=="large"&&state["material"]=="liquid-glass"&&
+              state["topmost"]==false&&state["autoHide"]==false,"legacy customization is ignored while ordinary display settings survive");
+        Check(legacyFiles.values["legacy-display.json"]==display,"loading legacy settings does not rewrite user data");
+        Check(legacy.HandlePage(PageCommand::IslandSizeSmall).has_value(),"ordinary settings remain editable");
+        const auto saved=nlohmann::json::parse(legacyFiles.values["legacy-display.json"]);
+        Check(!saved.contains("customization")&&saved["size"]=="small"&&saved["topmost"]==false&&saved["autoHide"]==false,
+              "next explicit save retires customization and preserves ordinary settings");
+        Check(legacy.HandlePage(PageCommand::IslandResetAppearance).has_value(),"appearance reset is supported while disabled");
+        const auto reset=nlohmann::json::parse(legacyFiles.values["legacy-display.json"]);
+        Check(reset["shape"]=="capsule"&&reset["material"]=="none"&&reset["size"]=="standard"&&
+              reset["topmost"]==false&&reset["autoHide"]==false,
+              "appearance reset restores only shape material and size and preserves visibility preferences");
     }
     {
         using namespace platform::windows;
@@ -136,6 +168,120 @@ void Scenario(){
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();SaveFrame(window.Frame(),L"compact.png");
         window.Expand(true);window.Settle();window.Update({playing,L"",L"",0,false,false,false});
         SaveFrame(window.Frame(),L"music.png");
+        {BOOL animation=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animation,0);
+         const HWND same=window.Handle();RECT before{},during{},final{};GetWindowRect(same,&before);
+         display.shape=IslandShape::Standard;window.SetDisplay(display);Pump(85);GetWindowRect(same,&during);
+         SaveFrame(window.Frame(),L"shape-transition.png");
+         window.Settle();GetWindowRect(same,&final);
+         Check(window.Handle()==same,"shape morph retains one native HWND");
+         if(animation)Check(during.top<before.top&&during.top>final.top,"shape morph moves through an intermediate position");
+         display.shape=IslandShape::Capsule;window.SetDisplay(display);Pump(45);
+         display.shape=IslandShape::Standard;window.SetDisplay(display);window.Settle();}
+        {const auto frame=window.Frame();const auto alpha=[&](int x,int y){return frame.pixels[static_cast<std::size_t>(MulDiv(y,GetDpiForWindow(window.Handle()),96))*frame.width+MulDiv(x,GetDpiForWindow(window.Handle()),96)]>>24;};
+         Check(alpha(12,1)>200&&alpha(1,18)==0&&alpha(186,70)>200,"attached contour has top shoulder, transparent side, and solid body");SaveFrame(frame,L"shape-standard-expanded.png");}
+        window.Expand(false);window.Settle();SaveFrame(window.Frame(),L"shape-standard-compact.png");
+        {
+            playing.artwork="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAAAiSURBVChThcihEQAACAAh919aOx88GjP7SCihhBJKKKEEDoMXf4GjQpJVAAAAAElFTkSuQmCC";
+            display.autoHide=false;window.SetDisplay(display);
+            window.Update({playing,L"",L"",0,false,false,false});window.Settle();
+            const int dpi=static_cast<int>(GetDpiForWindow(window.Handle()));
+            const auto px=[&](int dip){return MulDiv(dip,dpi,96);};
+            const auto frame=window.Frame();
+            int minX=frame.width,minY=frame.height,maxX=0,maxY=0,count=0;
+            for(unsigned y=0;y<frame.height;++y)for(unsigned x=0;x<frame.width;++x){
+                const auto p=frame.pixels[static_cast<std::size_t>(y)*frame.width+x];
+                if(x<static_cast<unsigned>(px(100))&&((p>>8)&255)>180&&((p>>16)&255)<80&&(p&255)<80){
+                    minX=std::min(minX,static_cast<int>(x));maxX=std::max(maxX,static_cast<int>(x));
+                    minY=std::min(minY,static_cast<int>(y));maxY=std::max(maxY,static_cast<int>(y));++count;
+                }
+            }
+            Check(minX>=px(16)&&count>px(20)*px(20)&&count>=(maxX-minX+1)*(maxY-minY+1)*.96,
+                  "standard compact artwork remains a complete rectangle inside the shoulders");
+            SaveFrame(frame,L"shape-standard-artwork.png");
+            playing.playing=false;window.Update({playing,L"",L"",0,false,false,false});window.Settle();
+            const auto paused=window.Frame();int barPixels=0;
+            for(int y=px(6);y<px(28);++y){
+                const auto p=paused.pixels[static_cast<std::size_t>(y)*paused.width+px(199)];
+                if(((p>>8)&255)>90&&((p>>8)&255)>((p>>16)&255)+40)++barPixels;
+            }
+            Check(barPixels>=px(6),"standard paused spectrum retains upright bars instead of corner dots");
+            SaveFrame(paused,L"shape-standard-paused.png");
+            IslandPreviewRenderer renderer;
+            wchar_t samplePath[32768]{};
+            const DWORD sampleLength=GetEnvironmentVariableW(L"LUME_ISLAND_PREVIEW_SAMPLES",samplePath,32768);
+            const auto sampleDirectory=sampleLength&&sampleLength<32768?std::filesystem::path(samplePath):std::filesystem::path{};
+            if(!sampleDirectory.empty())std::filesystem::create_directories(sampleDirectory);
+            wchar_t wallpaperPath[32768]{};
+            const DWORD wallpaperLength=GetEnvironmentVariableW(L"LUME_ISLAND_PREVIEW_WALLPAPER",wallpaperPath,32768);
+            const auto sampleWallpaper=wallpaperLength&&wallpaperLength<32768?std::filesystem::path(wallpaperPath):std::filesystem::path{};
+            const auto same=window.Handle();
+            for(const auto shape:{IslandShape::Standard,IslandShape::Capsule})
+              for(const auto size:{IslandSize::Small,IslandSize::Standard,IslandSize::Large})
+              for(const auto material:{IslandMaterial::None,IslandMaterial::Liquid,IslandMaterial::Frosted}) {
+                auto choice=display;choice.shape=shape;choice.size=size;choice.material=material;
+                window.SetDisplay(choice);window.Settle();
+                const auto preview=window.Preview(choice,false);
+                Check(window.Handle()==same&&!window.Expanded(),"preview never changes live HWND or expansion");
+                Check(preview.width>0&&preview.height>0,"offscreen native foreground exists");
+                auto changed=playing;changed.title=L"Different desktop song";changed.artist=L"Different artist";changed.artwork.clear();changed.position=90;
+                window.Update({changed,L"",L"",0,false,false,false});
+                const auto afterMedia=window.Preview(choice,false);
+                Check(preview.pixels.pixels==afterMedia.pixels.pixels,"sample preview is independent of desktop media and lyrics");
+                window.Update({playing,L"",L"",0,false,false,false});
+                const auto scene=renderer.Render(preview,choice,{});
+                Check(scene.width==960&&scene.height==300,"shared material shader produces a complete native preview scene");
+                if(size==IslandSize::Standard&&shape==IslandShape::Standard)SaveFrame(scene,
+                    material==IslandMaterial::None?L"preview-native-black.png":material==IslandMaterial::Liquid?L"preview-native-liquid.png":L"preview-native-frosted.png");
+                const auto url=IslandPreviewRenderer::PngDataUrl(scene);
+                Check(url.rfind("data:image/png;base64,",0)==0&&url.size()<2800000,"native preview encodes bounded PNG data");
+                const auto jpeg=IslandPreviewRenderer::JpegDataUrl(scene);
+                Check(jpeg.rfind("data:image/jpeg;base64,",0)==0&&jpeg.size()<200000,"animation frame uses bounded JPEG data");
+                const char* shapeName=shape==IslandShape::Standard?"standard":"capsule";
+                const char* sizeName=size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";
+                const char* materialName=material==IslandMaterial::Liquid?"liquid-glass":material==IslandMaterial::Frosted?"frosted-glass":"none";
+                if(!sampleDirectory.empty())for(bool expanded:{false,true}) {
+                    const auto sample=window.Preview(choice,expanded);
+                    const auto wallpaper=!sampleWallpaper.empty()&&std::filesystem::exists(sampleWallpaper)?sampleWallpaper.wstring():std::wstring{};
+                    const auto rendered=renderer.Render(sample,choice,wallpaper);
+                    const auto filename="island-native-"+std::string(shapeName)+"-"+sizeName+"-"+materialName+"-"+(expanded?"expanded":"compact")+".png";
+                    Check(IslandPreviewRenderer::WritePng(rendered,(sampleDirectory/filename).wstring()),"write native reference preview");
+                }
+              }
+            window.ReleasePreview();display.shape=IslandShape::Standard;display.size=IslandSize::Standard;display.material=IslandMaterial::None;
+            {
+                IslandDisplay from;from.shape=IslandShape::Capsule;
+                const auto start=window.Preview(from,false);
+                auto to=from;to.shape=IslandShape::Standard;
+                auto mid=window.Preview(to,false,1.f/30);
+                Check(mid.animating&&mid.shapeMix>0&&mid.shapeMix<1&&mid.topOffset>0&&mid.topOffset<start.topOffset,
+                      "preview shape morph has continuous shoulders and top position");
+                const auto reversed=window.Preview(from,false,1.f/30);
+                Check(reversed.animating&&reversed.shapeMix>0&&reversed.shapeMix<1,"reversal retains intermediate shape");
+                to.size=IslandSize::Large;
+                unsigned frames=0;
+                do {mid=window.Preview(to,true,1.f/30);++frames;}while(mid.animating&&frames<90);
+                Check(frames>3&&frames<90&&mid.shapeMix==1&&mid.width>start.width&&mid.height>start.height,
+                      "preview geometry transition settles and stops");
+                const auto stable=window.Preview(to,true,1.f/30);
+                Check(!stable.animating&&stable.pixels.pixels==mid.pixels.pixels,"settled sample needs no recurring frames");
+                window.ReleasePreview();
+            }
+            window.SetDisplay(display);window.Settle();
+            display.autoHide=true;window.SetDisplay(display);SendMessageW(window.Handle(),WM_MOUSELEAVE,0,0);Pump(4300);window.Settle();
+            RECT tucked{};GetWindowRect(window.Handle(),&tucked);MONITORINFO monitor{sizeof(monitor)};
+            GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitor);
+            Check(tucked.bottom>monitor.rcMonitor.top&&tucked.bottom<=monitor.rcMonitor.top+px(8),"standard auto-hide leaves a reachable edge");
+            const auto hidden=window.Frame();
+            Check(std::none_of(hidden.pixels.begin(),hidden.pixels.end(),[](std::uint32_t p){return (p&0x00ffffff)!=0;}),
+                  "tucked edge contains no artwork lyrics or spectrum pixels");
+            SaveFrame(hidden,L"shape-standard-tucked.png");
+            display.autoHide=false;playing.artwork.clear();playing.playing=true;
+            window.SetDisplay(display);window.Update({playing,L"",L"",0,false,false,false});
+        }
+        display.shape=IslandShape::Capsule;window.SetDisplay(display);window.Expand(true);window.Settle();
+        {const auto frame=window.Frame();const auto index=static_cast<std::size_t>(MulDiv(1,GetDpiForWindow(window.Handle()),96))*frame.width+MulDiv(12,GetDpiForWindow(window.Handle()),96);
+         Check((frame.pixels[index]>>24)==0,"capsule keeps a convex round top corner");SaveFrame(frame,L"shape-capsule-expanded.png");}
+        window.Expand(false);window.Settle();SaveFrame(window.Frame(),L"shape-capsule-compact.png");
         display.size=IslandSize::Small;window.SetDisplay(display);window.Expand(false);window.Settle();
         SaveFrame(window.Frame(),L"compact-small.png");
         // Media drops out for a moment between tracks while collapsed; once it is

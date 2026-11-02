@@ -14,7 +14,7 @@ import {validMusicDesktopCommand,validMusicDesktopMessage} from './music-desktop
 import {validNotesCommand,validNotesMessage} from './notes.js';
 import {validRadialShortcut,validRadialState} from './radial.js';
 import {validDockState} from './dock.js';
-import {validIslandState,validIslandCustomizationCommand} from './dynamic-island.js';
+import {validIslandState,validIslandPreview} from './dynamic-island.js';
 const styles = ["welfare", "mond", "insideDream"];
 const themes = ["spacious", "split", "todo"];
 const materials = ["liquid-glass", "frosted-glass"];
@@ -333,6 +333,7 @@ export function validHostMessage(m) {
   if (m.type === 'radial-state') return validRadialState(m);
   if (m.type === 'dock-state') return validDockState(m);
   if (m.type === 'dynamicIsland-state') return validIslandState(m);
+  if (m.type === 'dynamicIsland-preview') return validIslandPreview(m);
   if (m.type === "account-state") return validAccountState(m);
   if (m.type === "app-settings-state") return validApplicationSettingsState(m);
   if (m.type === "app-update-notice") return validUpdateNotice(m);
@@ -584,11 +585,12 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
     send(...parts) {
       const [kind, action, value] = parts;
       const allowed =
-        (kind === 'dynamicIsland' && ((parts.length===2 && ['reset','expand','collapse','focus','stopFocus'].includes(action)) ||
+        (kind === 'dynamicIsland' && ((parts.length===2 && ['reset','resetAppearance','expand','collapse','focus','stopFocus'].includes(action)) ||
           (parts.length===3 && ((['enabled','locked','hideFullscreen','topmost','hover','autoHide'].includes(action) && typeof value==='boolean') ||
             (action==='size' && ['small','standard','large'].includes(value)) ||
-            (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)) ||
-            validIslandCustomizationCommand(action,value))))) ||
+            (action==='shape' && ['standard','capsule'].includes(value)) ||
+            (action==='preview' && ['compact','expanded','stop'].includes(value)) ||
+            (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)))))) ||
         (kind === "ready" && parts.length === 1) ||
         (kind === 'radial' && ((parts.length===2 && action==='reset') ||
           (parts.length===3 && ((['enabled','capture'].includes(action) && typeof value==='boolean') ||

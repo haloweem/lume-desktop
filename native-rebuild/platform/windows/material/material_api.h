@@ -22,6 +22,7 @@ struct LumeMaterialParameters {
     uint32_t size;
     HWND owner;
     // 0: liquid widget, 1: frosted widget, 2: original frosted panel overlay.
+    // opticalProfile 5: island optics with attached top shoulders (profiles 0-4 unchanged).
     uint32_t frosted,opticalProfile,lightForeground;
     uint32_t pressed,reducedMotion;
     float contactX,contactY;
@@ -60,7 +61,12 @@ struct LumeMaterialParameters {
     uint32_t timelineCount;
     float timelineStepMs;
     int64_t timelineStart;
+    // V8: profile-5 island outline, 0 floating capsule .. 1 attached.
+    // Optional array of timelineCount values, following the V7 timeline clock.
+    float islandShape;
+    const float* islandShapeTimeline;
 };
+inline constexpr uint32_t LumeMaterialParametersV7Size=offsetof(LumeMaterialParameters,islandShape);
 inline constexpr uint32_t LumeMaterialParametersV1Size=offsetof(LumeMaterialParameters,cornerRadius);
 inline constexpr uint32_t LumeMaterialParametersV2Size=offsetof(LumeMaterialParameters,sceneAnchor);
 inline constexpr uint32_t LumeMaterialParametersV3Size=offsetof(LumeMaterialParameters,bottomInset);

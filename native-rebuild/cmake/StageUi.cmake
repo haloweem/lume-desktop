@@ -10,7 +10,17 @@ set(staged_visualizers)
 set(staged_ui_files)
 # A former build-time extractor lived at this path; never ship it as page code.
 file(REMOVE "${UI_DESTINATION}/extract-reference.mjs")
+# Local browser mockup uses a development-only wallpaper route.
+file(REMOVE "${UI_DESTINATION}/dynamic-island-preview.html")
+# A deleted feature must not survive in incremental installers. A future
+# implementation may reuse this filename once it exists in source again.
+if(NOT EXISTS "${UI_SOURCE}/island-customization.js")
+  file(REMOVE "${UI_DESTINATION}/island-customization.js")
+endif()
 foreach(relative IN LISTS ui_files)
+  if(relative STREQUAL "dynamic-island-preview.html")
+    continue()
+  endif()
   if(relative MATCHES "(^|/)(tests|tools)/|\\.test\\.|(^|/)node_modules/|^music-(visualizers|background|effects|material)/(.*/)?(source|src|verification|evidence)/|^music-visualizers/reference/contracts\\.js$")
     continue()
   endif()

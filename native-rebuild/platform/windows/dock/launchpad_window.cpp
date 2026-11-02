@@ -44,6 +44,19 @@ constexpr ULONGLONG EdgeDwellMs = 550;
 // Open: the panel unfolds from its centre while rising and fading in; close
 // reverses it. Text, icons and panels share the same retained-frame scale.
 constexpr float OpenOmega = 18, OpenZeta = .8f, CloseOmega = 30, CloseZeta = .9f, OpenDrop = 12;
+
+template<class Action>
+class ScopeExit {
+public:
+    explicit ScopeExit(Action action) : action_(std::move(action)) {}
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ~ScopeExit() { action_(); }
+private:
+    Action action_;
+};
+template<class Action> ScopeExit(Action) -> ScopeExit<Action>;
+
 struct Dib {
     HDC dc = nullptr;
     HBITMAP bitmap = nullptr;
@@ -276,13 +289,122 @@ struct LaunchpadWindow::Impl {
                 EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1
             ? 1000.0 / mode.dmDisplayFrequency : 1000.0 / 60;
     }
+    enum class DragSample { Pointer, Release, Frame, Paint, DropUpdate, GhostMove, Preview };
+    void StartDragDiagnostics() {
+        if (!ui_stall::HasLogPath()) return;
+        auto& d = dragDiagnostics;
+        const auto sequence = d.sequence + 1;
+        d = {};
+        d.sequence = sequence;
+        d.active = true;
+        d.startedAt = ui_stall::Now();
+        d.refreshMs = traceRefresh;
+        d.dpi = dpi;
+        d.itemCount = static_cast<int>(shown.size());
+        const auto layout = CurrentLayout();
+        d.pageSize = std::max(1, layout.columns * layout.rows);
+        const auto begin = (std::min)(shown.size(), static_cast<std::size_t>(std::max(0, page)) * d.pageSize);
+        d.pageItems = static_cast<int>((std::min)(shown.size() - begin, static_cast<std::size_t>(d.pageSize)));
+        d.page = page + 1;
+        d.pages = Pages();
+        d.frosted = frosted; d.compact = compact; d.collection = collectionView; d.reducedMotion = reducedMotion;
+        d.pixelWidth = bitmap.width; d.pixelHeight = bitmap.height;
+        d.lastFrameAt = d.startedAt;
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+            d.cpuStart = (static_cast<ULONGLONG>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+                         (static_cast<ULONGLONG>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+            d.cpuAvailable = true;
+        }
+    }
+    void RecordDragSample(DragSample sample, double elapsedMs, double x = 0, double y = 0) const {
+        auto& d = dragDiagnostics;
+        if (!d.active && !d.finishPending) return;
+        const auto add = [elapsedMs](double& total, double& maximum) {
+            total += elapsedMs;
+            maximum = (std::max)(maximum, elapsedMs);
+        };
+        switch (sample) {
+        case DragSample::Pointer:
+            ++d.pointerMoves;
+            add(d.pointerMs, d.pointerMaxMs);
+            if (d.hasPointer) d.pointerPathDip += std::hypot(x - d.lastX, y - d.lastY);
+            d.lastX = x; d.lastY = y; d.hasPointer = true;
+            break;
+        case DragSample::Release: ++d.releases; add(d.pointerMs, d.pointerMaxMs); break;
+        case DragSample::Frame: ++d.frames; add(d.frameMs, d.frameMaxMs); break;
+        case DragSample::Paint: ++d.paints; add(d.paintMs, d.paintMaxMs); break;
+        case DragSample::DropUpdate: ++d.dropUpdates; add(d.dropUpdateMs, d.dropUpdateMaxMs); break;
+        case DragSample::GhostMove: ++d.ghostMoves; add(d.ghostMs, d.ghostMaxMs); break;
+        case DragSample::Preview: add(d.previewMs, d.previewMaxMs); break;
+        }
+    }
+    void RecordDragFrame(double at) {
+        auto& d = dragDiagnostics;
+        if (!d.active) return;
+        if (d.lastFrameAt > 0) {
+            const double gap = at - d.lastFrameAt;
+            d.maxFrameGapMs = (std::max)(d.maxFrameGapMs, gap);
+            if (gap > d.refreshMs * 1.6) ++d.missedFrames;
+        }
+        d.lastFrameAt = at;
+    }
+    void FinishDragDiagnostics(const char* outcome) {
+        if (!dragDiagnostics.active) return;
+        dragDiagnostics.active = false;
+        dragDiagnostics.finishPending = true;
+        dragDiagnostics.outcome = outcome;
+    }
+    void FlushDragDiagnostics() {
+        auto& d = dragDiagnostics;
+        if (!d.finishPending) return;
+        char detail[1536]{};
+        const double duration = (std::max)(0.0, ui_stall::Now() - d.startedAt);
+        const double pointerCount = static_cast<double>(d.pointerMoves + d.releases);
+        const double pointerAverage = pointerCount ? d.pointerMs / pointerCount : 0;
+        const double frameAverage = d.frames ? d.frameMs / d.frames : 0;
+        const double paintAverage = d.paints ? d.paintMs / d.paints : 0;
+        const double dropAverage = d.dropUpdates ? d.dropUpdateMs / d.dropUpdates : 0;
+        FILETIME created{}, exited{}, kernel{}, user{};
+        double cpuMs = -1;
+        if (d.cpuAvailable && GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+            const auto cpuEnd = (static_cast<ULONGLONG>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+                                (static_cast<ULONGLONG>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+            cpuMs = static_cast<double>(cpuEnd - d.cpuStart) / 10000.0;
+        }
+        std::snprintf(detail, sizeof(detail),
+            "drag=%llu outcome=%s duration_ms=%.1f ui_cpu_ms=%.1f dpi=%u refresh_hz=%.1f material=%s reduced_motion=%d "
+            "compact=%d collection=%d panel_px=%ux%u items=%d page_items=%d page_size=%d page=%d/%d "
+            "ghost=%d pointer_moves=%llu pointer_releases=%llu pointer_avg_ms=%.3f pointer_max_ms=%.3f path_dip=%.1f "
+            "drop_updates=%llu drop_changes=%llu drop_avg_ms=%.3f drop_max_ms=%.3f frames=%llu slow_frame_gaps=%llu "
+            "frame_gap_max_ms=%.3f frame_avg_ms=%.3f frame_max_ms=%.3f paints=%llu paint_avg_ms=%.3f paint_max_ms=%.3f "
+            "draw_ms=%.3f readback_ms=%.3f upload_ms=%.3f compose_ms=%.3f preview_calls=%llu preview_source_items=%llu "
+            "preview_ms=%.3f preview_max_ms=%.3f "
+            "ghost_moves=%llu ghost_ms=%.3f ghost_max_ms=%.3f",
+            static_cast<unsigned long long>(d.sequence), d.outcome, duration, cpuMs, d.dpi, 1000.0 / d.refreshMs,
+            d.frosted ? "frosted" : "liquid", d.reducedMotion ? 1 : 0, d.compact ? 1 : 0, d.collection ? 1 : 0,
+            d.pixelWidth, d.pixelHeight, d.itemCount, d.pageItems, d.pageSize, d.page, d.pages,
+            d.ghostPresented ? 1 : 0, static_cast<unsigned long long>(d.pointerMoves),
+            static_cast<unsigned long long>(d.releases), pointerAverage, d.pointerMaxMs, d.pointerPathDip,
+            static_cast<unsigned long long>(d.dropUpdates), static_cast<unsigned long long>(d.dropChanges),
+            dropAverage, d.dropUpdateMaxMs, static_cast<unsigned long long>(d.frames),
+            static_cast<unsigned long long>(d.missedFrames), d.maxFrameGapMs, frameAverage, d.frameMaxMs,
+            static_cast<unsigned long long>(d.paints), paintAverage, d.paintMaxMs, d.drawMs, d.readbackMs, d.uploadMs,
+            d.composeMs, static_cast<unsigned long long>(d.previewCalls), static_cast<unsigned long long>(d.previewItemsCopied),
+            d.previewMs, d.previewMaxMs,
+            static_cast<unsigned long long>(d.ghostMoves), d.ghostMs, d.ghostMaxMs);
+        ui_stall::Report("launchpad-drag", d.startedAt, d.refreshMs, {}, detail);
+        const auto sequence = d.sequence;
+        d = {};
+        d.sequence = sequence;
+    }
     void TraceFrame() {
         if (!tracing) return;
         const double now = ui_stall::Now();
         char gap[48]{};
         if (!traceLast) std::snprintf(gap, sizeof(gap), " first=%.0f", now - traceStart);
         else if (now - traceLast > traceRefresh * 1.6) std::snprintf(gap, sizeof(gap), " %.0f@%.0f", now - traceLast, traceLast - traceStart);
-        traceGaps += gap;
+        if (traceGaps.size() < 4096) traceGaps += gap;
         traceLast = now;
     }
     void ReportOpen() {
@@ -307,6 +429,27 @@ struct LaunchpadWindow::Impl {
     bool refreshPending = false;
     POINT pressPoint{};
     float dragX = 0, dragY = 0, grabX = 0, grabY = 0;
+    struct DragDiagnostics {
+        std::uint64_t sequence = 0;
+        bool active = false, finishPending = false, ghostPresented = false, cpuAvailable = false;
+        const char* outcome = "cancel";
+        double startedAt = 0, refreshMs = 1000.0 / 60, lastFrameAt = 0;
+        double pointerMs = 0, pointerMaxMs = 0, frameMs = 0, frameMaxMs = 0;
+        double paintMs = 0, paintMaxMs = 0, dropUpdateMs = 0, dropUpdateMaxMs = 0;
+        double drawMs = 0, readbackMs = 0, uploadMs = 0, composeMs = 0, ghostMs = 0, ghostMaxMs = 0;
+        double previewMs = 0, previewMaxMs = 0;
+        double maxFrameGapMs = 0, pointerPathDip = 0, lastX = 0, lastY = 0;
+        unsigned dpi = 96;
+        int itemCount = 0, pageItems = 0, pageSize = 0, page = 0, pages = 0;
+        std::uint64_t pointerMoves = 0, releases = 0, frames = 0, missedFrames = 0;
+        std::uint64_t paints = 0, dropUpdates = 0, dropChanges = 0;
+        std::uint64_t previewCalls = 0, previewItemsCopied = 0, ghostMoves = 0;
+        ULONGLONG cpuStart = 0;
+        bool hasPointer = false;
+        bool frosted = false, compact = false, collection = false, reducedMotion = false;
+        unsigned pixelWidth = 0, pixelHeight = 0;
+    };
+    mutable DragDiagnostics dragDiagnostics;
     ULONGLONG edgeSince = 0;
     int edgeDirection = 0;
     std::unique_ptr<WidgetCanvas> canvas;
@@ -470,6 +613,14 @@ struct LaunchpadWindow::Impl {
     float CollectionAlpha() const { return collectionView ? std::clamp(collectionExpand.value, 0.f, 1.f) : 1.f; }
     // During a drag the dragged item is shown at its drop position.
     std::vector<dock::Entry> Preview() const {
+        const double traceStarted = dragDiagnostics.active || dragDiagnostics.finishPending ? ui_stall::Now() : 0;
+        auto traceSample = ScopeExit([this, traceStarted] {
+            if (traceStarted) RecordDragSample(DragSample::Preview, ui_stall::Now() - traceStarted);
+        });
+        if (dragDiagnostics.active || dragDiagnostics.finishPending) {
+            ++dragDiagnostics.previewCalls;
+            dragDiagnostics.previewItemsCopied += shown.size();
+        }
         if (dragged < 0 || drop < 0) return shown;
         auto result = shown;
         const auto moving = result[static_cast<std::size_t>(dragged)];
@@ -552,6 +703,10 @@ struct LaunchpadWindow::Impl {
         return ghostCanvas->Finish(ghostBitmap);
     }
     void MoveGhost() {
+        const double traceStarted = dragDiagnostics.active ? ui_stall::Now() : 0;
+        auto traceSample = ScopeExit([this, traceStarted] {
+            if (traceStarted) RecordDragSample(DragSample::GhostMove, ui_stall::Now() - traceStarted);
+        });
         if (!ghost || dragged < 0) return;
         POINT origin{static_cast<LONG>(std::lround((dragX - grabX) * dpi / 96)) - 6,
                      static_cast<LONG>(std::lround((dragY - grabY) * dpi / 96)) - 6};
@@ -837,7 +992,7 @@ struct LaunchpadWindow::Impl {
         const int oldPanel=panelScale,oldIcon=iconScale;panelScale=nextPanel;iconScale=nextIcon;
         if(!window)return true;
         if(!Geometry(dockAnchor)){panelScale=oldPanel;iconScale=oldIcon;return false;}
-        if(dragged>=0){dragged=drop=pressed=-1;if(GetCapture()==window)ReleaseCapture();}
+        if(dragged>=0){FinishDragDiagnostics("appearance-changed");FlushDragDiagnostics();dragged=drop=pressed=-1;if(GetCapture()==window)ReleaseCapture();}
         collectionSharp.reset();collectionBackground.reset();motion.clear();
         page=std::clamp(page,0,Pages()-1);
         if(!visible)return true;
@@ -846,6 +1001,8 @@ struct LaunchpadWindow::Impl {
     bool Show(RECT dockBounds, bool nextFrosted, bool prepareOnly = false) {
         if (!Create()) return false;
         if (prepareOnly && (visible || closing)) return true;
+        FinishDragDiagnostics("reopened");
+        FlushDragDiagnostics();
         frosted = nextFrosted;
         BOOL animate = TRUE;
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0);
@@ -947,6 +1104,9 @@ struct LaunchpadWindow::Impl {
     }
     void Hide() {
         if (!visible) return;
+        const bool tracingDrag = dragDiagnostics.active;
+        FinishDragDiagnostics("hidden");
+        if (tracingDrag) FlushDragDiagnostics();
         stage = stageForeground = stageHandoff = false;
         closeStage = !reducedMotion && window && material.State() == WidgetMaterialState::Ready;
         closeStageFrames = 0;
@@ -985,6 +1145,8 @@ struct LaunchpadWindow::Impl {
     }
     // Ends a close: hides the window and releases the glass.
     void Finish() {
+        FinishDragDiagnostics("closed");
+        FlushDragDiagnostics();
         stage = stageForeground = stageHandoff = false;
         closeStage = pendingClose = false;
         timeline.clear();
@@ -999,6 +1161,8 @@ struct LaunchpadWindow::Impl {
         if (window && std::exchange(rewarm, false)) PostMessageW(window, RewarmMessage, 0, 0);
     }
     void Stop() {
+        FinishDragDiagnostics("stopped");
+        FlushDragDiagnostics();
         rewarm = false;
         const bool was = visible;
         visible = false;
@@ -1231,6 +1395,10 @@ struct LaunchpadWindow::Impl {
     }
     // Renders the full-size content, then composes it.
     bool Paint() {
+        const double traceStarted = dragDiagnostics.active || dragDiagnostics.finishPending ? ui_stall::Now() : 0;
+        auto traceSample = ScopeExit([this, traceStarted] {
+            if (traceStarted) RecordDragSample(DragSample::Paint, ui_stall::Now() - traceStarted);
+        });
         if (!window || (!visible && !closing) || !canvas) return false;
         if (closing) return Compose(); // Async icon updates must not replace the frozen closing frame.
         // While the glass plays the opening, its content stays the picture taken at
@@ -1238,15 +1406,26 @@ struct LaunchpadWindow::Impl {
         // whole panel to the glass mid-motion and the icons visibly shake. It
         // lands once the panel has settled.
         if (stage && presenceMoving && openingPainted) { dirty = true; return Compose(); }
+        double phaseStarted = traceStarted ? ui_stall::Now() : 0;
         if (!canvas->Begin(width, height, dpi)) return false;
         DrawContent();
-        if (!canvas->Finish(bitmap) || !surface.Upload(bitmap)) return false;
+        if (traceStarted) { dragDiagnostics.drawMs += ui_stall::Now() - phaseStarted; phaseStarted = ui_stall::Now(); }
+        const bool finished = canvas->Finish(bitmap);
+        if (traceStarted) { dragDiagnostics.readbackMs += ui_stall::Now() - phaseStarted; phaseStarted = ui_stall::Now(); }
+        if (!finished) return false;
+        const bool uploaded = surface.Upload(bitmap);
+        if (traceStarted) dragDiagnostics.uploadMs += ui_stall::Now() - phaseStarted;
+        if (!uploaded) return false;
         ++bitmapGeneration;
         animationSource.reset();
         return Compose();
     }
     // Resample one retained frame, so icons and text move with the outer frame.
     bool Compose() {
+        const double traceStarted = dragDiagnostics.active || dragDiagnostics.finishPending ? ui_stall::Now() : 0;
+        auto traceSample = ScopeExit([this, traceStarted] {
+            if (traceStarted) dragDiagnostics.composeMs += ui_stall::Now() - traceStarted;
+        });
         if (!window || (!visible && !closing) || !surface.Width()) return false;
         if (pendingClose && closeStage) {
             // Closed mid-opening: start from the state the glass shows next refresh.
@@ -1434,6 +1613,10 @@ struct LaunchpadWindow::Impl {
         if (page != before) UpdateDrop();
     }
     void UpdateDrop() {
+        const double traceStarted = dragDiagnostics.active ? ui_stall::Now() : 0;
+        auto traceSample = ScopeExit([this, traceStarted] {
+            if (traceStarted) RecordDragSample(DragSample::DropUpdate, ui_stall::Now() - traceStarted);
+        });
         const auto layout = CurrentLayout();
         const auto entries = PageEntries();
         std::string under;
@@ -1452,6 +1635,7 @@ struct LaunchpadWindow::Impl {
             const bool changed = drop != dragged || dropCollectionId != under;
             drop = dragged;
             if (changed) {
+                if (dragDiagnostics.active) ++dragDiagnostics.dropChanges;
                 dropCollectionId = under;
                 Animate();
                 Paint();
@@ -1459,6 +1643,7 @@ struct LaunchpadWindow::Impl {
             return;
         }
         if (!dropCollectionId.empty()) {
+            if (dragDiagnostics.active) ++dragDiagnostics.dropChanges;
             dropCollectionId.clear();
             Paint();
         }
@@ -1471,9 +1656,13 @@ struct LaunchpadWindow::Impl {
             if (distance < bestDistance) { bestDistance = distance; best = i; }
         }
         const int next = std::min(page * PageSize() + best, static_cast<int>(shown.size()) - 1);
-        if (next != drop) { drop = next; Animate(); }
+        if (next != drop) {
+            if (dragDiagnostics.active) ++dragDiagnostics.dropChanges;
+            drop = next; Animate();
+        }
     }
     void BeginDrag(float x, float y) {
+        StartDragDiagnostics();
         dragged = pressed;
         drop = pressed;
         const auto layout = CurrentLayout();
@@ -1486,7 +1675,9 @@ struct LaunchpadWindow::Impl {
         edgeDirection = 0;
         // The pointer's icon takes over from the grid; the panel only keeps the
         // insertion gap, so it no longer renders the floating copy.
-        if (PresentGhost()) MoveGhost();
+        const bool ghostPresented = PresentGhost();
+        if (ghostPresented) MoveGhost();
+        dragDiagnostics.ghostPresented = ghostPresented && ghostPlaced;
         Animate();
         Paint();
     }
@@ -1514,7 +1705,7 @@ struct LaunchpadWindow::Impl {
         UpdateDrop(); Animate();
         return true;
     }
-    void EndDrag(bool commit) {
+    void EndDrag(bool commit, const char* outcome) {
         if (dragged < 0) return;
         HideGhost();
         dirty = true;
@@ -1532,6 +1723,7 @@ struct LaunchpadWindow::Impl {
         if (commit && !collectionView && !targetCollection.empty() && !source.collection && ports.moveIntoCollection) {
             ports.moveIntoCollection(source, targetCollection);
             dropCollectionId.clear(); Animate();
+            FinishDragDiagnostics(outcome);
             return;
         }
         if (commit && !collectionView && under.kind == HitKind::Item && under.index >= 0 &&
@@ -1542,6 +1734,7 @@ struct LaunchpadWindow::Impl {
                 ports.moveIntoCollection(source, target.collectionId)) {
                 dropCollectionId.clear();
                 Animate();
+                FinishDragDiagnostics(outcome);
                 return;
             }
         }
@@ -1559,6 +1752,7 @@ struct LaunchpadWindow::Impl {
         }
         dropCollectionId.clear();
         Animate();
+        FinishDragDiagnostics(outcome);
     }
     // Native search field: an owned layered EDIT composited above the glass,
     // keeping selection, clipboard and IME (as the organizer search does).
@@ -1886,6 +2080,11 @@ struct LaunchpadWindow::Impl {
         case FrameMessage: {
             self->clock.Consumed();
             if (!self->visible && !self->closing) { self->clock.Pause(); return 0; }
+            const double traceStarted = self->dragDiagnostics.active ? ui_stall::Now() : 0;
+            auto traceSample = ScopeExit([self, traceStarted] {
+                if (traceStarted) self->RecordDragSample(DragSample::Frame, ui_stall::Now() - traceStarted);
+            });
+            if (traceStarted) self->RecordDragFrame(traceStarted);
             // A refresh deferred by a drag lands as soon as it ends.
             if (self->refreshPending && self->dragged < 0 && !self->presenceMoving) {
                 self->refreshPending = false; self->Refresh(); self->Animate(); self->dirty = true;
@@ -1938,6 +2137,11 @@ struct LaunchpadWindow::Impl {
         case WM_MOUSEMOVE: {
             if (!self->visible) return 0;
             const float x = self->LayoutX(l), y = self->LayoutY(l);
+            const double traceStarted = ui_stall::HasLogPath() && self->pressed >= 0 && (w & MK_LBUTTON) ? ui_stall::Now() : 0;
+            auto traceSample = ScopeExit([self, traceStarted, x, y] {
+                if (traceStarted) self->RecordDragSample(DragSample::Pointer, ui_stall::Now() - traceStarted, x, y);
+                self->FlushDragDiagnostics();
+            });
             if (self->pressed >= 0 && (w & MK_LBUTTON) && self->query.empty()) {
                 const POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 const int threshold = MulDiv(static_cast<int>(DragThreshold), static_cast<int>(self->dpi), 96);
@@ -1970,7 +2174,7 @@ struct LaunchpadWindow::Impl {
                         const auto entry = self->shown[static_cast<std::size_t>(self->dragged)];
                         const auto path = OrganizerWide(entry.path);
                         if (wasOutside && self->ports.leaveOutside) self->ports.leaveOutside();
-                        self->EndDrag(false);
+                        self->EndDrag(false, "shell-drag");
                         self->pressed = -1;
                         if (GetCapture() == hwnd) ReleaseCapture();
                         // Dragging out of a collection also returns the item to
@@ -1979,6 +2183,8 @@ struct LaunchpadWindow::Impl {
                             !self->ports.removeFromCollection(entry)) { self->Paint(); return 0; }
                         // Close first so windows behind the panel can take the drop.
                         self->Hide();
+                        if (traceStarted) self->RecordDragSample(DragSample::Pointer, ui_stall::Now() - traceStarted, x, y);
+                        self->FlushDragDiagnostics();
                         DragPathsOut(hwnd, {path});
                         return 0;
                     }
@@ -2025,10 +2231,15 @@ struct LaunchpadWindow::Impl {
         }
         case WM_LBUTTONUP: {
             if (!self->visible) return 0;
+            const double traceStarted = self->dragDiagnostics.active ? ui_stall::Now() : 0;
+            auto traceSample = ScopeExit([self, traceStarted] {
+                if (traceStarted) self->RecordDragSample(DragSample::Release, ui_stall::Now() - traceStarted);
+                self->FlushDragDiagnostics();
+            });
             if (!self->compact && self->collectionView && !self->outside && self->dragged >= 0 && self->ports.removeFromCollection) {
                 if (!Inside(self->CurrentLayout().grid, self->dragX, self->dragY)) {
                     const auto entry = self->shown[static_cast<std::size_t>(self->dragged)];
-                    self->EndDrag(false);
+                    self->EndDrag(false, "leave-collection");
                     if (GetCapture() == hwnd) ReleaseCapture();
                     if (self->ports.removeFromCollection(entry)) self->FinishCollectionClose();
                     self->Paint();
@@ -2042,7 +2253,7 @@ struct LaunchpadWindow::Impl {
                 POINT screen{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
                 ClientToScreen(hwnd, &screen);
                 self->outside = false;
-                self->EndDrag(false);
+                self->EndDrag(false, "dock-drop");
                 if (GetCapture() == hwnd) ReleaseCapture();
                 if (self->collectionView && self->ports.removeFromCollection &&
                     !self->ports.removeFromCollection(entry)) { self->Paint(); return 0; }
@@ -2053,7 +2264,7 @@ struct LaunchpadWindow::Impl {
             }
             if (self->dragged >= 0) {
                 // End the drag before releasing capture, whose notification cancels drags.
-                self->EndDrag(true);
+                self->EndDrag(true, "commit");
                 if (GetCapture() == hwnd) ReleaseCapture();
                 self->Paint();
                 return 0;
@@ -2085,8 +2296,9 @@ struct LaunchpadWindow::Impl {
             if (self->dragged >= 0 && reinterpret_cast<HWND>(l) != hwnd) {
                 if (self->outside && self->ports.leaveOutside) self->ports.leaveOutside();
                 self->outside = false;
-                self->EndDrag(false);
+                self->EndDrag(false, "capture-lost");
                 self->Paint();
+                self->FlushDragDiagnostics();
             }
             self->pressed = -1;
             return 0;

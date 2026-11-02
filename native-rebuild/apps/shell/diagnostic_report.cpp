@@ -565,11 +565,21 @@ std::string Summary(const DiagnosticReportInput& input, const Json& system, cons
         for (const auto& name : skipped) text += "  " + name + "\r\n";
     }
     text += "\r\n用户描述:\r\n" + (input.note.empty() ? std::string("（未填写）") : input.note) + "\r\n";
+    text += "\r\n启动台图标拖动卡顿的采集方法:\r\n"
+            "  1. 保持平时的屏幕、缩放、壁纸和组件设置，打开启动台并等打开动画结束。\r\n"
+            "  2. 第一轮按住一个图标在同一格附近移动约 3 秒后松开；第二轮跨多个槽位往返约 5 秒后松开；各重复 2–3 次。\r\n"
+            "  3. 感到卡顿后立即在 设置 > 问题反馈 生成新的诊断报告；可在描述中补充大致时刻及是跟手图标还是其他图标换位卡顿。\r\n"
+            "  logs/launchpad-frames.log 的 launchpad-drag 是每次拖动汇总，launchpad-open 只测打开动画。\r\n"
+            "  拖动数据包含条目数、DPI/刷新率/材质、指针处理、落点计算、预览复制量、动画消息间隔与重绘各阶段耗时。\r\n"
+            "  slow_frame_gaps 是超过 1.6 个刷新周期的 UI 帧消息间隔次数，不是 GPU 实际丢帧数；耗时分项有嵌套，不能直接相加。\r\n"
+            "  每手势仅写一条汇总，无图标路径、名称或原始坐标；日志约 1 MiB 轮转，保留当前与上一份。\r\n"
+            "  processes.json 是导出时单点快照；显存 coverage=unavailable 表示未采集到，不代表占用为零。\r\n";
     text += "\r\n文件说明:\r\n"
             "  system.json      系统、显卡、显示器、外观与任务栏环境\r\n"
             "  processes.json   Lume 进程树（内存、显存、命令行）\r\n"
             "  modules.json     各组件当前状态\r\n"
             "  logs/            Lume 运行日志（错误时间线、退出码、内存心跳）\r\n"
+            "  logs/launchpad-frames*.log  启动台打开与图标拖动汇总（新版才有拖动数据）\r\n"
             "  crashes/         Lume 崩溃转储\r\n"
             "  windows-events.txt / wer/  Windows 记录的崩溃与无响应\r\n"
             "  settings/        组件偏好设置（不含账号与位置）\r\n";
@@ -646,7 +656,7 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
             });
         };
         if (!input.logDirectory.empty())
-            for (const auto* name : {L"lume.log", L"lume.1.log"})
+            for (const auto* name : {L"lume.log", L"lume.1.log", L"launchpad-frames.log", L"launchpad-frames.1.log"})
                 AddFile(entries, budget, input.logDirectory / name, "logs/" + Utf8(name), MaxLogBytes, true);
         if (!input.dataDirectory.empty()) {
             for (const auto& entry : fs::directory_iterator(input.dataDirectory, error)) {
@@ -656,8 +666,13 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
                 if (Private(name)) continue;
                 if (extension == L".json")
                     AddFile(entries, budget, entry.path(), "settings/" + entry.path().filename().u8string(), MaxSettingBytes);
-                else if (extension == L".log")
-                    AddFile(entries, budget, entry.path(), "logs/" + entry.path().filename().u8string(), MaxLogBytes, true);
+                else if (extension == L".log") {
+                    // Older builds wrote launchpad traces beside settings. Keep
+                    // that fallback without duplicate ZIP names hiding new data.
+                    const auto archiveName = "logs/" + entry.path().filename().u8string();
+                    if (std::none_of(entries.begin(), entries.end(), [&](const Entry& item) { return item.name == archiveName; }))
+                        AddFile(entries, budget, entry.path(), archiveName, MaxLogBytes, true);
+                }
             }
         }
         // Windows Error Reporting keeps a text report per crash; the newest

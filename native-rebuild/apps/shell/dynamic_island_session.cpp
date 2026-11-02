@@ -2,6 +2,7 @@
 #include "core/widget/widget_preferences_store.h"
 #include "platform/windows/local_settings_file_store.h"
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/dynamic_island/island_preview.h"
 #include "vendor/nlohmann/json.hpp"
 #include <utility>
 #include <algorithm>
@@ -20,6 +21,7 @@ struct DynamicIslandSession::Impl {
     IslandWindow window;
     std::string error;
     IslandDisplay display;
+    std::unique_ptr<IslandPreviewRenderer> previewRenderer;
     bool stopped = false, english = false;
     // True while the island shows another player's Windows media session.
     bool external = false;
@@ -50,8 +52,11 @@ struct DynamicIslandSession::Impl {
     }
     static const char* MaterialName(IslandMaterial value){return value==IslandMaterial::Liquid?"liquid-glass":value==IslandMaterial::Frosted?"frosted-glass":"none";}
     static const char* SizeName(IslandSize size){return size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";}
+    static const char* ShapeName(IslandShape shape){return shape==IslandShape::Standard?"standard":"capsule";}
     void LoadDisplay() {
         std::string text;const auto path=DisplayPath();
+        // Earlier builds included custom side/workspace data. Ignore those
+        // fields while retaining the ordinary display options in the same file.
         if(path.empty()||!files.Exists(path)||!files.ReadBounded(path,8192,text))return;
         const auto json=nlohmann::json::parse(text,nullptr,false);
         if(!json.is_object()||json.value("version",0)!=1)return;
@@ -66,15 +71,17 @@ struct DynamicIslandSession::Impl {
         if(material=="liquid-glass")display.material=IslandMaterial::Liquid;
         else if(material=="frosted-glass")display.material=IslandMaterial::Frosted;
         else if(material=="none")display.material=IslandMaterial::None;
-        if(const auto it=json.find("customization");it!=json.end())
-            if(const auto parsed=dynamic_island::ParseCustomization(it->dump()))display.customization=*parsed;
+        const auto shape=json.find("shape");
+        if(shape!=json.end()&&shape->is_string()) {
+            if(*shape=="standard")display.shape=IslandShape::Standard;
+            else if(*shape=="capsule")display.shape=IslandShape::Capsule;
+        }
     }
     bool SaveDisplay(const IslandDisplay& next) {
         const auto path=DisplayPath();if(path.empty())return true;
         const auto text=nlohmann::json{{"version",1},{"hideFullscreen",next.hideFullscreen},
             {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
-            {"material",MaterialName(next.material)},
-            {"customization",nlohmann::json::parse(dynamic_island::SerializeCustomization(next.customization))}}.dump();
+            {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)}}.dump();
         const auto temporary=path+".tmp";
         if(files.Write(temporary,text)&&files.Rename(temporary,path))return true;
         files.Remove(temporary);return false;
@@ -102,15 +109,13 @@ struct DynamicIslandSession::Impl {
             {"expanded",window.Expanded()},{"focusing",model.Focusing()},{"finished",model.Finished()},
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
-            {"material",MaterialName(display.material)},
-            {"customization",nlohmann::json::parse(dynamic_island::SerializeCustomization(display.customization))},
+            {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
         return std::wstring(json.begin(),json.end());
     }
     void Notify() {if(!stopped&&options.notify)options.notify(State());}
     void Paint() {
-        if(!window.Handle())return;
         SYSTEMTIME time{};GetLocalTime(&time);
         wchar_t clock[16]{},date[96]{};
         swprintf_s(clock,L"%02u:%02u",time.wHour,time.wMinute);
@@ -147,8 +152,6 @@ struct DynamicIslandSession::Impl {
         switch(action) {
         case Action::ExpansionChanged:RefreshWeather();Notify();return;
         case Action::Tick:{
-            const bool wasFinished=model.Finished();
-            if(model.Tick(Now())){Paint();if(model.Finished()&&!wasFinished)Notify();}
             // Lume Music has priority; otherwise follow the current Windows media
             // session every second so position, track and state stay current.
             if((model.Playback().available&&!external)||!options.externalMedia)return;
@@ -168,9 +171,7 @@ struct DynamicIslandSession::Impl {
         }
         case Action::ToggleMessages:{auto value=display;value.messages=!value.messages;if(CommitDisplay(value))Paint();Notify();return;}
         case Action::Reset:{if(const auto reply=HandlePage(ui::PageCommand::IslandReset);reply&&options.notify)options.notify(*reply);return;}
-        case Action::Focus:model.StartFocus(Now());Paint();Notify();return;
-        case Action::CancelFocus:model.CancelFocus();Paint();Notify();return;
-        case Action::Launchpad:if(options.openLaunchpad)options.openLaunchpad();return;
+        case Action::Focus:case Action::CancelFocus:return;
         default:{
             if(!prefs.enabled)return;
             const bool toggle=action==Action::Toggle&&model.Playback().available;
@@ -190,41 +191,21 @@ struct DynamicIslandSession::Impl {
         if(stopped)return {};
         using ui::PageCommand;
         auto next=prefs;
-        auto customization=display;bool customize=false;
-        const auto raw=static_cast<int>(command);
-        const auto ranged=[&](PageCommand first,PageCommand last){return raw>=static_cast<int>(first)&&raw<=static_cast<int>(last);};
-        if(ranged(PageCommand::IslandLeftWidgetFirst,PageCommand::IslandLeftWidgetLast)){
-            customization.customization.left.widget=static_cast<dynamic_island::MiniWidget>(raw-static_cast<int>(PageCommand::IslandLeftWidgetFirst));
-            customization.customization.customIcons=true;customize=true;
-        }else if(ranged(PageCommand::IslandRightWidgetFirst,PageCommand::IslandRightWidgetLast)){
-            customization.customization.right.widget=static_cast<dynamic_island::MiniWidget>(raw-static_cast<int>(PageCommand::IslandRightWidgetFirst));
-            customization.customization.customIcons=true;customize=true;
-        }else if(ranged(PageCommand::IslandCardMoveFirst,PageCommand::IslandCardMoveLast)){
-            const auto value=raw-static_cast<int>(PageCommand::IslandCardMoveFirst);
-            const auto source=static_cast<std::size_t>(value/static_cast<int>(dynamic_island::ExpandedWidget::Count));
-            const auto target=static_cast<std::size_t>(value%static_cast<int>(dynamic_island::ExpandedWidget::Count));
-            if(source>=static_cast<std::size_t>(dynamic_island::ExpandedWidget::Count))return State(true,false);
-            customize=customization.customization.MoveTo(static_cast<dynamic_island::ExpandedWidget>(source),target);
-            if(!customize)return State(true,false);
-        }else if(ranged(PageCommand::IslandCardFirst,PageCommand::IslandCardLast)){
-            const auto value=raw-static_cast<int>(PageCommand::IslandCardFirst);
-            const auto card=static_cast<dynamic_island::ExpandedWidget>(value/4);const auto action=value%4;
-            if(action<2)customization.customization.enabled[static_cast<std::size_t>(card)]=action==0;
-            else customization.customization.Move(card,action==2?-1:1);customize=true;
-        }else switch(command){
-            case PageCommand::IslandCustomIconsOn:customization.customization.customIcons=true;customize=true;break;
-            case PageCommand::IslandCustomIconsOff:customization.customization.customIcons=false;customize=true;break;
-            case PageCommand::IslandOverviewOn:customization.customization.overview=true;customize=true;break;
-            case PageCommand::IslandOverviewOff:customization.customization.overview=false;customize=true;break;
-            case PageCommand::IslandLeftCircle:customization.customization.left.style=dynamic_island::MiniStyle::Circle;customize=true;break;
-            case PageCommand::IslandLeftCapsule:customization.customization.left.style=dynamic_island::MiniStyle::Capsule;customize=true;break;
-            case PageCommand::IslandRightCircle:customization.customization.right.style=dynamic_island::MiniStyle::Circle;customize=true;break;
-            case PageCommand::IslandRightCapsule:customization.customization.right.style=dynamic_island::MiniStyle::Capsule;customize=true;break;
-            default:break;
-        }
-        if(customize){const bool saved=CommitDisplay(customization);if(saved){load=widget::LoadState::Loaded;Paint();}return State(true,saved);}
         switch(command) {
         case PageCommand::Ready:return State();
+        case PageCommand::IslandPreviewStop:ReleasePreview();return std::wstring{};
+        case PageCommand::IslandPreviewCompact:case PageCommand::IslandPreviewExpanded:{
+            const bool expanded=command==PageCommand::IslandPreviewExpanded;
+            if(!previewRenderer)previewRenderer=std::make_unique<IslandPreviewRenderer>();
+            const auto foreground=window.Preview(display,expanded,1.f/30);
+            const auto frame=previewRenderer->Render(foreground,display,options.previewWallpaper?options.previewWallpaper():std::wstring{});
+            const auto image=IslandPreviewRenderer::JpegDataUrl(frame);
+            const auto value=nlohmann::json{{"version",1},{"type","dynamicIsland-preview"},{"mode",expanded?"expanded":"compact"},
+                {"shape",ShapeName(display.shape)},{"material",MaterialName(display.material)},{"size",SizeName(display.size)},
+                {"width",image.empty()?0u:frame.width},{"height",image.empty()?0u:frame.height},{"image",image},
+                {"animating",foreground.animating&&!image.empty()},{"error",image.empty()?"render":""}}.dump();
+            return std::wstring(value.begin(),value.end());
+        }
         case PageCommand::IslandEnable:next.enabled=true;break;
         case PageCommand::IslandDisable:next.enabled=false;break;
         case PageCommand::IslandLock:case PageCommand::IslandUnlock:next.locked=true;break;
@@ -237,7 +218,8 @@ struct DynamicIslandSession::Impl {
         case PageCommand::IslandHoverOn:case PageCommand::IslandHoverOff:
         case PageCommand::IslandAutoHideOn:case PageCommand::IslandAutoHideOff:
         case PageCommand::IslandSizeSmall:case PageCommand::IslandSizeStandard:case PageCommand::IslandSizeLarge:
-        case PageCommand::IslandMaterialNone:case PageCommand::IslandMaterialLiquid:case PageCommand::IslandMaterialFrosted:{
+        case PageCommand::IslandMaterialNone:case PageCommand::IslandMaterialLiquid:case PageCommand::IslandMaterialFrosted:
+        case PageCommand::IslandShapeStandard:case PageCommand::IslandShapeCapsule:case PageCommand::IslandResetAppearance:{
             auto value=display;
             switch(command) {
             case PageCommand::IslandHideFullscreenOn:value.hideFullscreen=true;break;
@@ -254,6 +236,9 @@ struct DynamicIslandSession::Impl {
             case PageCommand::IslandMaterialNone:value.material=IslandMaterial::None;break;
             case PageCommand::IslandMaterialLiquid:value.material=IslandMaterial::Liquid;break;
             case PageCommand::IslandMaterialFrosted:value.material=IslandMaterial::Frosted;break;
+            case PageCommand::IslandShapeStandard:value.shape=IslandShape::Standard;break;
+            case PageCommand::IslandShapeCapsule:value.shape=IslandShape::Capsule;break;
+            case PageCommand::IslandResetAppearance:value.shape=IslandShape::Capsule;value.size=IslandSize::Standard;value.material=IslandMaterial::None;break;
             default:break;
             }
             const bool saved=CommitDisplay(value);
@@ -262,14 +247,14 @@ struct DynamicIslandSession::Impl {
         }
         case PageCommand::IslandExpand:case PageCommand::IslandCollapse:
             window.Expand(command==PageCommand::IslandExpand);return State(true);
-        case PageCommand::IslandFocus:Action(dynamic_island::Action::Focus);return State(true);
-        case PageCommand::IslandStopFocus:Action(dynamic_island::Action::CancelFocus);return State(true);
+        case PageCommand::IslandFocus:case PageCommand::IslandStopFocus:return {};
         default:return {};
         }
         const bool saved=Commit(next);return State(true,saved);
     }
     void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))window.Expand(true);Notify();}
-    void Shutdown() {if(stopped)return;stopped=true;window.SetTodoSource({});window.Stop();if(options.weatherActive)options.weatherActive(false);model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
+    void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();}
+    void Shutdown() {if(stopped)return;stopped=true;ReleasePreview();window.SetTodoSource({});window.Stop();if(options.weatherActive)options.weatherActive(false);model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
     ~Impl(){Shutdown();}
 };
 DynamicIslandSession::DynamicIslandSession(HINSTANCE instance,DynamicIslandSessionOptions options,settings::IFileStore* files)
@@ -299,6 +284,7 @@ bool DynamicIslandSession::ShowNotice(const std::string& id,const std::wstring& 
 }
 void DynamicIslandSession::RefreshTodos(){if(!impl_->stopped)impl_->window.RefreshTodos();}
 void DynamicIslandSession::RefreshWeather(){impl_->RefreshWeather();}
+void DynamicIslandSession::ReleasePreview(){impl_->ReleasePreview();}
 bool DynamicIslandSession::Running()const{return impl_->window.Handle()!=nullptr;}
 HWND DynamicIslandSession::Handle()const{return impl_->window.Handle();}
 const widget::Preferences& DynamicIslandSession::Snapshot()const{return impl_->prefs;}

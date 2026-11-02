@@ -15,7 +15,7 @@ test("settings scrollbars match wallpaper dimensions without system arrow button
   try {
     const page=await browser.newPage({viewport:{width:760,height:810}});
     const css=(await Promise.all(["app.css","application-settings.css"].map(name=>readFile(new URL(`../${name}`,import.meta.url),"utf8")))).join("\n");
-    const surfaces=["settings","CardGrid","wallpaper-grid","wallpaper-detail-target-menu",
+    const surfaces=["settings","settings-body","CardGrid","wallpaper-grid","wallpaper-detail-target-menu",
       "wallpaper-info-sidebar","wallpaper-info-meta","application-settings__nav",
       "application-settings__panel","application-settings__legal-text"];
     await page.setContent(`<style>${css}
@@ -41,12 +41,12 @@ test("settings scrollbars match wallpaper dimensions without system arrow button
       await page.screenshot({path:path.join(process.env.LUME_UI_SCREENSHOT_DIR,"scrollbar-surfaces.png")});
     }
     for(const surface of rendered) {
-      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name.startsWith("application-settings__");
+      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name==="settings-body"||surface.name.startsWith("application-settings__");
       assert.equal(surface.width,wallpaper?4:10,`${surface.name} rendered vertical gutter`);
       assert.equal(surface.height,wallpaper?4:10,`${surface.name} rendered horizontal gutter`);
     }
     for(const surface of rendered) {
-      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name.startsWith("application-settings__");
+      const wallpaper=surface.name==="wallpaper-grid"||surface.name==="settings"||surface.name==="settings-body"||surface.name.startsWith("application-settings__");
       assert.equal(surface.buttons,"none",`${surface.name} has no system arrows`);
       assert.equal(surface.track,wallpaper?"rgba(0, 0, 0, 0)":"rgba(8, 10, 14, 0.55)");
       assert.equal(surface.thumb,wallpaper?"rgba(255, 255, 255, 0.14)":"rgba(96, 108, 124, 0.72)");

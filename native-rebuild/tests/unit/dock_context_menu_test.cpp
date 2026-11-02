@@ -5,14 +5,18 @@
 #include "platform/windows/dock/launchpad_window.h"
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/organizer/organizer_text.h"
+#include "platform/windows/ui_stall_trace.h"
 #include <windowsx.h>
 #include <objbase.h>
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 namespace {
 using lume::shell::DockSession;
@@ -351,7 +355,7 @@ void DragGhostProbe() {
     const RECT anchor{0, 1200, 900, 1300};
     std::vector<lume::dock::Entry> entries;
     std::map<std::string, std::shared_ptr<const WidgetBitmap>> icons;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 92; ++i) {
         const auto path = "C:\\DragGhostFixture\\item" + std::to_string(i) + ".exe";
         entries.push_back({path, lume::platform::windows::OrganizerUtf8(L"Item" + std::to_wstring(i + 1)), true});
         WidgetCanvas icon;
@@ -363,16 +367,29 @@ void DragGhostProbe() {
     }
     unsigned drops = 0, leaves = 0;
     std::string dropped;
+    std::vector<std::string> arranged;
     LaunchpadPorts ports;
     ports.entries = [&] { return entries; };
     ports.icon = [&](const std::string& path) { return icons.at(path); };
     ports.dragOutside = [](POINT) { return true; };
     ports.dropOutside = [&](const lume::dock::Entry& entry, POINT) { dropped = entry.path; ++drops; return true; };
     ports.leaveOutside = [&] { ++leaves; };
+    ports.arrange = [&](std::vector<std::string> order) { arranged = std::move(order); };
     LaunchpadWindow pad(GetModuleHandleW(nullptr), std::move(ports));
     Check(pad.Show(anchor, false), "show the launchpad with fixture entries");
     Pump(200);
     pad.Settle();
+    wchar_t temp[MAX_PATH]{};
+    Check(GetTempPathW(MAX_PATH, temp) != 0, "locate isolated trace folder");
+    const auto traceFolder = std::filesystem::path(temp) / (L"lume-drag-diagnostics-" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::create_directories(traceFolder);
+    const auto traceFile = traceFolder / L"launchpad-frames.log";
+    const auto priorLog = ui_stall::logPath;
+    ui_stall::SetLogPath(traceFile.wstring());
+    const auto readTrace = [&] {
+        std::ifstream file(traceFile, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
     RECT client{};
     GetClientRect(pad.Handle(), &client);
     const auto dpi = GetDpiForWindow(pad.Handle()) / 96.f;
@@ -382,6 +399,11 @@ void DragGhostProbe() {
     SendMessageW(pad.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, press);
     SendMessageW(pad.Handle(), WM_MOUSEMOVE, MK_LBUTTON,
                  MAKELPARAM(GET_X_LPARAM(press) + 20, GET_Y_LPARAM(press) + 20));
+    const auto target = LaunchpadWindow::Cell(layout, 2);
+    SendMessageW(pad.Handle(), WM_MOUSEMOVE, MK_LBUTTON,
+                 PanelAt(pad.Handle(), target.x + target.width / 2, target.y + target.height / 2));
+    Pump(45);
+    Check(!std::filesystem::exists(traceFile), "pointer and frame messages perform no diagnostic disk writes during a drag");
     const HWND ghost = Find(L"LumeLaunchpadDragIcon");
     Check(ghost != nullptr, "a drag creates the pointer window");
     Check(IsWindowVisible(ghost) != FALSE, "the pointer window is visible during the drag");
@@ -399,15 +421,59 @@ void DragGhostProbe() {
     Check(ghostRect.right > frame.right, "the dragged icon is drawn outside the panel");
     // The icon keeps its grab offset, so compare the window's own movement with
     // the pointer's movement instead of centring it under the cursor.
-    Check(std::abs((ghostRect.left - startGhost.left) - (outsideX - (GET_X_LPARAM(press) + 20))) <= 2 &&
-          std::abs((ghostRect.top - startGhost.top) - (outsideY - (GET_Y_LPARAM(press) + 20))) <= 2,
+    const auto lastInside = PanelAt(pad.Handle(), target.x + target.width / 2, target.y + target.height / 2);
+    Check(std::abs((ghostRect.left - startGhost.left) - (outsideX - GET_X_LPARAM(lastInside))) <= 2 &&
+          std::abs((ghostRect.top - startGhost.top) - (outsideY - GET_Y_LPARAM(lastInside))) <= 2,
           "the dragged icon follows the pointer");
     Check(leaves == 0, "the panel keeps the drop while the pointer is outside");
     SendMessageW(pad.Handle(), WM_LBUTTONUP, 0, MAKELPARAM(outsideX, outsideY));
     Check(drops == 1 && dropped == entries[0].path, "releasing over the Dock hands the item to it");
     Check(IsWindowVisible(ghost) == FALSE, "the pointer window disappears after the drop");
+    const auto trace = readTrace();
+    Check(trace.find("launchpad-drag") != std::string::npos && trace.find("outcome=dock-drop") != std::string::npos &&
+          trace.find("items=92 ") != std::string::npos && trace.find("pointer_moves=3 ") != std::string::npos &&
+          trace.find("pointer_releases=1 ") != std::string::npos && trace.find("ghost=1 ") != std::string::npos,
+          "real 92-item drag emits one complete gesture summary");
+    const auto metric = [&](const char* key) {
+        const auto offset = trace.find(std::string(key) + "=");
+        Check(offset != std::string::npos, key);
+        return std::stod(trace.substr(offset + std::strlen(key) + 1));
+    };
+    Check(metric("frames") > 0 && metric("paints") > 0 && metric("drop_changes") > 0 &&
+          metric("preview_source_items") >= 92 && metric("preview_ms") > 0 &&
+          metric("paint_max_ms") > 0 && metric("ghost_moves") >= 3,
+          "summary measures actual animation, painting, preview copies and pointer movement");
+    Check(trace.find("DragGhostFixture") == std::string::npos && trace.find("Item1") == std::string::npos &&
+          std::count(trace.begin(), trace.end(), '\n') == 1, "gesture log contains no item paths/names and only one summary");
+    const auto beginAgain = [&] {
+        SendMessageW(pad.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, press);
+        SendMessageW(pad.Handle(), WM_MOUSEMOVE, MK_LBUTTON,
+                     MAKELPARAM(GET_X_LPARAM(press) + 20, GET_Y_LPARAM(press) + 20));
+    };
+    beginAgain();
+    SendMessageW(pad.Handle(), WM_MOUSEMOVE, MK_LBUTTON, lastInside);
+    Pump(30);
+    SendMessageW(pad.Handle(), WM_LBUTTONUP, 0, lastInside);
+    Check(arranged.size() == entries.size() && arranged[2] == entries[0].path &&
+          readTrace().find("drag=2 outcome=commit") != std::string::npos,
+          "diagnostics preserves the committed reorder and includes its release timing");
+    beginAgain();
+    ReleaseCapture();
+    Check(readTrace().find("drag=3 outcome=capture-lost") != std::string::npos, "capture loss retains cancelled drag data");
+    beginAgain();
+    pad.Hide();
+    Check(readTrace().find("drag=4 outcome=hidden") != std::string::npos, "hiding the panel retains an interrupted drag");
+    Check(pad.Show(anchor, false), "reopen after cancelled drag");
+    pad.Settle();
+    beginAgain();
     pad.Stop();
+    const auto allTraces = readTrace();
+    Check(allTraces.find("drag=5 outcome=stopped") != std::string::npos, "panel teardown retains an interrupted drag");
+    Check(std::count(allTraces.begin(), allTraces.end(), '\n') == 5, "each completed or cancelled gesture writes exactly one line");
     Check(Find(L"LumeLaunchpadDragIcon") == nullptr, "stopping the panel destroys the pointer window");
+    ui_stall::SetLogPath(priorLog);
+    if (GetEnvironmentVariableW(L"LUME_KEEP_DRAG_TRACE", nullptr, 0)) std::printf("%s", allTraces.c_str());
+    std::filesystem::remove_all(traceFolder);
     CoUninitialize();
 }
 }  // namespace
@@ -415,6 +481,11 @@ int wmain(int argc, wchar_t** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (argc > 1 && wcscmp(argv[1], L"--preview") == 0) { PopupProbe(true); return 0; }
+    if (argc > 1 && wcscmp(argv[1], L"--drag-diagnostics-scenario") == 0) {
+        DragGhostProbe();
+        std::puts("PASS isolated launchpad drag diagnostics and unchanged pointer behavior");
+        return 0;
+    }
     if (argc > 1 && wcscmp(argv[1], L"--scenario") == 0) {
         Scenario(); PopupProbe(false); DragGhostProbe();
         std::puts("PASS Dock collection lifecycle, transactional dragging, popup paging and launch, menu crash regressions and the launchpad drag pointer window");
@@ -424,7 +495,8 @@ int wmain(int argc, wchar_t** argv) {
     HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
     Check(desktop != nullptr, "create isolated desktop");
     wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
-    auto command = std::wstring(L"\"") + executable + L"\" --scenario";
+    const bool diagnosticOnly = argc > 1 && wcscmp(argv[1], L"--drag-diagnostics") == 0;
+    auto command = std::wstring(L"\"") + executable + (diagnosticOnly ? L"\" --drag-diagnostics-scenario" : L"\" --scenario");
     auto location = std::wstring(L"WinSta0\\") + name;
     STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.lpDesktop = location.data();
     startup.dwFlags = STARTF_USESTDHANDLES;

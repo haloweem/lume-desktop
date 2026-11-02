@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "style": "Lume Rounded Soft Fill",
+  "displaySize": 24,
+  "hitArea": 44,
+  "variants": [
+    "default",
+    "selected"
+  ],
+  "sizes": [
+    24,
+    48,
+    72,
+    256
+  ],
+  "icons": [
+    {
+      "id": "home",
+      "label": "首页",
+      "master": "home-default-256.png",
+      "selected": "home-selected-256.png",
+      "sourceBox": [
+        77,
+        145,
+        347,
+        390
+      ]
+    },
+    {
+      "id": "music",
+      "label": "音乐",
+      "master": "music-default-256.png",
+      "selected": "music-selected-256.png",
+      "sourceBox": [
+        76,
+        140,
+        318,
+        394
+      ]
+    },
+    {
+      "id": "todo",
+      "label": "待办",
+      "master": "todo-default-256.png",
+      "selected": "todo-selected-256.png",
+      "sourceBox": [
+        67,
+        141,
+        326,
+        390
+      ]
+    },
+    {
+      "id": "quick-launch",
+      "label": "快捷启动",
+      "master": "quick-launch-default-256.png",
+      "selected": "quick-launch-selected-256.png",
+      "sourceBox": [
+        64,
+        145,
+        312,
+        390
+      ]
+    },
+    {
+      "id": "clock",
+      "label": "时钟",
+      "master": "clock-default-256.png",
+      "selected": "clock-selected-256.png",
+      "sourceBox": [
+        77,
+        80,
+        347,
+        351
+      ]
+    },
+    {
+      "id": "notifications",
+      "label": "通知",
+      "master": "notifications-default-256.png",
+      "selected": "notifications-selected-256.png",
+      "sourceBox": [
+        76,
+        74,
+        337,
+        361
+      ]
+    },
+    {
+      "id": "settings",
+      "label": "设置",
+      "master": "settings-default-256.png",
+      "selected": "settings-selected-256.png",
+      "sourceBox": [
+        68,
+        79,
+        328,
+        355
+      ]
+    }
+  ]
+}

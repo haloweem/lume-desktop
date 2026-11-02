@@ -12,31 +12,37 @@ HWND Island(){HWND found=nullptr;EnumThreadWindows(GetCurrentThreadId(),[](HWND 
 },reinterpret_cast<LPARAM>(&found));return found;}
 struct Probe {
     shell::DesktopApplication* app=nullptr;
-    bool enabled=false,locked=false;
-    bool customized=false;
+    bool enabled=false,locked=false,previewDecoded=false;
     std::string material;
+    std::string shape;
     HWND island=nullptr;
     unsigned stage=0,ready=0;
     unsigned snapshots=0,snapshotAtOpen=0;
+    unsigned previews=0;
+    bool previewSettled=false;
     ULONGLONG deadline=0,closed=0;
     void Message(const std::wstring& text){
+        if(text.find(L"\"type\":\"dynamicIsland-preview\"")!=std::wstring::npos){
+            const auto image=nlohmann::json::parse(text);
+            Check(image.value("image",std::string{}).rfind("data:image/jpeg;base64,",0)==0,"real manager receives native preview pixels");
+            previewSettled=!image.value("animating",false)&&image.value("shape",std::string{})=="standard"&&
+                image.value("material",std::string{})=="frosted-glass";
+            ++previews;return;
+        }
         if(text.find(L"\"type\":\"dynamicIsland-state\"")==std::wstring::npos)return;
         const auto state=nlohmann::json::parse(text);enabled=state.value("enabled",false);
         locked=state.value("locked",false);material=state.value("material",std::string{});
+        shape=state.value("shape",std::string{});
+        previewDecoded=state.value("hover",false);
         ++snapshots;
-        if(const auto it=state.find("customization");it!=state.end()&&it->is_object()){
-            const auto& c=*it;
-            customized=state.value("error",std::string{}).empty()&&c["customIcons"]==true&&c["overview"]==true&&
-                c["left"]["widget"]=="clock"&&c["right"]["widget"]=="cpu"&&c["right"]["style"]=="capsule"&&
-                c["enabled"][6]==true&&c["order"][0]=="focus";
-        }
+        Check(!state.contains("customization"),"retired customization absent from native state");
     }
     void Tick(){
         if(GetTickCount64()>deadline){
             std::cerr<<"state: enabled="<<enabled<<" material="<<material<<'\n';
             Check(false,"real manager lifecycle deadline");app->Exit();return;
         }
-        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&customized&&snapshots>snapshotAtOpen){
+        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&previews>ready&&previewDecoded&&previewSettled){
             ++ready;
             Check(Island()!=nullptr,"real settings page creates island window");
             if(ready==1)island=Island();else Check(Island()==island,"reopen retains same native session");
@@ -66,44 +72,25 @@ int main(){
     }
     Probe probe;options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let material=false,dragged=false;
+      let material=false,shape=false,decoded=false;
       const act=()=>{
         const section=document.querySelector('[data-settings-scope="dynamicIsland"]');
         if(!section)return;
+        if(section.querySelector('[data-action="dynamicIsland-customIcons"],[data-action="dynamicIsland-overview"],[data-island-card]'))return;
+        if(!shape){
+          const choice=section.querySelector('button[data-island-shape="standard"]');
+          if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
+          shape=true;choice.click();return;
+        }
         if(!material){
-          const select=section.querySelector('#dynamicIsland-material');
-          if(!select||select.disabled||select.getAttribute('aria-disabled')==='true')return;
-          const option=select.nextElementSibling?.querySelector('[data-select-value="frosted-glass"]');
-          if(!option)return;
-          material=true;select.click();option.click();return;
+          const choice=section.querySelector('[data-island-preference="material"][data-value="frosted-glass"]');
+          if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
+          material=true;choice.click();return;
         }
-        const ready=button=>button&&!button.disabled&&button.getAttribute('aria-disabled')!=='true';
-        const switchOn=selector=>{
-          const button=section.querySelector(selector);
-          if(!ready(button))return false;
-          if(button.getAttribute('aria-checked')!=='true'){button.click();return false;}
-          return true;
-        };
-        if(!switchOn('[data-action="dynamicIsland-customIcons"]'))return;
-        for(const selector of [
-          '[data-action="dynamicIsland-leftWidget"][data-value="4"]',
-          '[data-action="dynamicIsland-rightWidget"][data-value="10"]',
-          '[data-action="dynamicIsland-rightStyle"][data-value="capsule"]'
-        ]){
-          const button=section.querySelector(selector);if(!ready(button))return;
-          if(button.getAttribute('aria-pressed')!=='true'){button.click();return;}
+        const preview=section.querySelector('[data-island-native-preview]');
+        if(!decoded&&preview&&!preview.hidden&&preview.complete&&preview.naturalWidth===960) {
+          decoded=true;window.chrome.webview.postMessage('v1|dynamicIsland|hover|true');
         }
-        if(!switchOn('[data-island-card="focus"] [role="switch"]'))return;
-        const focus=section.querySelector('[data-island-card="focus"]');
-        const first=focus?.parentElement.firstElementChild;
-        if(first!==focus){
-          if(dragged||!focus?.draggable)return;
-          dragged=true;const transfer=new DataTransfer();
-          focus.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:transfer}));
-          first.dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:transfer}));
-          focus.dispatchEvent(new DragEvent('dragend',{bubbles:true,dataTransfer:transfer}));return;
-        }
-        if(!switchOn('[data-action="dynamicIsland-overview"]'))return;
       };
       const observer=new MutationObserver(act);observer.observe(document.querySelector('#content'),{subtree:true,attributes:true,childList:true});act();
       window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true});

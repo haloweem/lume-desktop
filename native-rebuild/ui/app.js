@@ -39,7 +39,7 @@ import { minimizePage, minimizeNotice, syncMinimizeControls } from "./minimize.j
 import { radialPage, radialNotice, syncRadialControls, mountRadialShortcut } from "./radial.js";
 import { dockPage, dockNotice, syncDockControls } from "./dock.js";
 import { islandPage, islandStatus, syncIslandControls } from './dynamic-island.js';
-import {mountIslandCustomization} from './island-customization.js';
+import {createIslandPreviewController} from './island-preview-controller.js';
 import {
   selectedWallpaper,
   selectedWallpaperEngagement,
@@ -146,6 +146,18 @@ const wallpaperPreview=createWallpaperPreviewController({
   onChange:playing=>updateWallpaperPreviewButton(content,playing),
   onError:failWallpaperPreview,
 });
+const islandPreview=createIslandPreviewController({
+  send:mode=>bridge.send('dynamicIsland','preview',mode),
+  getMode:()=>state.dynamicIslandPreviewMode||'compact',
+  onFrame:message=>dispatch({type:'host',message}),
+  onTimeout:()=>{
+    if(state.dynamicIslandPreview?.image)return;
+    const {shape,size,material}=state.dynamicIsland;
+    dispatch({type:'host',message:{version:1,type:'dynamicIsland-preview',
+      mode:state.dynamicIslandPreviewMode||'compact',
+      shape,size,material,width:0,height:0,image:'',error:'render'}});
+  },
+});
 const visibilityCleanup=createVisibilityCleanup(
   releaseHiddenPageResources,
   generation=>bridge.lifecycle("cleanup",generation),
@@ -178,7 +190,6 @@ const radialShortcut=mountRadialShortcut(content,{
 });
 // A per-style key such as "pulse.barWidth" becomes v1|spectrum|pulse|barWidth|N.
 const unmountRanges=mountSettingsRanges(content,(scope,key,value)=>request(scope,...key.split('.'),value));
-const unmountIslandCustomization=mountIslandCustomization(content,(action,value)=>request('dynamicIsland',action,value));
 function notify(title) {
   showNotice(t(`${title}暂未接入`,`${title} is not yet available`));
 }
@@ -346,10 +357,15 @@ function dispatch(event) {
   const previousRadialStatus = state.radialStatus;
   const previousDockStatus = state.dockStatus;
   const previousWallpaper=state.wallpaper;
+  const previousIslandAppearance=state.dynamicIsland;
   state = reduce(state, event);
+  if(event.type==='host'&&event.message.type==='dynamicIsland-preview') {
+    syncIslandControls(content,state);return;
+  }
   if((event.type==='host'&&event.message.type==='dynamicIsland-state') ||
      (['request','unavailable'].includes(event.type)&&event.scope==='dynamicIsland')) {
     syncIslandControls(content,state);
+    if(['shape','size','material'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
     if(['error','unavailable','recovered'].includes(state.dynamicIslandStatus) &&
       !content.querySelector('[data-settings-scope="dynamicIsland"]'))showNotice(islandStatus(state));
     return;
@@ -421,6 +437,7 @@ function dispatch(event) {
       notices.dismiss();modal.showQuota(state.wallpaperAccount.status==="signed-in");
     }
     syncWallpaperStats();
+    if (state.view==="dynamicIsland") syncIslandControls(content,state);
     if ((state.view==="search" || state.view==="home") &&
       (previousWallpaper.catalog!==state.wallpaper.catalog ||
        previousWallpaper.library!==state.wallpaper.library)) render();
@@ -594,6 +611,7 @@ function render() {
   wallpaperScroll.restore(content,state);
   syncRadialControls(content,state);
   syncDockControls(content,state);
+  syncIslandControls(content,state);
   titlebar.setSurface(state.view==="music"?"music":"panel");
   syncTitlebarImmersive();
   syncDropZone();
@@ -653,6 +671,12 @@ function preloadWallpaperAssets() {
 }
 function updateVisibility() {
   const visible = document.visibilityState === "visible" && state.visible;
+  const islandHomeVisible=visible&&state.view==='dynamicIsland'&&tab==='home';
+  if(!islandHomeVisible&&state.dynamicIslandPreview) {
+    state={...state,dynamicIslandPreview:null};
+    syncIslandControls(content,state);
+  }
+  islandPreview.update(islandHomeVisible);
   unmountWallpaperImages.setVisible(visible);
   if(!visible)radialShortcut.cancel();
   const resourceVisible = visible && state.view === "performance";
@@ -924,8 +948,10 @@ content.addEventListener("click", (event) => {
     const id = button.dataset.open;
     if(id==="music")openMusicDesktopSettings();
     else if(id==="notes"){if(!bridge.notes("openWindow"))showNotice(t("便签暂不可用","Notes are unavailable"));}
-    else if (["widgets", "clock", "calendar", "performance", "spectrum", "almanac", "todayTodo", "weather","organizer","icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(id))
+    else if (["widgets", "clock", "calendar", "performance", "spectrum", "almanac", "todayTodo", "weather","organizer","icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(id)) {
+      if(id==="dynamicIsland")tab="home";
       dispatch({ type: "navigate", view: id });
+    }
     else {
       unavailableTitle =
         [...modules, ...widgets].find((i) => i.id === id)?.title || "此功能";
@@ -936,6 +962,15 @@ content.addEventListener("click", (event) => {
       state = {...state, notes:{...state.notes, pending:true}};
       syncNotesControls();
     }
+  } else if (button.dataset.islandPreference) {
+    const key=button.dataset.islandPreference;
+    if(['material','size'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
+  } else if (button.matches('button[data-island-shape]')) {
+    if(button.dataset.islandShape!==state.dynamicIsland.shape)request('dynamicIsland','shape',button.dataset.islandShape);
+  } else if (button.dataset.islandPreviewMode) {
+    state={...state,dynamicIslandPreviewMode:button.dataset.islandPreviewMode};
+    syncIslandControls(content,state);
+    islandPreview.refresh();
   } else if (button.dataset.action === "toggle")
     request("clock", "enabled", !state.clock.enabled);
   else if (button.dataset.action === "radial-toggle") request("radial","enabled",!state.radial.enabled);
@@ -945,10 +980,7 @@ content.addEventListener("click", (event) => {
     if(action==='toggle')request('dynamicIsland','enabled',!state.dynamicIsland.enabled);
     else if(action==='lock')request('dynamicIsland','locked',!state.dynamicIsland.locked);
     else if(['hideFullscreen','topmost','hover','autoHide'].includes(action))request('dynamicIsland',action,!state.dynamicIsland[action]);
-    else if(['customIcons','overview'].includes(action))request('dynamicIsland',action,!state.dynamicIsland.customization[action]);
-    else if(['leftWidget','rightWidget','card','cardMove'].includes(action))request('dynamicIsland',action,Number(button.dataset.value));
-    else if(['leftStyle','rightStyle'].includes(action))request('dynamicIsland',action,button.dataset.value);
-    else if(['reset','expand','collapse','focus','stopFocus'].includes(action))request('dynamicIsland',action);
+    else if(['reset','resetAppearance','expand','collapse','focus','stopFocus'].includes(action))request('dynamicIsland',action);
   }
   else if (button.dataset.action === "dock-toggle") request("dock","enabled",!state.dock.enabled);
   else if (button.dataset.action === "dock-reset") request("dock","reset");
@@ -1125,6 +1157,7 @@ content.addEventListener(
 );
 document.addEventListener("visibilitychange", updateVisibility);
 const unsubscribe = bridge.subscribe((message) => {
+  if(message.type==='dynamicIsland-preview'){islandPreview.receive(message);return;}
   if (DIAGNOSTICS_ENABLED) {
   const previousEvents=new Set(diagnosticsRecorder.list().map(event=>
     `${event.type}|${event.firstAt}|${JSON.stringify(event.details)}`));
@@ -1222,7 +1255,7 @@ const unsubscribe = bridge.subscribe((message) => {
       dispatch({type:"navigate",view:"music"});
       return;
     }
-    tab = "settings";
+    tab = message.page==="dynamicIsland" ? "home" : "settings";
     if (state.view !== message.page) {
       state = {...state, view:message.page, history:["icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(message.page)?["home","desktopBeauty"]:["home","desktopBeauty","widgets"]};
       state.musicReturn=null;
@@ -1238,6 +1271,7 @@ const unsubscribe = bridge.subscribe((message) => {
   } else dispatch({ type: "host", message });
 });
 window.addEventListener("beforeunload", () => {
+  islandPreview.dispose();
   notices.dispose();
   modal.dispose();
   wallpaperPreviewIntent=null;
@@ -1248,7 +1282,6 @@ window.addEventListener("beforeunload", () => {
   musicDesktopController?.dispose();
   unmountSelect();
   unmountRanges();
-  unmountIslandCustomization();
   radialShortcut.dispose();
   clockTimer.dispose();
   carouselTimer.dispose();

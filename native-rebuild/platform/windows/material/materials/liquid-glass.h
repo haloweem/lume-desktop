@@ -46,6 +46,29 @@ float rrSdf(float2 p, float2 halfSize, float radius) {
   float2 q = abs(p) - halfSize + radius;
   return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
 }
+float islandDistance(float2 p,float2 size,float shoulder,float radius) {
+  float bounds=max(max(-p.x,p.x-size.x),max(-p.y,p.y-size.y));
+  if(p.y<shoulder) {
+    if(p.x<shoulder)return max(bounds,shoulder-length(p-float2(0,shoulder)));
+    if(p.x>size.x-shoulder)return max(bounds,shoulder-length(p-float2(size.x,shoulder)));
+    return bounds;
+  }
+  if(p.y>size.y-radius) {
+    if(p.x<shoulder+radius)return max(bounds,length(p-float2(shoulder+radius,size.y-radius))-radius);
+    if(p.x>size.x-shoulder-radius)return max(bounds,length(p-float2(size.x-shoulder-radius,size.y-radius))-radius);
+  }
+  return max(bounds,max(shoulder-p.x,p.x-size.x+shoulder));
+}
+float islandMorphDistance(float2 p,float2 size,float shoulder,float radius,float capsuleRadius,float mix) {
+  return lerp(rrSdf(p-size*.5,size*.5,capsuleRadius),islandDistance(p,size,shoulder,radius),mix);
+}
+float islandCoverage(float2 p,float2 size,float shoulder,float radius,float capsuleRadius,float mix,float distance) {
+  if(abs(distance)>=.708)return distance<0?1:0;
+  float coverage=0;
+  [unroll]for(int y=0;y<8;++y)[unroll]for(int x=0;x<8;++x)
+    coverage+=islandMorphDistance(p+(float2(x,y)+.5)/8-.5,size,shoulder,radius,capsuleRadius,mix)<=0?1:0;
+  return coverage/64;
+}
 float roundedPixelCoverage(float2 p, float2 halfSize, float radius, float distance) {
   // Integrate the actual physical pixel footprint. Only the one-pixel rim
   // needs subpixel work; interiors/shadows keep the original single sample.
@@ -198,7 +221,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   float2 contraction = (pressure * 1.25
       + float2(abs(drift.y) * 0.40 - abs(drift.x) * 0.80,
                abs(drift.x) * 0.40 - abs(drift.y) * 0.80)) * scale;
-  if (optical.x <= 0.0) {
+  if (optical.x <= 0.0 && optical.y >= 0.0) {
     lensPoint -= contraction + drift * 0.55 * scale;
     halfSize -= contraction;
   }
@@ -210,6 +233,13 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   float ambient = exp(-pow(max(shadowDistance, 0.0) / (6.0 * dpiScale), 2.0)) * 0.05;
   float shadow = (contact + ambient) * lower;
   float mask = roundedPixelCoverage(lensPoint - halfSize, halfSize, radius, distance);
+  if(optical.y<-.5) {
+    float shoulder=min(10*dpiScale,lensSize.y*.25),bottomRadius=min(28*dpiScale,lensSize.y*.25);
+    float mix=saturate(-optical.y-1);
+    distance=islandMorphDistance(lensPoint,lensSize,shoulder,bottomRadius,radius,mix);
+    mask=islandCoverage(lensPoint,lensSize,shoulder,bottomRadius,radius,mix,distance);
+    shadow=0;
+  }
   if (optical.x > 0.0) {
     float radial = length(lensPoint - halfSize);
     float outerRadius = min(halfSize.x, halfSize.y) - 8.0 * dpiScale;
@@ -223,7 +253,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   float4 direct = desktopTexture.SampleLevel(linearClamp, sampleUv(screenPoint), 0);
   if (direct.a < 0.0001) return float4(0, 0, 0, 0);
   float3 fallback = direct.rgb / direct.a;
-  float opticalProfile = saturate(optical.y);
+  float opticalProfile = optical.y<-.5?1:saturate(optical.y);
   float dynamicProfile = step(0.5, opticalProfile);
   float thicknessProfile = saturate(optical.z);
   // Profile 3 (Dock, launchpad): a soft edge whose refraction, colour and

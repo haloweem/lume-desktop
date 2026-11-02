@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string_view>
-#include "core/dynamic_island/island_customization.h"
 
 namespace lume::ui {
 
@@ -92,16 +91,8 @@ enum class PageCommand {
     IslandTopmostOn, IslandTopmostOff, IslandHoverOn, IslandHoverOff, IslandAutoHideOn, IslandAutoHideOff,
     IslandSizeSmall, IslandSizeStandard, IslandSizeLarge,
     IslandMaterialNone, IslandMaterialLiquid, IslandMaterialFrosted,
-    IslandCustomIconsOn, IslandCustomIconsOff, IslandOverviewOn, IslandOverviewOff,
-    IslandLeftCircle, IslandLeftCapsule, IslandRightCircle, IslandRightCapsule,
-    IslandLeftWidgetFirst,
-    IslandLeftWidgetLast=IslandLeftWidgetFirst+static_cast<int>(dynamic_island::MiniWidget::Count)-1,
-    IslandRightWidgetFirst,
-    IslandRightWidgetLast=IslandRightWidgetFirst+static_cast<int>(dynamic_island::MiniWidget::Count)-1,
-    IslandCardFirst,
-    IslandCardLast=IslandCardFirst+static_cast<int>(dynamic_island::ExpandedWidget::Count)*4-1,
-    IslandCardMoveFirst,
-    IslandCardMoveLast=IslandCardMoveFirst+static_cast<int>(dynamic_island::ExpandedWidget::Count)*static_cast<int>(dynamic_island::ExpandedWidget::Count)-1,
+    IslandShapeStandard, IslandShapeCapsule, IslandResetAppearance,
+    IslandPreviewCompact, IslandPreviewExpanded, IslandPreviewStop,
     SpectrumEnable, SpectrumDisable, SpectrumReset, SpectrumStylePulse, SpectrumStyleBlocks, SpectrumStyleWaves,
     SpectrumSizeFirst,
     SpectrumSizeLast = SpectrumSizeFirst + 250,

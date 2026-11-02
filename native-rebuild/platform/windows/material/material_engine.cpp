@@ -67,6 +67,8 @@ struct GlassInstance {
   std::atomic<float> cornerRadius{0};
   std::atomic<float> innerRadius{0};
   std::atomic<float> opacity{1};
+  std::atomic<float> islandShape{1};
+  std::vector<float> islandShapeTimeline; // Protected by contentMutex, shares V7 clock.
   // Optical profiles are intentionally separate from the material toggle.
   // Profile 0 is the existing music/control-bar path; profile 1 is the
   // calendar component with dynamic thickness and fluid refraction.
@@ -340,8 +342,10 @@ bool DrawLens(GlassInstance* glass, ID3D11DeviceContext* context, const OutputCa
     values.readability[1] = glass->lightForeground ? 1.0f : 0.0f;
   }
   values.optical[0] = disc ? 0 : glass->innerRadius.load(std::memory_order_relaxed) * dpi;
-  values.optical[1] = static_cast<float>(glass->opticalProfile.load(std::memory_order_relaxed));
-  values.optical[2] = values.optical[1] > 2.5f ? 0.55f : values.optical[1] > 1.5f ? 0.92f : values.optical[1] > 0.5f ? 1.0f : 0.0f;
+  const auto profile=glass->opticalProfile.load(std::memory_order_relaxed);
+  // A negative shader marker keeps island geometry independent of Dock optics.
+  values.optical[1] = profile==5?-(1.f+glass->islandShape.load(std::memory_order_relaxed)):static_cast<float>(profile);
+  values.optical[2] = profile==5?1.f:values.optical[1] > 2.5f ? 0.55f : values.optical[1] > 1.5f ? 0.92f : values.optical[1] > 0.5f ? 1.0f : 0.0f;
   values.optical[3] = glass->cornerRadius.load(std::memory_order_relaxed) * dpi;
   D3D11_MAPPED_SUBRESOURCE mapped = {};
   if (FAILED(context->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
@@ -635,6 +639,8 @@ bool InitializeAndRun(GlassInstance* glass) {
         glass->opacity = mix(a.opacity, b.opacity);
         glass->contentOpacity = mix(a.contentOpacity, b.contentOpacity);
         glass->cornerRadius = mix(a.cornerRadius, b.cornerRadius);
+        if(glass->islandShapeTimeline.size()==glass->timeline.size())
+          glass->islandShape=mix(glass->islandShapeTimeline[index],glass->islandShapeTimeline[(std::min)(last,index+1)]);
         {
           std::lock_guard<std::mutex> panelsLock(glass->discsMutex);
           glass->panels.clear();
@@ -1124,21 +1130,22 @@ bool Valid(const LumeMaterialParameters* p) {
   return p && (p->size==LumeMaterialParametersV1Size || p->size==LumeMaterialParametersV2Size ||
               p->size==LumeMaterialParametersV3Size || p->size==LumeMaterialParametersV4Size ||
               p->size==LumeMaterialParametersV5Size || p->size==LumeMaterialParametersV6Size ||
-              p->size==((LumeMaterialParametersV6Size+7)&~7u) || p->size==sizeof(*p))
-      && p->owner && IsWindow(p->owner) && p->opticalProfile<=4 && p->panelCount<=8
+              p->size==((LumeMaterialParametersV6Size+7)&~7u) || p->size==LumeMaterialParametersV7Size || p->size==sizeof(*p))
+      && p->owner && IsWindow(p->owner) && p->opticalProfile<=5 && p->panelCount<=8
       && (p->size==LumeMaterialParametersV1Size || (std::isfinite(p->cornerRadius) && p->cornerRadius>=0))
       && (p->size<LumeMaterialParametersV3Size || !p->sceneAnchor || IsWindow(p->sceneAnchor))
       && (p->size<LumeMaterialParametersV4Size || p->bottomInset<=4096)
       && (p->size<LumeMaterialParametersV5Size || (std::isfinite(p->innerRadius) && p->innerRadius>=0 && p->innerRadius<=4096))
       && (p->size<LumeMaterialParametersV6Size || !p->opacityEnabled || (std::isfinite(p->opacity) && p->opacity>=0 && p->opacity<=1))
-      && (p->size!=sizeof(*p) || !p->lensOverride || (std::isfinite(p->lensX) && std::isfinite(p->lensY) &&
+      && (p->size<LumeMaterialParametersV7Size || !p->lensOverride || (std::isfinite(p->lensX) && std::isfinite(p->lensY) &&
           std::isfinite(p->lensWidth) && std::isfinite(p->lensHeight) && p->lensWidth>=1 && p->lensHeight>=1 &&
           p->lensWidth<=32768 && p->lensHeight<=32768))
-      && (p->size!=sizeof(*p) || !p->contentEnabled || (p->contentPixels && p->contentPixelWidth>0 && p->contentPixelHeight>0 &&
+      && (p->size<LumeMaterialParametersV7Size || !p->contentEnabled || (p->contentPixels && p->contentPixelWidth>0 && p->contentPixelHeight>0 &&
           p->contentPixelWidth<=8192 && p->contentPixelHeight<=8192 && std::isfinite(p->contentX) && std::isfinite(p->contentY) &&
           std::isfinite(p->contentWidth) && std::isfinite(p->contentHeight) && p->contentWidth>=0 && p->contentHeight>=0))
-      && (p->size!=sizeof(*p) || !p->timelineCount || (p->timeline && p->timelineCount<=8192 &&
-          std::isfinite(p->timelineStepMs) && p->timelineStepMs>=.5f && p->timelineStepMs<=100));
+      && (p->size<LumeMaterialParametersV7Size || !p->timelineCount || (p->timeline && p->timelineCount<=8192 &&
+          std::isfinite(p->timelineStepMs) && p->timelineStepMs>=.5f && p->timelineStepMs<=100))
+      && (p->size!=sizeof(*p) || (std::isfinite(p->islandShape)&&p->islandShape>=0&&p->islandShape<=1));
 }
 // lensOverride 2: fixes the owner origin the timeline is relative to, and its
 // whole extent in screen pixels as the stage (caller holds contentMutex).
@@ -1159,15 +1166,16 @@ void Configure(GlassInstance& g,const LumeMaterialParameters& p) {
   // A running timeline drives the lens, content rect, opacity, radius and
   // panels per frame; a call made meanwhile (a hover repaint, the pointer
   // moving) must not reset them to its first frame, which blanked the panel.
-  const bool timed=p.size==sizeof(p)&&p.timelineCount>0;
+  const bool timed=p.size>=LumeMaterialParametersV7Size&&p.timelineCount>0;
   g.frosted=p.frosted!=0;g.panelSurface=p.frosted==2;g.opticalProfile=p.opticalProfile;g.lightForeground=p.lightForeground!=0;
   if(!timed)g.cornerRadius=p.size==LumeMaterialParametersV1Size?0:p.cornerRadius;
   g.sceneAnchor=p.size>=LumeMaterialParametersV3Size?p.sceneAnchor:nullptr;
   g.bottomInset=p.size>=LumeMaterialParametersV4Size?static_cast<int>(p.bottomInset):0;
   g.innerRadius=p.size>=LumeMaterialParametersV5Size?static_cast<float>(p.innerRadius):0;
   if(!timed)g.opacity=p.size>=LumeMaterialParametersV6Size&&p.opacityEnabled?p.opacity:1.f;
+  if(!timed)g.islandShape=p.size==sizeof(p)?p.islandShape:1.f;
   {std::lock_guard<std::mutex> lock(g.contentMutex);
-   const bool v7=p.size==sizeof(p);
+   const bool v7=p.size>=LumeMaterialParametersV7Size;
    g.lensOverride=v7&&p.lensOverride!=0;
    if(g.lensOverride&&!timed){g.lensRect[0]=p.lensX;g.lensRect[1]=p.lensY;g.lensRect[2]=p.lensWidth;g.lensRect[3]=p.lensHeight;}
    g.contentEnabled=v7&&p.contentEnabled!=0;
@@ -1183,11 +1191,14 @@ void Configure(GlassInstance& g,const LumeMaterialParameters& p) {
    if(v7&&p.timelineCount){
      if(p.timelineStart!=g.timelineStart||p.timelineCount!=g.timeline.size()){
        g.timeline.assign(p.timeline,p.timeline+p.timelineCount);
+       if(p.size==sizeof(p)&&p.islandShapeTimeline)
+         g.islandShapeTimeline.assign(p.islandShapeTimeline,p.islandShapeTimeline+p.timelineCount);
+       else g.islandShapeTimeline.assign(p.timelineCount,p.size==sizeof(p)?p.islandShape:1.f);
        for(auto& frame:g.timeline)frame.panelCount=(std::min)(frame.panelCount,8u);
        g.timelineStep=p.timelineStepMs;g.timelineStart=p.timelineStart;
        if(p.lensOverride==2)AnchorStage(g);
      }
-   }else{g.timeline.clear();g.timelineStart=0;}
+   }else{g.timeline.clear();g.islandShapeTimeline.clear();g.timelineStart=0;}
    g.anchored=v7&&p.lensOverride==2&&!g.timeline.empty();}
   {std::lock_guard<std::mutex> lock(g.interactionMutex);
    g.interactionInput.pressed=p.pressed!=0;g.interactionInput.reducedMotion=p.reducedMotion!=0;

@@ -1,6 +1,7 @@
 #include "apps/shell/diagnostic_report.h"
 #include "apps/shell/self_check.h"
 #include "platform/windows/diagnostics/runtime_log.h"
+#include "platform/windows/ui_stall_trace.h"
 #include <windows.h>
 #include <filesystem>
 #include <fstream>
@@ -99,6 +100,16 @@ int main() {
     Write(logs / L"crashes" / L"LumeShell-1.dmp", "MDMP-fake");
     Write(data / L"huge-preferences.json", std::string(600 * 1024, 'x'));
     Write(logs / L"crashes" / L"LumeShell-0.dmp", std::string(17u << 20, 'd'));
+    const auto frameLog = logs / L"launchpad-frames.log";
+    Write(frameLog, std::string(1u << 20, 'r'));
+    platform::windows::ui_stall::SetLogPath(frameLog.wstring());
+    platform::windows::ui_stall::Report("launchpad-drag", platform::windows::ui_stall::Now(), 1000.0 / 420, {},
+                                      "items=92 outcome=commit pointer_moves=100 TRACE-NEW-DATA");
+    platform::windows::ui_stall::SetLogPath({});
+    Check(fs::file_size(logs / L"launchpad-frames.1.log") == (1u << 20) && fs::file_size(frameLog) < 2048,
+          "frame log rotates at 1 MiB and writes one bounded drag summary");
+    Write(data / L"launchpad-frames.log", "TRACE-LEGACY-DUPLICATE");
+    Write(data / L"legacy-extra.log", "TRACE-LEGACY-FALLBACK");
 
     platform::windows::diag::Initialize(logs);
     platform::windows::diag::Log("test", "wallpaper player exited, code " + platform::windows::diag::ExitCodeText(0xC0000005));
@@ -118,6 +129,7 @@ int main() {
     const auto zip = result.ok ? Read(result.path) : std::string{};
     Check(zip.size() > 22 && zip.compare(0, 4, "PK\x03\x04") == 0 && zip.find("PK\x05\x06") != std::string::npos, "zip structure");
     for (const auto* name : {"system.json", "processes.json", "modules.json", "windows-events.txt", "logs/lume.log",
+                             "logs/launchpad-frames.log", "logs/launchpad-frames.1.log", "logs/legacy-extra.log",
                              "settings/dock-preferences.json", "crashes/LumeShell-1.dmp"})
         Check(Has(zip, name), name);
     Check(Has(zip, "README.txt"), "summary entry");
@@ -126,6 +138,10 @@ int main() {
     Check(!Has(zip, std::string(4096, 'x')) && Has(zip, "settings/huge-preferences.json (600 KB)"), "oversized settings file left out and named");
     Check(!Has(zip, std::string(4096, 'd')) && Has(zip, "crashes/LumeShell-0.dmp (17408 KB)") && zip.size() < (33u << 20), "oversized dump left out, report under the cap");
     Check(!Has(zip, "SECRET-TOKEN") && !Has(zip, "PRIVATE-CITY"), "account and location excluded");
+    Check(Has(zip, "TRACE-NEW-DATA") && Has(zip, "TRACE-LEGACY-FALLBACK") && !Has(zip, "TRACE-LEGACY-DUPLICATE"),
+          "report includes current and rotated drag data plus legacy fallback without duplicate names");
+    Check(Has(zip, "启动台图标拖动卡顿的采集方法") && Has(zip, "同一格附近") && Has(zip, "slow_frame_gaps") &&
+          Has(zip, "coverage=unavailable"), "report explains how to reproduce, collect and interpret drag diagnostics");
 
     Check(shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostic-report","action":"create","note":"任务栏"})")->note == "\xE4\xBB\xBB\xE5\x8A\xA1\xE6\xA0\x8F", "create command");
     Check(shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostic-report","action":"open-logs"})").has_value(), "open logs command");

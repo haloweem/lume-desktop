@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Lume · 灵动岛布局预览</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/dynamic-island.css">
+  <link rel="stylesheet" href="/lume-icons.css">
+</head>
+<body>
+  <div id="app"><main id="content"></main></div>
+  <script type="module">
+    import {initialState} from './state.js';
+    import {islandPage,syncIslandControls} from './dynamic-island.js';
+    const content=document.querySelector('#content');
+    let state={...initialState(),dynamicIslandStatus:'idle',dynamicIslandPreviewMode:'expanded',dynamicIslandPreview:null};
+    state.dynamicIsland={...state.dynamicIsland,enabled:true,running:true,material:'frosted-glass'};
+    let tab='home',generation=0,last=null;
+    async function sync() {
+      const current=++generation;
+      const stage=content.querySelector('[data-island-preview-stage]');
+      if(stage) {
+        const mode=state.dynamicIslandPreviewMode;
+        const {shape,size,material}=state.dynamicIsland;
+        try {
+          const target={mode,shape,size,material};
+          if(last&&!matchMedia('(prefers-reduced-motion: reduce)').matches&&
+            (last.mode!==mode||last.shape!==shape||last.size!==size)) {
+            const params=new URLSearchParams({...target,fromShape:last.shape,fromSize:last.size,fromMode:last.mode});
+            const response=await fetch(`/__preview/transition?${params}`);
+            if(!response.ok)throw Error('transition unavailable');
+            const sequence=await response.json();
+            const pictures=await Promise.all(sequence.frames.map(async url=>{
+              const response=await fetch(url);if(!response.ok)throw Error('frame unavailable');
+              const blob=await response.blob();
+              const data=await new Promise(resolve=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.readAsDataURL(blob);});
+              const decoded=new Image();decoded.src=data;await decoded.decode();return data;
+            }));
+            for(const picture of pictures) {
+              if(current!==generation||!stage.isConnected)return;
+              state.dynamicIslandPreview={version:1,type:'dynamicIsland-preview',...target,width:960,height:300,image:picture,error:''};
+              syncIslandControls(content,state);
+              await new Promise(resolve=>setTimeout(resolve,1000/30));
+            }
+            last=target;return;
+          }
+          const result=await fetch(`/__preview/native?shape=${shape}&size=${size}&material=${material}&mode=${mode}`);
+          if(!result.ok)throw new Error('preview unavailable');
+          const image=await result.blob();
+          if(current!==generation||!stage.isConnected||state.dynamicIslandPreviewMode!==mode||state.dynamicIsland.shape!==shape||state.dynamicIsland.size!==size||state.dynamicIsland.material!==material)return;
+          state.dynamicIslandPreview={version:1,type:'dynamicIsland-preview',mode,shape,size,material,width:960,height:300,
+            image:await new Promise(resolve=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.readAsDataURL(image);}),error:''};
+          last=target;
+        } catch {
+          if(current!==generation)return;
+          state.dynamicIslandPreview={version:1,type:'dynamicIsland-preview',mode,shape,size,material,width:0,height:0,image:'',error:'render'};
+        }
+      }
+      syncIslandControls(content,state);
+    }
+    function render() {content.innerHTML=islandPage(state,tab);void sync();}
+    content.addEventListener('click',event=>{
+      const button=event.target.closest('button');if(!button)return;
+      if(button.dataset.tab){tab=button.dataset.tab;render();return;}
+      if(button.dataset.islandPreference)state.dynamicIsland={...state.dynamicIsland,[button.dataset.islandPreference]:button.dataset.value};
+      else if(button.dataset.action==='dynamicIsland-resetAppearance')state.dynamicIsland={...state.dynamicIsland,shape:'capsule',size:'standard',material:'none'};
+      else if(button.dataset.islandShape)state.dynamicIsland={...state.dynamicIsland,shape:button.dataset.islandShape};
+      else if(button.dataset.islandPreviewMode)state={...state,dynamicIslandPreviewMode:button.dataset.islandPreviewMode};
+      void sync();
+    });
+    render();
+  </script>
+</body>
+</html>

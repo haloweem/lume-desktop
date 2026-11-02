@@ -374,21 +374,21 @@ svg {
   background: rgba(130, 143, 162, 0.9);
   background-clip: padding-box;
 }
-:is(.wallpaper-grid, .settings, .application-settings__nav, .application-settings__panel,
+:is(.wallpaper-grid, .settings, .settings-body, .application-settings__nav, .application-settings__panel,
     .application-settings__legal-text, .application-settings textarea) {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
-:is(.wallpaper-grid, .settings, .application-settings__nav, .application-settings__panel,
+:is(.wallpaper-grid, .settings, .settings-body, .application-settings__nav, .application-settings__panel,
     .application-settings__legal-text, .application-settings textarea)::-webkit-scrollbar {
   width: 4px;
   height: 4px;
 }
-:is(.wallpaper-grid, .settings, .application-settings__nav, .application-settings__panel,
+:is(.wallpaper-grid, .settings, .settings-body, .application-settings__nav, .application-settings__panel,
     .application-settings__legal-text, .application-settings textarea)::-webkit-scrollbar-track {
   background: transparent;
 }
-:is(.wallpaper-grid, .settings, .application-settings__nav, .application-settings__panel,
+:is(.wallpaper-grid, .settings, .settings-body, .application-settings__nav, .application-settings__panel,
     .application-settings__legal-text, .application-settings textarea)::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
@@ -398,6 +398,7 @@ svg {
 @supports selector(::-webkit-scrollbar) {
   :is(
     .settings,
+    .settings-body,
     .application-settings__nav,
     .application-settings__panel,
     .application-settings__legal-text,
@@ -413,6 +414,7 @@ svg {
   }
   :is(
     .settings,
+    .settings-body,
     .application-settings__nav,
     .application-settings__panel,
     .application-settings__legal-text,
@@ -429,6 +431,7 @@ svg {
   }
   :is(
     .settings,
+    .settings-body,
     .application-settings__nav,
     .application-settings__panel,
     .application-settings__legal-text,

@@ -1,6 +1,7 @@
 #include "platform/windows/material/materials/liquid-glass.h"
 #include "platform/windows/material/materials/frosted-glass.h"
 #include "material-shader-bytecode.h"
+#include "core/dynamic_island/island_shape.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -304,6 +305,21 @@ void AnnulusPixelAreaCoverage(Renderer& renderer){
 int main(){
     try{
         Renderer renderer;
+        for(const bool frosted:{false,true})for(const float dpi:{1.f,1.25f,1.5f,2.f})for(const float height:{34.f,156.f})for(const float mix:{0.f,.5f,1.f}) {
+            auto c=Parameters(1,dpi,30);c.optical[1]=-(1+mix);c.lensSize[0]=300*dpi;c.lensSize[1]=height*dpi;
+            c.interaction[0]=0;
+            if(frosted){c.effect[0]=-1;c.effect[2]=-30*dpi;}
+            const auto image=renderer.Render(Solid(128),c,frosted);
+            const float w=c.lensSize[0],h=c.lensSize[1],radius=std::min(30*dpi,h/2);
+            unsigned opaque=0,clear=0;int errors=0;
+            for(int y=kOrigin;y<kOrigin+static_cast<int>(h);++y)for(int x=kOrigin;x<kOrigin+static_cast<int>(w);++x){
+                const float d=lume::dynamic_island::MorphShapeDistance(x-kOrigin+.5f,y-kOrigin+.5f,w,h,radius,mix,dpi);
+                const auto a=At(image,x,y).alpha;
+                if(d>1){++clear;if(a>0)++errors;}
+                else if(d<-1){++opaque;if(a<250)++errors;}
+            }
+            Expect(opaque>100&&clear>10&&errors==0,"attached island glass mask follows native geometry at "+std::to_string(static_cast<int>(dpi*96))+" DPI");
+        }
         AnnulusCoverage(renderer);
         AnnulusPixelAreaCoverage(renderer);
         NeutralTransmission(renderer);

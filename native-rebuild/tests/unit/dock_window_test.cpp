@@ -162,6 +162,8 @@ int main() {
     Pump(500);
     Check(dock.ScaleOf(2) > 1.3f && dock.ScaleOf(2) > dock.ScaleOf(3) && dock.ScaleOf(3) > dock.ScaleOf(5) - .01f,
           "hover magnifies the pointed icon most");
+    Pump(400);
+    Check(!dock.Animating(), "stationary hover stops repainting after magnification settles");
     RECT grown{};
     GetWindowRect(dock.BarHandle(), &grown);
     Check(grown.right - grown.left > bounds.right - bounds.left, "the bar widens with magnified icons");
@@ -169,6 +171,7 @@ int main() {
     Check(std::abs(dock.ScaleOf(6) - 1) < .01f, "the third icon away does not magnify");
     // A click without movement activates.
     SendMessageW(dock.Handle(), WM_MOUSEMOVE, 0, IconAt(dock, 2));
+    Check(dock.Animating(), "pointer movement restarts dock animation after idle hover");
     Pump(400);
     SendMessageW(dock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, IconAt(dock, 2));
     SendMessageW(dock.Handle(), WM_LBUTTONUP, 0, IconAt(dock, 2));
