@@ -77,6 +77,7 @@ struct NativeWidgetWindow::State {
         window=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|(ports.bottom?WS_EX_NOACTIVATE:0),ClassName,title.c_str(),WS_POPUP,
             prefs.x,prefs.y,1,1,nullptr,nullptr,instance,this);
         if(!window){configuring=false;return false;}
+        if(!window_layer::Register(window,window_layer::Kind::Desktop)){configuring=false;Stop();return false;}
         if(ports.canDropFiles)DragAcceptFiles(window,TRUE);
         SetPropW(window,lume::window_ids::DesktopWidgetProp,reinterpret_cast<HANDLE>(1));dpi=GetDpiForWindow(window);if(!dpi)dpi=96;
         if(ports.bottom)SetPropW(window,lume::window_ids::DesktopBottomProp,reinterpret_cast<HANDLE>(1));
@@ -89,7 +90,7 @@ struct NativeWidgetWindow::State {
         DesktopLevel(window);
         // Placement already falls back to a show without a z-order request; a
         // still hidden window means the desktop layer refused it outright.
-        if(!IsWindowVisible(window)){placementFailed=true;Stop();return false;}
+        if(!IsWindowVisible(window)&&!window_layer::Suppressed(window)){placementFailed=true;Stop();return false;}
         return true;
     }
     void Stop(){
@@ -109,6 +110,7 @@ struct NativeWidgetWindow::State {
         display=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW,DisplayClassName,title.c_str(),WS_POPUP,
             prefs.x,prefs.y,1,1,nullptr,nullptr,instance,nullptr);
         if(!display)return false;
+        window_layer::Register(display,window_layer::Kind::Desktop,window);
         SetPropW(display,lume::window_ids::DesktopCompanionOwnerProp,window);
         return true;
     }

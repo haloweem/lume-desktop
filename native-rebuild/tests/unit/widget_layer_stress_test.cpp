@@ -141,14 +141,16 @@ LRESULT CALLBACK AllowFixtureDislocation(HWND window, UINT message, WPARAM w, LP
     return CallWindowProcW(dislocationProcedure, window, message, w, l);
 }
 
-void Dislocate(HWND window) {
+void Dislocate(HWND window, HWND ceiling=nullptr) {
     // Reproduce an already-invalid order (for example an asynchronous desktop
     // transition) without granting production callers a permanent escape from
     // the widget's position guard. Subclassing is confined to our own HWND.
     dislocationProcedure = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window, GWLP_WNDPROC,
         reinterpret_cast<LONG_PTR>(AllowFixtureDislocation)));
     Check(dislocationProcedure != nullptr, "temporarily observe fixture window positioning");
-    const bool moved = SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
+    HWND anchor=ceiling?GetWindow(ceiling,GW_HWNDPREV):nullptr;
+    while(anchor&&GetWindowLongPtrW(anchor,GWL_EXSTYLE)&WS_EX_TOPMOST)anchor=GetWindow(anchor,GW_HWNDPREV);
+    const bool moved = SetWindowPos(window, anchor?anchor:HWND_TOP, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE;
     SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(dislocationProcedure));
     dislocationProcedure = nullptr;
@@ -231,6 +233,9 @@ void CheckLayer(const std::array<HWND, 3>& owners, HWND manager, const char* sta
 }
 
 void Run() {
+    // This test creates its own foreground fixtures, not a game detector. Real
+    // game/display classification is covered separately by the policy probe.
+    window_layer::contextReader=[] {return window_layer::Context{};};
     ForegroundRestore foreground;
     const auto instance = GetModuleHandleW(nullptr);
     Register(instance, L"LumeWidgetStressDesktopHost");
@@ -309,7 +314,7 @@ void Run() {
 
     SetActiveWindow(manager.handle);
     for (const auto owner : owners) {
-        Dislocate(owner);
+        Dislocate(owner,manager.handle);
         Check(Below(manager.handle, owner), "fixture places widget above active manager");
     }
     PositionTrace weatherTrace(weather.Handle());
@@ -336,9 +341,9 @@ void Run() {
             reinterpret_cast<WPARAM>(clock.Handle()), MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN));
         Check(response == MA_ACTIVATE, "clock click activates so the next manager click can take focus back");
         SetActiveWindow(clock.Handle());
-        Check(Below(manager.handle, clock.Handle()), "clicked clock is above manager");
+        Check(Below(clock.Handle(), manager.handle), "clicked clock remains below manager");
         desktop_level::RequestAll();Pump();
-        Check(Below(manager.handle, clock.Handle()), "passive restack retains clicked clock");
+        Check(Below(clock.Handle(), manager.handle), "passive restack retains application ceiling");
         SetActiveWindow(manager.handle);Pump();
         Check(Below(clock.Handle(), manager.handle), "manager activation returns clock below manager");
         clock.Stop();
@@ -353,12 +358,12 @@ void Run() {
         Check(GetActiveWindow() == clicked, "clicked fixture widget owns activation");
         Check(WaitFor([&] {
             const HWND glass = Surface(clicked);
-            return Below(manager.handle, clicked) && glass && Below(glass, clicked) &&
-                   Below(manager.handle, glass);
-        }, 1000), "click selects widget together with its real glass above manager");
+            return Below(clicked, manager.handle) && glass && Below(glass, clicked) &&
+                   Below(glass, manager.handle);
+        }, 1000), "click keeps widget and its real glass below manager");
         for (const auto owner : owners) {
             if (owner == clicked) continue;
-            Check(Below(owner, clicked), "unclicked widgets stay below selected widget");
+            Check(Below(owner, manager.handle), "unclicked widgets retain application ceiling during selection");
         }
         for (unsigned passive = 0; passive < 4; ++passive) {
             desktop_level::RequestAll();
@@ -366,8 +371,8 @@ void Run() {
             PostMessageW(Surface(clicked), WM_APP + 1, 0, 0);
             const auto until = GetTickCount64() + 35;
             do { Pump(); Sleep(5); } while (GetTickCount64() < until);
-            Check(Below(manager.handle, clicked) && Below(manager.handle, Surface(clicked)),
-                  "passive refresh cannot demote the explicitly selected widget pair");
+            Check(Below(clicked, manager.handle) && Below(Surface(clicked), manager.handle),
+                  "passive refresh cannot promote the clicked widget pair");
             for (const auto owner : owners) {
                 if (owner == clicked) continue;
                 Check(Below(owner, manager.handle) && Below(Surface(owner), manager.handle),
@@ -450,6 +455,7 @@ void Run() {
     calendar.Stop();
     weatherTooltip.Stop();
     for (auto* widget : widgets) widget->Stop();
+    window_layer::contextReader={};
     std::cout << "real widget/glass layer stress passed: 24 transitions, " << samples
               << " asynchronous samples\n";
 }

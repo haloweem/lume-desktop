@@ -14,7 +14,7 @@ export function calendarStatus(state) {
     save:t('日历保存失败，已恢复此前设置，请重试','Could not save the calendar. Previous settings restored. Please try again.'),rollback:t('日历恢复失败，请重新启用组件','Could not restore the calendar. Enable the widget again.'),
     load:t('日历配置读取失败，当前使用默认设置；尚未保存','Could not load calendar settings. Using defaults; not yet saved.'),
   }[state.calendarError] || t('日历配置读取失败，当前使用默认设置；尚未保存','Could not load calendar settings. Using defaults; not yet saved.');
-  if(state.calendarStatus === 'saving') return t('正在保存...','Saving...');
+  if(state.calendarStatus === 'saving') return '';
   if(state.calendarStatus === 'loading') return t('正在读取设置...','Loading settings...');
   if(state.calendarStatus === 'unavailable') return t('桌面宿主未连接，日历设置未保存','Desktop host disconnected. Calendar settings were not saved.');
   if(state.calendarLoadStatus === 'recovered-backup') return t('已从备份恢复日历配置，尚未保存到主配置','Calendar settings restored from backup; not yet saved to the main configuration.');

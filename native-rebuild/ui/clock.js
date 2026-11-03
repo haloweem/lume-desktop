@@ -3,7 +3,7 @@ import { t } from "./localization.js";
 const styles=()=>[["welfare",t("样式一","Style 1")],["mond",t("样式二","Style 2")],["insideDream",t("样式三","Style 3")]];
 function clockStatus(state) {
   if(state.status === "error") return state.error === "runtime" ? t("桌面时钟启动失败，请检查字体和安装文件","Could not start the desktop clock. Check the fonts and installation files.") : state.error === "rollback" ? t("时钟恢复失败，请重新启用组件","Could not restore the clock. Enable the widget again.") : t("保存失败，已恢复此前设置，请重试","Could not save. Previous settings restored. Please try again.");
-  return {loading:t("正在读取设置...","Loading settings..."),saving:t("正在保存...","Saving..."),unavailable:t("桌面宿主未连接，设置未保存","Desktop host disconnected. Settings were not saved.")}[state.status] || "";
+  return {loading:t("正在读取设置...","Loading settings..."),unavailable:t("桌面宿主未连接，设置未保存","Desktop host disconnected. Settings were not saved.")}[state.status] || "";
 }
 export function clockPage(state,tab="settings") {
   const description=t("在桌面显示时间，提供样式一、样式二、样式三三种样式。","Display the time on your desktop in three styles: Style 1, Style 2 and Style 3.");

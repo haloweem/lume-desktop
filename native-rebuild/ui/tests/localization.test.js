@@ -35,7 +35,7 @@ const componentSync = {
 const componentTitles = {
   clock: ["时间", "Clock"], calendar: ["日历", "Calendar"], performance: ["性能", "Performance"],
   almanac: ["黄历", "Almanac"], weather: ["天气", "Weather"], organizer: ["图标收纳", "Icon organizer"],
-  icons: ["桌面图标切换与自动隐藏", "Desktop icons"], taskbar: ["任务栏透明化", "Taskbar transparency"],
+  icons: ["图标隐藏", "Icon hiding"], taskbar: ["任务栏美化", "Taskbar appearance"],
   minimize: ["macOS 最小化动画", "macOS minimize animation"],
 };
 // Optional DOM coverage uses the same existing development dependency as other UI tests.
@@ -66,24 +66,24 @@ const chineseBaseline = {
   "library": "74785ec620bbd6fe42547319b96a3b4fa2eb88ac97bd2d58bd533cbd2fb97bb1",
   "search": "49860e2b7c44f67c0576eea72d2163402f2794e095825ac381903d2e3ba0d03b",
   "detail": "e7aa3f2e4af81c04d10a86c0f6465160b9ca2aca8ff37ed277f71aa4da91878b",
-  "clock-settings": "84f1996828f16216abd76776a6e12fbeca9fa3f00fdebd6e9ea1f5dcad2cd94c",
-  "clock-details": "0090a83f21f7505c42d6058ddc25017439fb2043ca2be008473bd17089db7636",
-  "calendar-settings": "50f30feef911a53b9adcd309864486362c5a3366671bb0e58b93e2e20e6e6152",
-  "calendar-details": "80cd2321f95cc62410183daa43904602271596a8160a21eb487b59f16b97ba5a",
-  "performance-settings": "d3f62508d4f7493a74c08374e5719fd6a08d2041e8185c69b1a5e5589dcf75ba",
-  "performance-details": "ebfb7bb55efa3b41ca37a35c4e77f1ba47bca7afc5ec2fda3ba16f6158118fbe",
-  "almanac-settings": "735ac9e1cba49be00124ebee11b937ceb252da4b40ff8cb6fa8a577416d9f725",
-  "almanac-details": "cd749b5bc7193b559b29558bfd192f69e0ab328206124ec0c6c4f127592f40b9",
-  "weather-settings": "641f2e48f188c86cf5e67fb0f3395e99c64ae7aa6e9b11b9b30c18b36f698806",
-  "weather-details": "9e1d175b4b577b588a132ea82bd86e3eb6cd707ac8d09cd4ba38be5a719e591f",
-  "organizer-settings": "5c3054a0707ba0cebe044d942e7cd472aeee85bdf073449ccc1e5f1e2006664f",
-  "organizer-details": "a25c8605714b68e43601d08e2f9c95cfc2ee83b458b913cba36ef2c4d7020f1a",
-  "icons-settings": "47fb8899e266e01d8d3a43dba6e04acd965d1df1d0cd6a0b575a8861ce72f83d",
-  "icons-details": "dfb7be808d636fd586c84590eeb7372dac4d422463e8cdb989fd77ceae130187",
-  "taskbar-settings": "d47b3782d722ff3b1e9b5bff7722b092a186c6e40b7112cb907ad3fd6594e87b",
-  "taskbar-details": "e24d332aa778e46e70fb4e64449c3c15e18b05c435742bea496cd30e686ab375",
-  "minimize-settings": "04ec4ffbbf625321b3d32e7f49bcb42214a39c0ea3772d77c86603a809f08e19",
-  "minimize-details": "2dd19a9f1116c018354dbe873231f462ebd7ba2ba765d234e9e128f909e41cd7",
+  "clock-settings": "d4f9eb23f4ce032ca5fbe183933d246e952489ea5e9745ff5cc4470b0560837e",
+  "clock-details": "bdaa72cb322056bf93e3a0058a8f82b06f976a590c3f0af804bbdfa233f99c08",
+  "calendar-settings": "8fcfb6494e4d0d09560fe31d699a58a42fad982ce2a9e9404f91d0aac71f44bf",
+  "calendar-details": "892efb79cd162174c3ea9acc1151d63f7c038896f6fd84f93126cdab0728ba0a",
+  "performance-settings": "bc7b5af2df3773c3b41faa7722277017a21560f1e1369486a07f7747d7275d51",
+  "performance-details": "dd8c618605dc00e8a0053b7d3d524ea275a1277d38083c6425ecc8bb04a100b4",
+  "almanac-settings": "440f0000bf02a8691358aa509cda25fbf0f4e906c956c87e395c52f091cc60c0",
+  "almanac-details": "01dcdac8027b34e329a6ff89feb91b6d27f06a6ddc288ad49893b1e0e138a2c3",
+  "weather-settings": "b4e2d483788c755a80c6c21bd94ccbf0260033cfb9c6fd799e6c1eaab621377e",
+  "weather-details": "58ed96f0367d7d79de8f830060b14cf7dcf1c4ad260dfb55611c9f867e8ad575",
+  "organizer-settings": "da8f2fdf39707e2d01704ac34e31b510518d3dc3de67a5c2fd06a0cf261c3a60",
+  "organizer-details": "c393785abc3e1e0ec44cf50a5ca94a3528bb5f66ebb766587409a27c017ef5d3",
+  "icons-settings": "44f4069aea80854aad733975e3dcf41fd6574a17a6ec963da27e4ab16f096d26",
+  "icons-details": "c8a8ece8dc85f2598b4681c3ef5c554d6792e7bf9c30aa743aee709a99134447",
+  "taskbar-settings": "0739de777f45a52e8934e8e51a5a35b13f8edb340552a8a0be21edffd5af1ccf",
+  "taskbar-details": "783a488bcd97f936b0fe7db28d9e0de07f6cbebaf30be23b141cbe51c3591a36",
+  "minimize-settings": "c3912ce1f818ab1f9622859be2a51ef9f0aefd02d000ecd29f9940c798d571cd",
+  "minimize-details": "783b9e445bceb7e4a9ae4ee57302771609fbc04b64d3af796fd45536fe6a9312",
 };
 
 function wallpaperState() {
@@ -155,7 +155,7 @@ test("catalog localizes only known module display fields and never mutates Chine
   assert.equal(catalogData.localizedItem(userItem), userItem);
   assert.deepEqual([catalogData.modules, catalogData.widgets], raw);
   const html = pages.catalog(initialState(), false) + pages.catalog(initialState(), true);
-  for (const label of ["Taskbar transparency", "Desktop icons", "Desktop widgets",
+  for (const label of ["Taskbar appearance", "Icon hiding", "Desktop widgets",
     "Clock", "Calendar", "Weather", "Almanac", "Performance", "Music", "Icon organizer"]) assert.ok(html.includes(label), label);
   // The minimize animation is temporarily hidden from the catalog.
   assert.ok(!html.includes("macOS minimize animation"), "minimize animation hidden");
@@ -220,11 +220,12 @@ test("known component status and recovery messages translate at the point of use
   ]) {
     for (const value of ["loading", "saving", "unavailable", "error"]) {
       const state = { ...initialState(), [`${scope}Status`]: value, [`${scope}Error`]: value === "error" ? "runtime" : "" };
-      assert.ok(status(state), `${scope}: ${value}`);
+      if(value==='saving')assert.equal(status(state),'',`${scope}: saving has no notification`);
+      else assert.ok(status(state), `${scope}: ${value}`);
       assert.doesNotMatch(status(state), /[\u3400-\u9fff]/u, `${scope}: ${value}`);
     }
     const saved = { ...initialState(), [`${scope}Status`]: "saved" };
-    assert.match(notice(saved, { previousStatus: "saving" }), /applied and saved/i);
+    assert.match(notice(saved, { previousStatus: "saving" }), scope==='organizer'?/organizer closed/i:/applied and saved/i);
     assert.equal(notice(saved, { previousStatus: "saving", hasInlineStatus: true }), null);
   }
   assert.doesNotMatch(taskbarStatus({ ...initialState(), taskbarStatus: "error", taskbarError: "core-start" }), /[\u3400-\u9fff]/u);
@@ -567,12 +568,14 @@ test("running component DOM retains language through pending, error and confirme
         const surface = root.firstElementChild, toggle = root.querySelector(`.Card ${toggleSelector}`);
         const reset = surface.querySelector(`[data-action="${scope === "clock" ? "reset" : `${scope}-reset`}"]`);
         assert.equal(surface.querySelector(toggleSelector), null, `${scope} 内页没有主开关`);
-        assert.equal(root.querySelector(".settings-head h3").textContent, componentTitles[scope][Number(english)], scope);
+        assert.equal(root.querySelector(".settings").getAttribute("aria-label"), componentTitles[scope][Number(english)], scope);
         assert.equal(toggle.getAttribute("aria-checked"), "true", scope);
         assert.equal(toggle.disabled, true, scope);
         assert.equal(reset.disabled, true, `${scope} 保存期间重置不可用`);
         sync(root, state);
         assert.deepEqual(state, pendingState, `${scope}: language does not change pending/native state`);
+        assert.equal(root.querySelector('.status').textContent,'',`${scope}: saving is silent`);
+        assert.equal(root.querySelector('.status').hidden,true,`${scope}: no saving status occupies the footer`);
 
         state[statusKey] = "error";
         state[errorKey] = "runtime";
@@ -663,7 +666,7 @@ test("real app language callbacks rerender every component and roll back failed 
         receive(snapshot(language));
         assert.equal(getLanguage(), language, scope);
         assert.equal(document.documentElement.lang, language, scope);
-        assert.equal(find(".settings-head h3").textContent, componentTitles[scope][Number(language === "en")], scope);
+        assert.equal(find(".settings").getAttribute("aria-label"), componentTitles[scope][Number(language === "en")], scope);
         assert.equal(find(".settings").dataset.settingsScope, scope, "language keeps the current component route");
       }
     }
@@ -683,14 +686,14 @@ test("real app language callbacks rerender every component and roll back failed 
     changeLanguage("en");
     receive(snapshot("en"));
     find("[data-settings-back]").click();
-    assert.equal(find(".settings-head h3").textContent, "Clock", "return renders the retained component in English");
+    assert.equal(find(".settings").getAttribute("aria-label"), "Clock", "return renders the retained component in English");
     receive({ version: 1, type: "settings", saved: false, error: "runtime",
       clock: { enabled: true, style: "mond", running: false, scale: 100, x: 10, y: 20,
         alpha: 255, color: 0xffffff, locked: false, customColor: false } });
     assert.match(find('[data-settings-scope="clock"] .status').textContent, /Could not start the desktop clock/);
     assert.equal(find("#clock-style span").textContent, "Style 2");
     receive(snapshot("zh-CN"));
-    assert.equal(find(".settings-head h3").textContent, "时间");
+    assert.equal(find(".settings").getAttribute("aria-label"), "时间");
     assert.match(find('[data-settings-scope="clock"] .status').textContent, /桌面时钟启动失败/);
     assert.equal(find("#clock-style span").textContent, "样式二");
     assert.deepEqual(commands.filter(command => typeof command === "string" &&

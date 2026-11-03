@@ -514,7 +514,7 @@ svg {
   line-height: 1.5715;
 }
 .settings-body:has(.settings-details) { padding-top:24px; }
-.settings-details {line-height:1.7;}
+.settings-details {line-height:1.7;margin-inline:0;text-align:left;}
 .settings-details h3 {font-size:18px;margin:0 0 .5em;font-weight:500;}
 .settings-details p {margin:0 0 1em;}
 .resource-overview {margin:0 0 28px;padding:16px;border:1px solid rgba(255,255,255,.12);background:#151515;}

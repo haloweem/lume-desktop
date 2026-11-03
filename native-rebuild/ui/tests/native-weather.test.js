@@ -48,7 +48,7 @@ test('weather keeps pending saves through background updates and uses confirmed 
   assert.equal(state.weather.city,'shanghai');
   assert.equal(reduce(initialState(),{type:'unavailable',scope:'all'}).weatherStatus,'unavailable');
 });
-test('weather settings preserve original controls and expose source attribution',()=>{
+test('weather settings preserve original controls and concise feature details',()=>{
   const state=reduce(initialState(),{type:'host',message:message({enabled:true,city:'shanghai'})});
   const html=weatherPage(state);
   assert.match(html,/data-settings-scope="weather"/);
@@ -56,7 +56,7 @@ test('weather settings preserve original controls and expose source attribution'
   assert.match(card({id:'weather',title:'天气'},state,true),/aria-checked="true"[^>]*data-action="weather-toggle"/);
   for(const [city] of weatherCities)assert.ok(html.includes(`data-select-value="${city}"`));
   assert.match(html,/data-action="weather-reset"/);
-  assert.match(weatherPage(state,'details'),/CC BY 4.0/);
+  assert.doesNotMatch(weatherPage(state,'details'),/数据来源与许可|Data sources and licenses|CC BY 4.0/);
   assert.doesNotMatch(weatherPage(state,'details'),/右上角刷新|刷新按钮的提示|top-right button|refresh button tooltip/);
   assert.match(weatherPage(state,'details'),/右键菜单或 F5/);
   assert.doesNotMatch(html,/未接入/);

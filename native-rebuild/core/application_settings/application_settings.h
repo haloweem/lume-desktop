@@ -21,6 +21,8 @@ struct Preferences {
     // Empty follows the installation folder; a value overrides the wallpaper
     // library root for future downloads (read at start-up).
     std::string wallpaperDirectory;
+    // 75 preserves the current manager layout; smaller values scale it as a whole.
+    int interfaceScale = 75;
 };
 enum class ReadStatus { Missing, Loaded, Failed };
 struct FileRead {
@@ -112,6 +114,7 @@ public:
     bool Load();
     bool Restore();
     bool SetLanguage(const std::string& language);
+    bool SetInterfaceScale(int percent);
     bool SetBalancedMode(bool enabled);
     bool SetAutostart(bool enabled);
     bool SetWallpaperDirectory(const std::string& directory);

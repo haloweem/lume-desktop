@@ -24,5 +24,8 @@ private:
     LumeMaterialParameters parameters_{};
     DWORD loadError_=0;
     bool attempted_=false;
+    mutable bool diagnosticSeen_=false;
+    mutable LumeMaterialStatus diagnosticPrevious_{};
+    void RecordStatus(const LumeMaterialStatus&) const;
 };
 }

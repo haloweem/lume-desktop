@@ -81,6 +81,19 @@ double CalculateOriginalZoom(int widthDip, int heightDip) noexcept {
     return std::clamp(std::min(widthDip / 1536.0, heightDip / 864.0), 0.5, 2.0);
 }
 
+PageBounds ScaleManagerWindowBounds(PageBounds baseline, int percent) noexcept {
+    const double ratio = std::clamp(percent, 50, 75) / 75.0;
+    baseline.width = std::max(1, static_cast<int>(JsRound(baseline.width * ratio)));
+    baseline.height = std::max(1, static_cast<int>(JsRound(baseline.height * ratio)));
+    return baseline;
+}
+
+double CalculateManagerZoom(int baselineWidthDip, int baselineHeightDip, int percent) noexcept {
+    // Clamp before applying the ratio so small screens can scale below the
+    // historical 0.5 floor without changing their existing logical layout.
+    return CalculateOriginalZoom(baselineWidthDip, baselineHeightDip) * std::clamp(percent, 50, 75) / 75.0;
+}
+
 PageBounds RestoreOriginalWindowBounds(PageBounds savedPixels, PageBounds savedWorkAreaPixels,
                                       PageBounds currentWorkAreaPixels, int savedDpi,
                                       int currentDpi) noexcept {

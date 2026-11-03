@@ -72,6 +72,7 @@ bool NativeCalendarWindow::Start(bool preservePosition) {
     const auto& profile=*preferences_.Active();
     window_=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW,kClass,L"Lume Calendar",WS_POPUP,profile.x,profile.y,1,1,nullptr,nullptr,instance_,this);
     if(!window_){renderer_.reset();return false;}
+    if(!window_layer::Register(window_,window_layer::Kind::Desktop)){Stop();return false;}
     SetPropW(window_,lume::window_ids::DesktopWidgetProp,reinterpret_cast<HANDLE>(1));SetPropW(window_,widget_snap::Capability,reinterpret_cast<HANDLE>(1));dpi_=GetDpiForWindow(window_);if(!dpi_)dpi_=96;
     if(!ApplyBounds(!preservePosition)||!Paint()){Stop();return false;}
     confirmedBounds_=CurrentBounds();

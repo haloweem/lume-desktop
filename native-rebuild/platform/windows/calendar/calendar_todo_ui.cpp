@@ -1,4 +1,5 @@
 #include "platform/windows/calendar/calendar_todo_ui.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/text_util.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/widget_ui/ui_font.h"
@@ -277,6 +278,7 @@ struct Surface::MaterialLayer {
             // Both flags also exclude this helper from GlassScene capture.
             shadow=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,
                 wc.lpszClassName,L"",WS_POPUP,0,0,0,0,window,nullptr,wc.hInstance,nullptr);
+            if(shadow)window_layer::Register(shadow,window_layer::Kind::Popup,window);
         }
         if(!shadow)return;
         const bool firstPresentation=shadowWidth==0;

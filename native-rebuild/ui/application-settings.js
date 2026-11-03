@@ -3,6 +3,8 @@ import {syncSettingsControlBusy} from './settings-frame.js';
 import {mountAccount,LUME_LOGO,REFRESH_ICON} from './account.js';
 import {validApplicationSettingsState} from './settings-account-protocol.js';
 import {DIAGNOSTICS_ENABLED} from './diagnostics.js';
+import {settingsRange} from './settings-range.js';
+import {mountInterfaceScaleControl} from './interface-scale-control.js';
 
 export {validApplicationSettingsState as isApplicationSettingsSnapshot};
 
@@ -18,6 +20,8 @@ const text={
     supportChecks:'启动自检',supportChecking:'正在检查…',supportCheckOk:'正常',supportCheckProblem:'异常',supportCheckUnknown:'未知',supportFix:'建议：',
     supportDone:'已保存到桌面：{file}，请把这个文件发给我们。',supportFailed:'生成失败：{error}',supportUnavailable:'当前无法生成诊断报告。',
     language:'语言',languageDescription:'选择 Lume 的显示语言。',balancedMode:'均衡模式',
+    interfaceScale:'界面缩放',interfaceScaleRatio:'缩放比例',
+    interfaceScaleDescription:'等比例调整管理界面的窗口、文字和控件大小，默认 75%。',
     balancedDescription:'动态壁纸以 30 fps 播放，全屏时自动暂停。',autostartLabel:'开机时自动启动 Lume',
     dataFolder:'用户数据目录',dataFolderDescription:'账号、待办、音乐库和设置保存在这里；更改后会在下次启动时搬移并生效。',
     wallpaperFolder:'壁纸下载目录',wallpaperFolderDescription:'壁纸文件保存在这里；更改后从下次启动开始，只影响之后下载的壁纸。',
@@ -55,6 +59,8 @@ const text={
     supportChecks:'Startup self-check',supportChecking:'Checking…',supportCheckOk:'OK',supportCheckProblem:'Problem',supportCheckUnknown:'Unknown',supportFix:'Suggestion: ',
     supportDone:'Saved to your desktop: {file}. Please send this file to us.',supportFailed:'Could not create the report: {error}',supportUnavailable:'The diagnostic report is not available right now.',
     language:'Language',languageDescription:'Choose the display language for Lume.',balancedMode:'Balanced mode',
+    interfaceScale:'Interface scale',interfaceScaleRatio:'Scale',
+    interfaceScaleDescription:'Scale the manager window, text and controls together. Default: 75%.',
     balancedDescription:'Play animated wallpapers at 30 fps and pause them in fullscreen.',autostartLabel:'Start Lume with Windows',
     dataFolder:'User data folder',dataFolderDescription:'Account, to-dos, music library and settings are stored here. A change is moved and applied at the next launch.',
     wallpaperFolder:'Wallpaper folder',wallpaperFolderDescription:'Wallpaper files are stored here. A change applies from the next launch and only to wallpapers downloaded afterwards.',
@@ -136,6 +142,10 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     <div class="application-settings__fields"><label class="application-settings__field"><span class="application-settings__label" data-settings-text="language"></span>
     <span class="application-settings__description" data-settings-text="languageDescription"></span>
     <select data-setting="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select></label>
+    <div class="application-settings__field" data-interface-scale-control>
+    <div class="application-settings__label" data-settings-text="interfaceScale"></div>
+    <p class="application-settings__description" data-settings-text="interfaceScaleDescription"></p>
+    ${settingsRange('application-interface-scale','缩放比例',75,50,75,'%',true,'app-settings','interfaceScale')}</div>
     <div class="application-settings__field"><div class="application-settings__label" data-settings-text="balancedMode"></div>
     <p class="application-settings__description" data-settings-text="balancedDescription"></p><label class="application-settings__switch-row">
     <input type="checkbox" role="switch" data-setting="balancedMode"><span data-settings-text="balancedMode"></span></label></div>
@@ -194,7 +204,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
   const $=selector=>root.querySelector(selector),panels=[...root.querySelectorAll('[data-settings-panel]')];
   const account=mountAccount($('[data-account-host]'),{bridge,onBusyChange:onAccountBusyChange});
   let state={revision:-1,language:'zh-CN',balancedMode:true,autostart:true,busy:false,error:'',update:{status:'idle',version:'',progress:0}};
-  let confirmed={language:'zh-CN',balancedMode:true,autostart:true};
+  let confirmed={language:'zh-CN',balancedMode:true,autostart:true,interfaceScale:75};
   let section='general',pending=null,localError='',localNotice='',disposed=false,requested=false,displayLanguage='zh-CN',pendingDiagnosticClear=null;
   const scroll=new Map();
   // 脱离文档或 display:none 后浏览器会把 scrollTop 读成 0，不能用它覆盖离开前的位置。
@@ -203,6 +213,12 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     panels.forEach(panel=>{if(!panel.hidden)scroll.set(panel.dataset.settingsPanel,panel.scrollTop);});
   };
   const effective=key=>pending?.action===key?pending.fields.value:confirmed[key];
+  const interfaceScale=mountInterfaceScaleControl($('[data-interface-scale-control]'),{
+    onPreview:value=>{
+      try{return bridge?.applicationSettings?.('previewInterfaceScale',{value})===true;}catch{return false;}
+    },
+    onCommit:value=>request('interfaceScale',{value}),
+  });
   function sync() {
     if(disposed) return;
     const language=effective('language'),t=text[language];
@@ -218,6 +234,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
       if(selected)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
     });
     const busy=state.busy || !!pending || state.revision<0;
+    interfaceScale.sync(effective('interfaceScale'),busy,t.interfaceScaleRatio);
     // 两个目录只读显示：数据目录固定，壁纸目录由宿主解析后下发。
     $('[data-settings-path="data"]').textContent=state.dataDirectory || '—';
     $('[data-settings-path="wallpaper"]').textContent=state.wallpaperDirectory || '—';
@@ -243,7 +260,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     const error=localError || state.error,message=$('[data-settings-message]');
     const code=error.toLowerCase().replaceAll('_','-');
     const errorKey=errorKeys[code] || 'failure';
-    message.textContent=localNotice || (error?t[errorKey]:state.revision<0?t.loading:pending?(pending.action==='checkUpdate'?t.checking:t.saving):'');
+    message.textContent=localNotice || (error?t[errorKey]:state.revision<0?t.loading:pending?.action==='checkUpdate'?t.checking:'');
     message.hidden=!message.textContent;message.classList.toggle('error',!!error && !localNotice);
     message.setAttribute('role',error?'alert':'status');
     account.setLanguage(language);
@@ -383,7 +400,8 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     if(message.revision<=state.revision)return true;
     state={...message,update:{...message.update}};
     // settled 快照始终携带 native 已确认值；回滚失败也必须显示实际值，不能捏造恢复成功。
-    if(!message.busy)confirmed={language:message.language,balancedMode:message.balancedMode,autostart:message.autostart};
+    if(!message.busy)confirmed={language:message.language,balancedMode:message.balancedMode,autostart:message.autostart,
+      interfaceScale:message.interfaceScale??75};
     if(pending && !message.busy && message.revision>pending.revision)pending=null;
     localError='';sync();
     return true;
@@ -490,7 +508,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     if(DIAGNOSTICS_ENABLED&&event.target.dataset.diagnosticField && diagnostics) diagnostics.saveNote(readDiagnosticNote());
   };
   const onScroll=event=>{if(event.target.hasAttribute?.('data-settings-panel'))scroll.set(event.target.dataset.settingsPanel,event.target.scrollTop);};
-  function hide() {if(disposed)return;captureScroll();root.hidden=true;}
+  function hide() {if(disposed)return;interfaceScale.cancel();captureScroll();root.hidden=true;}
   function requestSnapshot() {
     const settingsSent=request('snapshot'),accountSent=account.requestSnapshot();
     let diagnosticsSent=true;
@@ -513,6 +531,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     },
     dispose() {
       if(disposed)return;
+      interfaceScale.dispose();
       disposed=true;root.removeEventListener('click',onClick);root.removeEventListener('change',onChange);
       root.removeEventListener('scroll',onScroll,true);root.removeEventListener('input',onInput);account.dispose();pending=null;scroll.clear();root.remove();
     },

@@ -1,4 +1,5 @@
 #include "material_api.h"
+#include "material_diagnostics.h"
 #include "../lume_window_ids.h"
 #include "annular_region.h"
 #include <windows.h>
@@ -161,6 +162,9 @@ std::unordered_map<uint32_t, std::unique_ptr<GlassInstance>> g_glasses;
 uint32_t g_nextId = 1;
 
 void LogNative(const char* stage, HRESULT result = S_OK) {
+  // Persist initialization/failure stages, never per-frame timing or sample data.
+  if (std::strncmp(stage,"T ",2)!=0 && std::strncmp(stage,"Frames=",7)!=0)
+    lume::platform::windows::material_diagnostics::Write(stage,result);
   char buffer[256] = {};
   std::snprintf(buffer, sizeof(buffer), "%s hr=0x%08lx\n", stage, static_cast<unsigned long>(result));
   OutputDebugStringA(buffer);
@@ -183,7 +187,8 @@ LRESULT CALLBACK SurfaceWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
   }
   if (message == WM_APP + 1) {
     auto* glass = reinterpret_cast<GlassInstance*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (glass && glass->frameReady && IsWindowVisible(glass->owner))
+    if (glass && glass->frameReady && IsWindowVisible(glass->owner) &&
+        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp))
       SetWindowPos(hwnd, glass->owner, 0, 0, 0, 0,
                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
     else ShowWindow(hwnd, SW_HIDE);
@@ -399,6 +404,13 @@ bool InitializeAndRun(GlassInstance* glass) {
       lume::window_ids::GlassSurfaceClass, L"Lume Liquid Glass", WS_POPUP,
       surfaceLeft, surfaceTop, surfaceWidth, surfaceHeight, nullptr, nullptr, MaterialModule(), glass);
   if (!glass->surface) { SignalInitialization(glass, false); return false; }
+  // The HWND spans the virtual desktop. Publish an empty region before DComp
+  // sees it: a hidden launchpad prewarm otherwise starts with an unrestricted
+  // surface and can disrupt Explorer taskbar input on both monitors. The frame
+  // loop publishes the actual lens region before its first visible frame.
+  if (!lume::platform::windows::PublishRegion(glass->surface, CreateRectRgn(0, 0, 0, 0))) {
+    SignalInitialization(glass, false); return false;
+  }
   // Screenshots must contain the visible material. Feedback is prevented by
   // GlassScene's window-only SourcesBelow traversal, excluding this surface;
   // lower native surfaces arrive through SurfaceFeed, never monitor capture.
@@ -418,6 +430,14 @@ bool InitializeAndRun(GlassInstance* glass) {
   HRESULT adapterResult = factory->EnumAdapters(0, adapter.GetAddressOf());
   if (FAILED(adapterResult)) { LogNative("EnumAdapters", adapterResult); SignalInitialization(glass, false); return false; }
   LogNative("FactoryAndAdapter");
+  DXGI_ADAPTER_DESC adapterDescription{};
+  if(SUCCEEDED(adapter->GetDesc(&adapterDescription))) {
+    char details[128]{};
+    std::snprintf(details,sizeof(details),"vendor=0x%04x device=0x%04x luid=%08lx:%08lx",
+        adapterDescription.VendorId,adapterDescription.DeviceId,
+        static_cast<unsigned long>(adapterDescription.AdapterLuid.HighPart),adapterDescription.AdapterLuid.LowPart);
+    lume::platform::windows::material_diagnostics::Write("GraphicsAdapter",S_OK,details);
+  }
   std::shared_ptr<GlassCaptureRegistry::Graphics> graphics;
   try { graphics = g_glassCaptureRegistry.AcquireGraphics(adapter.Get()); }
   catch (const winrt::hresult_error& error) {
@@ -428,6 +448,7 @@ bool InitializeAndRun(GlassInstance* glass) {
   ComPtr<ID3D11DeviceContext> context = graphics->context;
   GlassScene scene;
   if (!scene.Initialize(graphics, glass->wake, surfaceLeft, surfaceTop, surfaceWidth, surfaceHeight)) {
+    LogNative("SceneInitialize",E_FAIL);
     SignalInitialization(glass, false); return false;
   }
   OutputCapture output;
@@ -1104,7 +1125,8 @@ bool InitializeAndRun(GlassInstance* glass) {
           absolute(lensRead), glass->lensWidth.load(), glass->lensHeight.load(), glass->lensX.load(), glass->lensY.load(), content ? 1 : 0, contentRev, glass->opacity.load());
       LogNative(line);
     }
-    if (glass->frameReady && IsWindowVisible(glass->owner)) {
+    if (glass->frameReady && IsWindowVisible(glass->owner) &&
+        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp)) {
       if (!IsWindowVisible(glass->surface) || GetWindow(glass->owner, GW_HWNDNEXT) != glass->surface)
         SetWindowPos(glass->surface, glass->owner, 0, 0, 0, 0,
                      SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);

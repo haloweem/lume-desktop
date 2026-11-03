@@ -14,7 +14,9 @@ using namespace lume::platform::windows;
 using lume::dock::Item;
 using lume::dock::Kind;
 namespace {
+char* checkpoint=nullptr;
 void Check(bool ok, const char* why) {
+    if(checkpoint)strncpy_s(checkpoint,512,why,_TRUNCATE);
     if (!ok) { std::fprintf(stderr, "FAIL: %s (Win32=%lu)\n", why, GetLastError()); std::fflush(stderr); std::exit(1); }
 }
 LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -80,11 +82,7 @@ struct Child {
 };
 void BelowApplication(const DockWindow& dock, HWND app, const char* context) {
     Check(dock.LayersVisible(), "both native layers stay available");
-    if (IsZoomed(app)) {
-        // A maximized application hides the Dock instead of only covering it.
-        Check(!IsWindowVisible(dock.Handle()) && !IsWindowVisible(dock.BarHandle()), "maximized application hides Dock");
-        return;
-    }
+    Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),"ordinary applications cover Dock without hiding its windows");
     Check(desktop_level::Above(app, dock.Handle()), context);
     Check(desktop_level::Above(app, dock.BarHandle()), "bar remains below application");
     Check(desktop_level::Above(dock.Handle(), dock.BarHandle()), "icons remain above bar");
@@ -216,6 +214,10 @@ int LiveMaterial() {
     return 0;
 }
 int Scenario() {
+    wchar_t checkpointName[100]{};
+    GetEnvironmentVariableW(L"LUME_TEST_LAYER_CHECKPOINT",checkpointName,100);
+    HANDLE checkpointMap=*checkpointName?OpenFileMappingW(FILE_MAP_WRITE,FALSE,checkpointName):nullptr;
+    if(checkpointMap)checkpoint=static_cast<char*>(MapViewOfFile(checkpointMap,FILE_MAP_WRITE,0,0,512));
     Check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "initialize isolated COM");
     MONITORINFO info{}; info.cbSize = sizeof(info);
     Check(GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info), "read monitor");
@@ -234,6 +236,14 @@ int Scenario() {
     Check(dock.Show(items, true), "show Dock with raised desktop host");
     BelowApplication(dock, browser, "Dock stays below maximized browser despite raised desktop host");
     Check(GetForegroundWindow() == foreground, "initial placement preserves foreground");
+    HWND settings=Window(L"LumeProbeWindowedSettings",{100,100,700,600},WS_OVERLAPPEDWINDOW);
+    ShowWindow(settings,SW_SHOW);SetForegroundWindow(settings);
+    desktop_level::Watcher::ForegroundChanged(settings);
+    SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+    Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),
+          "windowed foreground with a maximized browser in background never hides Dock");
+    BelowApplication(dock,settings,"exposed desktop Dock stays beneath windowed settings");
+    ShowWindow(settings,SW_HIDE);DestroyWindow(settings);
     ShowWindow(browser, SW_HIDE);  // The external application below is the ceiling now.
 
     // A genuine different-process application exercises the same policy.
@@ -342,6 +352,9 @@ int Scenario() {
         Check(desktop_level::Above(dock.BarHandle(), host), "idle Dock stays above desktop");
     }
     DestroyWindow(topmost);
+    // The following case tests a normal application's ceiling, not the
+    // fullscreen manager (which covers the Dock in the normal application band).
+    ShowWindow(manager,SW_HIDE);ShowWindow(managerGlass,SW_HIDE);
     // Also exercise a downward repair: an application can reinsert itself
     // below the entire Dock group without activating or moving the pointer.
     HWND lower = Window(L"LumeProbeLoweredApplication", {0, 0, 100, 40});
@@ -364,11 +377,25 @@ int Scenario() {
     Check(IsWindowVisible(dock.Handle()) && desktop_level::Above(dock.BarHandle(), host),
           "maximized window behind active desktop does not hide Dock");
     ShowWindow(browser, SW_HIDE);
+    // Full-monitor passive layered tools (GPU HUD/cursor overlays) are not
+    // fullscreen applications. Their bounds may span every display.
+    MONITORINFO overlayMonitor{sizeof(overlayMonitor)};
+    Check(GetMonitorInfoW(MonitorFromWindow(dock.BarHandle(),MONITOR_DEFAULTTOPRIMARY),&overlayMonitor),"read overlay monitor");
+    HWND passive=Window(L"LumeProbePassiveOverlay",overlayMonitor.rcMonitor);
+    for(const DWORD extra:{DWORD{0},DWORD{WS_EX_TRANSPARENT}}){
+        SetWindowLongPtrW(passive,GWL_EXSTYLE,WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|extra);
+        SetLayeredWindowAttributes(passive,0,1,LWA_ALPHA);
+        SetWindowPos(passive,HWND_TOP,0,0,0,0,flags|SWP_SHOWWINDOW);
+        SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),
+              "passive full-monitor overlay must not hide Dock");
+    }
+    ShowWindow(passive,SW_HIDE);DestroyWindow(passive);
     SetForegroundWindow(manager);
     desktop_level::Watcher::ForegroundChanged(manager);
-    SetWindowPos(manager, HWND_TOP, 0, 0, 0, 0, flags);
+    SetWindowPos(manager, HWND_TOP, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
     SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
-    Check(IsWindowVisible(dock.Handle()) && IsWindowVisible(dock.BarHandle()), "restored application retains visible Dock pair");
+    Check(IsWindowVisible(dock.Handle()) && IsWindowVisible(dock.BarHandle()), "own manager covers but never hides the Dock pair");
     BelowApplication(dock, manager, "switching back to application restores Dock ceiling");
     ShowWindow(manager, SW_HIDE); ShowWindow(managerGlass, SW_HIDE);
 
@@ -379,8 +406,8 @@ int Scenario() {
     Check(WaitFor([&] { return desktop_level::Above(dock.Handle(), host); }), "minimize returns Dock to desktop");
     ShowWindow(browser, SW_RESTORE);
     SetWindowPos(browser, HWND_BOTTOM, 0, 0, 0, 0, flags);
-    // Restored to maximized, the browser hides the Dock; otherwise it is the ceiling.
-    Check(WaitFor([&] { return IsZoomed(browser) ? !IsWindowVisible(dock.Handle()) : desktop_level::Above(browser, dock.Handle()); }),
+    // Maximized or restored, ordinary applications stay above a visible Dock.
+    Check(WaitFor([&] { return IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle())&&desktop_level::Above(browser, dock.Handle()); }),
           "restore event reapplies application ceiling");
     ShowWindow(browser, SW_HIDE);
     ShowWindow(app, SW_SHOWNOACTIVATE);
@@ -407,7 +434,26 @@ int Scenario() {
     ShowWindow(browser, SW_HIDE);
     Check(WaitFor([&] { return desktop_level::Above(dock.Handle(), host); }), "recreated desktop host restores Dock");
     Check(dock.LayersVisible(), "Dock remains available on desktop");
-    Check(materialSamples > 0, "real asynchronous surface was observed during fullscreen cycles");
+    {
+        using namespace window_layer;
+        Context policy;contextReader=[&]{return policy;};Start();
+        policy.foreignForeground=true;policy.fullscreen={info.rcMonitor};Update(policy);
+        SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(!IsWindowVisible(dock.Handle())&&!IsWindowVisible(dock.BarHandle()),
+              "foreground fullscreen protection still hides the Dock pair");
+        policy={};Update(policy);
+        SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),
+              "returning from fullscreen restores Dock without toggling its preference");
+        policy.exclusive=true;policy.allDisplays=true;Update(policy);
+        SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(!IsWindowVisible(dock.Handle())&&!IsWindowVisible(dock.BarHandle()),"exclusive fullscreen protection remains active");
+        policy={};Update(policy);SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),"exclusive protection exit restores Dock");
+        Stop();contextReader={};
+    }
+    Check(WaitFor([&] { return Surface(dock.BarHandle())!=nullptr; },3000),
+          "real glass is recreated after fullscreen suppression");
     dock.Stop();
     Check(!dock.Visible() && !IsWindow(dock.Handle()), "stop retires windows and event hooks");
     Check(dock.Show(items, true), "restart reattaches layer watcher");
@@ -424,12 +470,17 @@ int Scenario() {
           "preview provider enumerates the external program window");
     Check(dock_sources::CloseProgram(executable), "close-window posts WM_CLOSE to the external application");
     Check(WaitForSingleObject(external.process.hProcess, 1500) == WAIT_OBJECT_0, "fixture exits cleanly");
-    DestroyWindow(browser); DestroyWindow(managerGlass); DestroyWindow(manager); DestroyWindow(view); DestroyWindow(host);
-    CoUninitialize();
+    Check(true,"cleanup browser");DestroyWindow(browser);
+    Check(true,"cleanup manager glass");DestroyWindow(managerGlass);
+    Check(true,"cleanup manager");DestroyWindow(manager);
+    Check(true,"cleanup desktop view");DestroyWindow(view);
+    Check(true,"cleanup desktop host");DestroyWindow(host);
+    Check(true,"cleanup COM apartment");CoUninitialize();
     // Inactive desktops may not produce WGC frames. Live glass visibility is
     // also covered by the existing material/widget layer packaging probes.
     std::printf("dock application layer passed: 40 fullscreen/maximized cycles, real surface samples=%u, visible=%u\n",
                 materialSamples, visibleMaterialSamples);
+    if(checkpoint){UnmapViewOfFile(checkpoint);checkpoint=nullptr;}if(checkpointMap)CloseHandle(checkpointMap);
     return 0;
 }
 }  // namespace
@@ -451,8 +502,16 @@ int wmain(int argc, wchar_t** argv) {
     Check(desktop != nullptr, "create isolated desktop");
     DWORD code = 1;
     {
+        const auto checkpointName=L"Local\\LumeLayerCheckpoint-"+std::to_wstring(GetCurrentProcessId());
+        HANDLE map=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,512,checkpointName.c_str());
+        char* last=map?static_cast<char*>(MapViewOfFile(map,FILE_MAP_READ,0,0,512)):nullptr;
+        SetEnvironmentVariableW(L"LUME_TEST_LAYER_CHECKPOINT",checkpointName.c_str());
         Child scenario(L"--scenario", std::wstring(L"WinSta0\\") + name);
-        Check(WaitForSingleObject(scenario.process.hProcess, 25000) == WAIT_OBJECT_0, "scenario finishes within timeout");
+        SetEnvironmentVariableW(L"LUME_TEST_LAYER_CHECKPOINT",nullptr);
+        const bool finished=WaitForSingleObject(scenario.process.hProcess, 25000) == WAIT_OBJECT_0;
+        if(!finished&&last)std::fprintf(stderr,"last scenario checkpoint: %s\n",last);
+        if(last)UnmapViewOfFile(last);if(map)CloseHandle(map);
+        Check(finished, "scenario finishes within timeout");
         Check(GetExitCodeProcess(scenario.process.hProcess, &code), "read scenario result");
     }
     CloseDesktop(desktop);

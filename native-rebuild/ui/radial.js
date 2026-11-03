@@ -74,7 +74,7 @@ export function shortcutLabel(code) {
 
 export function radialStatus(state) {
   if(state.radialStatus==='loading')return t('正在读取设置...','Loading settings...');
-  if(state.radialStatus==='saving')return t('正在保存...','Saving...');
+  if(state.radialStatus==='saving')return '';
   if(state.radialStatus==='unavailable')return t('桌面宿主未连接，轮盘设置未保存','Desktop host disconnected. Radial settings were not saved.');
   if(state.radialStatus==='error')return {
     runtime:t('轮盘菜单启动失败，请检查安装文件','Could not start the radial menu. Check the installation files.'),

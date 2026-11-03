@@ -107,6 +107,9 @@ $musicOnlineNotices = [ordered]@{
     'Folia-NOTICE.md' = 'native-rebuild/ui/music-visualizers/vendor/licenses/Folia-NOTICE.md'
 }
 $settingsAccountProbes = @(
+  'lume-interface-scale-window-test',
+  'lume-window-layer-policy-test',
+  'lume-application-tray-menu-test',
   'lume-dynamic-island-test', 'lume-desktop-dynamic-island-test',
   'lume-today-todo-session-test', 'lume-desktop-today-todo-test',
   'lume-dock-context-menu-test',
@@ -491,6 +494,9 @@ foreach ($run in $acceptanceRuns) {
     $cacheKey = Get-PackageTextHash ($policyHash + '|' + $probeHashes[$name] + '|' + $logName + '|' + $context)
     $cachePath = Join-Path $cacheRoot ($cacheKey + '.json')
     $alwaysRun = $name -in @('lume-installer-shutdown-test', 'lume-update-presenter-test',
+        'lume-interface-scale-window-test',
+        'lume-window-layer-policy-test',
+        'lume-application-tray-menu-test',
         'lume-widget-layer-stress-test', 'lume-music-system-fonts-test',
         'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test')
     # Quick: a build to try out. Packaging, unpack, payload hashes and the

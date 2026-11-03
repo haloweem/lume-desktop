@@ -117,6 +117,12 @@ std::string ConditionLabel(int code) {
     return found == labels.end() ? u8"未知天气" : found->second;
 }
 bool ValidSnapshot(const Snapshot& value) {
+    const auto clock=[](const std::string& s){return s.empty()||(s.size()==5&&s[2]==':'&&
+        s[0]>='0'&&s[0]<='2'&&s[1]>='0'&&s[1]<='9'&&s.substr(0,2)<="23"&&s[3]>='0'&&s[3]<='5'&&s[4]>='0'&&s[4]<='9');};
+    if((value.windDirection&&!Number(*value.windDirection,0,360))||
+       (value.pressure&&!Number(*value.pressure,300,1200))||(value.visibility&&!Number(*value.visibility,0,200))||
+       (value.uv&&!Number(*value.uv,0,30))||(value.precipitation&&!Number(*value.precipitation,0,100))||
+       !clock(value.sunrise)||!clock(value.sunset))return false;
     const auto code = [](int c) { return c >= 0 && c <= 999; };
     if (!ValidCity(value.cityId) || !ValidLocation(value.location) || !Text(value.cityName, 240) ||
         !Text(value.timezone, 128) || !Instant(value.updatedAt) || !Instant(value.sourceUpdatedAt) ||

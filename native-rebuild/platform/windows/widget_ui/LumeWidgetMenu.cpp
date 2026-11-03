@@ -1,4 +1,5 @@
 #include "StdAfx.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/lume_window_ids.h"
 #include "LumeWidgetMenu.h"
 #include "core/dock/dock_model.h"
@@ -69,6 +70,7 @@ struct MenuState
 	HWND window = nullptr;
 	HWND owner = nullptr;
 	MenuKind kind = MenuKind::Root;
+	LumeWidgetMenu::Scope scope = LumeWidgetMenu::Scope::Desktop;
 	std::vector<MenuItem> items;
 	int hover = -1;
 	int pressed = -1;
@@ -410,7 +412,8 @@ UINT GetMenuWindowDpi(HWND window)
 UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	int x, int y, int scalePercent, bool locked,
 	const std::vector<MenuItem>* rootItems = nullptr, bool frosted = false,
-	int calendarTheme = 0, int timeStyle = 0, bool compact = false);
+	int calendarTheme = 0, int timeStyle = 0, bool compact = false,
+	LumeWidgetMenu::Scope scope = LumeWidgetMenu::Scope::Desktop);
 
 void OpenSubmenu(MenuState* state, int index)
 {
@@ -423,7 +426,7 @@ void OpenSubmenu(MenuState* state, int index)
 	ClientToScreen(state->window, &child);
 	const UINT command = ShowPopup(state->window, child, item.submenu,
 		state->x, state->y, state->scalePercent, state->locked, nullptr,
-		state->frosted, state->calendarTheme, state->timeStyle);
+		state->frosted, state->calendarTheme, state->timeStyle, false, state->scope);
 	state->childOpen = false;
 	if (command)
 	{
@@ -675,7 +678,8 @@ bool RegisterWindowClass()
 
 UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	int x, int y, int scalePercent, bool locked,
-	const std::vector<MenuItem>* rootItems, bool frosted, int calendarTheme, int timeStyle, bool compact)
+	const std::vector<MenuItem>* rootItems, bool frosted, int calendarTheme, int timeStyle, bool compact,
+	LumeWidgetMenu::Scope scope)
 {
 	if (!RegisterWindowClass()) return 0;
 	// Own the graphics lifetime as well as the modal window. Some callers
@@ -695,6 +699,7 @@ UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	GetClassNameW(owner, ownerClass, 32);
 	state.keepOwnerFocus = lstrcmpiW(ownerClass, L"EDIT") == 0;
 	state.kind = kind;
+	state.scope = scope;
 	state.x = x;
 	state.y = y;
 	state.scalePercent = scalePercent;
@@ -768,6 +773,9 @@ UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 		GetModuleHandle(nullptr),
 		&state);
 	if (!state.window) return 0;
+    using lume::platform::windows::window_layer::Kind;
+    lume::platform::windows::window_layer::Register(state.window,
+        scope == LumeWidgetMenu::Scope::Application ? Kind::ExplicitTool : Kind::Popup, owner);
 
 	const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
 	DwmSetWindowAttribute(state.window, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -892,14 +900,14 @@ UINT LumeWidgetMenu::ShowOrganizer(HWND owner,POINT position,bool list,bool fros
     return ShowPopup(owner,position,MenuKind::Root,0,0,iconScale,false,&items,frosted,false);
 }
 
-UINT LumeWidgetMenu::ShowItems(HWND owner, POINT position, const std::vector<Action>& actions, bool compact)
+UINT LumeWidgetMenu::ShowItems(HWND owner, POINT position, const std::vector<Action>& actions, bool compact, Scope scope)
 {
     if (actions.empty()) return 0;
     std::vector<MenuItem> items;
     for (const auto& action : actions)
         items.push_back({action.label, action.command, MenuKind::Root, MenuIcon::None,
             action.label.empty() && !action.command, false, action.enabled});
-    return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, false, false, 0, compact);
+    return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, false, false, 0, compact, scope);
 }
 
 UINT LumeWidgetMenu::ShowNotes(HWND owner, POINT position, bool frosted, bool locked)
@@ -933,10 +941,9 @@ UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool non
         none ? kDockMaterialNone : kDockMaterialGlass);
 }
 
-UINT LumeWidgetMenu::ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages)
+UINT LumeWidgetMenu::ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages, bool canExpand)
 {
     std::vector<MenuItem> items {
-        { expanded ? L"收起" : L"展开", 2, MenuKind::Root, MenuIcon::Center },
         { L"消息提醒", 12, MenuKind::Root, MenuIcon::None, false, messages },
         { L"材质设置", 0, MenuKind::Material, MenuIcon::Material },
         { L"", 0, MenuKind::Root, MenuIcon::None, true },
@@ -944,25 +951,7 @@ UINT LumeWidgetMenu::ShowIsland(HWND owner, POINT position, bool frosted, bool n
         { L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset },
         { L"关闭灵动岛", 1, MenuKind::Root, MenuIcon::Close }
     };
-    return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
-        none ? kDockMaterialNone : kDockMaterialGlass);
-}
-
-UINT LumeWidgetMenu::ShowIslandTodo(HWND owner, POINT position, bool item, bool writable, bool frosted, bool none)
-{
-    std::vector<MenuItem> items;
-    if (item)
-    {
-        items.push_back({ L"编辑待办", 50, MenuKind::Root, MenuIcon::Settings, false, false, writable });
-        items.push_back({ L"删除待办", 51, MenuKind::Root, MenuIcon::Close, false, false, writable });
-        items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
-    }
-    items.push_back({ L"新建待办", 52, MenuKind::Root, MenuIcon::Create, false, false, writable });
-    items.push_back({ L"材质设置", 0, MenuKind::Material, MenuIcon::Material });
-    items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
-    items.push_back({ L"收起", 2, MenuKind::Root, MenuIcon::Center });
-    items.push_back({ L"打开设置", 11, MenuKind::Root, MenuIcon::Settings });
-    items.push_back({ L"关闭灵动岛", 1, MenuKind::Root, MenuIcon::Close });
+    if (expanded || canExpand) items.insert(items.begin(), { expanded ? L"收起" : L"展开", 2, MenuKind::Root, MenuIcon::Center });
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
         none ? kDockMaterialNone : kDockMaterialGlass);
 }

@@ -68,6 +68,7 @@ bool NativeClockWindow::Start() {
     window_=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,kClass,L"Lume Clock",WS_POPUP,
         appearance_.x,appearance_.y,1,1,nullptr,nullptr,instance_,this);
     if(!window_) { renderer_.reset(); return false; }
+    if(!window_layer::Register(window_,window_layer::Kind::Desktop)){Stop();return false;}
     SetPropW(window_,widget_snap::Capability,reinterpret_cast<HANDLE>(1));
     dragSnap_.Bind(window_);
     dpi_=GetDpiForWindow(window_);

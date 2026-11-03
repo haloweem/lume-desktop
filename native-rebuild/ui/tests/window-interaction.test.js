@@ -147,7 +147,7 @@ domTest("settings pages do not become draggable through their scrollable padding
     body: '<div class="HomeRoot">Editable setting</div>',
   }));
   expectTargets(root, [
-    ".settings", ".settings-card", ".settings-head", ".settings-tabs",
+    ".settings", ".settings-card", ".settings-side-nav", ".settings-side-nav__links",
     ".settings-body", ".HomeRoot",
   ], false);
 });

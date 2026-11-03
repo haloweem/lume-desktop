@@ -274,7 +274,7 @@ Json RelatedSoftware() {
 
 Json Installation(const fs::path& install) {
     Json result{{"directory", install.u8string()}};
-    for (const auto* name : {L"LumeShell.exe", L"wallpaper-runtime\\mpv.exe", L"LumeMusicHost.exe", L"WebView2Loader.dll"}) {
+    for (const auto* name : {L"LumeShell.exe",L"LumeGlass.dll", L"wallpaper-runtime\\mpv.exe", L"LumeMusicHost.exe", L"WebView2Loader.dll"}) {
         const auto file = install / name;
         std::error_code error;
         if (!fs::is_regular_file(file, error)) { result["files"][Utf8(name)] = "missing"; continue; }
@@ -506,8 +506,10 @@ std::vector<std::string> Problems(const Json& modules) {
             const auto value = item.value().find(field);
             if (value == item.value().end() || !value->is_string()) continue;
             const auto text = value->get<std::string>();
+            if(std::string_view(field)=="catalogError"&&text=="WALLPAPER_CATALOG_CACHED")continue;
             const bool bad = (std::string(field).find("rror") != std::string::npos && !text.empty()) ||
-                text == "failed" || text == "unavailable" || text == "degraded" || text == "error";
+                text == "failed" || text == "unavailable" || text == "degraded" || text == "error" ||
+                (std::string_view(field)=="materialStatus"&&text=="transparent-fallback");
             if (bad) line += std::string(" ") + field + "=" + text;
         }
         if (!line.empty()) problems.push_back(item.key() + ":" + line);
@@ -656,7 +658,7 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
             });
         };
         if (!input.logDirectory.empty())
-            for (const auto* name : {L"lume.log", L"lume.1.log", L"launchpad-frames.log", L"launchpad-frames.1.log"})
+            for (const auto* name : {L"lume.log", L"lume.1.log",L"material.log",L"material.1.log", L"launchpad-frames.log", L"launchpad-frames.1.log"})
                 AddFile(entries, budget, input.logDirectory / name, "logs/" + Utf8(name), MaxLogBytes, true);
         if (!input.dataDirectory.empty()) {
             for (const auto& entry : fs::directory_iterator(input.dataDirectory, error)) {

@@ -6,6 +6,7 @@ import {modules} from '../catalog.js';
 import {catalog,search} from '../pages.js';
 import {islandPage,validIslandState} from '../dynamic-island.js';
 import {setLanguage} from '../localization.js';
+import {compactWidgets,compactWidgetPicker} from '../compact-widgets.js';
 const snapshot=(fields={})=>({version:1,type:'dynamicIsland-state',enabled:false,running:false,locked:false,
   expanded:false,focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:true,hover:false,autoHide:false,size:'standard',material:'none',
   loadStatus:'fresh',error:'',result:'snapshot',saved:false,...fields});
@@ -24,15 +25,16 @@ test('island bridge rejects malformed commands and snapshots',()=>{
   for(const fields of [{enabled:'true'},{remaining:1501},{remaining:NaN},{running:true},{extra:true},
     {saved:true,result:'snapshot'},{loadStatus:'bad'},{error:'unknown'},{size:'huge'},{hover:1},{material:'glass'},{hideIdle:false},{shape:'circle'},{shape:1}])assert.equal(validHostMessage(snapshot(fields)),false);
   for(const command of [['enabled',true],['locked',false],['expand'],['collapse'],['focus'],['stopFocus'],['reset'],
-    ['hideFullscreen',true],['topmost',false],['hover',true],['size','large'],['material','liquid-glass'],['autoHide',true],['shape','standard'],['shape','capsule'],['resetAppearance']])
+    ['hideFullscreen',true],['topmost',false],['hover',true],['size','large'],['material','liquid-glass'],['autoHide',true],['shape','standard'],['shape','capsule'],['resetAppearance'],
+    ['leftWidget',20],['rightWidget',14]])
     assert.ok(bridge.send('dynamicIsland',...command));
   for(const command of [['enabled','true'],['focus',true],['locked',1],['material','glass'],['path','C:/anything'],['size','huge'],['hover','yes'],['hideIdle',false]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
-  for(const command of [['customIcons',true],['overview',true],['leftWidget',4],['rightWidget',10],
+  for(const command of [['customIcons',true],['overview',true],['leftWidget',-1],['rightWidget',31],['leftWidget','4'],
     ['leftStyle','circle'],['rightStyle','capsule'],['card',0],['cardMove',0]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
   assert.equal(bridge.send('dynamicIsland','shape','circle'),false);
-  assert.equal(sent.length,16);
+  assert.equal(sent.length,18);
   assert.ok(validHostMessage({version:1,type:'navigate',page:'dynamicIsland'}));
 });
 test('native acknowledgement settles requests while preserving confirmed preferences on failure',()=>{
@@ -62,7 +64,7 @@ test('island settings show only display preferences and accurate details in both
     assert.doesNotMatch(settings,/dynamicIsland-lock/);
     assert.doesNotMatch(settings,/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview|正在播放|Now playing/);
     assert.doesNotMatch(settings,/dynamicIsland-focus|25-minute|专注/);
-    assert.doesNotMatch(settings,/dynamicIsland-(?:customIcons|overview|leftWidget|rightWidget|leftStyle|rightStyle|card)|data-island-card|自选左右显示|多组件工作台/);
+    assert.doesNotMatch(settings,/dynamicIsland-(?:customIcons|overview|leftStyle|rightStyle|card)|data-island-card|多组件工作台/);
     assert.doesNotMatch(islandPage(state,'details'),/workspace|customiz|自选左右|组件排序/i);
     assert.match(islandPage(state,'details'),/音乐|music/i);
   }
@@ -71,9 +73,26 @@ test('island settings show only display preferences and accurate details in both
   const active={...state,dynamicIsland:{...state.dynamicIsland,enabled:true,expanded:true}};
   assert.doesNotMatch(islandPage(active),/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview/);
   assert.doesNotMatch(islandPage(active),/dynamicIsland-hideIdle/);
-  for(const action of ['autoHide','hideFullscreen','topmost'])assert.match(islandPage(active),new RegExp(`data-action="dynamicIsland-${action}"`));
+  assert.match(islandPage(active),/data-action="dynamicIsland-autoHide"/);
+  assert.match(islandPage(active),/data-action="dynamicIsland-hideFullscreen"/);
+  assert.match(islandPage(active),/id="dynamicIsland-layer"/);
+  assert.match(islandPage(active),/data-select-value="above"/);
+  assert.match(islandPage(active),/全屏时隐藏/);
+  assert.match(islandPage(active),/空闲时隐藏/);
+  assert.doesNotMatch(islandPage(active),/无活动时自动隐藏/);
   assert.doesNotMatch(islandPage(active),/id="dynamicIsland-(?:size|material)"|data-island-preference/);
   const home=islandPage(active,'home');
+  assert.equal(compactWidgets.length,31);
+  assert.equal((home.match(/data-island-compact-widget="\d+"/g)||[]).length,31);
+  assert.match(home,/data-island-compact-side="left"/);
+  assert.match(home,/data-island-compact-side="right"/);
+  for(const id of [17,18,20,25])assert.match(home,new RegExp(`data-island-compact-widget="${id}"`));
+  const before=compactWidgetPicker({...state,dynamicIslandPreview:{readings:[{id:14,text:'3%',available:true}]}});
+  const after=compactWidgetPicker({...state,dynamicIslandPreview:{readings:[{id:14,text:'99%',available:true}]}});
+  assert.equal(before,after,'chooser samples do not use live native readings');
+  assert.match(before,/data-island-compact-widget="14"[\s\S]*?48%/);
+  assert.doesNotMatch(before,/data-compact-reading|99%/);
+  assert.doesNotMatch(home,/data-island-layout|data-island-membership|data-island-components-title|点击标签加入|Click a tag to add/);
   for(const [key,values] of [['material',['none','liquid-glass','frosted-glass']],['size',['small','standard','large']]])
     for(const value of values)assert.match(home,new RegExp(`data-island-preference="${key}" data-value="${value}"`));
   assert.match(home,/data-action="dynamicIsland-resetAppearance"/);

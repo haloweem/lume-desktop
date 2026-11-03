@@ -1,4 +1,5 @@
 #include "StdAfx.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/widget_ui/ui_font.h"
 #include "platform/windows/widget_ui/direct_write_edit.h"
 #include "LumeWidgetPositionEditor.h"
@@ -202,6 +203,7 @@ bool LumeWidgetPositionEditor::Show(HWND owner, int& x, int& y)
 		left, top, width, height,
 		owner, nullptr, GetModuleHandle(nullptr), &state);
 	if (!state.window) return false;
+    lume::platform::windows::window_layer::Register(state.window,lume::platform::windows::window_layer::Kind::Editor,owner);
 
 	const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
 	DwmSetWindowAttribute(state.window, DWMWA_WINDOW_CORNER_PREFERENCE,

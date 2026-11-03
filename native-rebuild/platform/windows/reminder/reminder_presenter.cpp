@@ -1,4 +1,5 @@
 #include "platform/windows/reminder/reminder_presenter.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/widget_ui/direct_write_text.h"
 #include <objidl.h>
 #include <gdiplus.h>
@@ -297,6 +298,7 @@ bool ReminderPresenter::Show(const ReminderNotice& notice, const ReminderAppeara
     if (!CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,kClass,L"Lume 日程提醒",WS_POPUP,
         g.area.right-g.margin-g.width,g.area.bottom-g.margin-g.height,g.width,g.height,nullptr,nullptr,self->instance,entry.get())) return false;
     self->entries.push_back(entry);
+    window_layer::Register(entry->window,window_layer::Kind::Popup);
     // Allocate and upload the layered surface while hidden. Creation alone does
     // not guarantee a paintable window; failed drawing must not consume a key.
     if (!self->Render(*entry)) { self->Remove(entry); return false; }

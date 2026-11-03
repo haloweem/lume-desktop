@@ -105,6 +105,22 @@ void TestRestoreAcrossDpiAndWorkAreaChanges() {
 }  // namespace
 
 int main() {
+    for(const lume::ui::PageBounds work: {lume::ui::PageBounds{0,0,1920,1040},
+        lume::ui::PageBounds{-1920,0,1536,824},lume::ui::PageBounds{0,0,800,600}}) {
+        const auto baseline=lume::ui::CalculateManagerWindowBounds(work);
+        for(int percent=50;percent<=75;++percent) {
+            const auto size=lume::ui::ScaleManagerWindowBounds(baseline,percent);
+            const double ratio=percent/75.0;
+            Expect(size.x==baseline.x&&size.y==baseline.y,"scale preserves the top-left anchor");
+            Expect(std::abs(size.width-baseline.width*ratio)<=0.5&&
+                   std::abs(size.height-baseline.height*ratio)<=0.5,"window dimensions use one proportional ratio");
+            const auto zoom=lume::ui::CalculateManagerZoom(baseline.width,baseline.height,percent);
+            const auto original=lume::ui::CalculateOriginalZoom(baseline.width,baseline.height);
+            Expect(std::abs(zoom-original*ratio)<1e-12,"all text and controls follow the window ratio below the old zoom floor");
+            Expect(std::abs(size.width/zoom-baseline.width/original)<=0.5/zoom+1e-9,
+                   "logical layout width stays unchanged within physical pixel rounding");
+        }
+    }
     TestBoundsMatchOriginalJavaScript();
     TestZoomLimitsAndInvalidDimensions();
     TestRestoreAcrossDpiAndWorkAreaChanges();

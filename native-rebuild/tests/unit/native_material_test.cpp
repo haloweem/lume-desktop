@@ -1,4 +1,9 @@
 #include "platform/windows/material/material_api.h"
+#include "platform/windows/material/widget_material_runtime.h"
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +14,12 @@ void Expect(bool b,const char* text){if(!b){std::cerr<<"FAIL: "<<text<<" error="
 unsigned statusEvents=0;
 void Pump(DWORD ms){const auto end=GetTickCount64()+ms;while(GetTickCount64()<end){MSG m{};while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){if(m.message==LumeMaterialStatusChangedMessage)++statusEvents;TranslateMessage(&m);DispatchMessageW(&m);}Sleep(10);}}
 int main(int argc,char**argv){
+ wchar_t temp[32768]{};GetTempPathW(32768,temp);
+ const auto diagnosticRoot=std::filesystem::path(temp)/(L"lume-material-诊断-"+std::to_wstring(GetCurrentProcessId()));
+ std::filesystem::create_directories(diagnosticRoot);
+ const auto diagnosticLog=diagnosticRoot/L"material.log";
+ wchar_t priorLog[32768]{};const auto priorLength=GetEnvironmentVariableW(L"LUME_MATERIAL_DIAGNOSTIC_LOG",priorLog,32768);
+ SetEnvironmentVariableW(L"LUME_MATERIAL_DIAGNOSTIC_LOG",diagnosticLog.c_str());
  Expect(argc==2,"DLL path supplied");HMODULE module=LoadLibraryA(argv[1]);Expect(module!=nullptr,"shared native material module loads");
  const auto attach=Resolve<LumeMaterialAttachFn>(module,"LumeMaterialAttach");
  const auto update=Resolve<LumeMaterialUpdateFn>(module,"LumeMaterialUpdate");
@@ -80,5 +91,24 @@ int main(int argc,char**argv){
  }
  DestroyWindow(owner);DestroyWindow(owner2);DestroyWindow(background);FreeLibrary(module);
  module=LoadLibraryA(argv[1]);Expect(module!=nullptr,"DLL reload after final detach");FreeLibrary(module);
+ {
+   lume::platform::windows::WidgetMaterialRuntime rejected;
+   LumeMaterialParameters invalid{};invalid.size=sizeof(invalid);
+   Expect(!rejected.Attach(invalid)&&rejected.State()==lume::platform::windows::WidgetMaterialState::TransparentFallback,
+          "invalid owner remains a visible fallback failure rather than a fake ready material");
+   const auto failure=rejected.Status();Expect(failure.failed&&failure.lastError<0,"material failure preserves its diagnostic HRESULT");
+   std::ifstream input(diagnosticLog,std::ios::binary);
+   const std::string log{std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()};
+   Expect(log.find("D3D11CreateDevice hr=0x00000000")!=std::string::npos,
+          "real DLL initialization stages reach the Unicode diagnostic path without debug environment setup");
+   Expect(log.find("MaterialLoadFailure hr=0x")!=std::string::npos&&log.find("loadError=")!=std::string::npos,
+          "runtime loader or rejected attachment error reaches the material diagnostic log");
+   const auto bytes=std::filesystem::file_size(diagnosticLog);
+   for(int n=0;n<100;++n)rejected.Status();
+   Expect(std::filesystem::file_size(diagnosticLog)==bytes,"unchanged fallback state does not log every polling frame");
+   Expect(log.find("T ")==std::string::npos,"persistent diagnostics do not enable per-frame timing");
+ }
+ SetEnvironmentVariableW(L"LUME_MATERIAL_DIAGNOSTIC_LOG",priorLength&&priorLength<32768?priorLog:nullptr);
+ std::filesystem::remove_all(diagnosticRoot);
  Expect(statusEvents>0,"material state changes notify the owner without polling");std::cout<<"PASS shared material lifecycle and native presentation\n";
 }

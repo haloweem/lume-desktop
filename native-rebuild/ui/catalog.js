@@ -3,13 +3,13 @@ import { t } from "./localization.js";
 export const modules = [
   {
     id: "taskbar",
-    title: "任务栏透明化",
+    title: "任务栏美化",
     description: "任务栏透明",
     toggle: true,
   },
   {
     id: "icons",
-    title: "桌面图标切换与自动隐藏",
+    title: "图标隐藏",
     description: "双击桌面隐藏图标",
     toggle: true,
   },
@@ -94,8 +94,8 @@ export const widgets = [
 
 const englishItems = {
   todayTodo:["Today’s tasks","Manage today’s tasks on your desktop: complete, edit or delete them."],
-  taskbar: ["Taskbar transparency", "Transparent taskbar"],
-  icons: ["Desktop icons", "Double-click the desktop to hide icons"],
+  taskbar: ["Taskbar appearance", "Transparent taskbar"],
+  icons: ["Icon hiding", "Double-click the desktop to hide icons"],
   minimize: ["macOS minimize animation", "Smooth window minimizing"],
   dock: ["Dock", "Launchpad and favourite apps"],
   dynamicIsland: ["Dynamic Island", "Music playback information and controls"],

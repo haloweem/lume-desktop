@@ -48,6 +48,8 @@ struct Snapshot {
     Millis updatedAt = 0, sourceUpdatedAt = 0, validAt = 0;
     double temperature = 0, humidity = 0;
     std::optional<double> apparentTemperature, windSpeed;
+    std::optional<double> windDirection,pressure,visibility,uv,precipitation;
+    std::string sunrise,sunset; // Provider-local HH:mm; absent when not supplied.
     int weatherCode = 999;
     std::string condition;
     bool isDay = true, remainingDay = false;

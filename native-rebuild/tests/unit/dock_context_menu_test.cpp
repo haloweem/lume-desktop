@@ -6,6 +6,7 @@
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/organizer/organizer_text.h"
 #include "platform/windows/ui_stall_trace.h"
+#include "platform/windows/widget_ui/desktop_level.h"
 #include <windowsx.h>
 #include <objbase.h>
 #include <algorithm>
@@ -407,7 +408,9 @@ void DragGhostProbe() {
     const HWND ghost = Find(L"LumeLaunchpadDragIcon");
     Check(ghost != nullptr, "a drag creates the pointer window");
     Check(IsWindowVisible(ghost) != FALSE, "the pointer window is visible during the drag");
-    Check((GetWindowLongW(ghost, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0, "the pointer window stays above the Dock");
+    Check(!(GetWindowLongW(ghost,GWL_EXSTYLE)&WS_EX_TOPMOST)&&
+          lume::platform::windows::desktop_level::Above(ghost,pad.Handle()),
+          "the pointer window stays above its launchpad within the non-topmost application band");
     RECT startGhost{};
     GetWindowRect(ghost, &startGhost);
     // Far outside the client area: the icon must follow the pointer there.

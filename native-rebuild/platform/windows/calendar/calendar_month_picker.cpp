@@ -1,4 +1,5 @@
 #include "platform/windows/calendar/calendar_month_picker.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <cstring>
@@ -17,6 +18,7 @@ bool CalendarMonthPicker::Open(HINSTANCE instance,HWND owner,CalendarRect screen
     if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS){renderer_.reset();return false;}
     window_=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW,kClass,L"选择月份",WS_POPUP,static_cast<int>(screen.x),static_cast<int>(screen.y),MulDiv(static_cast<int>(width_),static_cast<int>(dpi),96),MulDiv(static_cast<int>(height_),static_cast<int>(dpi),96),owner,nullptr,instance,this);
     if(!window_){renderer_.reset();return false;}
+    window_layer::Register(window_,window_layer::Kind::Popup,owner);
     Paint(); ShowWindow(window_,SW_SHOW); SetFocus(window_); return true;
 }
 void CalendarMonthPicker::Close(bool restoreFocus) {

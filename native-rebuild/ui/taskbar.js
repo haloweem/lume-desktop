@@ -31,7 +31,7 @@ const errors=()=>({
 export function taskbarStatus(state) {
   if(state.taskbarStatus==='loading')return t('正在读取任务栏设置...','Loading taskbar settings...');
   if(state.taskbarStatus==='unavailable')return t('桌面宿主未连接，任务栏设置未应用','Desktop host disconnected. Taskbar settings have not been applied.');
-  if(state.taskbarStatus==='saving')return t('正在应用任务栏设置...','Applying taskbar settings...');
+  if(state.taskbarStatus==='saving')return '';
   const messages=errors();
   let message=messages[state.taskbarError] || '';
   if(!message && state.taskbarLoadStatus==='failed')message=messages.load;
@@ -62,7 +62,7 @@ export function taskbarPage(state,tab='settings') {
     `<div class="setting-row" data-taskbar-hide-behavior ${p.autoHideTaskbar?'':'hidden'}><div><label>${t('隐藏行为','Hiding behavior')}</label><p class="setting-help">${hideBehaviorHelp(p.hideBehavior)}</p></div>${settingsSelect('taskbar-hide-behavior',t('隐藏行为','Hiding behavior'),p.hideBehavior,hideBehaviorOptions(),busy || !p.autoHideTaskbar)}</div>`+
     `<div class="reset-row"><button class="reset" data-action="taskbar-reset" ${busy?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<p>${t('自动隐藏：鼠标移到任务栏所在的屏幕边缘时显示。完全隐藏：鼠标移到边缘也不显示任务栏。','Auto-hide reveals the taskbar when the pointer reaches its screen edge. Completely hidden keeps it hidden at the edge as well.')}</p><p>${t('关闭此功能或退出 Lume 时，会恢复此功能修改前的任务栏设置；若恢复未完成，页面会显示实际错误。','Disabling the feature or exiting Lume restores the previous taskbar settings. Incomplete recovery is reported on this page.')}</p><p>${t('恢复默认会开启任务栏透明化、关闭自动隐藏，隐藏行为恢复为自动隐藏，并保留当前功能启用状态。','Restoring defaults turns transparency on and auto-hide off, resets hiding behavior to auto-hide, and keeps the current feature enable state.')}</p>`;
-  return settingsFrame({title:t('任务栏透明化','Taskbar transparency'),description:t('让 Windows 10 和 Windows 11 的任务栏保持透明。','Keep the Windows 10 and Windows 11 taskbar transparent.'),
+  return settingsFrame({title:t('任务栏美化','Taskbar appearance'),description:t('让 Windows 10 和 Windows 11 的任务栏保持透明。','Keep the Windows 10 and Windows 11 taskbar transparent.'),
     tab,body,scope:'taskbar',status:taskbarStatus(state),error:state.taskbarStatus==='error',backLabel:t('返回桌面美化','Back to desktop styles')});
 }
 const hideBehaviorOptions=()=>[['fully-hidden',t('完全隐藏','Completely hidden')],['auto-hide',t('自动隐藏','Auto-hide')]];

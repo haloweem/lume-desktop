@@ -13,7 +13,7 @@ const ranges=s=>[
 ];
 
 export function spectrumStatus(state) {
-  if(state.spectrumStatus==='saving')return t('正在保存...','Saving...');
+  if(state.spectrumStatus==='saving')return '';
   if(state.spectrumStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.spectrumStatus==='unavailable')return t('桌面宿主未连接，频谱设置未保存','Desktop host disconnected. Spectrum settings were not saved.');
   if(state.spectrumStatus==='error')return {

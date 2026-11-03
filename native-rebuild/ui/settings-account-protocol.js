@@ -19,6 +19,8 @@ export function validAccountCommand(action, fields) {
 }
 
 export function validApplicationSettingsCommand(action, fields) {
+  if (["interfaceScale","previewInterfaceScale"].includes(action))
+    return exact(fields,["value"]) && Number.isInteger(fields.value) && fields.value>=50 && fields.value<=75;
   if (action === "language")
     return exact(fields, ["value"]) && ["zh-CN", "en"].includes(fields.value);
   if (["balancedMode", "autostart"].includes(action))
@@ -51,8 +53,12 @@ export function validApplicationSettingsState(message) {
   const withPaths = [...base, "dataDirectory", "wallpaperDirectory"];
   // Older states carry no paths; accept both shapes so a host upgrade cannot
   // lock the page out, but validate the paths whenever they are present.
-  if (!exact(message, withPaths) && !exact(message, base)) return false;
-  if (exact(message, withPaths) &&
+  const withScale=Object.hasOwn(message||{},'interfaceScale');
+  const keys=withScale?[...base,'interfaceScale']:base;
+  const pathKeys=withScale?[...withPaths,'interfaceScale']:withPaths;
+  if (!exact(message,pathKeys) && !exact(message,keys)) return false;
+  if (withScale && (!Number.isInteger(message.interfaceScale)||message.interfaceScale<50||message.interfaceScale>75))return false;
+  if (exact(message,pathKeys) &&
     !(text(message.dataDirectory, 260) && text(message.wallpaperDirectory, 260))) return false;
   if (message.version !== 1 || message.type !== "app-settings-state" || !integer(message.revision) ||
     !["zh-CN", "en"].includes(message.language) ||

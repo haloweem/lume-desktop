@@ -2,7 +2,9 @@
 #include "apps/shell/self_check.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/ui_stall_trace.h"
+#include "platform/windows/material/material_diagnostics.h"
 #include <windows.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -112,6 +114,15 @@ int main() {
     Write(data / L"legacy-extra.log", "TRACE-LEGACY-FALLBACK");
 
     platform::windows::diag::Initialize(logs);
+    Write(logs/L"material.log",std::string((1u<<20)+1,'m'));
+    platform::windows::material_diagnostics::Write("WindowCapture",E_ACCESSDENIED,"sources=1 readySources=0");
+    Check(Read(logs/L"material.log").find("hr=0x80070005")!=std::string::npos,
+          "material failures are recorded automatically after runtime log initialization");
+    Check(fs::file_size(logs/L"material.1.log")==((1u<<20)+1),"material diagnostics rotate after one MiB");
+    for(unsigned i=0;i<100;++i)platform::windows::material_diagnostics::Write("WindowCapture",E_ACCESSDENIED);
+    const auto bounded=Read(logs/L"material.log");
+    Check(std::count(bounded.begin(),bounded.end(),'\n')<=48,"repeated material failures have a per-minute event budget");
+    Write(logs/L"material.1.log","MATERIAL-ROTATED-EVIDENCE");
     platform::windows::diag::Log("test", "wallpaper player exited, code " + platform::windows::diag::ExitCodeText(0xC0000005));
     Check(Read(logs / L"lume.log").find("0xC0000005 (access violation)") != std::string::npos, "runtime log line and exit code text");
 
@@ -123,18 +134,24 @@ int main() {
     input.version = "test";
     input.note = "TASKBAR-NOTE";
     input.modules = {{"taskbar-state", {{"type", "taskbar-state"}, {"error", "core-start"}}},
-                     {"dock-state", {{"type", "dock-state"}, {"error", ""}, {"materialStatus", "ready"}}}};
+                     {"dock-state", {{"type", "dock-state"}, {"error", ""}, {"materialStatus", "ready"}}},
+                     {"performance-state",{{"materialStatus","transparent-fallback"},{"error",""}}},
+                     {"wallpaper-state",{{"catalogError","WALLPAPER_CATALOG_CACHED"},{"error",""}}}};
     const auto result = shell::WriteDiagnosticReport(input);
     Check(result.ok && fs::is_regular_file(result.path), "report written");
     const auto zip = result.ok ? Read(result.path) : std::string{};
     Check(zip.size() > 22 && zip.compare(0, 4, "PK\x03\x04") == 0 && zip.find("PK\x05\x06") != std::string::npos, "zip structure");
     for (const auto* name : {"system.json", "processes.json", "modules.json", "windows-events.txt", "logs/lume.log",
-                             "logs/launchpad-frames.log", "logs/launchpad-frames.1.log", "logs/legacy-extra.log",
+                             "logs/launchpad-frames.log", "logs/launchpad-frames.1.log", "logs/legacy-extra.log","logs/material.log","logs/material.1.log",
                              "settings/dock-preferences.json", "crashes/LumeShell-1.dmp"})
         Check(Has(zip, name), name);
+    Check(Has(zip,"MATERIAL-ROTATED-EVIDENCE")&&Has(zip,"hr=0x80070005")&&Has(zip,"LumeGlass.dll"),
+          "report contains material stages, error codes and installed DLL inventory");
     Check(Has(zip, "README.txt"), "summary entry");
     Check(Has(zip, "TASKBAR-NOTE") && Has(zip, "taskbar-state: error=core-start"), "summary has note and failing module");
     Check(!Has(zip, "dock-state: "), "healthy module not listed as a problem");
+    Check(Has(zip,"performance-state: materialStatus=transparent-fallback")&&!Has(zip,"wallpaper-state: "),
+          "summary exposes real material fallback without treating normal catalog cache as a fault");
     Check(!Has(zip, std::string(4096, 'x')) && Has(zip, "settings/huge-preferences.json (600 KB)"), "oversized settings file left out and named");
     Check(!Has(zip, std::string(4096, 'd')) && Has(zip, "crashes/LumeShell-0.dmp (17408 KB)") && zip.size() < (33u << 20), "oversized dump left out, report under the cap");
     Check(!Has(zip, "SECRET-TOKEN") && !Has(zip, "PRIVATE-CITY"), "account and location excluded");

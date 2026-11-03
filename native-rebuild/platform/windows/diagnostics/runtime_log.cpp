@@ -140,6 +140,10 @@ void Initialize(const std::filesystem::path& directory) {
     std::filesystem::create_directories(directory, error);
     std::lock_guard<std::mutex> lock(Lock());
     Root() = directory;
+    // The material DLL has its own CRT and cannot call the shell logger. Share
+    // only a Unicode output path; detailed timing remains explicitly opt-in.
+    const auto materialLog=directory/L"material.log";
+    SetEnvironmentVariableW(L"LUME_MATERIAL_DIAGNOSTIC_LOG",materialLog.c_str());
 }
 
 std::filesystem::path Directory() {

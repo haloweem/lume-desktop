@@ -25,7 +25,7 @@ export const components=[
   {scope:'minimize',controls:['minimize-durationMs','minimize-restore','minimize-launch',
     'minimize-multiMonitor','minimize-unhideTaskbar','minimize-unhideDurationMs','minimize-engine']},
 ];
-const stylesheets=['reference.css','titlebar.css','app.css','clock.css','calendar.css','application-settings.css','music.css'];
+const stylesheets=['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css','lume-icons.css','application-settings.css','music.css'];
 const ui=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
 const action=scope=>scope==='clock'?'toggle':`${scope}-toggle`;
 const reset=scope=>scope==='clock'?'reset':`${scope}-reset`;
@@ -90,7 +90,7 @@ function installNativeFixture({messages,initial}) {
       enabled[scope]=value;
       emit(scope,'snapshot');
     },
-    navigate(scope) {receive({version:1,type:'navigate',page:scope});},
+    navigate(scope,section) {receive({version:1,type:'navigate',page:scope,...(section?{section}:{})});},
     reply(scope,fail=false) {
       if(!pending.has(scope))throw new Error(`${scope} 没有待确认的卡片命令`);
       if(!fail)enabled[scope]=pending.get(scope);
@@ -123,8 +123,8 @@ function installNativeFixture({messages,initial}) {
   }};
 }
 
-export async function createBrowserHarness() {
-  const output=path.resolve(ui,'../../build-artifacts/native-rebuild/component-settings-20260930/browser');
+export async function createBrowserHarness(outputDirectory) {
+  const output=outputDirectory||path.resolve(ui,'../../build-artifacts/native-rebuild/component-settings-20260930/browser');
   await mkdir(output,{recursive:true});
   const server=createServer(async(request,response)=>{
     try {

@@ -217,6 +217,7 @@ struct DesktopApplication::State {
         // reading. Reads are on demand, so the island adds no fetching of its own.
         value.weather=[this]{return exiting?dynamic_island::Weather{}:IslandWeather(weather.Reading());};
         value.openWeatherSettings=[this]{if(!exiting)Open(ManagerPage::Weather);};
+        value.openPerformanceSettings=[this]{if(!exiting)Open(ManagerPage::Performance);};
         value.weatherActive=[this](bool active){weather.SetSharedConsumer(active);};
         return value;
     }
@@ -271,6 +272,7 @@ struct DesktopApplication::State {
             nullptr,AnimationScope(this->options)),
         applicationSettings(instance,SettingsOptions(this->options),
             [this](const std::wstring& message){
+                if(!applicationSettings.HasWork())window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
                 Post(message);
                 if(!exiting){dynamicIsland.SetEnglish(applicationSettings.Preferences().language=="en");updateNotifications.SetLanguage(applicationSettings.Preferences().language=="en");updateNotifications.Wake();Wake();}
             },
@@ -341,6 +343,7 @@ struct DesktopApplication::State {
         });
         window.ConfigureMusicFonts(musicFonts.AssetDirectory().wstring(),
             [this](std::wstring_view filename){return musicFonts.AssetSize(filename);});
+        window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
         window.ConfigureThreadWake(lume::window_ids::ShellWakeMessage,[this]{DrainMusic();});
         window.ConfigureApplicationCommands([this](std::wstring_view message){
             if(exiting)return;
@@ -356,6 +359,10 @@ struct DesktopApplication::State {
                 if(*diagnosticsAction==diagnostics::Action::Clear)diagnosticOperations.Clear();
                 PostDiagnosticsState();
             } else if(const auto command=ui::ParseApplicationSettingsPageJson(message)) {
+                if(command->action==ui::ApplicationSettingsAction::PreviewInterfaceScale) {
+                    window.SetInterfaceScale(command->scalePercent);
+                    return;
+                }
                 if(command->action==ui::ApplicationSettingsAction::CheckUpdate&&updateNotifications.RequestManual()) {
                     if(!exiting)Post(applicationSettings.State());
                 } else if(const auto reply=applicationSettings.HandlePage(*command,window.Handle()))Post(*reply);
@@ -958,6 +965,18 @@ struct DesktopApplication::State {
         if(ran)return 1;
         ran=true;thread=GetCurrentThreadId();MSG queue{};PeekMessageW(&queue,nullptr,WM_USER,WM_USER,PM_NOREMOVE);
         const auto initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(initialized))return 1;
+        // Display permissions must be ready before any restored widget can show.
+        lume::platform::windows::desktop_level::Watcher desktopLevel;
+        if(!options.verification)desktopLevel.Start(instance);
+        lume::platform::windows::window_layer::observer=[](HWND window, auto kind, bool hidden){
+            DWORD pid=0;const auto& state=lume::platform::windows::window_layer::context;
+            GetWindowThreadProcessId(state.foreground,&pid);
+            lume::platform::windows::diag::Log("window-policy", "role="+std::to_string(static_cast<int>(kind))+
+                (hidden?" suppressed":" restored")+" foregroundPid="+std::to_string(pid)+
+                " protectedDisplays="+std::to_string(state.allDisplays?-1:static_cast<int>(state.fullscreen.size()))+
+                " topmost="+std::to_string((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0)+
+                " visible="+std::to_string(IsWindowVisible(window)!=FALSE));
+        };
         // The wallpaper first: its player starts on its own thread and process,
         // so after sign-in it appears while the widgets are still being built.
         wallpaper.Restore();
@@ -980,8 +999,6 @@ struct DesktopApplication::State {
         reminders.UpdateAppearance(Appearance());remindersStarted=true;reminders.Start();
         // Restack desktop widgets when Explorer replaces the desktop host after
         // they were shown (late desktop at boot, wallpaper WorkerW, Explorer restart).
-        lume::platform::windows::desktop_level::Watcher desktopLevel;
-        if(!options.verification)desktopLevel.Start(instance);
         ApplicationTray tray;
         const bool trayAvailable=tray.Create(instance,[this](TrayAction action){Tray(action);},
             [this](const std::wstring& callback){if(!exiting){account.HandleCallback(callback);Open(ManagerPage::Account);}},
@@ -999,6 +1016,7 @@ struct DesktopApplication::State {
         do {
             if(showManager) {
                 opening=false;visible=true;ready=false;dock.Refresh();
+                window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
                 result=window.Run(instance,[this](ui::PageCommand command){Dispatch(command);return std::wstring{};},options.verification,options.readyScript);
                 ui::MusicPageCommand closeMusic;
                 closeMusic.action=ui::MusicAction::Close;

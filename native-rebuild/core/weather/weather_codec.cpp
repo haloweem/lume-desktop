@@ -145,6 +145,13 @@ std::optional<Snapshot> ParseMet(std::string_view body, const Location& location
         result.temperature = result.hourly.front().temperature;
         result.humidity = Number(details.at("relative_humidity"), 0, 100);
         result.windSpeed = Number(details.at("wind_speed"), 0, 150) * 3.6;
+        const auto optionalNumber=[&](const Json& object,const char* key,double low,double high)->std::optional<double>{
+            if(!object.contains(key))return {};try{return Number(object.at(key),low,high);}catch(...){return {};}};
+        result.windDirection=optionalNumber(details,"wind_from_direction",0,360);
+        result.pressure=optionalNumber(details,"air_pressure_at_sea_level",300,1200);
+        result.uv=optionalNumber(details,"ultraviolet_index_clear_sky",0,30);
+        const auto& period=series[index].at("data").at("next_1_hours");
+        if(period.contains("details"))result.precipitation=optionalNumber(period.at("details"),"probability_of_precipitation",0,100);
         result.weatherCode = result.hourly.front().weatherCode;
         result.condition = result.hourly.front().condition;
         const int hour = std::stoi(result.hourly.front().time.substr(11, 2));
@@ -171,6 +178,13 @@ std::optional<std::string> EncodeCache(const Snapshot& value) {
         if (value.remainingDay) snapshot["forecastRange"] = "remaining-day";
         if (value.apparentTemperature) snapshot["apparentTemperature"] = *value.apparentTemperature;
         if (value.windSpeed) snapshot["windSpeed"] = *value.windSpeed;
+        if(value.windDirection)snapshot["windDirection"]=*value.windDirection;
+        if(value.pressure)snapshot["pressure"]=*value.pressure;
+        if(value.visibility)snapshot["visibility"]=*value.visibility;
+        if(value.uv)snapshot["uv"]=*value.uv;
+        if(value.precipitation)snapshot["precipitation"]=*value.precipitation;
+        if(!value.sunrise.empty())snapshot["sunrise"]=value.sunrise;
+        if(!value.sunset.empty())snapshot["sunset"]=value.sunset;
         for (const auto& hour : value.hourly) {
             Json row{{"time", hour.time}, {"temperature", hour.temperature}, {"weatherCode", hour.weatherCode},
                 {"condition", hour.condition}};
@@ -209,6 +223,13 @@ std::optional<Snapshot> DecodeCache(std::string_view text, std::string_view city
         result.humidity = Number(input.at("humidity"), 0, 100);
         if (input.contains("apparentTemperature")) result.apparentTemperature = Number(input.at("apparentTemperature"), -120, 100);
         if (input.contains("windSpeed")) result.windSpeed = Number(input.at("windSpeed"), 0, 540);
+        if(input.contains("windDirection"))result.windDirection=Number(input.at("windDirection"),0,360);
+        if(input.contains("pressure"))result.pressure=Number(input.at("pressure"),300,1200);
+        if(input.contains("visibility"))result.visibility=Number(input.at("visibility"),0,200);
+        if(input.contains("uv"))result.uv=Number(input.at("uv"),0,30);
+        if(input.contains("precipitation"))result.precipitation=Number(input.at("precipitation"),0,100);
+        if(input.contains("sunrise"))result.sunrise=Text(input.at("sunrise"));
+        if(input.contains("sunset"))result.sunset=Text(input.at("sunset"));
         result.weatherCode = Code(input.at("weatherCode"));
         result.condition = Text(input.at("condition"));
         result.isDay = input.at("isDay").get<bool>();

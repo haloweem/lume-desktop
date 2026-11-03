@@ -1,4 +1,5 @@
 #include "platform/windows/calendar/calendar_todo_picker.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/calendar/calendar_todo_form_layout.h"
 #include "platform/windows/calendar/calendar_todo_ui.h"
 #include "platform/windows/rounded_window_surface.h"
@@ -54,6 +55,7 @@ struct CalendarTodoPicker::Impl : std::enable_shared_from_this<Impl> {
             choice?L"重复":numeric?L"提前提醒分钟数":L"选择日期时间",WS_POPUP|WS_CLIPCHILDREN,
             host.left,host.top,1,1,owner,nullptr,instance,this);
         if(!window)return false;
+        window_layer::Register(window,window_layer::Kind::Popup,owner);
         if(choice) {
             for(std::size_t i=0;i<options.size();++i)Add(L"BUTTON",options[i].c_str(),ChoiceFirst+static_cast<int>(i),BS_OWNERDRAW);
         } else if(numeric) {

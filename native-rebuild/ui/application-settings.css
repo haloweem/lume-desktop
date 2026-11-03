@@ -176,6 +176,7 @@
   width: min(100%, 540px);
   align-self: center;
   justify-self: center;
+  transform: translateY(clamp(-48px, calc(120px - 20vh), 0px));
   display: grid;
   justify-items: center;
   gap: 14px;

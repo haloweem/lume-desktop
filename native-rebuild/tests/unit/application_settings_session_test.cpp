@@ -44,7 +44,7 @@ struct Transport final : IUpdateTransport {
         if (throwOnFetch) throw std::runtime_error("transport failure");
         if (offline) return {{}, "update-offline"};
         if (current) return {R"({"version":"1.0.1"})", {}};
-        return {R"({"version":"1.0.9","downloadUrl":"https://lumedesktop.com/electron.exe"})", {}};
+        return {R"({"version":"1.0.10","downloadUrl":"https://lumedesktop.com/electron.exe"})", {}};
     }
 };
 template<class Predicate> bool Pump(Predicate done) {
@@ -239,6 +239,17 @@ int main() {
           startup->reads > 0 && session.Preferences().autostart && startup->writes == 0 && transport->calls == 0,
           "restore reads real Run state and applies balanced preferences without any registration or network writes");
 
+    lume::ui::ApplicationSettingsPageCommand scale;
+    scale.action=ApplicationSettingsAction::InterfaceScale;scale.scalePercent=50;
+    Check(session.HandlePage(scale).has_value()&&Pump([&]{return !session.HasWork();})&&
+          session.Preferences().interfaceScale==50&&DecodePreferences(file->value.bytes).preferences.interfaceScale==50,
+          "interface scale reaches the settings worker and persists independently of wallpaper policy");
+    file->fail=true;scale.scalePercent=75;
+    Check(session.HandlePage(scale).has_value()&&Pump([&]{return !session.HasWork();})&&
+          session.Preferences().interfaceScale==50,"scale save failure publishes the old confirmed scale for window rollback");
+    file->fail=false;scale.scalePercent=75;
+    Check(session.HandlePage(scale).has_value()&&Pump([&]{return !session.HasWork();})&&
+          session.Preferences().interfaceScale==75,"scale can restore the original layout");
     balancedEntered = false; balancedRelease = false;
     const auto start = GetTickCount64();
     Check(session.HandlePage({ApplicationSettingsAction::BalancedMode, {}, true}).has_value(), "balanced action accepted");

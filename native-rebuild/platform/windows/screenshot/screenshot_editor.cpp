@@ -1,4 +1,5 @@
 #include "platform/windows/screenshot/screenshot_editor.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/screenshot/screenshot_render.h"
 #include "platform/windows/widget_ui/direct_write_text.h"
 #include "platform/windows/widget_ui/direct_write_edit.h"
@@ -119,6 +120,7 @@ struct ScreenshotEditor::Impl {
         if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS){Stop();return false;}
         window=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,EditorClass,L"Lume \u622a\u56fe",WS_POPUP|WS_CLIPCHILDREN,origin.x,origin.y,source.width,source.height,nullptr,nullptr,instance,this);
         if(!window){Stop();return false;}
+        window_layer::Register(window,window_layer::Kind::ExplicitTool);
         scale=static_cast<float>(GetDpiForWindow(window))/96;if(scale<=0)scale=1;
         SetWindowDisplayAffinity(window,WDA_EXCLUDEFROMCAPTURE);
         INITCOMMONCONTROLSEX common{sizeof(common),ICC_WIN95_CLASSES|ICC_BAR_CLASSES};InitCommonControlsEx(&common);
@@ -424,6 +426,7 @@ struct ScreenshotEditor::Impl {
         if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return;
         HWND hwnd=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,PinClass,L"Lume \u8d34\u56fe",WS_POPUP|WS_BORDER,origin.x+selection.left,origin.y+selection.top,pin->image.width,pin->image.height,nullptr,nullptr,instance,pin.get());
         if(!hwnd){error=L"\u8d34\u56fe\u521b\u5efa\u5931\u8d25";Repaint();return;}
+        window_layer::Register(hwnd,window_layer::Kind::Editor);
         pins.push_back(std::move(pin));Stop();ShowWindow(hwnd,SW_SHOW);SetForegroundWindow(hwnd);
     }
     void Action(Command command){

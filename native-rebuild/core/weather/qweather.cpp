@@ -385,6 +385,27 @@ std::optional<Snapshot> ParseQweather(std::string_view html, const Location& loc
             const auto label = page.Text(values[1]);
             if (label == u8"相对湿度") { result.humidity = Numeric(page.Text(values[0]), 0, 100); humidity = true; }
             if (label == u8"体感温度") result.apparentTemperature = Numeric(page.Text(values[0]), -120, 100);
+            // Optional provider fields must not invalidate an otherwise usable
+            // observation, and absent fields stay absent rather than showing zero.
+            try {
+                const auto text=page.Text(values[0]);
+                if(label==u8"气压")result.pressure=Numeric(text,300,1200);
+                if(label==u8"能见度")result.visibility=Numeric(text,0,200);
+                if(label==u8"紫外线"||label==u8"紫外线指数")result.uv=Numeric(text,0,30);
+                if(label==u8"降水概率")result.precipitation=Numeric(text,0,100);
+                if(label==u8"风速"&&text.find("km/h")!=std::string::npos)result.windSpeed=Numeric(text,0,540);
+                else if(label==u8"风速"&&text.find("m/s")!=std::string::npos)result.windSpeed=Numeric(text,0,150)*3.6;
+                if(label==u8"风向") {
+                    const std::array<std::string,8> names{u8"北风",u8"东北风",u8"东风",u8"东南风",u8"南风",u8"西南风",u8"西风",u8"西北风"};
+                    for(std::size_t i=0;i<names.size();++i)if(text==names[i])result.windDirection=static_cast<double>(i)*45;
+                }
+                if((label==u8"日出"||label==u8"日落")&&text.size()==5&&text[2]==':') {
+                    const auto hour=text.substr(0,2),minute=text.substr(3,2);
+                    if(hour>="00"&&hour<="23"&&minute>="00"&&minute<="59"){
+                        if(label==u8"日出")result.sunrise=text;else result.sunset=text;
+                    }
+                }
+            }catch(...){}
         }
         if (!humidity) return {};
         const auto icon = page.One(page.One(current, ".current-live"), "img");

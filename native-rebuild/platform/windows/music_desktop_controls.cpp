@@ -1,4 +1,5 @@
 #include "platform/windows/music_desktop_controls.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/music_metadata.h"
 #include "platform/windows/music_provider_http.h"
 #include "platform/windows/widget_ui/direct_write_tooltip.h"
@@ -600,6 +601,7 @@ struct MusicDesktopControls::Impl {
                 WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, window->Handle(), nullptr, instance, nullptr);
             if (tooltip && !direct_write_tooltip::Attach(tooltip)) { DestroyWindow(tooltip); tooltip = nullptr; }
             if (tooltip) {
+                window_layer::Register(tooltip,window_layer::Kind::Popup,window->Handle());
                 SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 420);
                 for (UINT_PTR id = 1; id <= 5; ++id) {
                     TOOLINFOW tool{}; tool.cbSize = sizeof(tool); tool.hwnd = window->Handle();

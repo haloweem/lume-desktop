@@ -16,6 +16,16 @@ int main() {
     const auto balanced = ParseApplicationSettingsPageJson(
         LR"({"version":1,"scope":"app-settings","action":"balancedMode","value":false})");
     Check(balanced && !balanced->flag, "false is not treated as a missing value");
+    for(const auto* action:{L"interfaceScale",L"previewInterfaceScale"}) {
+        for(const int percent:{50,62,75}) {
+            const auto command=ParseApplicationSettingsPageJson(std::wstring(L"{\"version\":1,\"scope\":\"app-settings\",\"action\":\"")+
+                action+L"\",\"value\":"+std::to_wstring(percent)+L"}");
+            Check(command&&command->scalePercent==percent,"typed scale and preview commands reach the host");
+        }
+        for(const auto* value:{L"49",L"76",L"62.5",L"true",L"\"60\"",L"null",L"18446744073709551615"})
+            Check(!ParseApplicationSettingsPageJson(std::wstring(L"{\"version\":1,\"scope\":\"app-settings\",\"action\":\"")+
+                action+L"\",\"value\":"+value+L"}"),"reject invalid scale commands");
+    }
     for (const auto* action : {L"snapshot", L"checkUpdate", L"downloadUpdate", L"installUpdate"}) {
         Check(ParseApplicationSettingsPageJson(std::wstring(L"{\"version\":1,\"scope\":\"app-settings\",\"action\":\"") +
             action + L"\"}").has_value(), "read-only actions contain no value");

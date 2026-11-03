@@ -1,17 +1,18 @@
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/dynamic_island/compact_widgets.h"
+#include "vendor/nlohmann/json.hpp"
+#include <shellapi.h>
+#include <shlobj.h>
 #include "core/dynamic_island/island_shape.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/text_util.h"
-#include "platform/windows/dynamic_island/island_weather_page.h"
 #include "platform/windows/performance/performance_monitor.h"
-#include "platform/windows/performance/performance_view.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include "platform/windows/widget_ui/layered_surface.h"
 #include "platform/windows/widget_ui/text_fit.h"
 #include "platform/windows/widget_ui/desktop_level.h"
 #include "platform/windows/dock/frame_clock.h"
-#include "core/calendar/lunar_calendar.h"
 #include "platform/windows/widget_ui/LumeWidgetMenu.h"
 #include "platform/windows/material/widget_material_runtime.h"
 #include <objidl.h>
@@ -44,14 +45,14 @@ constexpr float IdleWidth = 120, IdleHeight = 30;
 constexpr float CompactWidth = 236, CompactHeight = 34;
 constexpr float HoverGrowWidth = 12, HoverGrowHeight = 3;
 constexpr float ExpandedWidth = 372, ExpandedHeight = 156;
-constexpr float PageWidth = 404, PageHeight = 208;  // Calendar and todo pages.
+constexpr float PageWidth = 404, PageHeight = 208;  // Reminder page.
 constexpr float NoticeWidth = 340, NoticeHeight = 62;
 constexpr UINT NoticeMilliseconds = 9000;
 constexpr int MaxReminders = 10;
 // The canvas keeps this fixed size during animations, so no bitmap or render
 // target is reallocated per frame; each frame presents only the live area.
 constexpr float CanvasWidth = 420, CanvasHeight = 216;
-constexpr std::uint32_t Green = 0x30d158, Blue = 0x0a84ff;
+constexpr std::uint32_t Green = 0x30d158;
 constexpr float TopMargin = 8;
 // Auto-hide: how long without activity before tucking, and what stays visible.
 constexpr ULONGLONG IdleDelay = 3000, LeaveDelay = 1200;
@@ -65,18 +66,6 @@ calendar::Date Today() {
     SYSTEMTIME now{};
     GetLocalTime(&now);
     return {now.wYear, now.wMonth, now.wDay};
-}
-std::wstring Wide(std::string_view text) {
-    if (text.empty()) return {};
-    const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    std::wstring value(static_cast<std::size_t>(std::max(count, 0)), L'\0');
-    if (count > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), value.data(), count);
-    return value;
-}
-// A day's festival name (the calendar widget's data); holiday spans are not repeated.
-std::wstring Festival(const calendar::LunarDetails& lunar) {
-    if (!lunar.festivals.empty()) return Wide(lunar.festivals.front());
-    return {};
 }
 double Seconds() {
     static LARGE_INTEGER frequency = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f; }();
@@ -199,19 +188,17 @@ struct IslandWindow::Impl {
     std::string coverKey;
     std::uint32_t accent = 0x30d158;
     bool expanded = false, hoverExpanded = false, hovered = false, suppressed = false, visible = false;
-    // A maximized window is in front on the island's monitor: tuck away from its
-    // tabs and title bar; hovering the sliver still brings the island out.
-    bool maximized = false;
     int pressed = -1, hoverHit = -1;
     Spring width, height, presence, tuck, shape; // shape: 0 capsule, 1 attached.
     Spring pageFade;  // 0 right after a page change, 1 settled.
     Spring previewScale;
     bool sampleRendering=false;
     IslandPage page = IslandPage::Music;
-    bool pageChosen = false;  // The user picked the page since the island last opened.
-    calendar::Date month = Today(), selected = Today(), today = Today();
+    calendar::Date today = Today();
     IslandTodoSource todos;
     dynamic_island::Weather weather;  // Projection of the weather component.
+    CompactData compactData;
+    std::vector<std::wstring> heldFiles;
     // Keep samples warm for the window's lifetime: the worker posts
     // here, and the UI thread reads the latest snapshot.
     std::atomic<HWND> performanceTarget{nullptr};
@@ -219,7 +206,6 @@ struct IslandWindow::Impl {
         if (const HWND target = performanceTarget.load()) PostMessageW(target, PerformanceMessage, 0, 0);
     }};
     std::optional<performance::Snapshot> performanceSample;
-    bool performanceFailed = false;
     // id "msg:<exe>" marks a chat message: app names the program, target is
     // its window (activated on click). Chat messages never join reminders.
     struct Notice { std::string id; std::wstring title, time, app; HWND target = nullptr; std::uint32_t color = 0xff9f0a; };
@@ -227,8 +213,6 @@ struct IslandWindow::Impl {
     std::vector<Notice> reminders;  // Newest first, at most MaxReminders.
     std::deque<Notice> queued;      // Notices waiting for the current one to finish.
     int pageDirection = 1;          // +1 slides in from the right, -1 from the left.
-    std::vector<IslandTodo> todoRows;
-    std::vector<WidgetRect> todoChecks;
     std::vector<WidgetRect> reminderRows;
     FrameClock clock;
     double lastSeconds = 0;
@@ -255,14 +239,11 @@ struct IslandWindow::Impl {
 
     void Targets() {
         shape.target=Attached()?1.f:0.f;
-        if ((!HasMedia() && page == IslandPage::Music) || (reminders.empty() && page == IslandPage::Reminder)) page = IslandPage::Calendar;
-        // Media drops out briefly between tracks or while a player restarts its
-        // session. The Calendar page above is only a fallback: once media is back
-        // the island shows music again unless the user picked a page since it opened.
-        else if (HasMedia() && page == IslandPage::Calendar && !pageChosen) page = IslandPage::Music;
+        if (reminders.empty() && page == IslandPage::Reminder) page = IslandPage::Music;
+        if (!HasMedia() && page == IslandPage::Music && !reminders.empty()) page = IslandPage::Reminder;
         if (notice && !expanded) { width.target = NoticeWidth; height.target = NoticeHeight; }
-        else if (expanded && page == IslandPage::Music) { width.target = ExpandedWidth; height.target = ExpandedHeight; }
-        else if (expanded) { width.target = PageWidth; height.target = PageHeight; }
+        else if (expanded && page == IslandPage::Reminder) { width.target = PageWidth; height.target = PageHeight; }
+        else if (expanded) { width.target = ExpandedWidth; height.target = ExpandedHeight; }
         else if (HasMedia()) {
             width.target = CompactWidth + (hovered ? HoverGrowWidth : 0);
             height.target = CompactHeight + (hovered ? HoverGrowHeight : 0);
@@ -270,9 +251,12 @@ struct IslandWindow::Impl {
             width.target = IdleWidth + (hovered ? HoverGrowWidth * .5f : 0);
             height.target = IdleHeight + (hovered ? HoverGrowHeight * .5f : 0);
         }
+        if(!expanded&&!notice&&(display.leftWidget!=dynamic_island::CompactWidget::None||display.rightWidget!=dynamic_island::CompactWidget::None)){
+            width.target=HasMedia()?360.f:260.f;height.target=36.f;
+        }
         presence.target = Wanted() ? 1.f : 0.f;
         const bool idle = display.autoHide && GetTickCount64() >= activeUntil;
-        tuck.target = (idle || maximized) && !hovered && !expanded && !notice ? 1.f : 0.f;
+        tuck.target = idle && !hovered && !expanded && !notice ? 1.f : 0.f;
     }
     // Keeps the island out for a while after something happens, then tucks it.
     void Activity(ULONGLONG hold = IdleDelay) {
@@ -657,7 +641,18 @@ struct IslandWindow::Impl {
         else if (!Rolling() && fastBars) { fastBars = false; Pulse(); }
     }
     void Compact(float w, float h, float alpha) {
-        if (alpha <= .01f || !HasMedia()) return;
+        if(alpha<=.01f)return;
+        if(display.leftWidget!=dynamic_island::CompactWidget::None||display.rightWidget!=dynamic_island::CompactWidget::None){
+            const float inset=12+dynamic_island::IslandShoulder(h)*std::clamp(shape.x,0.f,1.f);
+            DrawCompact(*canvas,display.leftWidget,{inset,1,98,h-2},compactData,weather,performanceSample,view.english,alpha);
+            DrawCompact(*canvas,display.rightWidget,{w-inset-98,1,98,h-2},compactData,weather,performanceSample,view.english,alpha,true);
+            if(HasMedia()){
+                const float center=w/2;FadeImage(cover,{center-16,(h-24)/2,24,24},6,alpha);
+                Bars(center+14,h/2+7,14,3,2,2,alpha);
+            }
+            return;
+        }
+        if (!HasMedia()) return;
         // The shoulders belong to the outline, outside the compact content lane.
         const float attached=std::clamp(shape.x,0.f,1.f),inset=dynamic_island::IslandShoulder(h)*attached;
         const float art = h - 12, pad = (h - art) / 2;
@@ -759,7 +754,8 @@ struct IslandWindow::Impl {
     bool ShowNotice(const std::string& id, const std::wstring& title, const std::wstring& time) {
         // In the desktop layer windows may cover the island, so the reminder
         // would count as delivered unseen; the normal popup takes it instead.
-        if (!hwnd || suppressed || !display.topmost) return false;
+        if (!hwnd || suppressed || window_layer::Suppressed(hwnd)) return false;
+        if(window_layer::enabled && window_layer::ReadContext().foreignForeground)return false;
         const Notice next{id, title, time};
         reminders.erase(std::remove_if(reminders.begin(), reminders.end(), [&](const Notice& n) { return n.id == id; }), reminders.end());
         reminders.insert(reminders.begin(), next);
@@ -859,10 +855,6 @@ struct IslandWindow::Impl {
     std::vector<IslandPage> Pages() const {
         std::vector<IslandPage> pages;
         if (HasMedia()) pages.push_back(IslandPage::Music);
-        pages.push_back(IslandPage::Calendar);
-        pages.push_back(IslandPage::Weather);
-        pages.push_back(IslandPage::Performance);
-        pages.push_back(IslandPage::Todo);
         if (!reminders.empty()) pages.push_back(IslandPage::Reminder);
         return pages;
     }
@@ -877,142 +869,6 @@ struct IslandWindow::Impl {
             canvas->Rounded({x, h - 9, dot, 5}, 2.5f, 0xffffff, alpha * (current ? .85f : .3f));
             x += dot + 5;
         }
-    }
-    void Chevron(float cx, float cy, bool next, bool twice, float alpha) {
-        const float d = next ? 1.f : -1.f;
-        for (int i = 0; i < (twice ? 2 : 1); ++i) {
-            const float x = cx + (twice ? (static_cast<float>(i) * 5 - 2.5f) * d : 0);
-            canvas->Line(x - 2.5f * d, cy - 4, x + 1.5f * d, cy, 0xffffff, alpha, 1.5f);
-            canvas->Line(x + 1.5f * d, cy, x - 2.5f * d, cy + 4, 0xffffff, alpha, 1.5f);
-        }
-    }
-    // Calendar navigation buttons: prev year, prev month, next month, next year.
-    WidgetRect NavButton(int index, float w) const { return {w - 132 + static_cast<float>(index) * 26, 14, 24, 24}; }
-    struct GridGeometry { float left, top, cell, row; int rows, offset; };
-    GridGeometry Grid(float w) const {
-        const int first = calendar::Weekday({month.year, month.month, 1});
-        const int offset = (first + 6) % 7;  // Monday first, like the split calendar.
-        const int days = calendar::DaysInMonth(month.year, month.month);
-        const int rows = (offset + days + 6) / 7;
-        const float left = 176, top = 66, cell = (w - 24 - left) / 7;
-        return {left, top, cell, std::min(22.f, (PageHeight - 12 - top) / static_cast<float>(rows)), rows, offset};
-    }
-    void CalendarPage(float w, float alpha) {
-        if (alpha <= .01f) return;
-        static constexpr const wchar_t* Weekdays[] = {L"星期日", L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六"};
-        static constexpr const wchar_t* Short[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
-        auto& c = *canvas;
-        // Left: today, like the split calendar's summary column.
-        c.Text(Weekdays[calendar::Weekday(today)], {24, 20, 130, 18}, 13, Blue, alpha, WidgetTextWeight::Semibold);
-        c.Text(std::to_wstring(today.day), {20, 34, 140, 64}, 56, 0xffffff, alpha, WidgetTextWeight::Bold);
-        c.Text(std::to_wstring(today.year) + L"年" + std::to_wstring(today.month) + L"月", {24, 100, 130, 18}, 12,
-               0xffffff, .6f * alpha);
-        // Festivals of the shown month: upcoming ones first, then the latest past ones.
-        std::vector<std::pair<int, std::wstring>> festivals;
-        const int days = calendar::DaysInMonth(month.year, month.month);
-        for (int d = 1; d <= days; ++d) {
-            auto name = Festival(calendar::LookupLunar({month.year, month.month, d}));
-            if (!name.empty()) festivals.emplace_back(d, std::move(name));
-        }
-        std::vector<std::pair<int, std::wstring>> shown;
-        for (const auto& f : festivals) if (calendar::Date{month.year, month.month, f.first} >= today && shown.size() < 3) shown.push_back(f);
-        for (auto it = festivals.rbegin(); it != festivals.rend() && shown.size() < 3; ++it)
-            if (calendar::Date{month.year, month.month, it->first} < today) shown.push_back(*it);
-        std::sort(shown.begin(), shown.end());
-        float y = 126;
-        for (const auto& [day, name] : shown) {
-            const auto date = std::to_wstring(month.month) + L"月" + std::to_wstring(day) + L"日";
-            c.Text(date, {24, y, 70, 18}, 12, Blue, alpha, WidgetTextWeight::Semibold);
-            c.Text(FitWeightedText(c, name, 66, 12, WidgetTextWeight::Normal), {88, y, 66, 18}, 12, 0xffffff, .88f * alpha);
-            y += 20;
-        }
-        c.Line(162, 18, 162, PageHeight - 18, 0xffffff, .14f * alpha, 1);
-        // Right: month grid.
-        c.Text(std::to_wstring(month.year) + L"年" + std::to_wstring(month.month) + L"月", {176, 16, 120, 22}, 15,
-               0xffffff, alpha, WidgetTextWeight::Semibold);
-        for (int i = 0; i < 4; ++i) {
-            const auto r = NavButton(i, w);
-            if (hoverHit == 10 + i) c.Rounded(r, 12, 0xffffff, .14f * alpha);
-            Chevron(r.x + r.width / 2, r.y + r.height / 2, i >= 2, i == 0 || i == 3, .8f * alpha);
-        }
-        const auto g = Grid(w);
-        for (int i = 0; i < 7; ++i)
-            c.Text(Short[i], {g.left + g.cell * static_cast<float>(i), 46, g.cell, 16}, 11, 0xffffff, (i >= 5 ? .4f : .55f) * alpha,
-                   WidgetTextWeight::Medium, WidgetTextAlign::Center);
-        for (int d = 1; d <= days; ++d) {
-            const int index = g.offset + d - 1;
-            const float x = g.left + g.cell * static_cast<float>(index % 7), top = g.top + g.row * static_cast<float>(index / 7);
-            const calendar::Date date{month.year, month.month, d};
-            const bool isToday = date == today, isSelected = date == selected && !isToday;
-            const float cx = x + g.cell / 2, cy = top + g.row / 2 - 1;
-            if (isToday) c.AnnularSector(cx, cy, 0, 10, 0, 360, Blue, alpha);
-            else if (isSelected) c.AnnularSector(cx, cy, 9, 10, 0, 360, 0xffffff, .55f * alpha);
-            else if (hoverHit == 100 + d) c.AnnularSector(cx, cy, 0, 10, 0, 360, 0xffffff, .12f * alpha);
-            const bool weekend = index % 7 >= 5;
-            c.Text(std::to_wstring(d), {x, cy - 8, g.cell, 16}, 12, 0xffffff, (isToday ? 1.f : weekend ? .5f : .9f) * alpha,
-                   isToday ? WidgetTextWeight::Bold : WidgetTextWeight::Medium, WidgetTextAlign::Center);
-            // Dots: festivals in red, days with todos in the accent colour (shared store).
-            const bool festival = !Festival(calendar::LookupLunar(date)).empty();
-            const bool hasTodo = todos.hasTodos && todos.hasTodos(date);
-            const float dotY = cy + 9;
-            if (festival && hasTodo) {
-                c.AnnularSector(cx - 2.5f, dotY, 0, 1.4f, 0, 360, Blue, alpha);
-                c.AnnularSector(cx + 2.5f, dotY, 0, 1.4f, 0, 360, Green, alpha);
-            } else if (festival) c.AnnularSector(cx, dotY, 0, 1.4f, 0, 360, isToday ? 0xffffff : Blue, alpha);
-            else if (hasTodo) c.AnnularSector(cx, dotY, 0, 1.4f, 0, 360, isToday ? 0xffffff : Green, alpha);
-        }
-    }
-    void LoadTodos() {
-        todoRows = todos.forDay ? todos.forDay(selected) : std::vector<IslandTodo>{};
-    }
-    void TodoPage(float w, float h, float alpha) {
-        if (alpha <= .01f) return;
-        auto& c = *canvas;
-        const auto title = selected == today ? std::wstring(L"今日待办")
-                                             : std::to_wstring(selected.month) + L"月" + std::to_wstring(selected.day) + L"日 待办";
-        c.Text(title, {22, 16, 200, 22}, 15, 0xffffff, alpha, WidgetTextWeight::Semibold);
-        const auto done = std::count_if(todoRows.begin(), todoRows.end(), [](const auto& t) { return t.completed; });
-        if (!todoRows.empty())
-            c.Text(std::to_wstring(done) + L"/" + std::to_wstring(todoRows.size()) + L" 已完成", {w - 140, 19, 112, 18}, 12,
-                   0xffffff, .5f * alpha, WidgetTextWeight::Normal, WidgetTextAlign::Right);
-        todoChecks.clear();
-        if (todoRows.empty()) {
-            c.Text(L"没有待办", {0, h / 2 - 16, w, 22}, 14, 0xffffff, .7f * alpha, WidgetTextWeight::Medium, WidgetTextAlign::Center);
-            c.Text(L"在日历或今日待办中添加，这里会同步显示", {0, h / 2 + 8, w, 18}, 11.5f, 0xffffff, .42f * alpha,
-                   WidgetTextWeight::Normal, WidgetTextAlign::Center);
-            return;
-        }
-        const std::size_t rows = std::min<std::size_t>(todoRows.size(), 5);
-        for (std::size_t i = 0; i < rows; ++i) {
-            const auto& todo = todoRows[i];
-            const float y = 48 + static_cast<float>(i) * 29;
-            const WidgetRect check{22, y + 4, 18, 18};
-            todoChecks.push_back(check);
-            if (todo.color) {
-                c.Rounded({14, y, w - 40, 26}, 8, todo.color, (todo.completed ? .2f : .34f) * alpha);
-                c.Rounded({14, y + 4, 3, 18}, 1.5f, todo.color, (todo.completed ? .55f : 1.f) * alpha);
-            }
-            if (hoverHit == 200 + static_cast<int>(i)) c.Rounded({14, y, w - 40, 26}, 8, 0xffffff, .1f * alpha);
-            if (todo.completed) {
-                c.AnnularSector(check.x + 9, check.y + 9, 0, 9, 0, 360, Green, alpha);
-                c.Line(check.x + 5, check.y + 9.5f, check.x + 8, check.y + 12.5f, 0xffffff, alpha, 1.8f);
-                c.Line(check.x + 8, check.y + 12.5f, check.x + 13.5f, check.y + 6, 0xffffff, alpha, 1.8f);
-            } else c.AnnularSector(check.x + 9, check.y + 9, 7.6f, 9, 0, 360, 0xffffff, .7f * alpha);
-            const float timeWidth = todo.time.empty() ? 0.f : 74.f;
-            const float textWidth = w - 52 - 28 - timeWidth;
-            c.Text(FitWeightedText(c, todo.title, textWidth, 13, WidgetTextWeight::Medium), {50, y + 4, textWidth, 18}, 13, 0xffffff,
-                   (todo.completed ? .45f : .95f) * alpha, WidgetTextWeight::Medium);
-            if (todo.completed) {
-                const float strike = std::min(textWidth, c.MeasureText(FitWeightedText(c, todo.title, textWidth, 13, WidgetTextWeight::Medium), 13, WidgetTextWeight::Medium));
-                c.Line(50, y + 13, 50 + strike, y + 13, 0xffffff, .4f * alpha, 1);
-            }
-            if (timeWidth > 0)
-                c.Text(todo.time, {w - 28 - timeWidth, y + 5, timeWidth, 16}, 11, 0xffffff, .5f * alpha, WidgetTextWeight::Normal,
-                       WidgetTextAlign::Right);
-        }
-        if (todoRows.size() > rows)
-            c.Text(L"还有 " + std::to_wstring(todoRows.size() - rows) + L" 项 · 点击打开日历", {22, h - 24, w - 50, 16}, 11,
-                   0xffffff, .45f * alpha);
     }
     // Reminders shown this session, with their live todo state: complete one
     // with its circle, open it in the calendar by clicking the row.
@@ -1060,7 +916,6 @@ struct IslandWindow::Impl {
                    .45f * alpha);
     }
     void SetPage(IslandPage next, int direction = 0) {
-        pageChosen = true;
         if (next == page) return;
         if (!direction) {
             const auto pages = Pages();
@@ -1069,7 +924,6 @@ struct IslandWindow::Impl {
         }
         pageDirection = direction;
         page = next;
-        if (page == IslandPage::Todo) LoadTodos();
         SyncPerformance();
         pageFade.Snap(0);
         pageFade.target = 1;
@@ -1077,11 +931,10 @@ struct IslandWindow::Impl {
     }
     void Wheel(int delta) {
         const auto pages = Pages();
+        if (pages.empty()) return;
         if (!expanded) {
             // Scrolling the capsule opens straight onto the next page.
-            pageChosen = true;
             page = pages.size() > 1 && delta < 0 ? pages[1] : pages.front();
-            if (page == IslandPage::Todo) LoadTodos();
             Expand(true);
             return;
         }
@@ -1089,12 +942,6 @@ struct IslandWindow::Impl {
         const auto index = it == pages.end() ? 0 : static_cast<std::ptrdiff_t>(it - pages.begin());
         const auto count = static_cast<std::ptrdiff_t>(pages.size());
         SetPage(pages[static_cast<std::size_t>(((index + (delta < 0 ? 1 : -1)) % count + count) % count)], delta < 0 ? 1 : -1);
-    }
-    void StepMonth(int months) {
-        int total = month.year * 12 + (month.month - 1) + months;
-        total = std::clamp(total, 1 * 12, 9999 * 12 + 11);
-        month = {total / 12, total % 12 + 1, 1};
-        Place();
     }
     bool Draw() {
         const float w = std::clamp(width.x, 1.f, CanvasWidth), h = std::clamp(height.x, 1.f, CanvasHeight);
@@ -1129,10 +976,6 @@ struct IslandWindow::Impl {
         canvas->Offset(slide, 0);
         switch (page) {
         case IslandPage::Music: Expanded(w, content); break;
-        case IslandPage::Calendar: CalendarPage(w, content); break;
-        case IslandPage::Weather: DrawIslandWeatherPage(*canvas, weather, w, h, content); break;
-        case IslandPage::Performance: DrawPerformance(*canvas, w, h, performanceSample, performanceFailed, content); break;
-        case IslandPage::Todo: TodoPage(w, h, content); break;
         case IslandPage::Reminder: ReminderPage(w, h, content); break;
         }
         canvas->Offset(0, 0);
@@ -1172,49 +1015,12 @@ struct IslandWindow::Impl {
     // window covering this monitor is in front. QUNS_BUSY alone is not used: it
     // also reports fullscreen windows on other monitors.
     bool FullscreenInFront() const {
-        if (!display.hideFullscreen) return false;
-        QUERY_USER_NOTIFICATION_STATE state{};
-        if (SUCCEEDED(SHQueryUserNotificationState(&state)) &&
-            (state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE))
-            return true;
-        const HWND foreground = GetForegroundWindow();
-        if (!foreground || foreground == hwnd || !IsWindowVisible(foreground) || IsIconic(foreground)) return false;
-        wchar_t name[64]{};
-        GetClassNameW(foreground, name, static_cast<int>(std::size(name)));
-        for (const auto* shell : {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"})
-            if (wcscmp(name, shell) == 0) return false;
-        DWORD process = 0;
-        GetWindowThreadProcessId(foreground, &process);
-        if (process == GetCurrentProcessId()) return false;
-        const HMONITOR monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
-        if (MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) != monitor) return false;
-        MONITORINFO info{sizeof(info)};
-        GetMonitorInfoW(monitor, &info);
-        RECT bounds{};
-        if (FAILED(DwmGetWindowAttribute(foreground, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))))
-            GetWindowRect(foreground, &bounds);
-        return bounds.left <= info.rcMonitor.left && bounds.top <= info.rcMonitor.top &&
-               bounds.right >= info.rcMonitor.right && bounds.bottom >= info.rcMonitor.bottom;
-    }
-    // True when a maximized (not fullscreen) window of another app is in front on
-    // the island's monitor. Only a topmost island can cover it.
-    bool MaximizedInFront() const {
-        if (!display.topmost) return false;
-        const HWND foreground = GetForegroundWindow();
-        if (!foreground || foreground == hwnd || !IsWindowVisible(foreground) || IsIconic(foreground) ||
-            !IsZoomed(foreground))
-            return false;
-        DWORD process = 0;
-        GetWindowThreadProcessId(foreground, &process);
-        if (process == GetCurrentProcessId()) return false;
-        return MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) == MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        RECT area{}; MONITORINFO monitorInfo{sizeof(monitorInfo)};
+        if(hwnd)GetWindowRect(hwnd,&area);
+        if(IsRectEmpty(&area)&&GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitorInfo))area=monitorInfo.rcMonitor;
+        return window_layer::Protected(area,window_layer::ReadContext(),display.hideFullscreen)||window_layer::Suppressed(hwnd);
     }
     void CheckForeground() {
-        // Maximizing does not change the foreground window; the 1 s tick catches it.
-        if (const bool zoomed = MaximizedInFront(); zoomed != maximized) {
-            maximized = zoomed;
-            if (!suppressed) Animate();
-        }
         const bool next = FullscreenInFront();
         if (next == suppressed) return;
         suppressed = next;
@@ -1230,9 +1036,13 @@ struct IslandWindow::Impl {
 
     bool Start(const widget::Preferences& next, const IslandDisplay& options) {
         prefs = next;
-        if (hwnd && options.topmost != display.topmost) Stop();
+        if (hwnd && display.topmost!=options.topmost) Stop();
         display = options;
-        if (hwnd) { Animate(); return true; }
+        if (hwnd) {
+            window_layer::ConfigureIsland(hwnd,display.topmost,display.hideFullscreen);
+            SyncPerformance();
+            CheckForeground();Animate();return true;
+        }
         WNDCLASSEXW wc{sizeof(wc)};
         wc.hInstance = instance;
         wc.lpfnWndProc = Procedure;
@@ -1243,6 +1053,9 @@ struct IslandWindow::Impl {
         const DWORD style = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (display.topmost ? WS_EX_TOPMOST : 0);
         hwnd = CreateWindowExW(style, ClassName, L"Lume", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, this);
         if (!hwnd) return false;
+        if(!window_layer::Register(hwnd,window_layer::Kind::Island,nullptr,display.topmost,display.hideFullscreen)){Stop();return false;}
+        DragAcceptFiles(hwnd,TRUE);
+        compactData.Refresh();compactData.files=static_cast<unsigned>(heldFiles.size());
         dpi = GetDpiForWindow(hwnd);
         if (!dpi) dpi = 96;
         canvas = std::make_unique<WidgetCanvas>();
@@ -1255,7 +1068,6 @@ struct IslandWindow::Impl {
         foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundEvent, 0, 0,
                                          WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
         suppressed = FullscreenInFront();
-        maximized = MaximizedInFront();
         Targets();
         width.Snap(width.target);
         height.Snap(height.target);
@@ -1268,16 +1080,17 @@ struct IslandWindow::Impl {
     }
     // Rates need consecutive samples. Keep them warm across page changes.
     void SyncPerformance() {
-        const bool want = hwnd != nullptr;
+        using W=dynamic_island::CompactWidget;
+        const auto needsSample=[](W value){return value==W::Network||value==W::Cpu||value==W::Memory||value==W::CpuMemory;};
+        const bool want = preview != nullptr || (hwnd && (needsSample(display.leftWidget)||needsSample(display.rightWidget)));
         if (want && !performance.Running()) {
             performanceTarget = hwnd;
             performanceSample.reset();
-            performanceFailed = !performance.Start();
-        } else if (!want && performanceTarget.load()) {
+            performance.Start();
+        } else if (!want && performance.Running()) {
             performanceTarget = nullptr;
             performance.Stop();
             performanceSample.reset();
-            performanceFailed = false;
         }
     }
     void Stop() {
@@ -1286,7 +1099,6 @@ struct IslandWindow::Impl {
         performanceTarget = nullptr;
         performance.Stop();
         performanceSample.reset();
-        performanceFailed = false;
         StopClock();
         WatchOutside(false);
         DetachGlass();
@@ -1325,9 +1137,12 @@ struct IslandWindow::Impl {
     void Expand(bool next, bool byHover = false) {
         if (!hwnd || expanded == next) return;
         expanded = next;
-        if (next) { today = Today(); if (page != IslandPage::Calendar) month = {today.year, today.month, 1}; pageFade.Snap(1); }
-        else { month = {today.year, today.month, 1}; selected = today; pageChosen = false; if (HasMedia()) page = IslandPage::Music; }
-        if (next && page == IslandPage::Todo) LoadTodos();
+        if (next) {
+            const auto pages = Pages();
+            if (pages.empty()) { expanded = false; return; }
+            if (std::find(pages.begin(),pages.end(),page)==pages.end()) page=pages.front();
+            pageFade.Snap(1);
+        } else if (HasMedia()) page = IslandPage::Music;
         hoverExpanded = next && byHover;
         SyncPerformance();
         WatchOutside(next);
@@ -1345,20 +1160,11 @@ struct IslandWindow::Impl {
         if (x < 0 || x >= width.x || y < 0 || y >= height.x) return -1;
         if(dynamic_island::MorphShapeDistance(x,y,width.x,height.x,Radius(),shape.x)>0)return -1;
         if (notice && !expanded) return 400;
-        if (!expanded || Expansion() < .9f) return 0;
-        if (page == IslandPage::Calendar) {
-            for (int i = 0; i < 4; ++i) {
-                const auto r = NavButton(i, width.x);
-                if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return 10 + i;
-            }
-            const auto g = Grid(width.x);
-            if (x >= g.left && x < g.left + g.cell * 7 && y >= g.top && y < g.top + g.row * static_cast<float>(g.rows)) {
-                const int index = static_cast<int>((y - g.top) / g.row) * 7 + static_cast<int>((x - g.left) / g.cell);
-                const int day = index - g.offset + 1;
-                if (day >= 1 && day <= calendar::DaysInMonth(month.year, month.month)) return 100 + day;
-            }
-            return x < 162 ? 300 : 299;  // Left column opens the calendar; blank does nothing.
+        if(!expanded){
+            if(display.leftWidget!=dynamic_island::CompactWidget::None&&x<120)return 600;
+            if(display.rightWidget!=dynamic_island::CompactWidget::None&&x>width.x-120)return 601;
         }
+        if (!expanded || Expansion() < .9f) return 0;
         if (page == IslandPage::Reminder) {
             if (y < 40 && x >= width.x - 76) return 540;
             for (std::size_t i = 0; i < reminderRows.size(); ++i) {
@@ -1368,13 +1174,6 @@ struct IslandWindow::Impl {
             }
             return 299;
         }
-        if (page == IslandPage::Todo) {
-            for (std::size_t i = 0; i < todoChecks.size(); ++i)
-                if (y >= todoChecks[i].y - 4 && y < todoChecks[i].y + 22 && x < width.x - 24) return 200 + static_cast<int>(i);
-            return 300;
-        }
-        if (page == IslandPage::Weather) return weather.available?299:560;
-        if (page == IslandPage::Performance) return 299;
         if (y >= 110 && y < 146) {
             const float cx = width.x / 2;
             if (std::abs(x - (cx - 72)) < 22) return 1;
@@ -1383,7 +1182,41 @@ struct IslandWindow::Impl {
         }
         return y < 104 ? 0 : -1;
     }
+    void FileMenu() {
+        POINT at{};GetCursorPos(&at);
+        std::vector<LumeWidgetMenu::Action> actions;
+        actions.push_back({view.english?L"Copy all files":L"复制全部暂存文件",1,!heldFiles.empty()});
+        actions.push_back({view.english?L"Clear file tray":L"清空暂存（不删除文件）",2,!heldFiles.empty()});
+        for(std::size_t i=0;i<heldFiles.size();++i)actions.push_back({std::filesystem::path(heldFiles[i]).filename().wstring(),static_cast<UINT>(100+i),true});
+        if(heldFiles.empty())actions.push_back({view.english?L"Drop files onto the island":L"将文件拖到灵动岛即可暂存",0,false});
+        menuOpen=true;const auto command=LumeWidgetMenu::ShowItems(hwnd,at,actions);menuOpen=false;
+        if(command==2){heldFiles.clear();compactData.files=0;Activity();Animate();return;}
+        std::vector<std::wstring> chosen;
+        if(command==1)chosen=heldFiles;
+        else if(command>=100&&command<100+heldFiles.size())chosen.push_back(heldFiles[command-100]);
+        if(chosen.empty())return;
+        std::size_t chars=1;for(const auto& path:chosen)chars+=path.size()+1;
+        const auto memory=GlobalAlloc(GMEM_MOVEABLE|GMEM_ZEROINIT,sizeof(DROPFILES)+chars*sizeof(wchar_t));if(!memory)return;
+        auto* data=static_cast<DROPFILES*>(GlobalLock(memory));if(!data){GlobalFree(memory);return;}
+        data->pFiles=sizeof(DROPFILES);data->fWide=TRUE;
+        auto* dest=reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(data)+sizeof(DROPFILES));
+        for(const auto& path:chosen){std::copy(path.begin(),path.end(),dest);dest+=path.size()+1;}
+        GlobalUnlock(memory);
+        bool transferred=false;
+        if(OpenClipboard(hwnd)){if(EmptyClipboard())transferred=SetClipboardData(CF_HDROP,memory)!=nullptr;CloseClipboard();}
+        if(!transferred)GlobalFree(memory);
+        Activity();
+    }
     void Click(int hit) {
+        if(hit==600||hit==601){
+            using W=dynamic_island::CompactWidget;
+            const auto choice=hit==600?display.leftWidget:display.rightWidget;
+            if(choice==W::Files){FileMenu();return;}
+            if(choice>=W::Weather){if(act)act(dynamic_island::Action::WeatherSettings);return;}
+            if(choice>=W::Network){if(act)act(dynamic_island::Action::PerformanceSettings);return;}
+            if(todos.openCalendar)todos.openCalendar();
+            return;
+        }
         if (hit == 400 && notice && notice->target) {
             const auto target = notice->target;
             DismissNotice();
@@ -1400,7 +1233,7 @@ struct IslandWindow::Impl {
             }
             return;
         }
-        if (hit == 540) { reminders.clear(); SetPage(IslandPage::Calendar, -1); return; }
+        if (hit == 540) { reminders.clear(); Expand(false); Animate(); return; }
         if (hit >= 500 && hit < 520 + MaxReminders) {
             const auto index = static_cast<std::size_t>(hit >= 520 ? hit - 520 : hit - 500);
             if (index >= reminders.size()) return;
@@ -1413,23 +1246,6 @@ struct IslandWindow::Impl {
             return;
         }
         if (hit == 0) { Expand(!expanded); return; }
-        if (hit >= 10 && hit < 14) { StepMonth(hit == 10 ? -12 : hit == 11 ? -1 : hit == 12 ? 1 : 12); return; }
-        if (hit > 100 && hit < 140) {
-            // Selecting a day shows its todos, read from the same store as the calendar.
-            selected = {month.year, month.month, hit - 100};
-            SetPage(IslandPage::Todo);
-            return;
-        }
-        if (hit >= 200 && hit < 210) {
-            const auto index = static_cast<std::size_t>(hit - 200);
-            if (index < todoRows.size()) {
-                if (todoRows[index].projected) { if (todos.openCalendar) todos.openCalendar(); }
-                else if (todos.toggle) todos.toggle(todoRows[index]);
-            }
-            return;
-        }
-        if (hit == 300) { if (todos.openCalendar) todos.openCalendar(); return; }
-        if (hit == 560) { if (act) act(dynamic_island::Action::WeatherSettings); return; }
         if (hit == 299) return;
         if (!act) return;
         using dynamic_island::Action;
@@ -1446,23 +1262,9 @@ struct IslandWindow::Impl {
         if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return;
         menuOpen = true;
         KillTimer(hwnd, CollapseTimer);
-        const bool todoPage = expanded && page == IslandPage::Todo;
-        std::optional<IslandTodo> row;
-        if (todoPage && hoverHit >= 200 && hoverHit < 210 && static_cast<std::size_t>(hoverHit - 200) < todoRows.size())
-            row = todoRows[static_cast<std::size_t>(hoverHit - 200)];
-        const auto day = selected;
         const bool frosted = display.material == IslandMaterial::Frosted, none = display.material == IslandMaterial::None;
-        const UINT command = todoPage
-            ? LumeWidgetMenu::ShowIslandTodo(hwnd, at, row.has_value(), !todos.writable || todos.writable(), frosted, none)
-            : LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, expanded, display.messages);
-        if (command == 50 || command == 51 || command == 52) {
-            menuOpen = false;
-            Gdiplus::GdiplusShutdown(token);
-            if (command == 52) { if (todos.edit) todos.edit({}, day); }
-            else if (row && command == 50) { if (todos.edit) todos.edit(row->id, day); }
-            else if (row && todos.remove) todos.remove(*row);
-            return;
-        }
+        const UINT command = LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, expanded, display.messages,
+                                                       HasMedia() || !reminders.empty());
         menuOpen = false;
         Gdiplus::GdiplusShutdown(token);
         using dynamic_island::Action;
@@ -1504,12 +1306,16 @@ struct IslandWindow::Impl {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         }
         if (!self) return DefWindowProcW(hwnd, message, w, l);
+        if(message==desktop_level::Message()) {
+            self->CheckForeground();
+            if(!self->suppressed&&!window_layer::Suppressed(hwnd)) {
+                self->Animate();
+                if(!self->display.topmost&&IsWindowVisible(hwnd))desktop_level::Place(hwnd,false);
+            }
+            return 0;
+        }
         if (!self->display.topmost) {
             if (message == WM_WINDOWPOSCHANGING) desktop_level::Changing(l);
-            if (message == desktop_level::Message()) {
-                if (IsWindowVisible(hwnd)) desktop_level::Place(hwnd, false);
-                return 0;
-            }
         }
         static const UINT shellHook = RegisterWindowMessageW(L"SHELLHOOK");
         if (shellHook && message == shellHook) {
@@ -1517,12 +1323,33 @@ struct IslandWindow::Impl {
             return 0;
         }
         switch (message) {
+        case WM_DROPFILES: {
+            const auto drop=reinterpret_cast<HDROP>(w);
+            if(!self->suppressed&&!window_layer::Suppressed(hwnd)&&
+                (self->display.leftWidget==dynamic_island::CompactWidget::Files||self->display.rightWidget==dynamic_island::CompactWidget::Files)){
+                const UINT count=DragQueryFileW(drop,0xffffffff,nullptr,0);
+                for(UINT i=0;i<count&&i<64&&self->heldFiles.size()<32;++i){
+                    const UINT length=DragQueryFileW(drop,i,nullptr,0);if(!length||length>32760)continue;
+                    std::wstring path(length+1,L'\0');DragQueryFileW(drop,i,path.data(),length+1);path.resize(length);
+                    if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES)continue;
+                    if(std::find(self->heldFiles.begin(),self->heldFiles.end(),path)==self->heldFiles.end())self->heldFiles.push_back(std::move(path));
+                }
+                self->compactData.files=static_cast<unsigned>(self->heldFiles.size());self->Activity();self->Animate();
+            }
+            DragFinish(drop);return 0;
+        }
+        case WM_CANCELMODE:
+            if(window_layer::Suppressed(hwnd)) {
+                self->suppressed=true;
+                self->expanded=self->hoverExpanded=false;self->WatchOutside(false);
+                self->DetachGlass();self->clock.Pause();self->animating=false;
+            }
+            return 0;
         case ForegroundMessage: self->CheckForeground(); return 0;
         case PerformanceMessage:
             if (!self->performanceTarget.load()) return 0;  // a late sample after shutdown
             self->performanceSample = self->performance.Latest();
-            self->performanceFailed = !self->performanceSample && !self->performance.Running();
-            if (self->visible && self->expanded && self->page == IslandPage::Performance) self->Place();
+            if (self->visible && !self->expanded) self->Place();
             return 0;
         case FrameMessage:
             self->clock.Consumed();
@@ -1543,10 +1370,11 @@ struct IslandWindow::Impl {
         case WM_TIMER:
             switch (w) {
             case TickTimer:
+                self->compactData.Refresh();self->compactData.files=static_cast<unsigned>(self->heldFiles.size());
+                if(!self->expanded&&self->visible)self->Place();
                 self->CheckForeground();
                 if (const auto now = Today(); now != self->today) {
                     self->today = now;
-                    if (!self->expanded) self->month = {now.year, now.month, 1}, self->selected = now;
                     if (self->visible) self->Place();
                 }
                 // Other topmost windows may have covered the island.
@@ -1653,6 +1481,8 @@ void IslandWindow::Update(IslandPresentation view) {
     impl_->view = std::move(view);
     impl_->mediaAt = GetTickCount64();
     if (!impl_->hwnd) return;
+    if (had && !impl_->HasMedia() && impl_->expanded && impl_->page == IslandPage::Music)
+        impl_->Expand(false);
     impl_->Pulse();
     // A new track or a play/pause change briefly brings a tucked island out.
     if (oldId != impl_->view.media.id || oldPlaying != impl_->view.media.playing) impl_->Activity();
@@ -1663,11 +1493,10 @@ void IslandWindow::Expand(bool expanded) { impl_->Expand(expanded); }
 void IslandWindow::SetTodoSource(IslandTodoSource source) { impl_->todos = std::move(source); }
 void IslandWindow::SetWeather(dynamic_island::Weather value) {
     impl_->weather = std::move(value);
-    if (impl_->hwnd && impl_->visible && impl_->expanded) impl_->Place();
+    if (impl_->hwnd && impl_->visible && !impl_->expanded) impl_->Place();
 }
 void IslandWindow::RefreshTodos() {
-    if (impl_->page == IslandPage::Todo) impl_->LoadTodos();
-    if (impl_->hwnd && impl_->visible && impl_->expanded) impl_->Place();
+    if (impl_->hwnd && impl_->visible && impl_->expanded && impl_->page == IslandPage::Reminder) impl_->Place();
 }
 IslandPage IslandWindow::Page() const { return impl_->page; }
 bool IslandWindow::ShowNotice(const std::string& id, const std::wstring& title, const std::wstring& time) {
@@ -1704,6 +1533,9 @@ IslandPreviewFrame IslandWindow::Preview(const IslandDisplay& display,bool expan
         }
     }
     auto& p=*impl_->preview;
+    impl_->compactData.Refresh();impl_->compactData.files=static_cast<unsigned>(impl_->heldFiles.size());
+    impl_->SyncPerformance();impl_->performanceSample=impl_->performance.Latest();
+    p.compactData=impl_->compactData;p.weather=impl_->weather;p.performanceSample=impl_->performanceSample;p.view.english=impl_->view.english;
     if(!p.canvas)p.canvas=std::make_unique<WidgetCanvas>();
     p.display=display;p.dpi=96;p.page=IslandPage::Music;p.mediaAt=GetTickCount64();
     p.expanded=expanded;p.hovered=false;p.suppressed=false;p.pageFade.Snap(1);p.tuck.Snap(0);
@@ -1735,7 +1567,18 @@ IslandPreviewFrame IslandWindow::Preview(const IslandDisplay& display,bool expan
                     result.pixels.pixels.data()+static_cast<std::size_t>(y)*result.width);
     return result;
 }
-void IslandWindow::ReleasePreview(){impl_->preview.reset();}
+void IslandWindow::ReleasePreview(){impl_->preview.reset();impl_->SyncPerformance();}
+std::wstring IslandWindow::CompactReadings(){
+    impl_->compactData.Refresh();impl_->compactData.files=static_cast<unsigned>(impl_->heldFiles.size());
+    impl_->performanceSample=impl_->performance.Latest();
+    auto rows=nlohmann::json::array();
+    for(int i=1;i<static_cast<int>(dynamic_island::CompactWidget::Count);++i){
+        const auto value=ReadCompact(static_cast<dynamic_island::CompactWidget>(i),impl_->compactData,impl_->weather,impl_->performanceSample,impl_->view.english);
+        rows.push_back({{"id",i},{"text",text::Utf8(value.text)},{"secondary",text::Utf8(value.secondary)},
+            {"available",value.available},{"progress",value.progress?nlohmann::json(*value.progress):nlohmann::json(nullptr)}});
+    }
+    const auto result=rows.dump(-1,' ',true);return {result.begin(),result.end()};
+}
 void IslandWindow::Settle() { impl_->Settle(); }
 }
 namespace lume::platform::windows {

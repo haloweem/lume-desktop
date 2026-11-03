@@ -33,6 +33,8 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     }
     struct NumericCommand { std::wstring_view prefix; int minimum,maximum; PageCommand first; };
     constexpr NumericCommand numericCommands[] {
+        {L"v1|dynamicIsland|leftWidget|",0,30,PageCommand::IslandLeftWidgetFirst},
+        {L"v1|dynamicIsland|rightWidget|",0,30,PageCommand::IslandRightWidgetFirst},
         {L"v1|minimize|durationMs|",50,2000,PageCommand::MinimizeDurationFirst},
         {L"v1|minimize|unhideDurationMs|",0,5000,PageCommand::MinimizeUnhideDurationFirst},
         {L"v1|radial|shortcut|",1,4095,PageCommand::RadialShortcutFirst},

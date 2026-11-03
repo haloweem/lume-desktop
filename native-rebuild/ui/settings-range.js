@@ -29,8 +29,9 @@ export function syncSettingsRange(root,id,value,min,max,unit,disabled){
 }
 // One delegated controller covers every settings slider and its numeric input.
 export function mountSettingsRanges(root,onChange){
-  const sliderFor=target=>target.matches('[data-setting-slider]')?target:
-    target.matches('[data-setting-number]')?root.querySelector(`#${target.dataset.settingNumber}`):null;
+  const sliderFor=target=>target.closest('[data-interface-scale-control]')?null:
+    target.matches('[data-setting-slider]')?target:
+      target.matches('[data-setting-number]')?root.querySelector(`#${target.dataset.settingNumber}`):null;
   const busy=slider=>slider.disabled||slider.getAttribute('aria-disabled')==='true';
   const valid=(slider,value)=>integer(value,Number(slider.min),Number(slider.max));
   const restore=slider=>preview(slider,Number(slider.dataset.confirmed));

@@ -120,6 +120,7 @@ bool Service::Save(const Preferences& preferences, bool saveAutostart, bool rest
                 (initializeAutostart_ ||
                  decoded.preferences.language != preferences.language ||
                  decoded.preferences.balancedMode != preferences.balancedMode ||
+                 decoded.preferences.interfaceScale != preferences.interfaceScale ||
                  decoded.preferences.autostart != autostartIntent_)) {
                 Fail("preferences-save");
                 return false;
@@ -173,6 +174,13 @@ bool Service::SetBalancedMode(bool enabled) {
         Fail("balanced-rollback");
     }
     return false;
+}
+bool Service::SetInterfaceScale(int percent) {
+    if (!Ready()) return false;
+    if (percent < 50 || percent > 75) { Fail("interface-scale-invalid"); return false; }
+    auto next = state_.preferences;
+    next.interfaceScale = percent;
+    return Save(next);
 }
 bool Service::RollbackStartup(const StartupEntry& entry, const StartupEntry& expected) {
     try {

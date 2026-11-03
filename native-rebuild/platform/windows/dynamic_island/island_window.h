@@ -1,5 +1,6 @@
 #pragma once
 #include "core/dynamic_island/island_model.h"
+#include "core/dynamic_island/compact_widgets.h"
 #include "core/widget/widget_preferences.h"
 #include "core/calendar/calendar_date.h"
 #include "core/performance/performance_metrics.h"
@@ -21,11 +22,8 @@ struct IslandPresentation {
 };
 enum class IslandSize { Small, Standard, Large };
 enum class IslandShape { Standard, Capsule };
-// Pages of the expanded island; the mouse wheel moves between them.
-// Reminder lists the reminders shown in this session, once there is one.
-// Weather shows the weather component's current reading (it never fetches).
-// Performance reuses the widget's view with samples kept warm while enabled.
-enum class IslandPage { Music, Calendar, Todo, Reminder, Weather, Performance };
+// Only playback and active reminders have expanded views.
+enum class IslandPage { Music, Reminder };
 struct IslandTodo {
     std::string id;
     std::wstring title, time;
@@ -52,16 +50,18 @@ enum class IslandMaterial { None, Liquid, Frosted };
 // User-facing visibility and layering choices.
 struct IslandDisplay {
     bool hideFullscreen = true;  // Step aside for fullscreen apps, games and presentations.
-    bool topmost = true;         // Above windows; false keeps it in the desktop layer.
+    bool topmost = false;        // Explicitly chosen overlay above ordinary applications.
     bool hoverExpand = false;    // Expand after resting the pointer on the island.
     bool autoHide = true;        // Idle: tuck against the screen top, leaving a sliver to hover.
     bool messages = true;        // Show new QQ / WeChat / ... messages (their taskbar button flashing).
     IslandSize size = IslandSize::Standard;
     IslandMaterial material = IslandMaterial::None;
     IslandShape shape = IslandShape::Capsule;
+    dynamic_island::CompactWidget leftWidget=dynamic_island::CompactWidget::None;
+    dynamic_island::CompactWidget rightWidget=dynamic_island::CompactWidget::None;
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
-    return a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
+    return a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.size == b.size && a.material == b.material &&
            a.autoHide == b.autoHide && a.messages == b.messages && a.shape == b.shape;
 }
@@ -91,7 +91,7 @@ public:
     // Applies new display options; recreates the window when layering changes.
     bool SetDisplay(const IslandDisplay&);
     void Update(IslandPresentation);
-    // Weather page content; the host reads it from the weather component.
+    // Shared weather readings for the compact widgets.
     void SetWeather(dynamic_island::Weather);
     void SetTodoSource(IslandTodoSource);
     // Shows a todo reminder in the island for a few seconds; false when the
@@ -111,8 +111,10 @@ public:
     // Same drawing code, isolated canvas: no HWND, timers, hooks or live state changes.
     IslandPreviewFrame Preview(const IslandDisplay&,bool expanded,float advanceSeconds=0);
     void ReleasePreview();
-    // Latest sample used by the performance page, including while collapsed.
+    // Latest sample used by the compact widgets.
     std::optional<performance::Snapshot> PerformanceReading() const;
+    // Real current readings for the chooser, never sample/demo values.
+    std::wstring CompactReadings();
     // Verification: completes running animations immediately.
     void Settle();
 private:

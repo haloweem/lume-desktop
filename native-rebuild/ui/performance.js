@@ -67,7 +67,7 @@ function resourceOverview(snapshot) {
     `</section>`;
 }
 export function performanceStatus(state) {
-  if(state.performanceStatus==='saving')return t('正在保存...','Saving...');
+  if(state.performanceStatus==='saving')return '';
   if(state.performanceStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.performanceStatus==='unavailable')return t('桌面宿主未连接，性能设置未保存','Desktop host disconnected. Performance settings were not saved.');
   if(state.performanceStatus==='error')return {

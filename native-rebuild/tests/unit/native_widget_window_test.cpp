@@ -6,6 +6,7 @@
 #include <iostream>
 #include <mutex>
 #include <vector>
+#include <thread>
 #include "widget_presentation_capture.h"
 #include "platform/windows/widget_ui/widget_snap_protocol.h"
 #include "platform/windows/widget_ui/desktop_level.h"
@@ -449,6 +450,7 @@ int DesktopLevelRegression(){
         0,0,1,1,nullptr,nullptr,type.hInstance,nullptr);
     Expect(host&&CreateWindowExW(0,L"SHELLDLL_DefView",L"",WS_CHILD,0,0,1,1,host,nullptr,type.hInstance,nullptr),
         "create stand-in desktop host");
+    ShowWindow(host,SW_SHOWNOACTIVATE);
     Expect(desktop_level::Host()==host,"stand-in is the topmost desktop host");
     const lume::widget::Limits limits{340,216,320,204,720,720};
     NativeWidgetWindow widget(GetModuleHandleW(nullptr),L"Desktop level",limits,{});
@@ -467,10 +469,11 @@ int DesktopLevelRegression(){
     const bool keptAboveGlass=Below(glass,widget.Handle());
     DestroyWindow(glass);
     if(!keptAboveGlass){std::cerr<<"FAIL: restack keeps a widget above its own glass surface\n";widget.Stop();DestroyWindow(host);return 1;}
-    SetWindowPos(host,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    SetWindowPos(host,GetWindow(widget.Handle(),GW_HWNDPREV),0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     Expect(Below(widget.Handle(),host),"fixture stacks a new host above the widget");
     desktop_level::Watcher watcher;
     Expect(watcher.Start(GetModuleHandleW(nullptr)),"desktop level watcher starts");
+    desktop_level::Watcher::ForegroundChanged(host);
     MSG message{};
     for(const auto deadline=GetTickCount64()+1000;GetTickCount64()<deadline&&!Below(host,widget.Handle());){
         while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE))DispatchMessageW(&message);
@@ -575,7 +578,7 @@ int DeselectRegression(){
     auto pump=[&](unsigned ms){for(const auto end=GetTickCount64()+ms;GetTickCount64()<end;){while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE))DispatchMessageW(&message);Sleep(10);}};
     pump(200);
     desktop_level::Select(widget.Handle());pump(100);
-    Expect(Below(work,widget.Handle()),"a clicked widget is lifted above the application");
+    Expect(Below(widget.Handle(),work),"a clicked widget stays below the application");
     ShowWindow(other,SW_SHOW);SetForegroundWindow(other);pump(600);
     // Without foreground rights in a test session, deliver the change the hook would see.
     if(GetForegroundWindow()!=other){desktop_level::Watcher::ForegroundChanged(other);pump(300);}
@@ -694,13 +697,13 @@ int PlacementRefusalRegression(){
     const bool placed=desktop_level::RequestPlacement(widget,unusable,flags,host);
     const bool fellBack=placed&&IsWindowVisible(widget);
     ShowWindow(widget,SW_HIDE);
-    // With no usable anchor at all it must still appear, not stay hidden.
+    // With no safe anchor, stay hidden instead of jumping above an application.
     const bool ordered=desktop_level::RequestPlacement(widget,unusable,flags,nullptr);
-    const bool shownAnyway=!ordered&&IsWindowVisible(widget);
+    const bool safelyHidden=!ordered&&!IsWindowVisible(widget);
     DestroyWindow(widget);DestroyWindow(host);
     if(!fellBack)std::cerr<<"FAIL: a refused anchor keeps a desktop widget hidden\n";
-    if(!shownAnyway)std::cerr<<"FAIL: placement never shows a widget when no anchor is usable\n";
-    return fellBack&&shownAnyway?0:1;
+    if(!safelyHidden)std::cerr<<"FAIL: placement exposes a widget without a safe anchor\n";
+    return fellBack&&safelyHidden?0:1;
 }
 int main(int argc,char** argv){
     const auto initialAwareness=GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
@@ -712,8 +715,14 @@ int main(int argc,char** argv){
             <<" after="<<GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext())<<'\n';
     Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM");
     if(argc==2&&std::string(argv[1])=="--desktop-level"){
-        const int result=DesktopLevelRegression()|PlacementRefusalRegression()|GlassPairRegression()|ManagerCeilingRegression()|DeselectRegression()|
-            BandRegression()|SplitHitRegression();CoUninitialize();
+        const auto name=L"LumeWidgetLayerTest-"+std::to_wstring(GetCurrentProcessId());
+        HDESK desktop=CreateDesktopW(name.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);Expect(desktop!=nullptr,"isolated layer desktop");
+        int result=1;std::thread run([&]{Expect(SetThreadDesktop(desktop)!=FALSE,"bind isolated layer desktop");
+            CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+            window_layer::contextReader=[] { return window_layer::Context{}; };
+            result=DesktopLevelRegression()|PlacementRefusalRegression()|GlassPairRegression()|ManagerCeilingRegression()|DeselectRegression()|
+                BandRegression()|SplitHitRegression();window_layer::contextReader={};CoUninitialize();});
+        run.join();CloseDesktop(desktop);CoUninitialize();
         if(!result)std::cout<<"desktop level regression passed\n";
         return result;
     }

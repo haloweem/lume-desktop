@@ -152,10 +152,10 @@ const islandPreview=createIslandPreviewController({
   onFrame:message=>dispatch({type:'host',message}),
   onTimeout:()=>{
     if(state.dynamicIslandPreview?.image)return;
-    const {shape,size,material}=state.dynamicIsland;
+    const {shape,size,material,leftWidget,rightWidget}=state.dynamicIsland;
     dispatch({type:'host',message:{version:1,type:'dynamicIsland-preview',
       mode:state.dynamicIslandPreviewMode||'compact',
-      shape,size,material,width:0,height:0,image:'',error:'render'}});
+      shape,size,material,leftWidget,rightWidget,readings:[],width:0,height:0,image:'',error:'render'}});
   },
 });
 const visibilityCleanup=createVisibilityCleanup(
@@ -179,6 +179,7 @@ const unmountSelect=mountSettingsSelect(content,(id,value)=>{
   if(id==='dock-material') request('dock','material',value);
   if(id==='dynamicIsland-size') request('dynamicIsland','size',value);
   if(id==='dynamicIsland-material') request('dynamicIsland','material',value);
+  if(id==='dynamicIsland-layer'&&['desktop','above'].includes(value))request('dynamicIsland','topmost',value==='above');
   if(id==='dock-icon-scale') request('dock','iconScale',Number(value));
   if(id==='dock-position') request('dock','position',Number(value));
   if(id==='dock-bottom-offset') request('dock','bottomOffset',Number(value));
@@ -289,7 +290,7 @@ function loadMusicRuntime() {
         bridge,content,showNotice,translate:t,
         syncDesktopControls:syncMusicDesktopState,onExitFullscreen:exitMusicFullscreen,
         onImmersiveChange:value=>{musicImmersive=value;syncTitlebarImmersive();},
-        initialDesktopState:musicDesktopState,
+        initialDesktopState:musicDesktopState,initialViewState:musicViewState,
       });
       runtime.setCloseAndNavigate(()=>dispatch({type:'music-leave'}));
       return runtime;
@@ -299,6 +300,7 @@ function loadMusicRuntime() {
 }
 function openMusicDesktopSettings() {
   musicViewState={...musicViewState,screen:'desktop'};
+  musicRuntime?.setViewState(musicViewState);
   dispatch({type:'navigate',view:'music'});
 }
 function openMusicPage() {
@@ -365,7 +367,7 @@ function dispatch(event) {
   if((event.type==='host'&&event.message.type==='dynamicIsland-state') ||
      (['request','unavailable'].includes(event.type)&&event.scope==='dynamicIsland')) {
     syncIslandControls(content,state);
-    if(['shape','size','material'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
+    if(['shape','size','material','leftWidget','rightWidget'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
     if(['error','unavailable','recovered'].includes(state.dynamicIslandStatus) &&
       !content.querySelector('[data-settings-scope="dynamicIsland"]'))showNotice(islandStatus(state));
     return;
@@ -961,6 +963,17 @@ content.addEventListener("click", (event) => {
     if (!state.notes.pending && bridge.notes("setActive", {value:!state.notes.enabled})) {
       state = {...state, notes:{...state.notes, pending:true}};
       syncNotesControls();
+    }
+  } else if(button.dataset.islandCompactSide){
+    state={...state,islandCompactSide:button.dataset.islandCompactSide};syncIslandControls(content,state);
+  } else if(button.hasAttribute('data-island-compact-clear')){
+    const side=state.islandCompactSide==='right'?'right':'left';
+    request('dynamicIsland',side+'Widget',0);
+  } else if(button.dataset.islandCompactWidget!==undefined){
+    const side=state.islandCompactSide==='right'?'right':'left',id=Number(button.dataset.islandCompactWidget);
+    if(Number.isInteger(id)&&id>=0&&id<=30&&state.dynamicIsland[side+'Widget']!==id){
+      state={...state,dynamicIslandPreviewMode:'compact'};
+      request('dynamicIsland',side+'Widget',id);islandPreview.refresh();
     }
   } else if (button.dataset.islandPreference) {
     const key=button.dataset.islandPreference;

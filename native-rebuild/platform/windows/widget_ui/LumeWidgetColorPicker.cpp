@@ -1,4 +1,5 @@
 #include "StdAfx.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/widget_ui/ui_font.h"
 #include "platform/windows/widget_ui/direct_write_text.h"
 #include "platform/windows/widget_ui/direct_write_edit.h"
@@ -747,6 +748,7 @@ bool LumeWidgetColorPicker::Show(HWND owner, LumeWidgetColor& color, COLORREF de
 		x, y, width, height,
 		owner, nullptr, GetModuleHandle(nullptr), &state);
 	if (!state.window) return false;
+    lume::platform::windows::window_layer::Register(state.window,lume::platform::windows::window_layer::Kind::Editor,owner);
 	const bool restoreOwner = owner && IsWindow(owner) && IsWindowEnabled(owner);
 	if (restoreOwner)
 	{

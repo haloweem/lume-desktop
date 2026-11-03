@@ -45,7 +45,7 @@ export function validDockState(message) {
 
 export function dockStatus(state) {
   if(state.dockStatus==='loading')return t('正在读取设置...','Loading settings...');
-  if(state.dockStatus==='saving')return t('正在保存...','Saving...');
+  if(state.dockStatus==='saving')return '';
   if(state.dockStatus==='unavailable')return t('桌面宿主未连接，Dock 设置未保存','Desktop host disconnected. Dock settings were not saved.');
   if(state.dockStatus==='error')return {
     runtime:t('Dock 启动失败，请检查安装文件','Could not start the Dock. Check the installation files.'),

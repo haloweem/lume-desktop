@@ -7,7 +7,7 @@ export const weatherCities=[['auto','自动定位'],['beijing','北京'],['shang
   ['shenzhen','深圳'],['hangzhou','杭州'],['chengdu','成都'],['wuhan','武汉'],['nanjing','南京']];
 const cityOptions=()=>weatherCities.map(([key,label])=>[key,key==='auto'?t('自动定位','Automatic location'):label]);
 export function weatherStatus(state) {
-  if(state.weatherStatus==='saving')return t('正在保存...','Saving...');
+  if(state.weatherStatus==='saving')return '';
   if(state.weatherStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.weatherStatus==='unavailable')return t('桌面宿主未连接，天气设置未保存','Desktop host disconnected. Weather settings were not saved.');
   if(state.weatherStatus==='error')return {
@@ -47,8 +47,7 @@ export function weatherPage(state,tab='settings') {
     locationHint(state)+
     `<div class="reset-row"><button class="reset" data-action="weather-reset" ${disabled?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<div class="settings-details"><h3>${t('功能说明','About this widget')}</h3><p>${h(description)}</p><p>${t('组件可拖动、调整大小或锁定，位置随拖动保存。右键菜单或 F5 可刷新天气。退出 Lume 时组件一同关闭。','Drag, resize or lock the widget. Its position is saved when dragged. Refresh weather with the context menu or F5. The widget closes when you exit Lume.')}</p>`+
-    `<h3>${t('数据来源与许可','Data sources and licenses')}</h3><p>${t('优先读取和风天气公开页面的实况及预报，数据权利归原提供方所有。','Current conditions and forecasts are primarily read from public QWeather pages. Data rights belong to the original provider.')}</p>`+
-    `<p>${t('备用预报来自挪威气象局（MET Norway），依据署名 4.0 国际许可（CC BY 4.0）使用，经过单位换算与逐小时汇总。当前来源和时间可在天气概览的提示中查看。','Fallback forecasts are provided by MET Norway under CC BY 4.0, with unit conversions and hourly aggregation. The current source and time appear in the weather overview tooltip.')}</p></div>`;
+    `</div>`;
   return settingsFrame({title:t('天气','Weather'),description,tab,body,status:weatherStatus(state),error:state.weatherStatus==='error',scope:'weather'});
 }
 export function syncWeatherControls(root,state) {

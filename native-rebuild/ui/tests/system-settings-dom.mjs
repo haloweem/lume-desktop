@@ -58,7 +58,8 @@ try {
   assert.match(status(),/已应用/);
   click('[data-action="taskbar-autoHide"]');
   assert.equal(commands.at(-1),'v1|taskbar|autoHide|false');
-  assert.match(status(),/正在应用/);
+  assert.equal(status(),'');
+  assert.equal(find('.status').hidden,true);
   assert.doesNotMatch(status(),/已应用/);
   assert.equal(find('[data-action="taskbar-autoHide"]').getAttribute('aria-checked'),'false');
   taskbar({revision:2,enabled:true,error:'apply-auto-hide',pendingRecovery:true});

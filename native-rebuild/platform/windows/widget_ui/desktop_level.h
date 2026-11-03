@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "platform/windows/lume_window_ids.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include <cwchar>
 
 namespace lume::platform::windows::desktop_level {
@@ -138,6 +139,24 @@ inline HWND ManagerCeiling() {
         if (IsWindowVisible(below) && GetPropW(below, lume::window_ids::GlassSurfaceOwnerProp) == manager) result = below;
     return result;
 }
+// Every normal application is a ceiling, including one Explorer temporarily
+// moved below the desktop host. Never exempt an entire process: manager windows
+// in this process must still cover its desktop widgets.
+inline HWND ApplicationCeiling(HWND host) {
+    struct Scan { HWND host, last; bool desktop; } scan{host, nullptr, DesktopForeground(host)};
+    EnumWindows([](HWND window, LPARAM data) -> BOOL {
+        auto& s = *reinterpret_cast<Scan*>(data);
+        if (s.desktop && window == s.host) return FALSE;
+        if (window == s.host || !IsWindowVisible(window) || IsIconic(window) || InDesktopLayer(window) ||
+            window_layer::DesktopFamily(window) || window_layer::ShellDesktop(window) ||
+            (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST)) return TRUE;
+        DWORD cloak = 0; RECT bounds{};
+        if (!GetWindowRect(window, &bounds) || IsRectEmpty(&bounds) ||
+            (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloak, sizeof(cloak))) && cloak)) return TRUE;
+        s.last = window; return TRUE;
+    }, reinterpret_cast<LPARAM>(&scan));
+    return scan.last;
+}
 // Directly below a widget: its display window, then its glass.
 inline void KeepOwnedGlassBelow(HWND owner) {
     struct Search { HWND owner, glass, display; } search{owner, nullptr, nullptr};
@@ -161,9 +180,7 @@ inline void KeepOwnedGlassBelow(HWND owner) {
 }
 // Set while Place() restacks, so Changing() lets that move through.
 inline thread_local HWND placingWindow = nullptr;
-// Only a direct pointer activation may raise a desktop widget. Background
-// refreshes and Explorer restacks preserve that choice until the manager is
-// selected again; they never elect a new foreground window.
+// Retained for existing callers; selection never grants cross-application order.
 inline thread_local HWND selectedWidget = nullptr;
 inline void RequestAll();
 // Ignore implicit activation/owned-popup reorders. Place() and a direct
@@ -188,24 +205,11 @@ struct PlacementScope {
 };
 // raise: move to the top of the window's band even when it already sits in it.
 inline void Place(HWND window, bool show, bool raise = false);
-// A direct click on a widget. A widget an application covers comes forward
-// over it until the user moves on; otherwise it only rises to the top of its
-// band, so it never lands on the icon organizer or the Dock it overlaps.
+// A click only changes order inside the desktop band, never above applications.
 inline void Select(HWND window) {
     if (!IsDesktopWidget(window) || !IsWindowVisible(window) || AtBottom(window)) return;
-    if (selectedWidget != window && !CoveredByApplication(window)) {
-        const bool released = selectedWidget != nullptr;
-        selectedWidget = nullptr;
-        Place(window, false, true);
-        if (released) RequestAll();
-        return;
-    }
     selectedWidget = window;
-    PlacementScope scope(window);
-    SetWindowPos(window, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    KeepOwnedGlassBelow(window);
-    RequestAll();
+    Place(window, false, true);
 }
 // A click on a Lume desktop surface that is not a widget (the Dock): a widget
 // lifted over an application returns to the desktop layer.
@@ -224,42 +228,37 @@ inline void Forget(HWND window) {
 // Placement is a z-order request. Windows refuses it when the insert-after
 // window belongs to a higher-integrity or protected process (a system overlay
 // sitting right above the desktop), and the refusal covers the whole call --
-// including its show -- with ERROR_ACCESS_DENIED. Walk up to an anchor we may
-// use, fall back to the desktop host, and then show the window without a
-// z-order request: whether a widget appears must never depend on a refused
-// z-order. Returns whether the requested order was applied.
+// including its show -- with ERROR_ACCESS_DENIED. Fall back to the desktop
+// host only. If that also fails, hide instead of trying higher applications.
 inline bool RequestPlacement(HWND window, HWND anchor, UINT flags, HWND host) {
+    if(anchor&&anchor!=HWND_BOTTOM&&anchor!=HWND_TOPMOST&&anchor!=HWND_NOTOPMOST&&
+       (GetWindowLongPtrW(anchor,GWL_EXSTYLE)&WS_EX_TOPMOST))anchor=HWND_TOP;
     if (SetWindowPos(window, anchor, 0, 0, 0, 0, flags)) return true;
     // The desktop host keeps the window in its own layer (below applications),
     // so it is the correct fallback; walking up would insert the widget under
     // some application and leave it above the ones below that.
     if (host && host != anchor && SetWindowPos(window, host, 0, 0, 0, 0, flags)) return true;
-    const bool pseudo = !anchor || anchor == HWND_BOTTOM || anchor == HWND_TOPMOST ||
-                        anchor == HWND_NOTOPMOST;
-    if (!pseudo) {
-        for (HWND candidate = GetWindow(anchor, GW_HWNDPREV); candidate;
-             candidate = GetWindow(candidate, GW_HWNDPREV))
-            if (SetWindowPos(window, candidate, 0, 0, 0, 0, flags)) return true;
-    }
-    if (flags & SWP_SHOWWINDOW) ShowWindow(window, SW_SHOWNA);
+    // Failure cannot grant permission to rise above a protected/system anchor.
+    SetWindowPos(window, HWND_BOTTOM, 0, 0, 0, 0, (flags & ~SWP_SHOWWINDOW) | SWP_HIDEWINDOW);
     return false;
 }
 inline void Place(HWND window, bool show, bool raise) {
     PlacementScope scope(window);
+    if(show&&window_layer::Suppressed(window))window_layer::WantVisible(window);
+    if (window_layer::Suppressed(window)) return;
     // Calendar/weather own even-hidden topmost tooltip windows. Windows must
     // not reorder that owner group as a side effect of moving a glass/widget.
     const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
                        (show ? SWP_SHOWWINDOW : 0);
     const HWND host = Host();
-    HWND ceiling = ManagerCeiling();
+    if (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST)
+        SetWindowPos(window, HWND_BOTTOM, 0, 0, 0, 0, flags & ~SWP_SHOWWINDOW);
+    HWND ceiling = ApplicationCeiling(host);
+    if(selectedWidget && selectedWidget!=window && IsWindowVisible(selectedWidget) &&
+       BandOf(selectedWidget)==BandOf(window) && (!ceiling || !Above(selectedWidget,ceiling)))ceiling=selectedWidget;
     // Show Desktop raises Explorer above still-visible application windows.
     // Those covered windows are no longer a ceiling until an app is restored.
     if (DesktopForeground(host) && Above(host, ceiling)) ceiling = nullptr;
-    if (selectedWidget == window) {
-        if (show) RequestPlacement(window, nullptr, flags | SWP_NOZORDER, host);
-        KeepOwnedGlassBelow(window);
-        return;
-    }
     if (!host) { RequestPlacement(window, HWND_BOTTOM, flags, nullptr); KeepOwnedGlassBelow(window); return; }
     if (AtBottom(window)) {
         // Right below the lowest of Lume's other desktop windows (Dock, widgets,
@@ -282,16 +281,17 @@ inline void Place(HWND window, bool show, bool raise) {
             if ((GetWindowLongW(above, GWL_STYLE) & WS_CAPTION) == WS_CAPTION) break;
         }
         if (!anchor) anchor = first;
+        if (ceiling && (!anchor || Above(anchor, ceiling))) anchor = ceiling;
         // Already directly below the anchor: leave the order alone.
         HWND below = anchor ? GetWindow(anchor, GW_HWNDNEXT) : nullptr;
         while (below && below != window && !IsWindowVisible(below)) below = GetWindow(below, GW_HWNDNEXT);
         if (!anchor || below == window) {
-            if (show) ShowWindow(window, SW_SHOWNA);
+            if (show) RequestPlacement(window, nullptr, flags | SWP_NOZORDER, host);
             KeepOwnedGlassBelow(window);
             return;
         }
         // Never fall back to a higher anchor: keep the order rather than rise.
-        if (!SetWindowPos(window, anchor, 0, 0, 0, 0, flags) && show) ShowWindow(window, SW_SHOWNA);
+        RequestPlacement(window, anchor, flags, host);
         KeepOwnedGlassBelow(window);
         return;
     }
@@ -312,14 +312,14 @@ inline void Place(HWND window, bool show, bool raise) {
             const HWND anchor = ceiling ? ceiling : GetWindow(window, GW_HWNDPREV);
             RequestPlacement(window, anchor, flags | SWP_SHOWWINDOW, host);
         } else if (show) {
-            ShowWindow(window, SW_SHOWNA);
+            RequestPlacement(window, nullptr, flags | SWP_NOZORDER, host);
         }
         KeepOwnedGlassBelow(window);
         return;
     }
     // Below a higher band (the organizer, the Dock): directly under its
     // lowest window. Inserting after one of our own windows cannot be refused.
-    if (const HWND upper = BandCeiling(window, host)) {
+    if (const HWND upper = BandCeiling(window, host); upper && (!ceiling || !Above(upper, ceiling))) {
         RequestPlacement(window, upper, flags, host);
         KeepOwnedGlassBelow(window);
         return;
@@ -333,8 +333,7 @@ inline void Place(HWND window, bool show, bool raise) {
     // foreground and Windows ignores HWND_TOP from a background process, so
     // the widget would stay under the raised desktop. Inserting after the
     // window directly above the host is still honoured.
-    const bool desktopShown = band && after && DesktopForeground(host);
-    RequestPlacement(window, band && !desktopShown ? HWND_TOP : after, flags, host);
+    RequestPlacement(window, band ? HWND_TOP : after, flags, host);
     KeepOwnedGlassBelow(window);
 }
 inline void RequestAll() {
@@ -367,24 +366,35 @@ public:
                                   0, 0, 0, 0, nullptr, nullptr, instance, this);
         if (!window_) return false;
         current_ = this;
+        window_layer::applicationCeiling=[] { return ApplicationCeiling(Host()); };
+        window_layer::Start();
+        SetTimer(window_, PolicyTimer, 250, nullptr);
         Hook();
         // A clicked widget is lifted above other windows. Once the user moves on
         // to anything else, it returns to the desktop layer; otherwise closing or
         // minimizing that other window would reveal the widget over the user's work.
         foregroundHook_ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, Foreground, 0, 0,
                                           WINEVENT_OUTOFCONTEXT);
+        locationHook_ = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, nullptr, Location, 0, 0,
+                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
         Sweep();
         return true;
     }
     void Stop() {
+        if (current_ == this) window_layer::Stop();
         foregroundDesktop = nullptr;
         if (hook_) { UnhookWinEvent(hook_); hook_ = nullptr; }
         if (foregroundHook_) { UnhookWinEvent(foregroundHook_); foregroundHook_ = nullptr; }
+        if (locationHook_) { UnhookWinEvent(locationHook_); locationHook_ = nullptr; }
         if (window_) { DestroyWindow(window_); window_ = nullptr; }
         if (current_ == this) current_ = nullptr;
     }
 private:
-    static constexpr UINT_PTR SweepTimer = 1, SettleTimer = 2, DesktopTimer = 3;
+    static constexpr UINT_PTR SweepTimer = 1, SettleTimer = 2, DesktopTimer = 3, PolicyTimer = 4;
+    static void CALLBACK Location(HWINEVENTHOOK, DWORD, HWND window, LONG object, LONG, DWORD, DWORD) {
+        if (current_ && !current_->policyPending_ && object == OBJID_WINDOW && window == GetForegroundWindow())
+            current_->policyPending_=PostMessageW(current_->window_, WM_APP + 1, 0, 0)!=FALSE;
+    }
     // While the desktop is in front, Explorer raises it again without a new
     // foreground change: after Win+D's animation and on every click on the
     // desktop (any monitor). Widgets restack this often until it leaves.
@@ -421,6 +431,7 @@ private:
 public:
     // Called for every foreground change; public for tests.
     static void ForegroundChanged(HWND window) {
+        window_layer::Refresh();
         const bool wasDesktop = foregroundDesktop != nullptr;
         const HWND host = Host();
         foregroundDesktop = IsDesktopForegroundWindow(window, host) ? host : nullptr;
@@ -453,6 +464,10 @@ private:
             SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         }
         if (!self) return DefWindowProcW(window, message, w, l);
+        if (message == WM_APP + 1 || (message == WM_TIMER && w == PolicyTimer)) {
+            self->policyPending_=false;
+            window_layer::Refresh(); return 0;
+        }
         if (message == self->taskbarCreated_ && self->taskbarCreated_) {
             self->Hook(); self->Sweep(); return 0;
         }
@@ -475,9 +490,10 @@ private:
     }
     static inline Watcher* current_ = nullptr;
     HWND window_ = nullptr;
-    HWINEVENTHOOK hook_ = nullptr, foregroundHook_ = nullptr;
+    HWINEVENTHOOK hook_ = nullptr, foregroundHook_ = nullptr, locationHook_ = nullptr;
     DWORD hookProcess_ = 0;
     UINT taskbarCreated_ = 0;
     unsigned sweeps_ = 0;
+    bool policyPending_ = false;
 };
 }  // namespace lume::platform::windows::desktop_level

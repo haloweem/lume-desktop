@@ -13,6 +13,19 @@ const settings = (fields = {}) => ({
   update: { status: "idle", version: "", progress: 0 }, ...fields,
 });
 
+test('interface scale permits only 50-75 integer previews and saves, with legacy default compatibility',()=>{
+  const sent=[];const bridge=createBridge({postMessage:message=>sent.push(message)});
+  for(const action of ['interfaceScale','previewInterfaceScale']){
+    for(const value of [50,62,75])assert.equal(bridge.applicationSettings(action,{value}),true);
+    for(const value of [49,76,62.5,'60',true,null,Infinity])
+      assert.equal(bridge.applicationSettings(action,{value}),false);
+  }
+  assert.equal(sent.length,6);
+  assert.equal(validHostMessage(settings()),true);
+  for(const interfaceScale of [50,62,75])assert.equal(validHostMessage(settings({interfaceScale})),true);
+  for(const interfaceScale of [49,76,62.5,'60',null])assert.equal(validHostMessage(settings({interfaceScale})),false);
+});
+
 test("in-app update notices permit only classified public metadata", () => {
   const notice = {version:1,type:"app-update-notice",kind:"incompatible",updateVersion:"1.0.3",
     error:"update-incompatible",manual:false};

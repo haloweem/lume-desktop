@@ -1,4 +1,5 @@
 #include "platform/windows/radial/radial_window.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/radial/radial_shortcut.h"
 #include "platform/windows/widget_ui/LumeWidgetMenu.h"
@@ -58,6 +59,7 @@ struct RadialWindow::Impl {
         if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
         window=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,ClassName,L"Lume \u8f6e\u76d8\u83dc\u5355",
             WS_POPUP,0,0,320,320,nullptr,nullptr,instance,this);
+        if(window)window_layer::Register(window,window_layer::Kind::Popup);
         return window!=nullptr;
     }
     bool Region(){

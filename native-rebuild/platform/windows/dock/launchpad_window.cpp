@@ -1,4 +1,5 @@
 #include "platform/windows/dock/launchpad_window.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/dock/dock_spring.h"
@@ -679,6 +680,7 @@ struct LaunchpadWindow::Impl {
         ghost = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
                                 DragGhostClass, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, nullptr);
         if (!ghost) return false;
+        window_layer::Register(ghost,window_layer::Kind::Popup,window);
         ghostCanvas = std::make_unique<WidgetCanvas>();
         return true;
     }
@@ -714,7 +716,10 @@ struct LaunchpadWindow::Impl {
         if (!ghostPlaced) {
             if (!ghostSurface.Present(ghost, ghostBitmap, &origin)) return;
             ghostPlaced = true;
-            ShowWindow(ghost, SW_SHOWNOACTIVATE);
+            // Registration clears legacy TOPMOST. Lift the drag image above
+            // its active launchpad within the ordinary application band.
+            SetWindowPos(ghost,HWND_TOP,0,0,0,0,
+                SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
             return;
         }
         // Moving an already presented layered window reuses its pixels; a
@@ -744,6 +749,7 @@ struct LaunchpadWindow::Impl {
         window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, wc.lpszClassName, compact ? L"Lume 收纳" : L"Lume 启动台", WS_POPUP,
                                  0, 0, 1, 1, nullptr, nullptr, instance, this);
         if (!window) return false;
+        window_layer::Register(window,window_layer::Kind::Popup);
         // Drop files onto a collection tile, or onto the flat grid to add them.
         // The target is attached to this window only; it never touches Explorer.
         dropTarget.Attach(window,
@@ -1769,6 +1775,7 @@ struct LaunchpadWindow::Impl {
         search = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, L"EDIT", L"", WS_POPUP | ES_AUTOHSCROLL, 0, 0, 1, 1,
                                  window, nullptr, instance, nullptr);
         if (!search) return false;
+        window_layer::Register(search,window_layer::Kind::Popup,window);
         if (!direct_write_edit::Attach(search)) { DestroyWindow(search); search = nullptr; return false; }
         SetPropW(search, L"LumeLaunchpadSearch", reinterpret_cast<HANDLE>(this));
         searchProcedure = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(search, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(SearchProcedure)));
@@ -2044,6 +2051,14 @@ struct LaunchpadWindow::Impl {
         }
         if (!self) return DefWindowProcW(hwnd, message, w, l);
         switch (message) {
+        case WM_CANCELMODE:
+            if(window_layer::Suppressed(hwnd)) {
+                self->HideGhost();self->FreezeSearch();self->pressed=self->dragged=self->drop=-1;
+                self->rewarm=false;self->Finish();self->material.Detach();
+                if(self->ports.visibility)self->ports.visibility();
+                return 0;
+            }
+            break;
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT paint{}; BeginPaint(hwnd, &paint); EndPaint(hwnd, &paint); return 0; }
         case WM_ACTIVATE:

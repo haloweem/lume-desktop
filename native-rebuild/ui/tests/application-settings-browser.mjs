@@ -12,14 +12,22 @@ const {chromium}=createRequire(import.meta.url)(path.resolve(process.argv[2]));
 const ui=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const output=path.resolve(process.argv[3]);
 const artifacts=path.resolve(ui,'../../build-artifacts');
+const nativePreviewPath=path.join(artifacts,'native-rebuild/release/verification/dynamic-island/compact-widgets-scene.png');
+const nativePreview=fs.existsSync(nativePreviewPath)?`data:image/png;base64,${fs.readFileSync(nativePreviewPath).toString('base64')}`:'';
+const nativeReadingsPath=path.join(artifacts,'native-rebuild/release/verification/dynamic-island/compact-readings.json');
+const nativeReadings=fs.existsSync(nativeReadingsPath)?JSON.parse(fs.readFileSync(nativeReadingsPath,'utf8')):[];
 assert.ok(output.startsWith(artifacts+path.sep),'测试产物仅写项目 build-artifacts');
 fs.mkdirSync(output,{recursive:true});
 function installNativeFixture(initialSettings={}) {
   const listeners=new Set(),commands=[];
+  const {nativePreview='',nativeReadings=[],...settingsOverrides}=initialSettings;
   let settings={version:1,type:'app-settings-state',revision:1,language:'zh-CN',balancedMode:true,autostart:false,
-    busy:false,error:'',update:{status:'idle',version:'',progress:0},...initialSettings};
+    busy:false,error:'',update:{status:'idle',version:'',progress:0},...settingsOverrides};
   let account={version:1,type:'account-state',revision:1,status:'signed-in',busy:false,error:'',
     profile:{id:'test-user',displayName:'测试用户',avatarUrl:'',vip:true,vipExpiresAt:'2030-01-01T00:00:00Z'}};
+  let island={version:1,type:'dynamicIsland-state',enabled:false,running:false,locked:true,
+    expanded:false,focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:false,hover:false,autoHide:true,
+    size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,loadStatus:'loaded',error:'',result:'snapshot',saved:false};
   const wallpaper={version:1,type:'wallpaper-state',revision:1,status:'idle',error:'',loadStatus:'fresh',
     playerAvailable:true,catalogStatus:'ready',catalogError:'',likedIds:[],catalog:[],library:[],displays:[],
     download:{id:'',status:'idle',received:0,total:0,error:''},pauseFullscreen:false};
@@ -36,7 +44,31 @@ function installNativeFixture(initialSettings={}) {
     removeEventListener(type,listener) {if(type==='message')listeners.delete(listener);},
     postMessage(command) {
       commands.push(command);
-      if(command==='v1|ready')queueMicrotask(()=>{receive(settings);receive(account);receive(wallpaper);});
+      if(command?.scope==='app-settings'&&command.action==='previewInterfaceScale'&&window.harness.simulateScale)
+        document.documentElement.style.zoom=String(command.value/75);
+      if(command==='v1|ready')queueMicrotask(()=>{receive(settings);receive(account);receive(wallpaper);receive(island);});
+      if(typeof command==='string'&&command.startsWith('v1|dynamicIsland|')){
+        const [, ,action,value]=command.split('|');
+        if(action==='preview'&&value!=='stop'){
+          const readings=nativeReadings.length===30?nativeReadings:
+            Array.from({length:30},(_,index)=>({id:index+1,text:'',secondary:'',available:false,progress:null}));
+          const preview={version:1,type:'dynamicIsland-preview',mode:value,shape:island.shape,
+            material:island.material,size:island.size,width:nativePreview?960:0,height:nativePreview?300:0,
+            image:nativePreview,error:nativePreview?'':'render',animating:false,
+            leftWidget:island.leftWidget,rightWidget:island.rightWidget,readings};
+          queueMicrotask(()=>{if(window.harness.holdPreview)window.harness.pendingPreview=preview;else receive(preview);});
+        }
+        if(['leftWidget','rightWidget'].includes(action)){
+          const previous=island[action];island={...island,[action]:Number(value),saved:true,result:'applied',error:''};
+          if(window.harness.rejectIslandSave){island={...island,[action]:previous,saved:false,error:'save'};window.harness.rejectIslandSave=false;}
+          queueMicrotask(()=>receive(island));
+        }
+        if(['topmost','hideFullscreen','autoHide'].includes(action)){
+          const previous=island[action];island={...island,[action]:value==='true',saved:true,result:'applied',error:''};
+          if(window.harness.rejectIslandSave){island={...island,[action]:previous,saved:false,error:'save'};window.harness.rejectIslandSave=false;}
+          queueMicrotask(()=>receive(island));
+        }
+      }
       if(command?.scope==='app-settings' && command.action==='snapshot')queueMicrotask(()=>receive(settings));
       if(command?.scope==='account' && command.action==='snapshot')queueMicrotask(()=>receive(account));
       if(command?.scope==='diagnostics') {
@@ -50,7 +82,7 @@ const server=http.createServer((req,res)=>{
   const route=new URL(req.url,'http://localhost').pathname;
   const file=path.resolve(ui,'.'+(route==='/'?'/index.html':route));
   if(!file.startsWith(ui+path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {res.writeHead(404).end();return;}
-  res.setHeader('Content-Type',({'.css':'text/css','.js':'text/javascript','.html':'text/html;charset=utf-8',
+  res.setHeader('Content-Type',({'.css':'text/css','.js':'text/javascript','.html':'text/html;charset=utf-8','.svg':'image/svg+xml','.png':'image/png',
     '.webp':'image/webp','.ttf':'font/ttf','.otf':'font/otf'})[path.extname(file)] || 'application/octet-stream');
   res.end(fs.readFileSync(file));
 });
@@ -97,7 +129,7 @@ try {
     await page.evaluate(()=>harness.accountSnapshot({status:'signed-in',error:'',
       profile:{id:'test-user',displayName:'测试用户',avatarUrl:'',vip:true,vipExpiresAt:'2030-01-01T00:00:00Z'}}));
     assert.deepEqual(await page.locator('link[rel="stylesheet"]').evaluateAll(links=>links.map(link=>link.getAttribute('href'))),
-      ['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','application-settings.css','music.css']);
+      ['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css','lume-icons.css','application-settings.css','music.css']);
     await page.locator('[data-titlebar-settings]').click();
     for(const section of ['general','user','autostart',...(DIAGNOSTICS_ENABLED?['diagnostics']:[]),'about']) {
       await page.locator(`button[data-settings-section="${section}"]`).click();
@@ -268,9 +300,169 @@ try {
   assert.match(await restored.locator('[data-settings-message]').textContent(),/wallpaper.*policy/i);
   await restored.screenshot({path:path.join(output,'960-en-restored-error.png')});
   await restored.close();
+  const scalePage=await browser.newPage({viewport:{width:1536,height:864}});
+  scalePage.on('pageerror',e=>errors.push(e.message));
+  await scalePage.addInitScript(installNativeFixture,{interfaceScale:75});
+  await scalePage.goto(`http://127.0.0.1:${server.address().port}/`);
+  await scalePage.locator('[data-titlebar-settings]').click();
+  const slider=scalePage.locator('#application-interface-scale');
+  const number=scalePage.locator('#application-interface-scale-number');
+  await slider.waitFor({state:'visible'});
+  await scalePage.waitForFunction(()=>document.querySelector('#application-interface-scale').getAttribute('aria-disabled')==='false');
+  assert.deepEqual(await slider.evaluate(node=>[node.min,node.max,node.step,node.value]),['50','75','1','75']);
+  assert.equal(await scalePage.evaluate(()=>document.querySelector('[data-setting="language"]').closest('.application-settings__field')
+    .nextElementSibling.hasAttribute('data-interface-scale-control')),true,'scale control immediately follows language');
+  await number.fill('49');await number.press('Enter');
+  assert.equal(await number.inputValue(),'75','invalid numeric input restores the confirmed scale');
+  await scalePage.evaluate(()=>{harness.simulateScale=true;harness.commands.length=0;});
+  const track=await slider.boundingBox();
+  const left=track.x+8,right=track.x+track.width-8,y=track.y+track.height/2;
+  await scalePage.mouse.move(right,y);await scalePage.mouse.down();
+  await scalePage.mouse.move(left+(right-left)*.56,y,{steps:8});
+  await scalePage.waitForTimeout(80);
+  assert.equal(await slider.inputValue(),'64','pointer mapping stays stable after the control itself shrinks');
+  assert.equal(await scalePage.evaluate(()=>harness.commands.filter(c=>c?.action==='interfaceScale').length),0,
+    'drag preview does not persist on every frame');
+  await scalePage.mouse.move(left,y,{steps:10});await scalePage.mouse.up();
+  await scalePage.waitForTimeout(80);
+  const scaleCommands=await scalePage.evaluate(()=>harness.commands.filter(c=>c?.scope==='app-settings'));
+  assert.deepEqual(scaleCommands.filter(c=>c.action==='interfaceScale').map(c=>c.value),[50],
+    'one completed drag persists only its final value');
+  assert.ok(scaleCommands.filter(c=>c.action==='previewInterfaceScale').length>1,'drag previews update the whole interface');
+  await scalePage.evaluate(()=>{harness.settingsSnapshot({interfaceScale:75,error:'preferences-save'});document.documentElement.style.zoom='1';});
+  assert.equal(await slider.inputValue(),'75','failed save restores the confirmed scale and thumb');
+  await scalePage.evaluate(()=>{harness.settingsSnapshot({interfaceScale:75,error:''});document.activeElement?.blur();});
+  await scalePage.evaluate(()=>{const field=document.querySelector('#application-interface-scale-number');field.value='60';
+    field.dispatchEvent(new Event('input',{bubbles:true}));});
+  await scalePage.waitForTimeout(35);
+  assert.equal(await slider.inputValue(),'60','valid numeric input previews the shared interface scale');
+  await number.press('Escape');
+  assert.equal(await slider.inputValue(),'75','Escape restores the saved scale without a write');
+  await scalePage.waitForTimeout(30);
+  assert.equal(await scalePage.evaluate(()=>harness.commands.filter(c=>c?.action==='interfaceScale').length),1);
+  await number.blur();
+  await scalePage.screenshot({path:path.join(output,'interface-scale-general-75.png')});
+  await scalePage.close();
+  for(const width of [1536,680]){
+    const islandPage=await browser.newPage({viewport:{width,height:864}});
+    islandPage.on('pageerror',e=>errors.push(e.message));
+    await islandPage.addInitScript(installNativeFixture,{nativePreview,nativeReadings});
+    await islandPage.goto(`http://127.0.0.1:${server.address().port}/`);
+    await islandPage.waitForFunction(()=>harness.commands.includes('v1|ready'));
+    await islandPage.evaluate(()=>harness.receive({version:1,type:'navigate',page:'dynamicIsland'}));
+    await islandPage.waitForFunction(()=>document.querySelectorAll('[data-island-compact-widget]').length===31);
+    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="20"] svg')?.textContent.includes('12°–20°'));
+    const picker=islandPage.locator('.island-compact-picker');
+    const previewStage=islandPage.locator('[data-island-preview-stage]');
+    const pickerBox=await picker.boundingBox(),previewBox=await previewStage.boundingBox();
+    assert.ok(pickerBox.y>=previewBox.y+previewBox.height-1,'compact chooser stays below the live preview');
+    if(width===1536)assert.equal(await picker.locator('.island-compact-picker__grid').first().evaluate(element=>
+      getComputedStyle(element).gridTemplateColumns.split(' ').length),6,'desktop chooser has six options per row');
+    assert.equal(await picker.evaluate(element=>{
+      const style=getComputedStyle(element);return style.backgroundColor==='rgba(0, 0, 0, 0)'&&style.borderStyle==='none';
+    }),true,'compact widgets have no enclosing blue-gray panel');
+    const capsuleRatio=await picker.locator('.island-compact-picker__chip').first().evaluate(element=>{
+      const box=element.getBoundingClientRect();return box.width/box.height;
+    });
+    assert.ok(capsuleRatio>=2.35&&capsuleRatio<=2.45,'compact options keep the reference capsule proportion');
+    assert.equal(await picker.locator('.island-compact-picker__sample svg').evaluateAll(images=>images.length===31&&images.every(image=>{
+      const box=image.getBBox();return box.x>=0&&box.y>=0&&box.x+box.width<=94&&box.y+box.height<=38;
+    })),true,'all static reference drawings fit inside their capsules');
+    assert.equal(await picker.locator('[data-island-compact-widget="14"] .island-compact-picker__sample').textContent(),'48%',
+      'processor option shows the fixed reference ring value even when native data is unavailable');
+    assert.equal(await picker.locator('[data-island-compact-widget="6"] .island-compact-picker__sample').textContent(),'56%',
+      'day progress uses the fixed reference bar value');
+    assert.equal(await picker.locator('.island-compact-picker__current, .island-compact-picker__sides, .island-compact-picker__top').count(),0,
+      'old blue-gray controls and heading are removed');
+    if(nativePreview){
+      await islandPage.locator('[data-island-native-preview]').waitFor({state:'visible'});
+      await islandPage.evaluate(()=>{
+        harness.holdPreview=true;
+        const img=document.querySelector('[data-island-native-preview]'),stage=document.querySelector('[data-island-preview-stage]');
+        harness.previewNode=img;harness.gridNode=document.querySelector('.island-compact-picker__grid');
+        harness.previewFlashes=[];
+        harness.previewObserver=new MutationObserver(()=>{
+          if(img.hidden||!img.getAttribute('src')||!stage.classList.contains('has-native-preview'))harness.previewFlashes.push('blank');
+        });
+        harness.previewObserver.observe(stage,{subtree:true,attributes:true,childList:true});
+      });
+    }
+    await picker.locator('[data-island-compact-widget="20"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="20"]')?.getAttribute('aria-pressed')==='true');
+    if(nativePreview){
+      await islandPage.waitForFunction(()=>harness.pendingPreview?.leftWidget===20);
+      assert.deepEqual(await islandPage.evaluate(()=>({flashes:harness.previewFlashes,
+        sameImage:harness.previewNode===document.querySelector('[data-island-native-preview]'),
+        sameGrid:harness.gridNode===document.querySelector('.island-compact-picker__grid')})),{flashes:[],sameImage:true,sameGrid:true},
+        'acknowledged selection keeps the old frame and DOM while the native reply is delayed');
+      await islandPage.evaluate(()=>{
+        const canvas=document.createElement('canvas');canvas.width=960;canvas.height=300;
+        const context=canvas.getContext('2d');context.drawImage(harness.previewNode,0,0,960,300);
+        context.fillStyle='#242f2e';context.fillRect(0,0,1,1);
+        harness.changedImage=canvas.toDataURL('image/png');
+        harness.holdPreview=false;harness.receive({...harness.pendingPreview,image:harness.changedImage});
+      });
+      await islandPage.waitForFunction(()=>document.querySelector('[data-island-native-preview]').src===harness.changedImage);
+      assert.deepEqual(await islandPage.evaluate(()=>harness.previewFlashes),[],'decoded replacement also stays continuously visible');
+    }
+    await previewStage.locator('[data-island-compact-side="right"]').click();
+    assert.equal(await picker.locator('[data-island-selection-side]').textContent(),'右侧图标');
+    assert.match(await picker.locator('[data-island-selection-hint]').textContent(),/左半边/);
+    await picker.locator('[data-island-compact-widget="1"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="1"]')?.getAttribute('aria-pressed')==='true');
+    assert.deepEqual(await islandPage.evaluate(()=>harness.commands.filter(command=>typeof command==='string'&&
+      /dynamicIsland\|(leftWidget|rightWidget)\|/.test(command))),
+      ['v1|dynamicIsland|leftWidget|20','v1|dynamicIsland|rightWidget|1']);
+    if(width===1536){
+      await islandPage.setViewportSize({width,height:1400});
+      await islandPage.screenshot({path:path.join(output,'island-home-1536.png'),
+        clip:{x:0,y:0,width:1536,height:1120}});
+      await islandPage.setViewportSize({width,height:864});
+    }
+    await previewStage.locator('[data-island-compact-side="left"]').click();
+    await islandPage.evaluate(()=>{harness.rejectIslandSave=true;});
+    await picker.locator('[data-island-compact-widget="15"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-settings-scope="dynamicIsland"] .status')?.textContent.includes('失败'));
+    assert.equal(await picker.locator('[data-island-compact-widget="20"]').getAttribute('aria-pressed'),'true',
+      'failed side save preserves the confirmed selection');
+    await picker.locator('[data-island-compact-clear]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-island-selection-name]')?.textContent==='无');
+    await previewStage.locator('[data-island-compact-side="right"]').click();
+    assert.equal(await picker.locator('[data-island-selection-name]').textContent(),'农历','clearing left does not clear right');
+    if(nativePreview){
+      assert.deepEqual(await islandPage.evaluate(()=>harness.previewFlashes),[],'switching, rollback and clearing never blank the preview');
+      await islandPage.evaluate(()=>harness.previewObserver.disconnect());
+    }
+    await islandPage.screenshot({path:path.join(output,`island-compact-picker-${width}.png`)});
+    await islandPage.locator('[data-tab="settings"]').click();
+    const layer=islandPage.locator('#dynamicIsland-layer');
+    await layer.click();
+    await islandPage.locator('[data-select-owner="dynamicIsland-layer"][data-select-value="above"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('#dynamicIsland-layer')?.textContent.includes('应用上方'));
+    const hide=islandPage.locator('[data-action="dynamicIsland-hideFullscreen"]');
+    await hide.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-hideFullscreen"]').getAttribute('aria-checked')==='false');
+    await hide.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-hideFullscreen"]').getAttribute('aria-checked')==='true');
+    const idle=islandPage.locator('[data-action="dynamicIsland-autoHide"]');
+    assert.equal(await idle.getAttribute('aria-label'),'空闲时隐藏');
+    await idle.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-autoHide"]').getAttribute('aria-checked')==='false');
+    await idle.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-autoHide"]').getAttribute('aria-checked')==='true');
+    await islandPage.evaluate(()=>{harness.rejectIslandSave=true;});
+    await layer.click();await islandPage.locator('[data-select-owner="dynamicIsland-layer"][data-select-value="desktop"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-settings-scope="dynamicIsland"] .status')?.textContent.includes('失败'));
+    assert.match(await layer.textContent(),/应用上方/,'failed save retains the confirmed layer');
+    const commands=await islandPage.evaluate(()=>harness.commands.filter(c=>typeof c==='string'&&/dynamicIsland\|(topmost|hideFullscreen|autoHide)\|/.test(c)));
+    assert.deepEqual(commands,['v1|dynamicIsland|topmost|true','v1|dynamicIsland|hideFullscreen|false','v1|dynamicIsland|hideFullscreen|true',
+      'v1|dynamicIsland|autoHide|false','v1|dynamicIsland|autoHide|true','v1|dynamicIsland|topmost|false']);
+    assert.equal(await islandPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await layer.click();await islandPage.locator('[data-select-owner="dynamicIsland-layer"][data-select-value="above"]').click();
+    await islandPage.waitForFunction(()=>document.querySelector('[data-settings-scope="dynamicIsland"] .status')?.hidden===true);
+    await islandPage.evaluate(()=>document.activeElement?.blur());
+    await islandPage.screenshot({path:path.join(output,`island-layer-options-${width}.png`)});
+    await islandPage.close();
+  }
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(output,'layout.json'),JSON.stringify({entry:'index.html + app.js',results,errors,remoteRequests},null,2));
-  console.log(`实际 app.js Edge 验证通过：${results.length} 组四栏几何，完整 index/CSP/6 个样式表，5 个视口，中英切换，VIP 位图、草稿/焦点/滚动、返回、键盘菜单、注销及不兼容更新。`);
+  console.log(`实际 app.js Edge 验证通过：${results.length} 组四栏几何，完整 index/CSP/11 个样式表，5 个视口，中英切换；缩放真实拖动、单次提交、范围校验、数字预览、Escape 及失败回退通过。`);
 } finally {
   await browser?.close();
   await new Promise(resolve=>server.close(resolve));

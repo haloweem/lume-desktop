@@ -1133,6 +1133,7 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
   document.defaultView.addEventListener('resize',positionFloatingMenus);
   document.addEventListener('visibilitychange',documentVisibility);
   return {
+    navigate(next) {if(!disposed)render(next);},
     updateDefaultBackground(media) {
       if(disposed)return;
       defaultBackground=media;

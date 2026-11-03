@@ -18,6 +18,7 @@ export function createIslandPreviewController({send,getMode,onFrame,onTimeout=()
     receive(frame){if(!active)return;pending=false;retries=0;
       if(timer!==null)clearTimer(timer);timer=null;
       onFrame(frame);if(dirty)schedule(0);else if(frame.animating&&!frame.error)schedule(16);
+      else if(frame.mode==='compact'&&Array.isArray(frame.readings))schedule(2000);
     },
     dispose(){if(disposed)return;if(timer!==null)clearTimer(timer);timer=null;if(active)send('stop');active=false;pending=false;disposed=true;},
   };

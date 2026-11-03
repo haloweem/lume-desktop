@@ -28,6 +28,18 @@ inline bool Unoccluded(HWND window,const RECT& bounds) {
         if(!IsWindowVisible(above)||IsIconic(above)||!GetWindowRect(above,&other)||
            !IntersectRect(&overlap,&other,&bounds))continue;
         if(SUCCEEDED(DwmGetWindowAttribute(above,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)))&&cloaked)continue;
+        // A composition surface can span the virtual desktop while its real
+        // HWND region contains only a small lens. Test actual region overlap;
+        // ERROR means no explicit region, so retain the conservative rectangle.
+        if(const auto region=CreateRectRgn(0,0,0,0)) {
+            const int kind=GetWindowRgn(above,region);
+            RECT local={overlap.left-other.left,overlap.top-other.top,
+                overlap.right-other.left,overlap.bottom-other.top};
+            const bool outside=kind==NULLREGION||
+                ((kind==SIMPLEREGION||kind==COMPLEXREGION)&&!RectInRegion(region,&local));
+            DeleteObject(region);
+            if(outside)continue;
+        }
         wchar_t name[128]{};GetClassNameW(above,name,128);
         std::wcerr<<L"corner fixture is occluded by "<<name<<L", hwnd="<<above<<L'\n';
         return false;

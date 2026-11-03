@@ -582,6 +582,7 @@ bool NotesPageWindow::Open(HINSTANCE instance, MessageHandler onMessage, std::fu
                                       instance, state.get());
     if (!hwnd)
         return false;
+    window_layer::Register(hwnd,state->Compact()&&!state->options.edit?window_layer::Kind::Desktop:window_layer::Kind::Editor);
     SetPropW(hwnd, lume::window_ids::DesktopWidgetProp, reinterpret_cast<HANDLE>(1));
     SetPropW(hwnd, widget_snap::Capability, reinterpret_cast<HANDLE>(1));
     state->snap.Bind(hwnd);

@@ -528,6 +528,7 @@ struct OrganizerSession::Impl {
             editor=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_LAYERED,L"EDIT",text.c_str(),
                 WS_POPUP|ES_AUTOHSCROLL|(kind==SearchEditor?ES_CENTER:0),0,0,1,1,window.Handle(),nullptr,owner.instance,nullptr);
             if(!editor){owner.error="editor";return false;}
+            window_layer::Register(editor,window_layer::Kind::Editor,window.Handle());
             if(!direct_write_edit::Attach(editor)){DestroyWindow(editor);editor=nullptr;owner.error="editor";return false;}
             SetPropW(editor,L"LumeOrganizerEditor",reinterpret_cast<HANDLE>(this));
             editorProcedure=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(editor,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProcedure)));
@@ -632,6 +633,7 @@ struct OrganizerSession::Impl {
                 tabGhost=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,
                     TabGhostClass,L"",WS_POPUP,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
                 if(!tabGhost)return;
+                window_layer::Register(tabGhost,window_layer::Kind::Popup,window.Handle());
                 ghostState=-1;
             }
             const auto dpi=GetDpiForWindow(hwnd)?GetDpiForWindow(hwnd):96u;
@@ -669,6 +671,7 @@ struct OrganizerSession::Impl {
                 removeGhost=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,
                     RemoveGhostClass,L"",WS_POPUP,0,0,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
                 if(!removeGhost)return;
+                window_layer::Register(removeGhost,window_layer::Kind::Popup,window.Handle());
                 removeGhostDrawn=false;
             }
             const auto dpi=GetDpiForWindow(hwnd)?GetDpiForWindow(hwnd):96u;

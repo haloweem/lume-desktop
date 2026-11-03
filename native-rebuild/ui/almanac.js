@@ -4,7 +4,7 @@ import {t} from './localization.js';
 
 const materials=()=>[['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')]];
 export function almanacStatus(state) {
-  if(state.almanacStatus==='saving')return t('正在保存...','Saving...');
+  if(state.almanacStatus==='saving')return '';
   if(state.almanacStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.almanacStatus==='unavailable')return t('桌面宿主未连接，黄历设置未保存','Desktop host disconnected. Almanac settings were not saved.');
   if(state.almanacStatus==='error')return {

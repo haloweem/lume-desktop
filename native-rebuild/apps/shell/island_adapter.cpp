@@ -82,6 +82,10 @@ dynamic_island::Weather IslandWeather(const platform::windows::WeatherReading& r
     next.temperature=static_cast<int>(std::floor(snapshot.temperature+.5));
     next.code=snapshot.weatherCode;
     next.isDay=snapshot.isDay;
+    next.humidity=snapshot.humidity;next.windSpeed=snapshot.windSpeed;
+    next.windDirection=snapshot.windDirection;next.pressure=snapshot.pressure;next.visibility=snapshot.visibility;
+    next.uv=snapshot.uv;next.precipitation=snapshot.precipitation;next.apparentTemperature=snapshot.apparentTemperature;
+    next.sunrise=platform::windows::WeatherText(snapshot.sunrise);next.sunset=platform::windows::WeatherText(snapshot.sunset);
     if(!snapshot.forecast.empty()){
         next.hasRange=true;
         next.high=static_cast<int>(std::floor(snapshot.forecast.front().high+.5));

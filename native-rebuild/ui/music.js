@@ -345,7 +345,7 @@ function panel(state, view, preferences, background, library) {
 
 export function musicDesktopPage(controls={pending:true},tab='settings') {
   const status=controls.error?'桌面音乐组件操作失败，请重试':
-    controls.pending?'正在保存...':controls.enabled&&!controls.running?'桌面音乐组件未运行':'';
+    controls.pending?'':controls.enabled&&!controls.running?'桌面音乐组件未运行':'';
   const body=`<div class="setting-row"><label for="music-desktop-enabled">启用组件</label>
     <button id="music-desktop-enabled" type="button" role="switch" aria-label="音乐" aria-checked="${!!controls.enabled}"
       class="switch${controls.enabled?' checked':''}" data-music-action="desktop-enabled" ${controls.pending?'disabled':''}><span></span></button></div>`;

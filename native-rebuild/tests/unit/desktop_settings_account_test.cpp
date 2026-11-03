@@ -1,6 +1,7 @@
 #include "apps/shell/desktop_application.h"
 #include "vendor/nlohmann/json.hpp"
 #include <filesystem>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 
@@ -10,7 +11,8 @@ struct Probe {
     DesktopApplication* app = nullptr;
     ULONGLONG started = 0;
     bool failed = false, hidden = false, opened = false, settings = false, account = false,
-        diagnostics = false, diagnosticsCleared = false;
+        diagnostics = false, diagnosticsCleared = false, scaled = false;
+    RECT original{};
     std::uint64_t initialDiagnosticsRevision = 0;
     unsigned diagnosticsSnapshots = 0;
     std::filesystem::path diagnosticsPath;
@@ -19,6 +21,18 @@ struct Probe {
     }
     void Message(const std::wstring& text) {
         const auto json = nlohmann::json::parse(text);
+        if(json.value("type","")=="app-settings-state"&&!json.value("busy",true)&&app->ManagerHandle()) {
+            RECT current{};GetWindowRect(app->ManagerHandle(),&current);
+            if(json.value("interfaceScale",75)==75&&!original.right)original=current;
+            if(json.value("interfaceScale",75)==50) {
+                scaled=true;
+                Check(original.right&&current.left==original.left&&current.top==original.top,
+                    "production Shell scales the manager around its fixed top-left");
+                Check(std::abs((current.right-current.left)-(original.right-original.left)*2.0/3)<1&&
+                      std::abs((current.bottom-current.top)-(original.bottom-original.top)*2.0/3)<1,
+                    "production scale preview and confirmation use the same width/height ratio");
+            }
+        }
         if (json.value("type", "") == "diagnostics-state") {
             diagnostics = true;
             Check(json.value("schemaVersion", 0) == 1, "native diagnostics use the versioned schema");
@@ -39,7 +53,7 @@ struct Probe {
             settings = true;
             Check(json.value("error", "") == "", "language applies without system or account effects");
         }
-        if (settings && account && GetTickCount64()-started>1000) app->Exit();
+        if (settings && account && scaled && GetTickCount64()-started>1000) app->Exit();
     }
     void Tick() {
         if (GetTickCount64() - started > 15000) {
@@ -56,7 +70,7 @@ struct Probe {
             opened = true;
             app->Open(lume::shell::ManagerPage::ApplicationSettings);
         }
-        if(settings&&account&&GetTickCount64()-started>1000)app->Exit();
+        if(settings&&account&&scaled&&GetTickCount64()-started>1000)app->Exit();
     }
 };
 Probe* active = nullptr;
@@ -78,9 +92,14 @@ int main() {
     options.accountOptions.storageDirectory = (root / "account").u8string();
     options.wallpaperOptions.root = (root / "wallpapers").u8string();
     options.readyScript = LR"JS(
+        let scaleStage=0;
         const settingsProbe = setInterval(() => {
             const language = document.querySelector('[data-setting="language"]');
             if (!language || language.disabled || !document.querySelector('.application-settings:not([hidden])')) return;
+            const scale=document.querySelector('#application-interface-scale');
+            if(!scale||scale.getAttribute('aria-disabled')==='true')return;
+            if(scaleStage<2){scale.value=scaleStage===0?'50':'75';++scaleStage;
+              scale.dispatchEvent(new Event('change',{bubbles:true}));return;}
             clearInterval(settingsProbe);
             if(document.querySelector('[data-settings-section="diagnostics"]'))return;
             document.querySelector('[data-settings-section="user"]').click();
@@ -114,7 +133,7 @@ int main() {
         KillTimer(nullptr, timer);
         active = nullptr;
     }
-    probe.Check(result == 0 && probe.hidden && probe.settings && probe.account && !probe.diagnostics && !probe.diagnosticsCleared,
+    probe.Check(result == 0 && probe.hidden && probe.settings && probe.account && probe.scaled && !probe.diagnostics && !probe.diagnosticsCleared,
         "complete settings/account lifecycle with diagnostics disabled and no diagnostic replies");
     nlohmann::json preferences;
     {
@@ -122,6 +141,7 @@ int main() {
         if (saved) saved >> preferences;
     }
     probe.Check(preferences.value("language", "") == "en", "language persisted in the isolated file");
+    probe.Check(preferences.value("interfaceScale",0)==75,"interface scale is persisted with the restored original layout");
     nlohmann::json diagnosticStore;
     {
         std::ifstream diagnosticFile(root / "diagnostics.json", std::ios::binary);

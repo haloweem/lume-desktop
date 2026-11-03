@@ -108,7 +108,7 @@ add_library(lume-widget-ui STATIC
 )
 target_include_directories(lume-widget-ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-widget-ui PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-widget-ui PRIVATE lume-window-surface gdiplus dwmapi user32 gdi32 comctl32 uxtheme d2d1 dwrite windowscodecs ole32 uuid imm32 msimg32)
+target_link_libraries(lume-widget-ui PRIVATE lume-window-surface gdiplus dwmapi user32 gdi32 comctl32 uxtheme d2d1 dwrite windowscodecs ole32 uuid imm32 msimg32 shell32)
 lume_enable_native_warnings(lume-widget-ui)
 
 add_library(lume-native-clock STATIC

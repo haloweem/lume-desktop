@@ -17,8 +17,8 @@ public:
     void Stop();
     void Place();
     void Consumed() { pending_ = false; }
-    // True while a maximized application window fills the Dock's monitor; the
-    // Dock is then hidden instead of waiting below it.
+    // True only during shared foreground fullscreen/exclusive protection.
+    // Ordinary maximized/background windows just cover the resident Dock.
     bool Covered() const { return covered_; }
 private:
     void Request();

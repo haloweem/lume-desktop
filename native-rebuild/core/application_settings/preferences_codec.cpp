@@ -9,10 +9,14 @@ DecodedPreferences DecodePreferences(std::string_view bytes) noexcept {
         const auto json = detail::ParseObject(bytes);
         if (!json.contains("version") || !json["version"].is_number_integer())
             return {{}, "preferences-invalid"};
-        // Version 2 adds wallpaperDirectory; version 1 files still load with it empty.
-        if (json["version"] != 1 && json["version"] != 2) return {{}, "preferences-version"};
+        // Old files keep the exact current layout. Version 3 adds interfaceScale.
+        if (json["version"] != 1 && json["version"] != 2 && json["version"] != 3)
+            return {{}, "preferences-version"};
         const bool hasDirectory = json.contains("wallpaperDirectory");
-        if (json.size() != (hasDirectory ? 5u : 4u) || !json.at("language").is_string() ||
+        const bool hasScale = json.contains("interfaceScale");
+        if ((json["version"] == 3 && (!hasScale || !hasDirectory)) ||
+            (json["version"] != 3 && hasScale)) return {{}, "preferences-invalid"};
+        if (json.size() != 4u + (hasDirectory ? 1u : 0u) + (hasScale ? 1u : 0u) || !json.at("language").is_string() ||
             !json.at("balancedMode").is_boolean() || !json.at("autostart").is_boolean())
             return {{}, "preferences-invalid"};
         Preferences preferences{json["language"].get<std::string>(),
@@ -27,18 +31,25 @@ DecodedPreferences DecodePreferences(std::string_view bytes) noexcept {
         }
         if (preferences.language != "zh-CN" && preferences.language != "en")
             return {{}, "preferences-invalid"};
+        if (hasScale) {
+            const auto& percent = json["interfaceScale"];
+            if (!percent.is_number_integer() || percent < 50 || percent > 75)
+                return {{}, "preferences-invalid"};
+            preferences.interfaceScale = percent.get<int>();
+        }
         return {preferences, {}};
     } catch (...) { return {{}, "preferences-invalid"}; }
 }
 std::string EncodePreferences(const Preferences& preferences) {
-    return nlohmann::json{{"version", 2}, {"language", preferences.language},
+    return nlohmann::json{{"version", 3}, {"language", preferences.language},
         {"balancedMode", preferences.balancedMode}, {"autostart", preferences.autostart},
-        {"wallpaperDirectory", preferences.wallpaperDirectory}}.dump();
+        {"wallpaperDirectory", preferences.wallpaperDirectory}, {"interfaceScale", preferences.interfaceScale}}.dump();
 }
 std::wstring SerializeSnapshot(const Snapshot& state) {
     const auto json = nlohmann::json{{"version", 1}, {"type", "app-settings-state"},
         {"revision", state.revision}, {"language", state.preferences.language},
         {"balancedMode", state.preferences.balancedMode}, {"autostart", state.preferences.autostart},
+        {"interfaceScale", state.preferences.interfaceScale},
         {"dataDirectory", state.dataDirectory}, {"wallpaperDirectory", state.wallpaperDirectory},
         {"busy", state.busy}, {"error", state.error}, {"update", {
             {"status", state.update.status}, {"version", state.update.version},

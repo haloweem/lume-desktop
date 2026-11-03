@@ -16,6 +16,9 @@ double CalculateOriginalZoom(int widthDip, int heightDip) noexcept;
 // areas (laptops at 125-150%) with a page zoom near 0.6; there it grows to
 // 1152x648 (zoom 0.75), or the largest 16:9 that fits.
 PageBounds CalculateManagerWindowBounds(PageBounds workArea) noexcept;
+// Scale the existing layout around its top-left, preserving its logical canvas.
+PageBounds ScaleManagerWindowBounds(PageBounds baseline, int percent) noexcept;
+double CalculateManagerZoom(int baselineWidthDip, int baselineHeightDip, int percent) noexcept;
 
 // Restore a saved physical-pixel rectangle relative to the current work area.
 PageBounds RestoreOriginalWindowBounds(PageBounds savedPixels, PageBounds savedWorkAreaPixels,

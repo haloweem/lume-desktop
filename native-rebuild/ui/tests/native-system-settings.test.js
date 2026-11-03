@@ -173,7 +173,7 @@ test('taskbar toggles respond immediately while confirmation and failures stay t
     assert.doesNotMatch(taskbarPage(state),/data-action="taskbar-toggle"/);
     assert.match(taskbarPage(state),/data-action="taskbar-transparent" disabled/);
     assert.match(taskbarPage(state),/data-action="taskbar-autoHide" disabled/);
-    assert.match(taskbarStatus(state),/正在应用/);
+    assert.equal(taskbarStatus(state),'');
     assert.doesNotMatch(taskbarStatus(state),/已应用|已保存/);
   };
   assertRequested();

@@ -33,7 +33,7 @@ struct Probe {
         const auto state=nlohmann::json::parse(text);enabled=state.value("enabled",false);
         locked=state.value("locked",false);material=state.value("material",std::string{});
         shape=state.value("shape",std::string{});
-        previewDecoded=state.value("hover",false);
+        previewDecoded=state.value("hover",false)&&state.value("topmost",false)&&state.value("hideFullscreen",false);
         ++snapshots;
         Check(!state.contains("customization"),"retired customization absent from native state");
     }
@@ -45,6 +45,7 @@ struct Probe {
         if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&previews>ready&&previewDecoded&&previewSettled){
             ++ready;
             Check(Island()!=nullptr,"real settings page creates island window");
+            Check((GetWindowLongPtrW(Island(),GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"real display-layer dropdown applies native overlay state");
             if(ready==1)island=Island();else Check(Island()==island,"reopen retains same native session");
             Check(!app->ClockRunning()&&!app->CalendarRunning(),"island does not enable unrelated components");
             stage=1;app->CloseManager();closed=GetTickCount64();
@@ -72,7 +73,7 @@ int main(){
     }
     Probe probe;options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let material=false,shape=false,decoded=false;
+      let material=false,shape=false,decoded=false,layer=false,hideOff=false,hideOn=false;
       const act=()=>{
         const section=document.querySelector('[data-settings-scope="dynamicIsland"]');
         if(!section)return;
@@ -88,6 +89,24 @@ int main(){
           material=true;choice.click();return;
         }
         const preview=section.querySelector('[data-island-native-preview]');
+        if(material&&shape&&preview&&!preview.hidden&&preview.complete&&preview.naturalWidth===960&&!layer){
+          section.querySelector('[data-tab="settings"]').click();return;
+        }
+        const displayLayer=section.querySelector('#dynamicIsland-layer');
+        if(displayLayer&&!layer){
+          if(displayLayer.disabled||displayLayer.getAttribute('aria-disabled')==='true')return;
+          if(!displayLayer.textContent.includes('应用上方')){
+            displayLayer.click();section.querySelector('[data-select-owner="dynamicIsland-layer"][data-select-value="above"]').click();return;
+          }
+          layer=true;
+        }
+        const fullscreen=section.querySelector('[data-action="dynamicIsland-hideFullscreen"]');
+        if(layer&&fullscreen){
+          if(fullscreen.disabled||fullscreen.getAttribute('aria-disabled')==='true')return;
+          if(!hideOff){hideOff=true;fullscreen.click();return;}
+          if(fullscreen.getAttribute('aria-checked')==='false'&&!hideOn){hideOn=true;fullscreen.click();return;}
+          if(hideOn&&fullscreen.getAttribute('aria-checked')==='true'){section.querySelector('[data-tab="home"]').click();return;}
+        }
         if(!decoded&&preview&&!preview.hidden&&preview.complete&&preview.naturalWidth===960) {
           decoded=true;window.chrome.webview.postMessage('v1|dynamicIsland|hover|true');
         }

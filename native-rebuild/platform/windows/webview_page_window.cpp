@@ -162,6 +162,8 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     RECT windowed{};
     RECT windowedWorkArea{};
     int windowedDpi = 96;
+    int interfaceScale = 75, referenceWidth = 0, referenceHeight = 0, referenceDpi = 96;
+    bool resizingInterface = false;
     unsigned verificationRasterDpi = 0;
     std::wstring error;
     std::wstring verificationReadyScript;
@@ -242,12 +244,50 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     void NotifyWindow() {
         Post(fullscreen ? L"{\"version\":1,\"type\":\"window\",\"fullscreen\":true}" : L"{\"version\":1,\"type\":\"window\",\"fullscreen\":false}");
     }
+    double Zoom() const {
+        if (!fullscreen && referenceWidth > 0 && referenceHeight > 0)
+            return ui::CalculateManagerZoom(MulDiv(referenceWidth,96,referenceDpi),
+                MulDiv(referenceHeight,96,referenceDpi),interfaceScale);
+        RECT client{}; GetClientRect(hwnd,&client);
+        const double dpi = static_cast<double>(verificationRasterDpi ? verificationRasterDpi : GetDpiForWindow(hwnd))/96.0;
+        return ui::CalculateOriginalZoom(static_cast<int>(std::lround(client.right/dpi)),
+            static_cast<int>(std::lround(client.bottom/dpi)));
+    }
+    void RememberScaleReference(int width,int height,int dpi) {
+        referenceWidth=MulDiv(width,75,interfaceScale);
+        referenceHeight=MulDiv(height,75,interfaceScale);
+        referenceDpi=dpi>0?dpi:96;
+    }
+    bool SetScale(int percent) {
+        if (percent<50 || percent>75 || closing) return false;
+        if (percent==interfaceScale) return true;
+        if (fullscreen) {
+            const auto restored=ui::ScaleManagerWindowBounds({windowed.left,windowed.top,
+                MulDiv(referenceWidth,windowedDpi,referenceDpi),
+                MulDiv(referenceHeight,windowedDpi,referenceDpi)},percent);
+            windowed={restored.x,restored.y,restored.x+restored.width,restored.y+restored.height};
+            interfaceScale=percent;
+            return true;
+        }
+        const int dpi=verificationRasterDpi?static_cast<int>(verificationRasterDpi):static_cast<int>(GetDpiForWindow(hwnd));
+        const auto bounds=ui::ScaleManagerWindowBounds({0,0,
+            MulDiv(referenceWidth,dpi,referenceDpi),MulDiv(referenceHeight,dpi,referenceDpi)},percent);
+        const int previous=interfaceScale;
+        interfaceScale=percent;
+        resizingInterface=true;
+        const bool applied=SetWindowPos(hwnd,nullptr,0,0,bounds.width,bounds.height,
+            SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER)!=FALSE;
+        resizingInterface=false;
+        if (!applied) interfaceScale=previous;
+        Layout();
+        return applied;
+    }
     void Layout() {
         if (!hwnd || closing || IsIconic(hwnd)) return;
         RECT client{}; GetClientRect(hwnd, &client);
         const double dpi = static_cast<double>(verificationRasterDpi?verificationRasterDpi:GetDpiForWindow(hwnd))/96.0;
-        const double zoom = ui::CalculateOriginalZoom(static_cast<int>(std::lround(client.right / dpi)), static_cast<int>(std::lround(client.bottom / dpi)));
-        if (controller) { controller->put_Bounds(client); controller->put_ZoomFactor(zoom); }
+        const double zoom = Zoom();
+        if (controller) controller->SetBoundsAndZoomFactor(client,zoom);
         // CSS owns the original 34px radius. Preserve its coverage alpha all
         // the way to DWM instead of clipping it again with a binary HRGN.
         ConfigureRoundedWindow(hwnd,fullscreen?0.f:static_cast<float>(34.0*zoom*dpi),true);
@@ -310,7 +350,7 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
             MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
             GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
             windowedWorkArea = monitor.rcWork;
-            windowedDpi = static_cast<int>(GetDpiForWindow(hwnd));
+            windowedDpi = verificationRasterDpi?static_cast<int>(verificationRasterDpi):static_cast<int>(GetDpiForWindow(hwnd));
             fullscreen = true;
             SetWindowPos(hwnd, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top,
                 monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top, SWP_NOOWNERZORDER);
@@ -319,8 +359,10 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
             MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
             GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
             const auto asBounds = [](const RECT& r) { return ui::PageBounds{r.left, r.top, r.right-r.left, r.bottom-r.top}; };
+            const int currentDpi=verificationRasterDpi?static_cast<int>(verificationRasterDpi):static_cast<int>(GetDpiForWindow(hwnd));
             const auto restored = ui::RestoreOriginalWindowBounds(asBounds(windowed), asBounds(windowedWorkArea),
-                asBounds(monitor.rcWork), windowedDpi, static_cast<int>(GetDpiForWindow(hwnd)));
+                asBounds(monitor.rcWork),windowedDpi,currentDpi);
+            RememberScaleReference(restored.width,restored.height,currentDpi);
             SetWindowPos(hwnd, nullptr, restored.x, restored.y, restored.width, restored.height, SWP_NOZORDER | SWP_NOOWNERZORDER);
         }
         Layout(); NotifyWindow();
@@ -602,6 +644,7 @@ LRESULT CALLBACK WebViewPageWindow::WindowProc(HWND hwnd, UINT message, WPARAM w
     if (!state) return DefWindowProcW(hwnd, message, wparam, lparam);
     switch (message) {
     case WM_SIZE:
+        if (state->resizingInterface) { state->Layout(); return 0; }
         if (wparam == SIZE_MINIMIZED) {
             if (state->controller) state->controller->put_IsVisible(FALSE);
             state->ApplyLifecycleActions(state->lifecycle.OnHidden());
@@ -616,7 +659,10 @@ LRESULT CALLBACK WebViewPageWindow::WindowProc(HWND hwnd, UINT message, WPARAM w
     case WM_DPICHANGED: {
         auto* rect = reinterpret_cast<RECT*>(lparam);
         if (state->fullscreen) state->FitFullscreenMonitor();
-        else SetWindowPos(hwnd, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        else {
+            state->RememberScaleReference(rect->right-rect->left,rect->bottom-rect->top,HIWORD(wparam));
+            SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);
+        }
         state->Layout(); return 0;
     }
     case WM_MOUSEACTIVATE:
@@ -691,7 +737,7 @@ LRESULT CALLBACK WebViewPageWindow::WindowProc(HWND hwnd, UINT message, WPARAM w
         direct_write::Draw(dc, state->error, rect, RGB(225, 225, 225), style);
         RECT client{};GetClientRect(hwnd,&client);
         const double dpi=static_cast<double>(GetDpiForWindow(hwnd))/96.0;
-        const auto zoom=ui::CalculateOriginalZoom(static_cast<int>(std::lround(client.right/dpi)),static_cast<int>(std::lround(client.bottom/dpi)));
+        const auto zoom=state->Zoom();
         buffer.Present(state->fullscreen?0.f:static_cast<float>(34*zoom*dpi));
         EndPaint(hwnd, &paint); return 0;
     }
@@ -754,9 +800,14 @@ int WebViewPageWindow::Run(HINSTANCE instance,CommandHandler handler,bool verifi
         bounds.x+=(bounds.width-width)/2;bounds.y+=(bounds.height-height)/2;
         bounds.width=width;bounds.height=height;
     }
+    state_->interfaceScale=interfaceScale_;
+    state_->referenceWidth=static_cast<int>(std::lround(bounds.width*scale));
+    state_->referenceHeight=static_cast<int>(std::lround(bounds.height*scale));
+    state_->referenceDpi=static_cast<int>(openDpi);
+    const auto scaled=ui::ScaleManagerWindowBounds({0,0,state_->referenceWidth,state_->referenceHeight},interfaceScale_);
     HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW, kClassName, L"Lume", WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX,
         area.left + static_cast<int>(std::lround(bounds.x*scale)), area.top + static_cast<int>(std::lround(bounds.y*scale)),
-        static_cast<int>(std::lround(bounds.width*scale)), static_cast<int>(std::lround(bounds.height*scale)), nullptr, nullptr, instance, state_.get());
+        scaled.width,scaled.height,nullptr,nullptr,instance,state_.get());
     if (!hwnd) { state_.reset(); CoUninitialize(); return 1; }
     state_->Layout();
     if(SetTimer(hwnd,kStartupTimeout,15000,nullptr))state_->Initialize();
@@ -802,6 +853,12 @@ void WebViewPageWindow::ConfigureApplicationCommands(ApplicationCommandHandler h
 }
 void WebViewPageWindow::ConfigureVisibility(VisibilityHandler handler) {
     visibilityHandler_=std::move(handler);
+}
+bool WebViewPageWindow::SetInterfaceScale(int percent) {
+    if (percent<50 || percent>75) return false;
+    if (state_ && state_->hwnd && !state_->SetScale(percent)) return false;
+    interfaceScale_=percent;
+    return true;
 }
 void WebViewPageWindow::RequestClose() { if (state_ && state_->hwnd) PostMessageW(state_->hwnd, WM_CLOSE, 0, 0); }
 HWND WebViewPageWindow::Handle() const { return state_?state_->hwnd:nullptr; }

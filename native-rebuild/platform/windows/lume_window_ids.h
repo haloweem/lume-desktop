@@ -26,6 +26,9 @@ inline constexpr wchar_t DesktopCompanionOwnerProp[] = L"LumeDesktopCompanionOwn
 inline constexpr wchar_t GlassOwnerProp[] = L"LumeGlassOwner";
 // On a glass surface window: the HWND it renders glass for.
 inline constexpr wchar_t GlassSurfaceOwnerProp[] = L"LumeGlassSurfaceOwner";
+// Runtime-only display policy; never changes the persisted enabled preference.
+inline constexpr wchar_t LayerSuppressedProp[] = L"LumeLayerSuppressed";
+inline constexpr wchar_t LayerRoleProp[] = L"LumeLayerRole";
 
 // Class names.
 // Every native desktop surface (Dock, clock, calendar, widgets) starts with this.

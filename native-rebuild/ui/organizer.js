@@ -7,7 +7,7 @@ const materials=()=>[['liquid-glass',t('液态玻璃','Liquid glass')],['frosted
 export function organizerStatus(state){
   if(state.organizerStatus==='saving')return typeof state.organizerPending==='boolean'
     ? state.organizerPending?t('正在开启...','Starting...'):t('正在关闭...','Stopping...')
-    : t('正在保存...','Saving...');
+    : '';
   if(state.organizerStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.organizerStatus==='unavailable')return t('桌面宿主未连接，图标收纳设置未保存','Desktop host disconnected. Icon organizer settings were not saved.');
   if(state.organizerStatus==='error')return {

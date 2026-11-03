@@ -242,6 +242,8 @@ struct DockWindow::Impl {
         icons = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, IconClass, L"Lume Dock", WS_POPUP,
                                 0, 0, 1, 1, nullptr, nullptr, instance, this);
         if (!bar || !icons) { Stop(); return false; }
+        if(!window_layer::Register(icons,window_layer::Kind::Desktop)||
+           !window_layer::Register(bar,window_layer::Kind::Desktop,icons)){Stop();return false;}
         desktopLayer.Start(icons, bar);
         iconCanvas = std::make_unique<WidgetCanvas>();
         barCanvas = std::make_unique<WidgetCanvas>();
@@ -398,7 +400,7 @@ struct DockWindow::Impl {
         desktopLayer.Place();
         if (desktopLayer.Covered() == wasCovered) return;
         if (desktopLayer.Covered()) {
-            // Hidden under a maximized window: release the glass too.
+            // Fullscreen protection: release the glass too.
             hovering = false;
             HidePreview();
             material.Detach();
@@ -709,6 +711,7 @@ struct DockWindow::Impl {
             preview = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 PreviewClass, L"Lume Dock 窗口预览", WS_POPUP, 0, 0, 1, 1, icons, nullptr, instance, this);
             if (!preview) return;
+            window_layer::Register(preview,window_layer::Kind::Popup,icons);
             previewCanvas = std::make_unique<WidgetCanvas>();
         }
         previewIndex = index;
@@ -887,6 +890,7 @@ struct DockWindow::Impl {
         ghost = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
                                 GhostClass, L"Lume Dock", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, this);
         if (!ghost) return false;
+        window_layer::Register(ghost,window_layer::Kind::Popup,icons);
         ghostCanvas = std::make_unique<WidgetCanvas>();
         return true;
     }
@@ -1264,6 +1268,10 @@ struct DockWindow::Impl {
                 return 0;
             }
             break;
+        case WM_CANCELMODE:
+            if(self->dragged!=None)self->EndDrag(false);
+            self->HidePreview();self->HideGhost();self->hovering=false;self->hover=None;
+            self->clock.Pause();return 0;
         case FrameMessage: {
             self->clock.Consumed();
             if (!self->visible) { self->clock.Pause(); return 0; }

@@ -23,6 +23,7 @@ struct Job {
 bool SavesPreferences(const Job& job) {
     return !job.restore && (job.command.action == ApplicationSettingsAction::Language ||
         job.command.action == ApplicationSettingsAction::BalancedMode ||
+        job.command.action == ApplicationSettingsAction::InterfaceScale ||
         job.command.action == ApplicationSettingsAction::Autostart ||
         job.command.action == ApplicationSettingsAction::SetWallpaperDirectory);
 }
@@ -270,6 +271,8 @@ struct ApplicationSettingsSession::Impl {
         case ApplicationSettingsAction::Autostart: service->SetAutostart(job.command.flag); break;
         case ApplicationSettingsAction::SetWallpaperDirectory:
             service->SetWallpaperDirectory(job.command.directory); break;
+        case ApplicationSettingsAction::InterfaceScale:
+            service->SetInterfaceScale(job.command.scalePercent); break;
         case ApplicationSettingsAction::CheckUpdate: {
             if (!service->BeginCheck()) break;
             const auto response = updates->Fetch(cancellation);
@@ -443,6 +446,7 @@ std::optional<std::wstring> ApplicationSettingsSession::HandlePage(const ui::App
         return State();
     }
     case ApplicationSettingsAction::Language:
+    case ApplicationSettingsAction::InterfaceScale:
     case ApplicationSettingsAction::BalancedMode:
     case ApplicationSettingsAction::Autostart:
     case ApplicationSettingsAction::CheckUpdate:

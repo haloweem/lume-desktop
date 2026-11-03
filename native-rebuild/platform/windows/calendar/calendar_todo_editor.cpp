@@ -1,4 +1,5 @@
 #include "platform/windows/calendar/calendar_todo_editor.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/calendar/calendar_todo_draft.h"
 #include "platform/windows/calendar/calendar_todo_picker.h"
 #include "platform/windows/calendar/calendar_todo_form_layout.h"
@@ -149,6 +150,7 @@ struct CalendarTodoEditor::Impl : std::enable_shared_from_this<Impl> {
             host.top+todo_ui::Px(layout.panel.y,dpi),todo_ui::Px(layout.panel.width,dpi),
             todo_ui::Px(layout.panel.height,dpi),owner,nullptr,instance,this);
         if(!window)return false;
+        window_layer::Register(window,window_layer::Kind::Editor,owner);
         viewport=CreateWindowExW(WS_EX_CONTROLPARENT,kFormClass,L"日程可滚动表单",
             WS_CHILD|WS_VISIBLE|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,0,0,1,1,window,nullptr,instance,this);
         form=CreateWindowExW(WS_EX_CONTROLPARENT,kFormClass,L"日程字段",

@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
     }
     Fixture external;
     Check(external.service.Load(), "load new preferences");
-    external.file.value = {ReadStatus::Loaded, R"({"version":3})"};
+    external.file.value = {ReadStatus::Loaded, R"({"version":4})"};
     Check(!external.service.SetLanguage("en") && external.file.writes == 0 &&
           external.service.State().error == "preferences-version", "revalidate externally upgraded file before every save");
 
@@ -540,9 +540,32 @@ int main(int argc, char** argv) {
     Check(disabledUpdates.service.State().error == "update-disabled", "repeated disabled operations do not mislabel a compatible source");
     const auto jsonText = SerializeSnapshot(startup.service.State());
     const auto json = nlohmann::json::parse(jsonText);
-    Check(json.size() == 11 && json.at("version") == 1 && json.at("type") == "app-settings-state" &&
+    Check(json.size() == 12 && json.at("version") == 1 && json.at("type") == "app-settings-state" &&
           json.at("revision").is_number_unsigned() && json.at("update").size() == 3 &&
           json.at("dataDirectory").is_string() && json.at("wallpaperDirectory").is_string(),
           "fixed public snapshot contract");
+    Fixture scale;
+    scale.file.value={ReadStatus::Loaded,R"({"version":1,"language":"en","balancedMode":false,"autostart":false})"};
+    Check(scale.service.Load()&&scale.service.State().preferences.interfaceScale==75,
+          "old preferences preserve the existing manager scale");
+    Check(scale.service.SetInterfaceScale(50)&&scale.service.State().preferences.interfaceScale==50&&
+          DecodePreferences(scale.file.value.bytes).preferences.interfaceScale==50,
+          "minimum interface scale is saved and confirmed");
+    Check(scale.service.SetLanguage("zh-CN")&&DecodePreferences(scale.file.value.bytes).preferences.interfaceScale==50,
+          "other preferences preserve the interface scale");
+    const auto scaleBytes=scale.file.value.bytes;
+    const auto scaleWrites=scale.file.writes;
+    for(const int invalid:{49,76,-1,100})Check(!scale.service.SetInterfaceScale(invalid)&&
+        scale.file.writes==scaleWrites,"reject out-of-range interface scale before writing");
+    scale.file.fail=true;
+    Check(!scale.service.SetInterfaceScale(75)&&scale.service.State().preferences.interfaceScale==50&&
+          scale.file.value.bytes==scaleBytes,"failed scale save retains the confirmed preference");
+    scale.file.fail=false;
+    Check(scale.service.SetInterfaceScale(75)&&DecodePreferences(scale.file.value.bytes).preferences.interfaceScale==75,
+          "interface scale can restore the exact current layout");
+    for(const auto* invalid:{"49","76","62.5","true","\"60\"","null","18446744073709551615"}) {
+        const auto bytes=std::string(R"({"version":3,"language":"en","balancedMode":true,"autostart":false,"wallpaperDirectory":"","interfaceScale":)")+invalid+"}";
+        Check(!DecodePreferences(bytes).error.empty(),"persisted scale is a bounded integer");
+    }
     std::cout << "application settings service passed\n";
 }

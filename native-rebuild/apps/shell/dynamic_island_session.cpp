@@ -23,6 +23,7 @@ struct DynamicIslandSession::Impl {
     IslandDisplay display;
     std::unique_ptr<IslandPreviewRenderer> previewRenderer;
     bool stopped = false, english = false;
+    bool weatherRequested = false, previewActive = false;
     // True while the island shows another player's Windows media session.
     bool external = false;
     // Play/pause shows at once; players confirm a few hundred ms later. Until
@@ -64,6 +65,12 @@ struct DynamicIslandSession::Impl {
         flag("hideFullscreen",display.hideFullscreen);
         flag("topmost",display.topmost);flag("hoverExpand",display.hoverExpand);flag("autoHide",display.autoHide);
         flag("messages",display.messages);
+        for(const auto* key:{"leftWidget","rightWidget"}){
+            const auto field=json.find(key);if(field==json.end()||!field->is_string())continue;
+            const auto value=dynamic_island::ParseCompactWidget(field->get<std::string>());
+            if(value==dynamic_island::CompactWidget::Count)continue;
+            (std::string_view(key)=="leftWidget"?display.leftWidget:display.rightWidget)=value;
+        }
         const auto size=json.value("size",std::string{});
         if(size=="small")display.size=IslandSize::Small;else if(size=="large")display.size=IslandSize::Large;
         else if(size=="standard")display.size=IslandSize::Standard;
@@ -81,7 +88,9 @@ struct DynamicIslandSession::Impl {
         const auto path=DisplayPath();if(path.empty())return true;
         const auto text=nlohmann::json{{"version",1},{"hideFullscreen",next.hideFullscreen},
             {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
-            {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)}}.dump();
+            {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},
+            {"leftWidget",dynamic_island::CompactWidgetId(next.leftWidget)},
+            {"rightWidget",dynamic_island::CompactWidgetId(next.rightWidget)}}.dump();
         const auto temporary=path+".tmp";
         if(files.Write(temporary,text)&&files.Rename(temporary,path))return true;
         files.Remove(temporary);return false;
@@ -92,7 +101,14 @@ struct DynamicIslandSession::Impl {
         const auto previous=display;
         if(prefs.enabled&&!window.SetDisplay(next)){error="runtime";return false;}
         if(!SaveDisplay(next)){if(prefs.enabled)window.SetDisplay(previous);error="save";return false;}
-        display=next;error.clear();return true;
+        display=next;SyncWeatherConsumer(prefs.enabled);RefreshWeather();error.clear();return true;
+    }
+    void SyncWeatherConsumer(bool enabled) {
+        using W=dynamic_island::CompactWidget;
+        const bool wanted=previewActive||(enabled&&(display.leftWidget>=W::Weather||display.rightWidget>=W::Weather));
+        if(wanted==weatherRequested)return;
+        weatherRequested=wanted;
+        if(options.weatherActive)options.weatherActive(wanted);
     }
     std::uint64_t Now()const {return options.monotonicMillis?options.monotonicMillis():GetTickCount64();}
     const char* LoadStatus()const {
@@ -110,6 +126,7 @@ struct DynamicIslandSession::Impl {
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
             {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},
+            {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
         return std::wstring(json.begin(),json.end());
@@ -123,9 +140,9 @@ struct DynamicIslandSession::Impl {
         window.Update({model.Playback(),clock,date,model.RemainingSeconds(),model.Focusing(),model.Finished(),english});
     }
     bool Runtime(const widget::Preferences& next) {
-        if(!next.enabled){window.Stop();if(options.weatherActive)options.weatherActive(false);return true;}
+        if(!next.enabled){window.Stop();SyncWeatherConsumer(false);return true;}
         if(!window.Start(next,display))return false;
-        if(options.weatherActive)options.weatherActive(true);
+        SyncWeatherConsumer(true);
         RefreshWeather();Paint();return true;
     }
     void RefreshWeather() {
@@ -161,6 +178,7 @@ struct DynamicIslandSession::Impl {
         }
         case Action::Settings:if(options.openSettings)options.openSettings();return;
         case Action::WeatherSettings:if(options.openWeatherSettings)options.openWeatherSettings();return;
+        case Action::PerformanceSettings:if(options.openPerformanceSettings)options.openPerformanceSettings();return;
         case Action::Close:{auto next=prefs;next.enabled=false;Commit(next);Notify();return;}
         case Action::MaterialNone:case Action::MaterialLiquid:case Action::MaterialFrosted:{
             auto value=display;
@@ -191,19 +209,35 @@ struct DynamicIslandSession::Impl {
         if(stopped)return {};
         using ui::PageCommand;
         auto next=prefs;
+        const int number=static_cast<int>(command);
+        const bool left=number>=static_cast<int>(PageCommand::IslandLeftWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandLeftWidgetLast);
+        const bool right=number>=static_cast<int>(PageCommand::IslandRightWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandRightWidgetLast);
+        if(left||right){
+            auto value=display;const auto selected=static_cast<dynamic_island::CompactWidget>(number-
+                static_cast<int>(left?PageCommand::IslandLeftWidgetFirst:PageCommand::IslandRightWidgetFirst));
+            (left?value.leftWidget:value.rightWidget)=selected;
+            const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
+            return State(true,saved);
+        }
         switch(command) {
         case PageCommand::Ready:return State();
         case PageCommand::IslandPreviewStop:ReleasePreview();return std::wstring{};
         case PageCommand::IslandPreviewCompact:case PageCommand::IslandPreviewExpanded:{
             const bool expanded=command==PageCommand::IslandPreviewExpanded;
+            previewActive=true;SyncWeatherConsumer(prefs.enabled);
+            RefreshWeather();
             if(!previewRenderer)previewRenderer=std::make_unique<IslandPreviewRenderer>();
             const auto foreground=window.Preview(display,expanded,1.f/30);
             const auto frame=previewRenderer->Render(foreground,display,options.previewWallpaper?options.previewWallpaper():std::wstring{});
             const auto image=IslandPreviewRenderer::JpegDataUrl(frame);
+            auto readings=nlohmann::json::parse(window.CompactReadings(),nullptr,false);
+            if(!readings.is_array())readings=nlohmann::json::array();
             const auto value=nlohmann::json{{"version",1},{"type","dynamicIsland-preview"},{"mode",expanded?"expanded":"compact"},
                 {"shape",ShapeName(display.shape)},{"material",MaterialName(display.material)},{"size",SizeName(display.size)},
                 {"width",image.empty()?0u:frame.width},{"height",image.empty()?0u:frame.height},{"image",image},
-                {"animating",foreground.animating&&!image.empty()},{"error",image.empty()?"render":""}}.dump();
+                {"animating",foreground.animating&&!image.empty()},
+                {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
+                {"readings",std::move(readings)},{"error",image.empty()?"render":""}}.dump(-1,' ',true);
             return std::wstring(value.begin(),value.end());
         }
         case PageCommand::IslandEnable:next.enabled=true;break;
@@ -253,8 +287,8 @@ struct DynamicIslandSession::Impl {
         const bool saved=Commit(next);return State(true,saved);
     }
     void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))window.Expand(true);Notify();}
-    void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();}
-    void Shutdown() {if(stopped)return;stopped=true;ReleasePreview();window.SetTodoSource({});window.Stop();if(options.weatherActive)options.weatherActive(false);model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
+    void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();previewActive=false;SyncWeatherConsumer(prefs.enabled);}
+    void Shutdown() {if(stopped)return;ReleasePreview();window.SetTodoSource({});window.Stop();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
     ~Impl(){Shutdown();}
 };
 DynamicIslandSession::DynamicIslandSession(HINSTANCE instance,DynamicIslandSessionOptions options,settings::IFileStore* files)

@@ -27,6 +27,8 @@ public:
     void ConfigureApplicationCommands(ApplicationCommandHandler handler);
     void ConfigureVisibility(VisibilityHandler handler);
     void ConfigureThreadWake(UINT message, std::function<void()> handler);
+    // UI thread; callable before Run. Resizes around the current top-left.
+    bool SetInterfaceScale(int percent);
     void ConfigureWallpaper(WallpaperHandler handler,std::wstring mediaDirectory,
         WallpaperDropHandler dropHandler = {});
     void ConfigureMusicBackground(std::wstring mediaDirectory);
@@ -51,6 +53,7 @@ private:
     ApplicationCommandHandler applicationHandler_;
     VisibilityHandler visibilityHandler_;
     UINT wakeMessage_ = 0;
+    int interfaceScale_ = 75;
     std::function<void()> wakeHandler_;
     static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 };

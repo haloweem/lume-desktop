@@ -28,6 +28,7 @@ struct DynamicIslandSessionOptions {
     // never fetches, locates or stores weather itself.
     std::function<dynamic_island::Weather()> weather;
     std::function<void()> openWeatherSettings;
+    std::function<void()> openPerformanceSettings;
     std::function<void(bool)> weatherActive;
     // Bundled Forest sample background; independent of the user's desktop.
     std::function<std::wstring()> previewWallpaper;
@@ -44,7 +45,7 @@ public:
     void Update(dynamic_island::Media);
     void SetEnglish(bool);
     void RefreshTodos();
-    // Re-reads the weather component and repaints the weather page.
+    // Re-reads the weather component for compact widgets.
     void RefreshWeather();
     void ReleasePreview();
     bool ShowNotice(const std::string& taskId,const std::wstring& title,const std::wstring& time);

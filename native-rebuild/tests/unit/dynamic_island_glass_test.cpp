@@ -1,4 +1,5 @@
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include <objbase.h>
 #include <cstdlib>
 #include <iostream>
@@ -44,6 +45,17 @@ void Material(IslandMaterial material,bool topmost,const char* reason){
     Check(window.SetDisplay(display),"attached shape applies while glass is running");Pump(500);
     Check(GlassShown(window.Handle()),"glass stays when switching to attached shape");
     window.Expand(false);Pump(500);Check(GlassShown(window.Handle()),"attached compact glass stays visible");
+    if(topmost) {
+        using namespace platform::windows::window_layer;
+        Context next;contextReader=[&]{return next;};Start();
+        RECT bounds{};GetWindowRect(window.Handle(),&bounds);
+        next.foreignForeground=true;next.fullscreen.push_back(bounds);next.exclusive=true;
+        Update(next);Pump(150);
+        Check(!IsWindowVisible(window.Handle())&&!GlassShown(window.Handle()),"exclusive protection hides the actual overlay island and its glass together");
+        next={};Update(next);Pump(1400);
+        Check(GlassShown(window.Handle()),"actual overlay glass restores with its island after protection clears");
+        Stop();contextReader={};
+    }
     window.Stop();
 }
 // Choosing a glass in settings or the menu while the island is running.

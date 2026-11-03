@@ -45,6 +45,34 @@ struct CursorIsolation {
     }
 };
 void PrepareStartupFixture(HWND target);
+bool CheckRegionOcclusion() {
+    const DWORD flags=WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST;
+    const auto instance=GetModuleHandleW(nullptr);
+    const HWND target=CreateWindowExW(flags,L"STATIC",L"",WS_POPUP|WS_VISIBLE,
+        -20000,-20000,100,100,nullptr,nullptr,instance,nullptr);
+    const HWND overlay=CreateWindowExW(flags,L"STATIC",L"",WS_POPUP|WS_VISIBLE,
+        -20000,-20000,300,300,nullptr,nullptr,instance,nullptr);
+    bool okay=target&&overlay;
+    const auto region=[&](int l,int t,int r,int b) {
+        const auto handle=CreateRectRgn(l,t,r,b);
+        if(!handle)return false;
+        if(SetWindowRgn(overlay,handle,FALSE))return true;
+        DeleteObject(handle);return false;
+    };
+    if(okay) {
+        SetWindowPos(overlay,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+        RECT bounds{};GetWindowRect(target,&bounds);
+        okay=region(200,200,250,250)&&corner_test::Unoccluded(target,bounds);
+        okay=region(0,0,0,0)&&corner_test::Unoccluded(target,bounds)&&okay;
+        okay=region(20,20,60,60)&&!corner_test::Unoccluded(target,bounds)&&okay;
+        SetWindowRgn(overlay,nullptr,FALSE);
+        okay=!corner_test::Unoccluded(target,bounds)&&okay;
+    }
+    if(overlay)DestroyWindow(overlay);
+    if(target)DestroyWindow(target);
+    std::cout<<"region occlusion regression="<<okay<<" (outside/empty ignored, overlapping/unbounded rejected)\n";
+    return okay;
+}
 void CALLBACK CloseVerificationWindow(HWND,UINT,UINT_PTR,DWORD);
 LRESULT CALLBACK PreserveFixtureCreationOrder(HWND target,UINT message,WPARAM wp,LPARAM lp,
     UINT_PTR id,DWORD_PTR) {
@@ -256,6 +284,7 @@ int main(int argc,char** argv) {
     const char* requestedHold=std::getenv("LUME_VERIFY_HOLD_MS");
     verificationHoldMs=requestedHold?static_cast<UINT>(std::clamp(std::atoi(requestedHold),500,10000)):500;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if(!handshakeOnly&&!CheckRegionOcclusion())return 1;
     CursorIsolation cursorIsolation(!handshakeOnly);
     WebViewPageWindow window;
     verificationWindow = &window;

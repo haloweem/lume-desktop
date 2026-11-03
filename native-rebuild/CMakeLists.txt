@@ -24,6 +24,9 @@ add_subdirectory(tests/unit)
 # Packaging consumes exact target paths from this configuration. Never select
 # an acceptance executable by searching output directories for the first match.
 set(lume_acceptance_probe_targets
+  lume-interface-scale-window-test
+  lume-window-layer-policy-test
+  lume-application-tray-menu-test
   lume-wallpaper-session-test
   lume-dynamic-island-test lume-desktop-dynamic-island-test
   lume-today-todo-session-test lume-desktop-today-todo-test

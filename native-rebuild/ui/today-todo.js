@@ -4,7 +4,7 @@ import {t} from './localization.js';
 
 const materials=()=>[['solid',t('普通','Standard')],['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')]];
 export function todayTodoStatus(state) {
-  if(state.todayTodoStatus==='saving')return t('正在保存...','Saving...');
+  if(state.todayTodoStatus==='saving')return '';
   if(state.todayTodoStatus==='loading')return t('正在读取设置...','Loading settings...');
   if(state.todayTodoStatus==='unavailable')return t('桌面宿主未连接，待办清单设置未保存','Desktop host disconnected. To-do list settings were not saved.');
   if(state.todayTodoStatus==='error')return {

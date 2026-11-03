@@ -12,9 +12,9 @@ import {musicCommand} from './music-runtime-state.js';
 
 export function createMusicRuntime({
   bridge, content, showNotice, translate, getDefaultBackground, syncDesktopControls,
-  initialDesktopState, onExitFullscreen, onImmersiveChange,
+  initialDesktopState,initialViewState, onExitFullscreen, onImmersiveChange,
 } = {}) {
-  let musicViewState=null, musicViewOpen=false, musicView=null, musicNativeVisible=null;
+  let musicViewState=initialViewState?{...initialViewState}:null, musicViewOpen=false, musicView=null, musicNativeVisible=null;
   // The view validates commands against the newest host snapshot. Each new
   // queue bumps the session, so a mount-time snapshot would reject every
   // later toggle/seek/next as "unavailable" while playback continues.
@@ -152,6 +152,7 @@ export function createMusicRuntime({
   }
   let closeAndNavigate=null;
   return {
+    setViewState(next){musicViewState={...next};musicView?.navigate(musicViewState);},
     setCloseAndNavigate(callback){closeAndNavigate=callback;},
     render,
     close,

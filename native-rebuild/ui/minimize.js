@@ -20,7 +20,7 @@ const errors=()=>({
 export function minimizeStatus(state) {
   if(state.minimizeStatus==='loading')return t('正在读取动画设置...','Loading animation settings...');
   if(state.minimizeStatus==='unavailable')return t('桌面宿主未连接，动画设置未保存','Desktop host disconnected. Animation settings were not saved.');
-  if(state.minimizeStatus==='saving')return t('正在应用动画设置...','Applying animation settings...');
+  if(state.minimizeStatus==='saving')return '';
   if(state.minimizeError) {
     const message=errors()[state.minimizeError] || t('动画服务出现错误，尚未确认应用结果','The animation service encountered an error. Application is not confirmed.');
     return state.minimize.systemError ? `${message}${t(`（系统错误：${state.minimize.systemError}）`,` (system error: ${state.minimize.systemError})`)}` : message;

@@ -23,9 +23,8 @@ public:
     // Material submenu adds "无" (command 7) for a Dock without glass.
     static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false, bool systemTray = false);
     // Dynamic island: 8/9 material, 7 none, 2 expand/collapse, 11 settings, 10 reset, 1 close.
-    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages = true);
-    // Island todo page: 50 edit, 51 delete (when a row is under the pointer), 52 new, then ShowIsland items.
-    static UINT ShowIslandTodo(HWND owner, POINT position, bool item, bool writable, bool frosted, bool none);
+    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages = true,
+                           bool canExpand = true);
     // Dock or launchpad item: 20 pin, 21 unpin, 22 open location, 23 remove from launchpad.
     // `canReveal` is false for virtual entries such as the Lume manager item.
     static UINT ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal = true,
@@ -38,8 +37,12 @@ public:
     // Launchpad collection tile: 40 rename, 41 delete (contents return to the grid).
     static UINT ShowLaunchpadCollection(HWND owner, POINT position, bool dockActions = false, bool pinned = false);
 	struct Action { std::wstring label; UINT command=0; bool enabled=true; };
+	// Application menus are explicitly invoked tools (for example the tray),
+	// independent of desktop-widget visibility and fullscreen suppression.
+	enum class Scope { Desktop, Application };
 	// Compact text-only layout for short menus such as the application tray.
-	static UINT ShowItems(HWND owner, POINT position, const std::vector<Action>& items, bool compact = false);
+	static UINT ShowItems(HWND owner, POINT position, const std::vector<Action>& items, bool compact = false,
+		Scope scope = Scope::Desktop);
 	static UINT ShowScreenshotPin(HWND owner, POINT position);
 	// Audio spectrum: 30 + style index (样式一, 样式二), IDM_LUME_WIDGET_SIZE_FIRST.. for 50..300%,
 	// then 11 settings, 12 lock, 10 reset, 1 close.

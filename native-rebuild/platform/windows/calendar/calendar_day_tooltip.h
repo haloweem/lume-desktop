@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/widget_ui/direct_write_tooltip.h"
 #include "core/calendar/calendar_model.h"
 #include "core/calendar/lunar_calendar.h"
@@ -28,6 +29,7 @@ public:
             WS_POPUP|TTS_NOPREFIX|TTS_ALWAYSTIP,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,
             owner,nullptr,GetModuleHandleW(nullptr),nullptr);
         if(!window_)return false;
+        window_layer::Register(window_,window_layer::Kind::Popup,owner);
         if(!direct_write_tooltip::Attach(window_)){Stop();return false;}
         owner_=owner;
         for(std::size_t i=0;i<text_.size();++i){

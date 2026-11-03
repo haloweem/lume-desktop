@@ -56,24 +56,11 @@ HWND ApplicationCeiling(HWND host) {
     }, reinterpret_cast<LPARAM>(&search));
     return search.last;
 }
-// Any maximized application on the monitor, focused or not, covers the Dock.
-bool MaximizedCovers(HWND bar) {
-    struct Search { HWND host; HMONITOR monitor; DWORD shellPid; bool found, desktop; } search{
-        desktop_level::Host(), MonitorFromWindow(bar, MONITOR_DEFAULTTOPRIMARY), 0, false, false};
-    search.desktop = desktop_level::DesktopForeground(search.host);
-    GetWindowThreadProcessId(GetShellWindow(), &search.shellPid);
-    EnumWindows([](HWND window, LPARAM data) -> BOOL {
-        auto& result = *reinterpret_cast<Search*>(data);
-        if (result.desktop && window == result.host) return FALSE;
-        if (!IsWindowVisible(window) || IsIconic(window) || !IsZoomed(window) ||
-            OwnOverlay(window) || ShellDesktop(window, result.host, result.shellPid) ||
-            MonitorFromWindow(window, MONITOR_DEFAULTTONULL) != result.monitor) return TRUE;
-        DWORD cloaked = 0;
-        if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return TRUE;
-        result.found = true;
-        return FALSE;
-    }, reinterpret_cast<LPARAM>(&search));
-    return search.found;
+// Ordinary applications cover a resident Dock through z-order, never SW_HIDE.
+// Only the shared foreground fullscreen/exclusive policy suppresses its monitor.
+bool FullscreenProtected(HWND bar) {
+    RECT area{};GetWindowRect(bar,&area);
+    return window_layer::enabled && window_layer::Protected(area,window_layer::ReadContext());
 }
 constexpr UINT Flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
 void Demote(HWND window) {
@@ -129,9 +116,9 @@ void CALLBACK DockDesktopLayer::Event(HWINEVENTHOOK hook, DWORD event, HWND wind
 }
 void DockDesktopLayer::Place() {
     if (!icons_ || !bar_) return;
-    if (const bool covered = MaximizedCovers(bar_); covered != covered_) {
+    if (const bool covered = FullscreenProtected(bar_); covered != covered_) {
         covered_ = covered;
-        // Restoring a maximized window raises no hooked event: poll gently while hidden.
+        // Recheck while protected so a missed foreground event cannot leave it hidden.
         if (covered_) SetTimer(icons_, FallbackTimer, 700, nullptr);
         else if (fallback_) SetTimer(icons_, FallbackTimer, 1500, nullptr);
         else KillTimer(icons_, FallbackTimer);
@@ -185,9 +172,7 @@ void DockDesktopLayer::Place() {
         // such a window (a system overlay right above the desktop), and the
         // refused call would leave the Dock hidden. Retry against the desktop
         // host, then show it without a z-order request.
-        if (!SetWindowPos(icons_, anchor, 0, 0, 0, 0, flags) &&
-            !(host && SetWindowPos(icons_, host, 0, 0, 0, 0, flags)))
-            ShowWindow(icons_, SW_SHOWNA);
+        desktop_level::RequestPlacement(icons_,anchor,flags,host);
     }
     {
         desktop_level::PlacementScope placement(bar_);

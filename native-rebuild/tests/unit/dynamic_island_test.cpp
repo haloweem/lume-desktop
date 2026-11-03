@@ -1,15 +1,19 @@
 #include "apps/shell/dynamic_island_session.h"
 #include "platform/windows/dynamic_island/island_window.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/dynamic_island/island_preview.h"
 #include "vendor/nlohmann/json.hpp"
 #include <objbase.h>
 #include <gdiplus.h>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <thread>
+#include <shlobj.h>
+#include "platform/windows/dynamic_island/compact_widgets.h"
 
 using namespace lume;
 using ui::PageCommand;
@@ -36,14 +40,58 @@ void SaveFrame(const platform::windows::WidgetBitmap& frame,const wchar_t* name)
     const CLSID png={0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
     Check(image.Save((root/name).c_str(),&png)==Gdiplus::Ok,"save actual native foreground");
 }
-bool HasLightning(const platform::windows::WidgetBitmap& frame){
-    return std::any_of(frame.pixels.begin(),frame.pixels.end(),[](std::uint32_t pixel){
-        const auto red=(pixel>>16)&0xff,green=(pixel>>8)&0xff,blue=pixel&0xff;
-        return red>green+35&&green>blue+35&&red>100;
-    });
-}
 void Scenario(){
     Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM initialization");
+    {
+        using namespace platform::windows;
+        using W=dynamic_island::CompactWidget;
+        CompactData values;values.time={};values.time.wYear=2026;values.time.wMonth=11;values.time.wDay=3;
+        values.time.wDayOfWeek=2;values.time.wHour=12;values.time.wMinute=34;
+        values.battery=57;values.disk=39;values.hasBattery=true;values.plugged=true;values.files=2;
+        dynamic_island::Weather weather;weather.available=true;weather.hasRange=true;
+        weather.low=12;weather.high=20;weather.temperature=18;weather.condition=L"多云";weather.humidity=65;
+        weather.windSpeed=12.96;weather.windDirection=90;weather.uv=3;weather.pressure=1023;
+        weather.visibility=21;weather.apparentTemperature=17;weather.precipitation=48;
+        weather.sunrise=L"06:09";weather.sunset=L"17:31";
+        performance::Snapshot metrics;metrics.monotonicMillis=GetTickCount64();metrics.cpu=48;metrics.memory=62;
+        metrics.download=1024;metrics.upload=512;
+        for(int id=1;id<static_cast<int>(W::Count);++id){
+            const auto value=ReadCompact(static_cast<W>(id),values,weather,metrics,false);
+            Check(value.available&&!value.text.empty(),"every offered mini widget has a real data-backed display path");
+        }
+        Check(ReadCompact(W::TemperatureRange,values,weather,metrics,false).text==L"12°–20°"&&
+              ReadCompact(W::Cpu,values,weather,metrics,false).text==L"48%"&&
+              ReadCompact(W::Humidity,values,weather,metrics,false).text==L"65%",
+              "weather and performance projections use their true source values");
+        WidgetCanvas compactCanvas;WidgetBitmap compactFrame;
+        Check(compactCanvas.Begin(600,420,144),"compact comparison canvas starts");
+        for(int id=1;id<static_cast<int>(W::Count);++id){
+            const float x=static_cast<float>((id-1)%5)*120,y=static_cast<float>((id-1)/5)*70;
+            compactCanvas.Rounded({x,y,110,36},18,0x000000);
+            DrawCompact(compactCanvas,static_cast<W>(id),{x+8,y+1,94,34},values,weather,metrics,false,1);
+            compactCanvas.Text(std::to_wstring(id),{x,y+38,110,18},10,0xffffff,1,false,WidgetTextAlign::Center);
+        }
+        Check(compactCanvas.Finish(compactFrame),"compact comparison canvas finishes");
+        SaveFrame(compactFrame,L"compact-reference-gallery.png");
+        for(const auto kind:{W::DayProgress,W::WeekProgress,W::MonthProgress,W::QuarterProgress,W::YearProgress,W::Cpu,W::Memory,W::Disk,W::CpuMemory})
+          for(const unsigned dpi:{96u,144u})for(const bool right:{false,true}){
+            Check(compactCanvas.Begin(98,34,dpi),"meter regression canvas starts");
+            DrawCompact(compactCanvas,kind,{0,0,98,34},values,weather,metrics,false,1,right);
+            Check(compactCanvas.Finish(compactFrame),"meter regression canvas finishes");
+            bool visible=false,extra=false;
+            for(unsigned y=0;y<compactFrame.height;++y)for(unsigned x=0;x<compactFrame.width;++x){
+                if(!(compactFrame.pixels[static_cast<std::size_t>(y)*compactFrame.width+x]>>24))continue;
+                visible=true;const float dip=static_cast<float>(x)*96/static_cast<float>(dpi);
+                extra|=right?dip<75:dip>23;
+            }
+            Check(visible&&!extra,"one aligned ring contains the number without an extra icon or duplicate value");
+        }
+        weather={};values.battery.reset();values.hasBattery=false;metrics.monotonicMillis=1;
+        Check(!ReadCompact(W::TemperatureRange,values,weather,metrics,false).available&&
+              !ReadCompact(W::Battery,values,weather,metrics,false).available&&
+              !ReadCompact(W::Cpu,values,weather,metrics,false).available,
+              "missing weather battery and stale performance samples never fabricate readings");
+    }
     std::uint64_t now=1000;
     dynamic_island::Model model;model.StartFocus(now);Check(model.RemainingSeconds()==1500,"25 minute timer");
     model.Tick(now+999);Check(model.RemainingSeconds()==1500,"round up remaining seconds");
@@ -58,27 +106,56 @@ void Scenario(){
         options.notify=[&](const auto&){++notifications;};
     options.control=[&](auto action,const auto& projection){Check(projection.session==7&&projection.id=="fixture","control retains native identity");last=action;++controls;};
     options.weatherActive=[&](bool active){weatherActive=active;};
+    options.weather=[] {dynamic_island::Weather value;value.enabled=value.available=value.hasRange=true;
+        value.low=12;value.high=20;value.temperature=18;value.humidity=65;value.condition=L"多云";return value;};
     const auto foreground=GetForegroundWindow();
     {
         shell::DynamicIslandSession session(GetModuleHandleW(nullptr),options,&files);
         Check(session.Restore()&&!session.Running()&&files.values.empty(),"disabled restore has no window or file writes");
         Check(!session.HandlePage(PageCommand::DockEnable),"unrelated commands rejected");
         Check(session.HandlePage(PageCommand::IslandEnable).has_value()&&session.Running(),"enable creates window");
-        Check(weatherActive,"island enables its shared weather consumer");
-        Check((GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"island shows above windows by default");
+        Check(!weatherActive,"island without a weather widget leaves the shared weather worker idle");
+        Check((GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)==0,"island stays in the desktop layer by default");
         Pump(900);Check(IsWindowVisible(session.Handle()),"idle capsule is visible by default");
         Check(GetForegroundWindow()==foreground,"enable never takes focus");
         Check(SendMessageW(session.Handle(),WM_MOUSEACTIVATE,0,0)==MA_NOACTIVATE,"click never activates");
         const auto original=files.values["island.json"];files.fail=true;
         session.HandlePage(PageCommand::IslandDisable);
         Check(session.Running()&&session.Snapshot().enabled&&files.values["island.json"]==original,"failed disable restores live window and original preferences");
-        Check(weatherActive,"failed disable also restores the shared weather consumer");
+        Check(!weatherActive,"failed disable preserves the idle weather worker");
         Check(State(session)["error"]=="save","save failure reported");
         files.fail=false;session.HandlePage(PageCommand::IslandLock);Check(session.Snapshot().locked,"lock persisted");
         session.Update(media);const HWND hwnd=session.Handle();
         Pump(900);Check(IsWindowVisible(hwnd),"playback keeps the island visible");
         RECT r{};GetClientRect(hwnd,&r);const int dpi=static_cast<int>(GetDpiForWindow(hwnd));
         Check(r.right==MulDiv(236,dpi,96)&&r.bottom==MulDiv(34,dpi,96),"compact capsule settles at its playing size");
+        {
+            const auto left=static_cast<PageCommand>(static_cast<int>(PageCommand::IslandLeftWidgetFirst)+20);
+            const auto right=static_cast<PageCommand>(static_cast<int>(PageCommand::IslandRightWidgetFirst)+1);
+            Check(session.HandlePage(left).has_value()&&session.HandlePage(right).has_value(),"independent side selections reach real session");
+            Check(weatherActive,"a selected weather widget requests shared weather data");
+            Pump(900);GetClientRect(session.Handle(),&r);
+            Check(r.right==MulDiv(360,dpi,96)&&State(session)["leftWidget"]==20&&State(session)["rightWidget"]==1,
+                  "compact island widens for the two real mini widgets");
+            const auto saved=nlohmann::json::parse(files.values["island-display.json"]);
+            Check(saved["leftWidget"]=="temperatureRange"&&saved["rightWidget"]=="lunar",
+                  "left and right widget identities persist independently");
+            const auto preview=nlohmann::json::parse(*session.HandlePage(PageCommand::IslandPreviewCompact));
+            Check(preview["leftWidget"]==20&&preview["rightWidget"]==1&&
+                  preview["readings"][19]["text"]=="12°–20°"&&preview["readings"][19]["available"]==true,
+                  "actual native preview returns selected side values from the shared weather reading");
+            session.HandlePage(PageCommand::IslandPreviewStop);
+            files.fail=true;
+            session.HandlePage(PageCommand::IslandLeftWidgetFirst);
+            Check(State(session)["leftWidget"]==20&&State(session)["error"]=="save",
+                  "failed side save restores the actual running selection");
+            files.fail=false;
+            session.HandlePage(PageCommand::IslandLeftWidgetFirst);
+            session.HandlePage(PageCommand::IslandRightWidgetFirst);
+            Check(!weatherActive,"clearing weather slots releases the shared weather worker");
+            Pump(900);GetClientRect(session.Handle(),&r);
+            Check(r.right==MulDiv(236,dpi,96),"clearing both slots restores the original compact width");
+        }
         Click(hwnd,100,15);Pump(900);
         Check(State(session)["expanded"]==true,"real capsule click expands");
         PostMessageW(hwnd,WM_APP+0x6e3,0,0);Pump(60);Check(State(session)["expanded"]==false,"outside click collapses");
@@ -98,14 +175,18 @@ void Scenario(){
         session.HandlePage(PageCommand::IslandSizeLarge);session.HandlePage(PageCommand::IslandHoverOn);
         Check(State(session)["size"]=="large"&&State(session)["hover"]==true&&files.values.count("island-display.json"),"display options persisted beside preferences");
         {   files.fail=true;const auto saved=files.values["island-display.json"];
-            session.HandlePage(PageCommand::IslandTopmostOff);
-            Check(State(session)["error"]=="save"&&State(session)["topmost"]==true&&session.Running()&&
-                  (GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)&&files.values["island-display.json"]==saved,
+            session.HandlePage(PageCommand::IslandTopmostOn);
+            Check(State(session)["error"]=="save"&&State(session)["topmost"]==false&&session.Running()&&
+                  !(GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)&&files.values["island-display.json"]==saved,
                   "failed display save keeps the previous window and file");
             files.fail=false;}
         session.HandlePage(PageCommand::IslandTopmostOff);
         Check(session.Running()&&!(GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"desktop layer option recreates a non-topmost window");
         session.HandlePage(PageCommand::IslandTopmostOn);session.HandlePage(PageCommand::IslandSizeStandard);session.HandlePage(PageCommand::IslandHoverOff);
+        session.HandlePage(PageCommand::IslandHideFullscreenOff);
+        Check(State(session)["hideFullscreen"]==false&&State(session)["topmost"]==true&&
+              (GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"island-only layering and fullscreen choices apply to the actual native window");
+        session.HandlePage(PageCommand::IslandHideFullscreenOn);
         session.HandlePage(PageCommand::IslandMaterialFrosted);Check(State(session)["material"]=="frosted-glass","material persisted");
         session.HandlePage(PageCommand::IslandMaterialNone);
         session.HandlePage(PageCommand::IslandCollapse);session.HandlePage(PageCommand::IslandAutoHideOn);
@@ -125,7 +206,7 @@ void Scenario(){
     {
         shell::DynamicIslandSession restored(GetModuleHandleW(nullptr),options,&files);
         Check(restored.Restore()&&restored.Running()&&restored.Snapshot().locked,"enabled and locked survive restart");
-        Check(State(restored)["topmost"]==true&&State(restored)["hover"]==false&&
+        Check(State(restored)["topmost"]==true&&State(restored)["hideFullscreen"]==true&&State(restored)["hover"]==false&&
               State(restored)["autoHide"]==false&&State(restored)["material"]=="none"&&State(restored)["shape"]=="standard",
               "display options including unchecked auto-hide survive restart");restored.Shutdown();
         files.values["broken.json"]="bad data";options.preferencesPath="broken.json";
@@ -158,7 +239,8 @@ void Scenario(){
     }
     {
         using namespace platform::windows;
-        IslandWindow window(GetModuleHandleW(nullptr),{});
+        dynamic_island::Action compactAction=dynamic_island::Action::Tick;
+        IslandWindow window(GetModuleHandleW(nullptr),[&](dynamic_island::Action action){compactAction=action;});
         widget::Preferences prefs;prefs.enabled=true;
         IslandDisplay display;
         Check(window.Start(prefs,display),"preview window starts");
@@ -166,6 +248,45 @@ void Scenario(){
         SaveFrame(window.Frame(),L"idle.png");
         auto playing=media;playing.spectrum.fill(.5f);playing.spectrum[2]=.9f;playing.energy=.6f;
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();SaveFrame(window.Frame(),L"compact.png");
+        display.leftWidget=dynamic_island::CompactWidget::TemperatureRange;
+        display.rightWidget=dynamic_island::CompactWidget::Lunar;
+        dynamic_island::Weather compactWeather;compactWeather.available=compactWeather.hasRange=true;
+        compactWeather.low=12;compactWeather.high=20;compactWeather.temperature=16;window.SetWeather(compactWeather);
+        Check(window.SetDisplay(display),"real native island accepts independent compact side widgets");
+        window.Settle();SaveFrame(window.Frame(),L"compact-widgets.png");
+        RECT compactRect{};GetClientRect(window.Handle(),&compactRect);
+        Check(compactRect.right==MulDiv(360,static_cast<int>(GetDpiForWindow(window.Handle())),96),
+              "real compact island leaves separate readable left and right lanes");
+        const auto nativePreview=window.Preview(display,false);
+        Check(nativePreview.width>0&&nativePreview.pixels.pixels.size()==
+              static_cast<std::size_t>(nativePreview.width)*nativePreview.height,
+              "the production preview uses the same native compact rendering path");
+        SaveFrame(nativePreview.pixels,L"compact-widgets-preview.png");
+        IslandPreviewRenderer compactRenderer;
+        SaveFrame(compactRenderer.Render(nativePreview,display,{}),L"compact-widgets-scene.png");
+        wchar_t readingsExe[32768]{};GetModuleFileNameW(nullptr,readingsExe,32768);
+        const auto readingsPath=std::filesystem::path(readingsExe).parent_path()/L"verification/dynamic-island/compact-readings.json";
+        const auto readings=window.CompactReadings();
+        std::ofstream readingsFile(readingsPath,std::ios::binary);
+        for(const wchar_t byte:readings)readingsFile.put(static_cast<char>(byte));
+        Click(window.Handle(),20,18);window.Settle();
+        Check(!window.Expanded()&&compactAction==dynamic_island::Action::WeatherSettings,
+              "weather compact widget opens the weather manager without an old page");
+        bool calendarOpened=false;
+        IslandTodoSource navigation;navigation.openCalendar=[&]{calendarOpened=true;};
+        window.SetTodoSource(navigation);
+        window.Expand(false);window.Settle();
+        Click(window.Handle(),340,18);window.Settle();
+        Check(!window.Expanded()&&calendarOpened,"lunar compact widget opens the calendar manager");
+        display.leftWidget=dynamic_island::CompactWidget::Cpu;
+        Check(window.SetDisplay(display),"system compact widget applies");window.Settle();
+        compactAction=dynamic_island::Action::Tick;
+        Click(window.Handle(),20,18);window.Settle();
+        Check(!window.Expanded()&&compactAction==dynamic_island::Action::PerformanceSettings,
+              "performance compact widget opens the performance manager");
+        window.Expand(false);window.Settle();
+        display.leftWidget=display.rightWidget=dynamic_island::CompactWidget::None;
+        Check(window.SetDisplay(display),"mini widget choices can be cleared without rebuilding other settings");window.Settle();
         window.Expand(true);window.Settle();window.Update({playing,L"",L"",0,false,false,false});
         SaveFrame(window.Frame(),L"music.png");
         {BOOL animation=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animation,0);
@@ -284,91 +405,42 @@ void Scenario(){
         window.Expand(false);window.Settle();SaveFrame(window.Frame(),L"shape-capsule-compact.png");
         display.size=IslandSize::Small;window.SetDisplay(display);window.Expand(false);window.Settle();
         SaveFrame(window.Frame(),L"compact-small.png");
-        // Media drops out for a moment between tracks while collapsed; once it is
-        // back the island must open on the music page, not the calendar fallback.
+        // A media gap no longer exposes an empty legacy page.
         window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
-        Check(window.Page()==IslandPage::Calendar,"no media falls back to the calendar");
+        window.Expand(true);window.Settle();
+        Check(!window.Expanded(),"no media or reminders leaves the island compact");
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();
         window.Expand(true);window.Settle();
         Check(window.Page()==IslandPage::Music,"music page again after a brief media gap");
         window.Expand(false);window.Settle();
-        // Opened during the gap: the calendar fallback gives way when the song is back.
+        // The next track can still open its music controls.
         window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
         window.Expand(true);window.Settle();
+        Check(!window.Expanded(),"media gap cannot open a removed page");
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();
         Check(window.Page()==IslandPage::Music,"an open island returns to music once media is back");
         window.Expand(false);window.Settle();
-        // Calendar and todo pages read the shared todo store through the source.
-        int toggles=0;
         IslandTodoSource source;
-        source.forDay=[](calendar::Date){return std::vector<IslandTodo>{
-            {"a",L"提交周报",L"09:30",true,false,0x6bd89b},{"b",L"和设计评审灵动岛",L"14:00",false,false,0xff6961},{"c",L"买牛奶",L"",false,false,0}};};
-        source.hasTodos=[](calendar::Date d){return d.day%5==0;};
-        source.toggle=[&](const IslandTodo& t){Check(t.id=="b","toggle routes the clicked todo");++toggles;};
         window.SetTodoSource(source);
         display.size=IslandSize::Standard;window.SetDisplay(display);
         window.Expand(true);window.Settle();
-        Check(window.Page()==IslandPage::Music,"music page first while playing");
+        Check(window.Page()==IslandPage::Music,"music remains the only expanded page without reminders");
         SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        Check(window.Page()==IslandPage::Calendar,"wheel moves to the calendar page");
-        SaveFrame(window.Frame(),L"calendar.png");
-        // The weather page only projects the host's reading; it never fetches.
-        dynamic_island::Weather weather;
-        weather.enabled=true;weather.available=true;weather.city=L"广州 · 天河区";weather.condition=L"多云";
-        weather.temperature=26;weather.hasRange=true;weather.high=29;weather.low=21;weather.code=3;weather.isDay=true;
-        weather.hours=6;
-        for(std::size_t i=0;i<weather.hourly.size();++i){
-            auto& hour=weather.hourly[i];hour.label=std::to_wstring(10+i);hour.temperature=26+static_cast<int>(i%3);
-            hour.code=i<2?3:i<4?61:0;
-        }
-        window.SetWeather(weather);
-        SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        Check(window.Page()==IslandPage::Weather,"wheel moves to the weather page");
-        SaveFrame(window.Frame(),L"weather.png");
-        auto rain=weather;rain.city=L"上海 · 浦东新区";rain.condition=L"中雨";rain.code=61;rain.temperature=19;rain.high=22;rain.low=16;
-        window.SetWeather(rain);window.Settle();
-        SaveFrame(window.Frame(),L"weather-rain.png");
-        auto clear=weather;clear.city=L"北京 · 朝阳区";clear.condition=L"晴";clear.code=0;clear.temperature=31;clear.high=34;clear.low=23;
-        window.SetWeather(clear);window.Settle();
-        SaveFrame(window.Frame(),L"weather-clear.png");
-        clear.isDay=false;clear.condition=L"晴";clear.temperature=18;clear.high=34;clear.low=23;
-        window.SetWeather(clear);window.Settle();
-        SaveFrame(window.Frame(),L"weather-night.png");
-        auto unknown=weather;unknown.code=999;unknown.condition=L"霾";
-        window.SetWeather(unknown);window.Settle();
-        Check(!HasLightning(window.Frame()),"unknown weather code does not render as thunderstorm");
-        auto storm=weather;storm.code=95;storm.condition=L"雷暴";
-        window.SetWeather(storm);window.Settle();
-        Check(HasLightning(window.Frame()),"WMO thunderstorm code renders lightning");
-        window.SetWeather({});window.Settle();
-        SaveFrame(window.Frame(),L"weather-off.png");
-        window.SetWeather(weather);window.Settle();
+        Check(window.Page()==IslandPage::Music,"wheel cannot reopen removed pages");
+        display.leftWidget=dynamic_island::CompactWidget::Cpu;
+        Check(window.SetDisplay(display),"compact CPU choice starts performance sampling");
         const auto warmDeadline=GetTickCount64()+6000;
-        while ((!window.PerformanceReading() || !window.PerformanceReading()->cpu) &&
-               GetTickCount64()<warmDeadline) Pump(20);
-        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,
-              "performance rates are ready before opening their page");
+        while ((!window.PerformanceReading() || !window.PerformanceReading()->cpu) && GetTickCount64()<warmDeadline) Pump(20);
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,"compact performance readings stay warm");
         const auto warmStamp=window.PerformanceReading()->monotonicMillis;
-        SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        Check(window.Page()==IslandPage::Performance,"wheel moves to the performance page");
-        Check(window.PerformanceReading() && window.PerformanceReading()->cpu &&
-              window.PerformanceReading()->monotonicMillis>=warmStamp,"first frame retains warm rates");
-        window.Expand(false);
-        Pump(1200);
+        window.Expand(false);Pump(1200);
         Check(window.PerformanceReading() && window.PerformanceReading()->cpu &&
               window.PerformanceReading()->monotonicMillis>warmStamp,"collapsed island keeps rates current");
         window.Expand(true);window.Settle();
-        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,"reopening keeps rates");
-        for(int i=0;i<6&&window.Page()!=IslandPage::Performance;++i){
-            SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        }
-        SaveFrame(window.Frame(),L"performance.png");
-        SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        Check(window.Page()==IslandPage::Todo,"wheel moves to the todo page");
-        SaveFrame(window.Frame(),L"todo.png");
-        Click(window.Handle(),30,48+29+13);Check(toggles==1,"todo checkbox toggles through the shared store");
-        SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
-        Check(window.Page()==IslandPage::Music,"wheel wraps back to music");
+        Check(window.PerformanceReading() && window.PerformanceReading()->cpu,"reopening music keeps compact rates");
+        display.leftWidget=dynamic_island::CompactWidget::None;
+        Check(window.SetDisplay(display),"clearing compact CPU choice applies");
+        Check(!window.PerformanceReading(),"unused performance samples are released");
         std::string opened;source.openTask=[&](const std::string& id){opened=id;};
         source.find=[](const std::string& id)->std::optional<IslandTodo>{IslandTodo t;t.id=id;t.title=L"给妈妈打电话";t.time=L"10月20日 19:30";t.notes=L"记得问周末安排";return t;};
         window.SetTodoSource(source);
@@ -385,7 +457,27 @@ void Scenario(){
         Check(window.Page()==IslandPage::Music,"sideways scrolling wraps to the first page");
         window.Expand(false);window.Settle();
         display.topmost=false;Check(window.SetDisplay(display),"desktop layer option applies");
-        Check(!window.ShowNotice("task-8",L"x",L""),"a desktop-layer island leaves reminders to the popup");
+        Check(!(GetWindowLongPtrW(window.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"a reminder-capable island remains below applications");
+        {
+            using namespace platform::windows::window_layer;
+            Context policy;contextReader=[&]{return policy;};Start();
+            display.topmost=true;display.hideFullscreen=true;display.autoHide=false;
+            Check(window.SetDisplay(display),"explicit overlay starts in the shared policy");window.Settle();
+            Check(IsWindowVisible(window.Handle())&&(GetWindowLongPtrW(window.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),
+                  "actual island window can show above normal applications");
+            RECT area{};GetWindowRect(window.Handle(),&area);
+            policy.foreignForeground=true;policy.fullscreen.push_back(area);Update(policy);Pump(50);window.Settle();
+            Check(!IsWindowVisible(window.Handle()),"actual island hides immediately for fullscreen with the option enabled");
+            display.hideFullscreen=false;Check(window.SetDisplay(display),"fullscreen visibility preference applies live");window.Settle();
+            Check(IsWindowVisible(window.Handle())&&!Suppressed(window.Handle()),"actual island resumes over ordinary fullscreen when explicitly allowed");
+            policy.exclusive=true;Update(policy);Pump(50);window.Settle();
+            Check(!IsWindowVisible(window.Handle()),"actual island still yields to exclusive game protection");
+            policy={};Update(policy);Pump(1100);window.Settle();
+            Check(IsWindowVisible(window.Handle()),"actual island restores after game protection clears");
+            display.topmost=false;display.hideFullscreen=true;Check(window.SetDisplay(display),"desktop layer can be restored");window.Settle();
+            Check(!(GetWindowLongPtrW(window.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"desktop layer clears native topmost state");
+            Stop();contextReader={};
+        }
         window.SetTodoSource({});
         window.Stop();Check(window.Frame().pixels.empty(),"stop frees rendered bitmap");
     }

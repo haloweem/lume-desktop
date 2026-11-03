@@ -97,7 +97,8 @@ LRESULT CALLBACK ApplicationTray::WindowProc(HWND hwnd,UINT message,WPARAM wpara
         else if(lparam == NIN_BALLOONUSERCLICK) { if(self->handler_) self->handler_(TrayAction::OpenDiagnostics); }
         else if(lparam == WM_RBUTTONUP || lparam == WM_CONTEXTMENU) {
             POINT point{}; GetCursorPos(&point); SetForegroundWindow(hwnd);
-            const UINT result=LumeWidgetMenu::ShowItems(hwnd,point,{{L"打开 Lume",1},{L"导出诊断报告",3},{L"",0},{L"退出 Lume",2}},true);
+            const UINT result=LumeWidgetMenu::ShowItems(hwnd,point,
+                {{L"打开 Lume",1},{L"导出诊断报告",3},{L"",0},{L"退出 Lume",2}},true,LumeWidgetMenu::Scope::Application);
             PostMessageW(hwnd,WM_NULL,0,0);
             if (self->handler_) {
                 if (const auto action = MapTrayCommand(result)) self->handler_(*action);

@@ -33,6 +33,8 @@ std::optional<ApplicationSettingsPageCommand> ParseApplicationSettingsPageJson(s
         else if (action == "language") { command.action = ApplicationSettingsAction::Language; hasValue = true; }
         else if (action == "balancedMode") { command.action = ApplicationSettingsAction::BalancedMode; hasValue = true; }
         else if (action == "autostart") { command.action = ApplicationSettingsAction::Autostart; hasValue = true; }
+        else if (action == "interfaceScale") { command.action = ApplicationSettingsAction::InterfaceScale; hasValue = true; }
+        else if (action == "previewInterfaceScale") { command.action = ApplicationSettingsAction::PreviewInterfaceScale; hasValue = true; }
         else return {};
         if (json.size() != (hasValue ? 4u : 3u)) return {};
         if (hasValue) {
@@ -41,6 +43,10 @@ std::optional<ApplicationSettingsPageCommand> ParseApplicationSettingsPageJson(s
                 if (!value.is_string()) return {};
                 command.language = value.get<std::string>();
                 if (command.language != "zh-CN" && command.language != "en") return {};
+            } else if (command.action == ApplicationSettingsAction::InterfaceScale ||
+                       command.action == ApplicationSettingsAction::PreviewInterfaceScale) {
+                if (!value.is_number_integer() || value < 50 || value > 75) return {};
+                command.scalePercent = value.get<int>();
             } else {
                 if (!value.is_boolean()) return {};
                 command.flag = value.get<bool>();
