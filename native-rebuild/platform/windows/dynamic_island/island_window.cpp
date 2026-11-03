@@ -1319,12 +1319,17 @@ struct IslandWindow::Impl {
             break;
         }
     }
+    void SyncHoverExpansion() {
+        if(!hwnd)return;
+        KillTimer(hwnd,HoverTimer);
+        if(display.hoverExpand&&hovered&&!expanded&&!suppressed&&!menuOpen)SetTimer(hwnd,HoverTimer,320,nullptr);
+    }
     void Hover(bool inside) {
         if (inside == hovered) return;
         hovered = inside;
         if (inside) {
             KillTimer(hwnd, CollapseTimer);
-            if (display.hoverExpand && HasMedia() && !expanded) SetTimer(hwnd, HoverTimer, 320, nullptr);
+            SyncHoverExpansion();
         } else {
             KillTimer(hwnd, HoverTimer);
             hoverHit = -1;
@@ -1426,7 +1431,7 @@ struct IslandWindow::Impl {
                 return 0;
             case HoverTimer:
                 KillTimer(hwnd, HoverTimer);
-                if (self->hovered) self->Expand(true, true);
+                if (self->display.hoverExpand&&self->hovered&&!self->suppressed&&!self->menuOpen) self->Expand(true, true);
                 return 0;
             case CollapseTimer:
                 KillTimer(hwnd, CollapseTimer);
@@ -1521,6 +1526,13 @@ bool IslandWindow::SetDisplay(const IslandDisplay& d) {
     }
     if (startAutoHide || d.shape!=previous.shape || d.size!=previous.size || d.material!=previous.material)
         impl_->Activity();  // Show changed appearance briefly before tucking again.
+    if(d.hoverExpand!=previous.hoverExpand){
+        impl_->SyncHoverExpansion();
+        if(!d.hoverExpand&&impl_->hoverExpanded){
+            impl_->hoverExpanded=false;
+            if(impl_->expanded&&!impl_->hovered)SetTimer(impl_->hwnd,CollapseTimer,3500,nullptr);
+        }
+    }
     return true;
 }
 void IslandWindow::Update(IslandPresentation view) {

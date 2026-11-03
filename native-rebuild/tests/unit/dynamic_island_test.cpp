@@ -28,7 +28,20 @@ struct Files final:settings::IFileStore {
     bool Rename(const std::string& a,const std::string& b)override{if(fail||!Exists(a))return false;values[b]=values[a];values.erase(a);return true;}
     bool Remove(const std::string& p)override{values.erase(p);return true;}
 };
-void Pump(unsigned ms){const auto end=GetTickCount64()+ms;do{MSG m{};while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}MsgWaitForMultipleObjects(0,nullptr,FALSE,5,QS_ALLINPUT);}while(GetTickCount64()<end);}
+unsigned syntheticHoverLeaves=0;
+void Pump(unsigned ms,HWND syntheticHover=nullptr){
+    const auto end=GetTickCount64()+ms;
+    do{
+        MSG m{};
+        while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){
+            // The physical pointer stays on the user's input desktop. This
+            // fixture owns its synthetic enter/leave events on the isolated desktop.
+            if(syntheticHover&&m.hwnd==syntheticHover&&m.message==WM_MOUSELEAVE){++syntheticHoverLeaves;continue;}
+            TranslateMessage(&m);DispatchMessageW(&m);
+        }
+        MsgWaitForMultipleObjects(0,nullptr,FALSE,5,QS_ALLINPUT);
+    }while(GetTickCount64()<end);
+}
 void Click(HWND hwnd,int x,int y){const auto dpi=static_cast<int>(GetDpiForWindow(hwnd));const auto at=MAKELPARAM(MulDiv(x,dpi,96),MulDiv(y,dpi,96));SendMessageW(hwnd,WM_LBUTTONDOWN,0,at);SendMessageW(hwnd,WM_LBUTTONUP,0,at);}
 thread_local HWND menuOwner=nullptr;
 LRESULT CALLBACK PreventMenuActivation(int code,WPARAM w,LPARAM l){
@@ -74,8 +87,54 @@ void SaveFrame(const platform::windows::WidgetBitmap& frame,const wchar_t* name)
     const CLSID png={0x557cf406,0x1a04,0x11d3,{0x9a,0x73,0x00,0x00,0xf8,0x1e,0xf3,0x2e}};
     Check(image.Save((root/name).c_str(),&png)==Gdiplus::Ok,"save actual native foreground");
 }
+void CheckExpansionModes(){
+    Files files;
+    unsigned settingsOpened=0;
+    shell::DynamicIslandSessionOptions options;options.preferencesPath="expansion-mode.json";
+    options.openSettings=[&]{++settingsOpened;};
+    {
+        shell::DynamicIslandSession session(GetModuleHandleW(nullptr),options,&files);
+        Check(session.Restore(),"restore the default expansion mode");
+        session.HandlePage(PageCommand::IslandEnable);session.HandlePage(PageCommand::IslandAutoHideOff);Pump(60);
+        const auto hwnd=session.Handle();
+        const auto move=[&]{const int dpi=static_cast<int>(GetDpiForWindow(hwnd));SendMessageW(hwnd,WM_MOUSEMOVE,0,MAKELPARAM(MulDiv(32,dpi,96),MulDiv(10,dpi,96)));};
+        move();Pump(380,hwnd);
+        Check(State(session)["hover"]==false&&State(session)["expanded"]==false,"click mode does not expand on mouse hover");
+        Click(hwnd,32,10);Check(State(session)["expanded"]==true,"click mode expands the idle island on a real click");
+        session.HandlePage(PageCommand::IslandCollapse);SendMessageW(hwnd,WM_MOUSELEAVE,0,0);
+        session.HandlePage(PageCommand::IslandHoverOn);move();Pump(380,hwnd);
+        Check(State(session)["expanded"]==true,"hover mode expands without a media session");
+        SendMessageW(hwnd,WM_MOUSELEAVE,0,0);Pump(520);
+        Check(State(session)["expanded"]==false,"a panel opened by hover collapses after the pointer leaves");
+        const auto widget=static_cast<PageCommand>(static_cast<int>(PageCommand::IslandLeftWidgetFirst)+static_cast<int>(dynamic_island::CompactWidget::DayProgress));
+        session.HandlePage(widget);move();Pump(380,hwnd);
+        Check(State(session)["expanded"]==true,"hover mode also expands the compact widget without music");
+        session.HandlePage(PageCommand::IslandCollapse);SendMessageW(hwnd,WM_MOUSELEAVE,0,0);move();
+        session.HandlePage(PageCommand::IslandHoverOff);SendMessageW(hwnd,WM_TIMER,3,0);
+        Check(State(session)["hover"]==false&&State(session)["expanded"]==false,"switching to click mode cancels a pending hover expansion");
+        const auto previous=files.values["expansion-mode-display.json"];files.fail=true;
+        session.HandlePage(PageCommand::IslandHoverOn);SendMessageW(hwnd,WM_TIMER,3,0);
+        Check(State(session)["hover"]==false&&State(session)["expanded"]==false&&State(session)["error"]=="save"&&
+            files.values["expansion-mode-display.json"]==previous,"failed mode save restores both the running interaction and the previous file");
+        files.fail=false;session.HandlePage(PageCommand::IslandHoverOn);Pump(380,hwnd);
+        Check(State(session)["expanded"]==true,"enabling hover mode while the pointer is already inside starts expansion");
+        session.HandlePage(PageCommand::IslandResetAppearance);
+        Check(State(session)["hover"]==true,"appearance reset preserves the chosen expansion mode");
+        session.Shutdown();
+    }
+    shell::DynamicIslandSession restored(GetModuleHandleW(nullptr),options,&files);
+    Check(restored.Restore()&&State(restored)["hover"]==true,"hover expansion preference survives restart");
+    const auto hwnd=restored.Handle();const int dpi=static_cast<int>(GetDpiForWindow(hwnd));
+    SendMessageW(hwnd,WM_MOUSEMOVE,0,MAKELPARAM(MulDiv(32,dpi,96),MulDiv(10,dpi,96)));Pump(380,hwnd);
+    Check(State(restored)["expanded"]==true&&settingsOpened==0,"restored hover mode expands within the island without opening settings");
+    restored.HandlePage(PageCommand::IslandReset);
+    Check(State(restored)["hover"]==false,"restore defaults returns to click expansion");
+    restored.Shutdown();
+    std::cout<<"isolated hover: ignored "<<syntheticHoverLeaves<<" unrelated physical-pointer leave events\n";
+}
 void Scenario(){
     Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM initialization");
+    CheckExpansionModes();
     {
         using namespace platform::windows;
         using W=dynamic_island::CompactWidget;

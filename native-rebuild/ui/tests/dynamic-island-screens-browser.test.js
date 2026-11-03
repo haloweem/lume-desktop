@@ -21,7 +21,7 @@ function installFixture({island,settings,language}) {
     set(screen,screens) {current={...current,screen,screens};snapshot();},
     reply(failed=false) {
       if(pending===null)throw new Error('No pending display policy command');
-      if(!failed)current.screen=pending;
+      if(!failed)current[pending.key]=pending.value;
       pending=null;
       receive({...current,result:'applied',saved:!failed,error:failed?'save':''});
     },
@@ -39,7 +39,10 @@ function installFixture({island,settings,language}) {
         });
       } else if(typeof command==='string'&&/^v1\|dynamicIsland\|screen\|\d+$/.test(command)) {
         if(pending!==null)throw new Error('Duplicate display policy request while saving');
-        pending=Number(command.split('|')[3]);
+        pending={key:'screen',value:Number(command.split('|')[3])};
+      } else if(typeof command==='string'&&/^v1\|dynamicIsland\|hover\|(true|false)$/.test(command)) {
+        if(pending!==null)throw new Error('Duplicate expansion mode request while saving');
+        pending={key:'hover',value:command.split('|')[3]==='true'};
       } else if(typeof command==='string'&&/^v1\|dynamicIsland\|preview\|(compact|expanded)$/.test(command)) {
         queueMicrotask(()=>receive({version:1,type:'dynamicIsland-preview',mode:command.split('|')[3],
           shape:current.shape,size:current.size,material:current.material,width:0,height:0,image:'',error:'render'}));
@@ -50,11 +53,11 @@ function installFixture({island,settings,language}) {
   }};
 }
 
-test('real settings entry: display policy follows monitor inventory, host acknowledgements and layout',{
+test('real settings entry: display policy and expansion mode follow native acknowledgements and layout',{
   skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:90000,
 },async t=>{
   assert.ok(validHostMessage(island));assert.ok(validHostMessage(settings));
-  const harness=await createBrowserHarness(path.resolve('build-artifacts/island-display-policy-browser-20261104'));
+  const harness=await createBrowserHarness(process.env.LUME_ISLAND_BROWSER_OUTPUT||path.resolve('build-artifacts/island-display-policy-browser-20261104'));
   try {
     for(const width of [1536,680])for(const language of ['zh-CN','en']) {
       await t.test(`${width}px ${language}`,async()=>{
@@ -130,6 +133,35 @@ test('real settings entry: display policy follows monitor inventory, host acknow
           assert.equal(await page.locator('[data-island-screen="2"]').getAttribute('aria-pressed'),'true','returning to the page preserves the host selection');
           const commands=await page.evaluate(()=>window.islandScreensFixture.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dynamicIsland|screen|')));
           assert.ok(commands.includes('v1|dynamicIsland|screen|0')&&commands.includes('v1|dynamicIsland|screen|4'));
+          const modes=page.locator('.island-expansion');
+          assert.equal(await modes.locator('h2').textContent(),language==='en'?'Expansion mode':'展开模式');
+          assert.deepEqual(await modes.locator('button').allTextContents(),language==='en'?['Click to expand','Hover to expand']:['点击展开','悬停展开']);
+          const click=modes.locator('[data-island-expansion="click"]'),hover=modes.locator('[data-island-expansion="hover"]');
+          assert.equal(await click.getAttribute('aria-pressed'),'true');
+          await hover.click();
+          assert.equal(await click.getAttribute('aria-pressed'),'true','expansion mode waits for host confirmation');
+          assert.ok(await hover.evaluate(button=>button.disabled||button.getAttribute('aria-disabled')==='true'));
+          await page.evaluate(()=>window.islandScreensFixture.reply(true));
+          assert.equal(await click.getAttribute('aria-pressed'),'true','failed expansion-mode saves retain click mode');
+          await hover.click();await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(await hover.getAttribute('aria-pressed'),'true');
+          await page.evaluate(()=>window.islandScreensFixture.navigate());
+          assert.equal(await hover.getAttribute('aria-pressed'),'true','returning to the page preserves the expansion mode');
+          const expansion=await page.evaluate(()=>{
+            const card=document.querySelector('.island-expansion').getBoundingClientRect();
+            const display=document.querySelector('.island-display').getBoundingClientRect();
+            const appearance=document.querySelector('.island-appearance').getBoundingClientRect();
+            return {afterDisplay:card.top>=display.bottom,overflow:document.documentElement.scrollWidth>innerWidth,
+              labelsFit:[...document.querySelectorAll('[data-island-expansion]')].every(button=>button.scrollWidth<=button.clientWidth+1),
+              clip:{x:appearance.left,y:appearance.top,width:appearance.width,height:card.bottom-appearance.top}};
+          });
+          assert.ok(expansion.afterDisplay&&expansion.labelsFit&&!expansion.overflow,'expansion mode follows Display and its labels fit at both widths');
+          await page.screenshot({path:path.join(harness.output,`${width}-${language}-expansion-mode.png`),clip:expansion.clip});
+          await click.click();await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(await click.getAttribute('aria-pressed'),'true');
+          const modeCommands=await page.evaluate(()=>window.islandScreensFixture.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dynamicIsland|hover|')));
+          assert.deepEqual(modeCommands,['v1|dynamicIsland|hover|true','v1|dynamicIsland|hover|true','v1|dynamicIsland|hover|false']);
+          report.expansion={...expansion,commands:modeCommands,passed:true};
           assert.deepEqual(errors,[]);assert.deepEqual(remoteRequests,[]);
           report.commands=commands;report.passed=true;
         } finally {await page.close();}

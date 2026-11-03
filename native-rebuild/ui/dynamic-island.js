@@ -100,6 +100,16 @@ function islandHome(state) {
           </div>
         </div>
       </section>
+      <section class="island-expansion" aria-labelledby="island-expansion-label">
+        <div class="island-appearance__head"><h2 id="island-expansion-label">${t('展开模式','Expansion mode')}</h2></div>
+        <div class="island-appearance__body">
+          <div class="island-appearance__row">
+            <div class="island-appearance__segments" role="group" aria-labelledby="island-expansion-label">
+              ${[['click',t('点击展开','Click to expand')],['hover',t('悬停展开','Hover to expand')]].map(([mode,label])=>`<button type="button" data-island-expansion="${mode}" aria-pressed="${p.hover===(mode==='hover')}" ${busy(state)?'disabled':''}>${label}</button>`).join('')}
+            </div>
+          </div>
+        </div>
+      </section>
     </aside>
     <div class="island-home__main">
     <section class="island-home__preview-shell" aria-label="${t('灵动岛实时预览','Dynamic Island live preview')}">
@@ -216,6 +226,10 @@ export function syncIslandControls(root,state) {
     }
     const unavailable=home.querySelector('[data-island-screen-unavailable]');
     if(unavailable)unavailable.hidden=!(p.screen>0&&!screenIds(p).includes(p.screen));
+    home.querySelectorAll('[data-island-expansion]').forEach(button=>{
+      button.setAttribute('aria-pressed',String(p.hover===(button.dataset.islandExpansion==='hover')));
+      syncSettingsControlBusy(button,disabled);
+    });
     syncCompactWidgetPicker(home,state);
   }
   for(const [action,value] of [['toggle',p.enabled],...displayToggles().map(([a,key])=>[a,p[key]])]) {

@@ -4,7 +4,7 @@ target_link_libraries(lume-dynamic-island-test PRIVATE lume-dynamic-island ole32
 set_target_properties(lume-dynamic-island-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 lume_enable_native_warnings(lume-dynamic-island-test)
 add_test(NAME lume-dynamic-island-test COMMAND lume-dynamic-island-test)
-set_tests_properties(lume-dynamic-island-test PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE LABELS "isolated;dynamic-island")
+set_tests_properties(lume-dynamic-island-test PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE LABELS "isolated;dynamic-island")
 add_executable(lume-dynamic-island-glass-test dynamic_island_glass_test.cpp)
 target_compile_definitions(lume-dynamic-island-glass-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(lume-dynamic-island-glass-test PRIVATE lume-dynamic-island ole32)

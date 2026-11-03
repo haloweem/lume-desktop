@@ -110,6 +110,30 @@ test('shape waits for native confirmation, survives rollback and accepts older s
   assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.shape,'capsule');
 });
 
+test('expansion mode defaults to click and follows confirmed hover preferences in both languages',()=>{
+  for(const language of ['zh-CN','en']){
+    setLanguage(language);
+    for(const hover of [false,true]){
+      const state=reduce(initialState(),{type:'host',message:snapshot({hover})});
+      const html=islandPage(state,'home');
+      assert.ok(html.indexOf('class="island-expansion"')>html.indexOf('class="island-display"'));
+      assert.match(html,new RegExp(`data-island-expansion="${hover?'hover':'click'}" aria-pressed="true"`));
+      assert.match(html,new RegExp(`data-island-expansion="${hover?'click':'hover'}" aria-pressed="false"`));
+      for(const label of language==='en'?['Expansion mode','Click to expand','Hover to expand']:['展开模式','点击展开','悬停展开'])assert.ok(html.includes(label));
+    }
+  }
+  setLanguage('zh-CN');
+  let state=reduce(initialState(),{type:'host',message:snapshot()});
+  state=reduce(state,{type:'request',scope:'dynamicIsland',key:'hover',value:true});
+  assert.equal(state.dynamicIsland.hover,false,'pending mode waits for native confirmation');
+  assert.match(islandPage(state,'home'),/data-island-expansion="hover" aria-pressed="false" disabled/);
+  state=reduce(state,{type:'host',message:snapshot({error:'save',result:'applied'})});
+  assert.equal(state.dynamicIsland.hover,false,'failed saves retain click mode');
+  state=reduce(state,{type:'host',message:snapshot({hover:true,result:'applied',saved:true,loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.hover,true);
+  assert.match(islandPage(state,'home'),/data-island-expansion="hover" aria-pressed="true"/);
+});
+
 test('display policy lists connected screens and preserves confirmed selection across save failures',()=>{
   const sent=[],bridge=createBridge({postMessage:message=>sent.push(message)});
   for(const screen of [0,1,64])assert.ok(bridge.send('dynamicIsland','screen',screen));

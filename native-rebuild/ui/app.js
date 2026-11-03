@@ -981,6 +981,9 @@ content.addEventListener("click", (event) => {
   } else if (button.dataset.islandScreen!==undefined) {
     const screen=Number(button.dataset.islandScreen);
     if(Number.isInteger(screen)&&screen>=0&&screen<=64&&screen!==state.dynamicIsland.screen)request('dynamicIsland','screen',screen);
+  } else if (button.dataset.islandExpansion) {
+    const mode=button.dataset.islandExpansion;
+    if(['click','hover'].includes(mode)&&state.dynamicIsland.hover!==(mode==='hover'))request('dynamicIsland','hover',mode==='hover');
   } else if (button.matches('button[data-island-shape]')) {
     if(button.dataset.islandShape!==state.dynamicIsland.shape)request('dynamicIsland','shape',button.dataset.islandShape);
   } else if (button.dataset.islandPreviewMode) {
