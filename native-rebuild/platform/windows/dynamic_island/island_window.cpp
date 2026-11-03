@@ -172,6 +172,20 @@ struct Spring {
 };
 }  // namespace
 
+std::vector<IslandMonitor> ConnectedIslandMonitors() {
+    std::vector<IslandMonitor> monitors;
+    EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR monitor,HDC,LPRECT,LPARAM data)->BOOL{
+        MONITORINFOEXW info{};info.cbSize=sizeof(info);
+        if(GetMonitorInfoW(monitor,&info)&&!IsRectEmpty(&info.rcMonitor)&&!IsRectEmpty(&info.rcWork))
+            reinterpret_cast<std::vector<IslandMonitor>*>(data)->push_back({info.szDevice,info.rcMonitor,info.rcWork,(info.dwFlags&MONITORINFOF_PRIMARY)!=0});
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&monitors));
+    // Keep numbering deterministic when Windows changes its enumeration order.
+    std::sort(monitors.begin(),monitors.end(),[](const auto& a,const auto& b){return a.device<b.device;});
+    if(monitors.size()>64)monitors.resize(64);
+    return monitors;
+}
+
 struct IslandWindow::Impl {
     HINSTANCE instance;
     Act act;
@@ -179,6 +193,7 @@ struct IslandWindow::Impl {
     unsigned dpi = 96;
     widget::Preferences prefs;
     IslandDisplay display;
+    std::optional<IslandMonitor> targetMonitor;
     IslandPresentation view;
     std::unique_ptr<WidgetCanvas> canvas;
     LayeredSurface surface;
@@ -219,11 +234,12 @@ struct IslandWindow::Impl {
     float drawnWidth = 0, drawnHeight = 0;
     ULONGLONG activeUntil = 0;
     HWINEVENTHOOK foregroundHook = nullptr;
-    HHOOK outsideHook = nullptr;  // Only while expanded: a click elsewhere collapses.
+    bool watchingOutside=false;
     bool menuOpen = false, animating = false;
     WidgetMaterialRuntime glass;
     LumeMaterialParameters lastGlass{};
-    static inline Impl* active = nullptr;
+    static inline std::vector<Impl*> instances;
+    static inline HHOOK outsideHook=nullptr;  // Shared only while at least one island is expanded.
 
     Impl(HINSTANCE i, Act a) : instance(i), act(std::move(a)) {}
     ~Impl() { Stop(); }
@@ -233,6 +249,10 @@ struct IslandWindow::Impl {
     unsigned CanvasDpi() const { return static_cast<unsigned>(std::lround(static_cast<float>(dpi) * ScaleFactor())); }
     int Px(float value) const { return static_cast<int>(std::lround(value * static_cast<float>(CanvasDpi()) / 96.f)); }
     bool HasMedia() const { return view.media.available; }
+    bool ReadMonitor(MONITORINFO& info) const {
+        if(targetMonitor){info.rcMonitor=targetMonitor->bounds;info.rcWork=targetMonitor->work;info.dwFlags=targetMonitor->primary?MONITORINFOF_PRIMARY:0;return true;}
+        return GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&info)!=FALSE;
+    }
     bool Glass() const { return display.material != IslandMaterial::None; }
     bool Attached() const {return display.shape==IslandShape::Standard;}
     bool Wanted() const { return !suppressed; }  // The idle pill always shows.
@@ -436,7 +456,7 @@ struct IslandWindow::Impl {
     bool Place() {
         if (!hwnd || !canvas || !visible) return false;
         MONITORINFO info{sizeof(info)};
-        if (!GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info)) return false;
+        if (!ReadMonitor(info)) return false;
         if (!Draw()) return false;
         // Centre on the composed bitmap so every animation frame stays symmetric.
         const int center = info.rcWork.left + (info.rcWork.right - info.rcWork.left) / 2;
@@ -466,7 +486,7 @@ struct IslandWindow::Impl {
     bool BuildKeyframes() {
         MONITORINFO info{sizeof(info)};
         RECT window{};
-        if (!GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info) || !GetWindowRect(hwnd, &window)) return false;
+        if (!ReadMonitor(info) || !GetWindowRect(hwnd, &window)) return false;
         const float px = static_cast<float>(CanvasDpi()) / 96, dipScale = static_cast<float>(dpi) / 96, scale = ScaleFactor();
         const float center = static_cast<float>(info.rcWork.left + (info.rcWork.right - info.rcWork.left) / 2);
         const float floating=static_cast<float>(info.rcWork.top+Px(TopMargin));
@@ -1024,7 +1044,7 @@ struct IslandWindow::Impl {
     bool FullscreenInFront() const {
         RECT area{}; MONITORINFO monitorInfo{sizeof(monitorInfo)};
         if(hwnd)GetWindowRect(hwnd,&area);
-        if(IsRectEmpty(&area)&&GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitorInfo))area=monitorInfo.rcMonitor;
+        if(IsRectEmpty(&area)&&ReadMonitor(monitorInfo))area=monitorInfo.rcMonitor;
         return window_layer::Protected(area,window_layer::ReadContext(),display.hideFullscreen)||window_layer::Suppressed(hwnd);
     }
     void CheckForeground() {
@@ -1035,8 +1055,9 @@ struct IslandWindow::Impl {
         else Animate();
         Pulse();
     }
-    static void CALLBACK ForegroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
-        if (active && active->hwnd) PostMessageW(active->hwnd, ForegroundMessage, 0, 0);
+    static void CALLBACK ForegroundEvent(HWINEVENTHOOK hook, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
+        for(const auto current:instances)
+            if(current->foregroundHook==hook&&current->hwnd)PostMessageW(current->hwnd,ForegroundMessage,0,0);
     }
 
     // --- Lifecycle -----------------------------------------------------------
@@ -1058,7 +1079,10 @@ struct IslandWindow::Impl {
         if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
         expanded = hoverExpanded = hovered = visible = false;
         const DWORD style = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (display.topmost ? WS_EX_TOPMOST : 0);
-        hwnd = CreateWindowExW(style, ClassName, L"Lume", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, instance, this);
+        MONITORINFO target{sizeof(target)};
+        ReadMonitor(target);
+        hwnd = CreateWindowExW(style, ClassName, L"Lume", WS_POPUP,
+            target.rcWork.left+(target.rcWork.right-target.rcWork.left)/2,target.rcWork.top,1,1,nullptr,nullptr,instance,this);
         if (!hwnd) return false;
         if(!window_layer::Register(hwnd,window_layer::Kind::Island,nullptr,display.topmost,display.hideFullscreen)){Stop();return false;}
         DragAcceptFiles(hwnd,TRUE);
@@ -1071,7 +1095,7 @@ struct IslandWindow::Impl {
         SyncPerformance();
         // Taskbar-button flashes of chat programs (best effort).
         RegisterShellHookWindow(hwnd);
-        active = this;
+        instances.push_back(this);
         foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundEvent, 0, 0,
                                          WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
         suppressed = FullscreenInFront();
@@ -1110,7 +1134,7 @@ struct IslandWindow::Impl {
         WatchOutside(false);
         DetachGlass();
         if (foregroundHook) { UnhookWinEvent(foregroundHook); foregroundHook = nullptr; }
-        if (active == this) active = nullptr;
+        instances.erase(std::remove(instances.begin(),instances.end(),this),instances.end());
         if (hwnd) {
             const auto old = hwnd;
             hwnd = nullptr;
@@ -1126,20 +1150,25 @@ struct IslandWindow::Impl {
         pressed = hoverHit = -1;
     }
     static LRESULT CALLBACK OutsideProc(int code, WPARAM w, LPARAM l) {
-        if (code == HC_ACTION && active && active->hwnd && !active->menuOpen &&
+        if (code == HC_ACTION &&
             (w == WM_LBUTTONDOWN || w == WM_RBUTTONDOWN || w == WM_MBUTTONDOWN)) {
-            RECT rect{};
             const POINT point = reinterpret_cast<const MSLLHOOKSTRUCT*>(l)->pt;
-            if (GetWindowRect(active->hwnd, &rect) && !PtInRect(&rect, point))
-                PostMessageW(active->hwnd, OutsideMessage, 0, 0);
+            for(const auto current:instances){
+                RECT rect{};
+                if(current->watchingOutside&&current->hwnd&&!current->menuOpen&&GetWindowRect(current->hwnd,&rect)&&!PtInRect(&rect,point))
+                    PostMessageW(current->hwnd,OutsideMessage,0,0);
+            }
         }
         return CallNextHookEx(nullptr, code, w, l);
     }
     // The hook exists only while the panel is open and is removed as soon as it
     // collapses, so normal use (and games, which force a collapse) never pay for it.
     void WatchOutside(bool watch) {
+        watchingOutside=watch;
         if (watch && !outsideHook) outsideHook = SetWindowsHookExW(WH_MOUSE_LL, OutsideProc, instance, 0);
-        if (!watch && outsideHook) { UnhookWindowsHookEx(outsideHook); outsideHook = nullptr; }
+        if (!watch && outsideHook&&std::none_of(instances.begin(),instances.end(),[](const auto current){return current->watchingOutside;})) {
+            UnhookWindowsHookEx(outsideHook);outsideHook=nullptr;
+        }
     }
     void Expand(bool next, bool byHover = false) {
         if (!hwnd || expanded == next) return;
@@ -1448,7 +1477,7 @@ struct IslandWindow::Impl {
             self->Menu(point);
             return 0;
         }
-        case WM_DPICHANGED: self->dpi = HIWORD(w); self->Place(); return 0;
+        case WM_DPICHANGED: self->dpi = HIWORD(w); if(self->canvas)self->Animate(); return 0;
         case WM_DISPLAYCHANGE: self->Place(); return 0;
         case WM_CLOSE: if (self->act) self->act(dynamic_island::Action::Close); return 0;
         case WM_NCDESTROY:
@@ -1466,6 +1495,18 @@ IslandWindow::IslandWindow(HINSTANCE i, Act act) : impl_(std::make_unique<Impl>(
 IslandWindow::~IslandWindow() = default;
 std::optional<performance::Snapshot> IslandWindow::PerformanceReading() const { return impl_->performanceSample; }
 bool IslandWindow::Start(const widget::Preferences& p, const IslandDisplay& d) { return impl_->Start(p, d); }
+void IslandWindow::SetMonitor(const IslandMonitor& monitor) {
+    if(impl_->targetMonitor&&*impl_->targetMonitor==monitor)return;
+    impl_->targetMonitor=monitor;
+    if(!impl_->hwnd)return;
+    impl_->DetachGlass();
+    impl_->StopClock();
+    RECT current{};GetWindowRect(impl_->hwnd,&current);
+    SetWindowPos(impl_->hwnd,nullptr,monitor.work.left+(monitor.work.right-monitor.work.left-(current.right-current.left))/2,
+        monitor.work.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    impl_->dpi=GetDpiForWindow(impl_->hwnd);if(!impl_->dpi)impl_->dpi=96;
+    impl_->CheckForeground();impl_->Activity();impl_->Place();impl_->Animate();
+}
 void IslandWindow::Stop() { impl_->Stop(); }
 bool IslandWindow::SetDisplay(const IslandDisplay& d) {
     if (!impl_->hwnd) { impl_->display = d; return true; }

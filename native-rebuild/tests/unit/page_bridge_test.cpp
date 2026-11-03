@@ -100,6 +100,9 @@ void TestExactVersionedCommands() {
         {L"v1|dynamicIsland|preview|compact", PageCommand::IslandPreviewCompact},
         {L"v1|dynamicIsland|preview|expanded", PageCommand::IslandPreviewExpanded},
         {L"v1|dynamicIsland|preview|stop", PageCommand::IslandPreviewStop},
+        {L"v1|dynamicIsland|screen|0", PageCommand::IslandScreenFirst},
+        {L"v1|dynamicIsland|screen|1", static_cast<PageCommand>(static_cast<int>(PageCommand::IslandScreenFirst)+1)},
+        {L"v1|dynamicIsland|screen|64", PageCommand::IslandScreenLast},
     };
     for (const auto& item : islandMaterials) {
         Expect(ParsePageCommand(item.first) == item.second, "dynamic island material command fits protocol bounds");

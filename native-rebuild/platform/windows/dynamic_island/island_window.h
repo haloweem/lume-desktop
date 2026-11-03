@@ -47,8 +47,18 @@ struct IslandTodoSource {
 };
 // None keeps the classic opaque black capsule.
 enum class IslandMaterial { None, Liquid, Frosted };
+struct IslandMonitor {
+    std::wstring device;
+    RECT bounds{}, work{};
+    bool primary=false;
+};
+inline bool operator==(const IslandMonitor& a,const IslandMonitor& b) {
+    return a.device==b.device&&a.primary==b.primary&&EqualRect(&a.bounds,&b.bounds)&&EqualRect(&a.work,&b.work);
+}
+std::vector<IslandMonitor> ConnectedIslandMonitors();
 // User-facing visibility and layering choices.
 struct IslandDisplay {
+    int screen=-1;               // -1 follows the primary display; 0 means all; 1..64 selects a connected screen.
     bool hideFullscreen = true;  // Step aside for fullscreen apps, games and presentations.
     bool topmost = false;        // Explicitly chosen overlay above ordinary applications.
     bool hoverExpand = false;    // Expand after resting the pointer on the island.
@@ -61,7 +71,7 @@ struct IslandDisplay {
     dynamic_island::CompactWidget rightWidget=dynamic_island::CompactWidget::None;
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
-    return a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
+    return a.screen==b.screen&&a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.size == b.size && a.material == b.material &&
            a.autoHide == b.autoHide && a.messages == b.messages && a.shape == b.shape;
 }
@@ -87,6 +97,8 @@ public:
     IslandWindow(HINSTANCE, Act);
     ~IslandWindow();
     bool Start(const widget::Preferences&, const IslandDisplay& = {});
+    // Bind this window to one screen; the session owns the all-screen group.
+    void SetMonitor(const IslandMonitor&);
     void Stop();
     // Applies new display options; recreates the window when layering changes.
     bool SetDisplay(const IslandDisplay&);

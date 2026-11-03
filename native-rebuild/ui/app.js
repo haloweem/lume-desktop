@@ -978,6 +978,9 @@ content.addEventListener("click", (event) => {
   } else if (button.dataset.islandPreference) {
     const key=button.dataset.islandPreference;
     if(['material','size'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
+  } else if (button.dataset.islandScreen!==undefined) {
+    const screen=Number(button.dataset.islandScreen);
+    if(Number.isInteger(screen)&&screen>=0&&screen<=64&&screen!==state.dynamicIsland.screen)request('dynamicIsland','screen',screen);
   } else if (button.matches('button[data-island-shape]')) {
     if(button.dataset.islandShape!==state.dynamicIsland.shape)request('dynamicIsland','shape',button.dataset.islandShape);
   } else if (button.dataset.islandPreviewMode) {

@@ -32,6 +32,8 @@ struct DynamicIslandSessionOptions {
     std::function<void(bool)> weatherActive;
     // Bundled Forest sample background; independent of the user's desktop.
     std::function<std::wstring()> previewWallpaper;
+    // Optional display inventory port; production reads the connected Windows monitors.
+    std::function<std::vector<platform::windows::IslandMonitor>()> monitors;
 };
 
 class DynamicIslandSession final {

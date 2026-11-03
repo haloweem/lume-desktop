@@ -53,6 +53,18 @@ void CALLBACK SelectSettings(HWND,UINT,UINT_PTR timer,DWORD){
     PostMessageW(menu,WM_KEYDOWN,VK_RETURN,1);
 }
 nlohmann::json State(const shell::DynamicIslandSession& s){return nlohmann::json::parse(s.State());}
+std::vector<HWND> IslandWindows(){
+    std::vector<HWND> result;
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND hwnd,LPARAM data)->BOOL{
+        wchar_t name[80]{};GetClassNameW(hwnd,name,80);
+        if(std::wstring_view(name)==L"LumeWindowsDynamicIsland")reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&result));
+    return result;
+}
+bool OnScreen(HWND hwnd,const platform::windows::IslandMonitor& screen){
+    RECT rect{};return GetWindowRect(hwnd,&rect)&&std::abs((rect.left+rect.right)-(screen.work.left+screen.work.right))<=2;
+}
 void SaveFrame(const platform::windows::WidgetBitmap& frame,const wchar_t* name){
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
     const auto root=std::filesystem::path(exe).parent_path()/L"verification"/L"dynamic-island";
@@ -258,6 +270,74 @@ void Scenario(){
         Check(reset["shape"]=="capsule"&&reset["material"]=="none"&&reset["size"]=="standard"&&
               reset["topmost"]==false&&reset["autoHide"]==false,
               "appearance reset restores only shape material and size and preserves visibility preferences");
+    }
+    {
+        using namespace platform::windows;
+        Files screenFiles;
+        auto hardware=ConnectedIslandMonitors();Check(!hardware.empty(),"read the connected display inventory");
+        auto first=hardware.front();first.primary=true;
+        auto second=first;second.device=L"verification-screen-2";second.primary=false;
+        const LONG width=first.bounds.right-first.bounds.left;
+        OffsetRect(&second.bounds,-width,0);OffsetRect(&second.work,-width,0);
+        auto third=first;third.device=L"verification-screen-3";third.primary=false;
+        const LONG height=first.bounds.bottom-first.bounds.top;
+        OffsetRect(&third.bounds,0,-height);OffsetRect(&third.work,0,-height);
+        std::vector<IslandMonitor> connected{first,second};
+        unsigned inventoryReads=0;
+        shell::DynamicIslandSessionOptions screenOptions;screenOptions.preferencesPath="screen-policy.json";
+        screenOptions.monitors=[&]{++inventoryReads;return connected;};
+        const auto select=[](int id){return static_cast<PageCommand>(static_cast<int>(PageCommand::IslandScreenFirst)+id);};
+        {
+            shell::DynamicIslandSession session(GetModuleHandleW(nullptr),screenOptions,&screenFiles);
+            Check(session.Restore()&&!session.Running()&&State(session)["screens"]==nlohmann::json({1,2}),"disabled settings list the current screens without creating windows");
+            session.HandlePage(select(1));Check(!session.Running(),"display policy can be saved while the island is disabled");
+            session.HandlePage(PageCommand::IslandEnable);session.HandlePage(PageCommand::IslandAutoHideOff);Pump(160);
+            Check(IslandWindows().size()==1&&OnScreen(session.Handle(),first),"screen 1 creates one island centered on that screen");
+            session.HandlePage(select(2));Pump(100);
+            Check(IslandWindows().size()==1&&OnScreen(session.Handle(),second)&&State(session)["screen"]==2,"screen 2 moves the actual native island");
+            const auto saved=screenFiles.values["screen-policy-display.json"];screenFiles.fail=true;
+            session.HandlePage(select(0));Pump(80);
+            Check(IslandWindows().size()==1&&OnScreen(session.Handle(),second)&&State(session)["screen"]==2&&State(session)["error"]=="save"&&
+                screenFiles.values["screen-policy-display.json"]==saved,"failed all-screen save restores the old window group and file");
+            screenFiles.fail=false;session.HandlePage(select(0));Pump(120);
+            const auto all=IslandWindows();
+            Check(all.size()==2&&std::any_of(all.begin(),all.end(),[&](HWND hwnd){return OnScreen(hwnd,first);})&&
+                std::any_of(all.begin(),all.end(),[&](HWND hwnd){return OnScreen(hwnd,second);}),"all screens creates a real island on each target");
+            const auto reads=inventoryReads;
+            for(const HWND hwnd:all)SendMessageW(hwnd,WM_TIMER,1,0);
+            Check(inventoryReads==reads+1,"multiple islands poll the display inventory only once per tick");
+            const auto other=*std::find_if(all.begin(),all.end(),[&](HWND hwnd){return hwnd!=session.Handle();});
+            SendMessageW(other,WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);
+            Check(State(session)["expanded"]==true,"the second island accepts normal expansion input");
+            session.HandlePage(PageCommand::IslandCollapse);
+            const auto allSaved=screenFiles.values["screen-policy-display.json"];
+            connected={first};session.HandlePage(PageCommand::Ready);Pump(80);
+            Check(IslandWindows().size()==1&&State(session)["screens"]==nlohmann::json({1})&&screenFiles.values["screen-policy-display.json"]==allSaved,
+                "disconnect removes duplicate windows without rewriting the all-screen preference");
+            connected={first,second,third};session.HandlePage(PageCommand::Ready);Pump(100);
+            Check(IslandWindows().size()==3&&State(session)["screens"]==nlohmann::json({1,2,3}),"a newly connected screen receives its own island in all-screen mode");
+            session.HandlePage(select(2));Pump(80);const auto selectedSaved=screenFiles.values["screen-policy-display.json"];
+            connected={first};session.HandlePage(PageCommand::Ready);Pump(80);
+            Check(IslandWindows().size()==1&&OnScreen(session.Handle(),first)&&State(session)["screen"]==2&&screenFiles.values["screen-policy-display.json"]==selectedSaved,
+                "an unavailable selected screen falls back to the primary screen and retains the saved choice");
+            connected={first,second};session.HandlePage(PageCommand::Ready);Pump(80);
+            Check(OnScreen(session.Handle(),second),"reconnecting the selected screen restores its island");
+            session.HandlePage(select(64));
+            Check(State(session)["error"]=="screen"&&State(session)["screen"]==2&&screenFiles.values["screen-policy-display.json"]==selectedSaved,
+                "a stale screen selection is rejected without changing the saved policy");
+            session.Shutdown();Check(IslandWindows().empty(),"shutting down releases the entire display group");
+        }
+        shell::DynamicIslandSession restored(GetModuleHandleW(nullptr),screenOptions,&screenFiles);
+        Check(restored.Restore()&&State(restored)["screen"]==2&&OnScreen(restored.Handle(),second),"the selected screen survives restart");
+        restored.HandlePage(PageCommand::IslandResetAppearance);
+        Check(State(restored)["screen"]==2,"appearance reset preserves the display policy");
+        restored.HandlePage(PageCommand::IslandReset);Pump(80);
+        Check(State(restored)["screen"]==1&&IslandWindows().size()==1&&OnScreen(restored.Handle(),first),"restore defaults returns to the primary screen");
+        restored.HandlePage(select(0));Pump(80);
+        const auto windows=IslandWindows();Check(windows.size()==2,"all-screen mode can be restored after reset");
+        const auto other=*std::find_if(windows.begin(),windows.end(),[&](HWND hwnd){return hwnd!=restored.Handle();});
+        SendMessageW(other,WM_CLOSE,0,0);
+        Check(!restored.Running()&&IslandWindows().empty(),"closing an island on another screen closes the component once");
     }
     {
         using namespace platform::windows;

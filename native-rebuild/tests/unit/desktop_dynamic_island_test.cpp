@@ -10,6 +10,9 @@ void Check(bool ok,const char* why){if(!ok){passed=false;std::cerr<<"FAIL: "<<wh
 HWND Island(){HWND found=nullptr;EnumThreadWindows(GetCurrentThreadId(),[](HWND h,LPARAM p)->BOOL{
     wchar_t name[80]{};GetClassNameW(h,name,80);if(std::wstring(name)==L"LumeWindowsDynamicIsland")*reinterpret_cast<HWND*>(p)=h;return TRUE;
 },reinterpret_cast<LPARAM>(&found));return found;}
+std::size_t IslandCount(){std::size_t count=0;EnumThreadWindows(GetCurrentThreadId(),[](HWND hwnd,LPARAM data)->BOOL{
+    wchar_t name[80]{};GetClassNameW(hwnd,name,80);if(std::wstring(name)==L"LumeWindowsDynamicIsland")++*reinterpret_cast<std::size_t*>(data);return TRUE;
+},reinterpret_cast<LPARAM>(&count));return count;}
 struct Probe {
     shell::DesktopApplication* app=nullptr;
     bool enabled=false,locked=false,previewDecoded=false;
@@ -19,6 +22,7 @@ struct Probe {
     unsigned stage=0,ready=0;
     unsigned snapshots=0,snapshotAtOpen=0;
     unsigned previews=0;
+    unsigned allScreenChecks=0,singleScreenChecks=0;
     bool previewSettled=false;
     ULONGLONG deadline=0,closed=0;
     void Message(const std::wstring& text){
@@ -35,6 +39,18 @@ struct Probe {
         shape=state.value("shape",std::string{});
         previewDecoded=state.value("hover",false)&&state.value("topmost",false)&&state.value("hideFullscreen",false);
         ++snapshots;
+        if(state.value("saved",false)&&state.contains("screens")){
+            const int selected=state.value("screen",1);
+            Check(IslandCount()==(selected==0?state["screens"].size():1),"real display policy applies the requested native window count");
+            if(selected==0)++allScreenChecks;
+            else{
+                ++singleScreenChecks;
+                const auto monitors=platform::windows::ConnectedIslandMonitors();RECT rect{};
+                Check(selected<=static_cast<int>(monitors.size())&&GetWindowRect(Island(),&rect)&&
+                    std::abs((rect.left+rect.right)-(monitors[static_cast<std::size_t>(selected-1)].work.left+monitors[static_cast<std::size_t>(selected-1)].work.right))<=2,
+                    "real screen selection centers the native island on that monitor");
+            }
+        }
         Check(!state.contains("customization"),"retired customization absent from native state");
     }
     void Tick(){
@@ -73,7 +89,7 @@ int main(){
     }
     Probe probe;options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let material=false,shape=false,decoded=false,layer=false,hideOff=false,hideOn=false;
+      let material=false,shape=false,decoded=false,layer=false,hideOff=false,hideOn=false,allScreens=false,singleScreen=false;
       const act=()=>{
         const section=document.querySelector('[data-settings-scope="dynamicIsland"]');
         if(!section)return;
@@ -87,6 +103,19 @@ int main(){
           const choice=section.querySelector('[data-island-preference="material"][data-value="frosted-glass"]');
           if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
           material=true;choice.click();return;
+        }
+        const all=section.querySelector('[data-island-screen="0"]');
+        if(all&&!allScreens){
+          if(all.disabled||all.getAttribute('aria-disabled')==='true')return;
+          if(all.getAttribute('aria-pressed')!=='true'){all.click();return;}
+          allScreens=true;
+        }
+        if(allScreens&&!singleScreen){
+          const screens=section.querySelectorAll('[data-island-screen]:not([data-island-screen="0"])');
+          const selected=screens[screens.length-1];
+          if(!selected||selected.disabled||selected.getAttribute('aria-disabled')==='true')return;
+          if(selected.getAttribute('aria-pressed')!=='true'){selected.click();return;}
+          singleScreen=true;
         }
         const preview=section.querySelector('[data-island-native-preview]');
         if(material&&shape&&preview&&!preview.hidden&&preview.complete&&preview.naturalWidth===960&&!layer){
@@ -120,6 +149,7 @@ int main(){
     const auto timer=SetTimer(nullptr,0,40,Tick);Check(timer!=0,"create lifecycle driver");
     const auto result=app.Run();KillTimer(nullptr,timer);current=nullptr;
     Check(result==0&&probe.ready==2&&probe.stage==2,"complete real manager reopen and native close");
+    Check(probe.allScreenChecks>=2&&probe.singleScreenChecks>=2,"real display policy buttons work before and after reopening the manager");
     Check(!Island()&&!app.ManagerHandle(),"application releases all island windows");
     std::cout<<(passed?"PASS":"FAIL")<<" island manager protocol, real UI controls, close/reopen and message-loop lifetime\n";
     return passed?0:1;

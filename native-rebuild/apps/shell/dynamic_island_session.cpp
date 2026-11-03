@@ -11,6 +11,7 @@ namespace lume::shell {
 using namespace platform::windows;
 struct DynamicIslandSession::Impl {
     DynamicIslandSessionOptions options;
+    HINSTANCE instance;
     LocalSettingsFileStore local;
     settings::IFileStore& files;
     widget::Limits limits{260,48,220,44,560,220};
@@ -19,6 +20,9 @@ struct DynamicIslandSession::Impl {
     widget::LoadState load = widget::LoadState::Fresh;
     dynamic_island::Model model;
     IslandWindow window;
+    std::vector<std::unique_ptr<IslandWindow>> mirrors;
+    std::vector<IslandMonitor> screens;
+    ULONGLONG screensChecked=0;
     std::string error;
     IslandDisplay display;
     std::unique_ptr<IslandPreviewRenderer> previewRenderer;
@@ -35,13 +39,61 @@ struct DynamicIslandSession::Impl {
         if (!media.available || media.playing == *expectedPlaying || GetTickCount64() >= expectedUntil) { expectedPlaying.reset(); return; }
         media.playing = *expectedPlaying;
     }
-    Impl(HINSTANCE instance, DynamicIslandSessionOptions o, settings::IFileStore* f)
-        : options(std::move(o)), files(f?*f:local), store(files,limits), prefs(widget::Defaults(limits)),
-          window(instance,[this](dynamic_island::Action action){Action(action);}) {
+    Impl(HINSTANCE module, DynamicIslandSessionOptions o, settings::IFileStore* f)
+        : options(std::move(o)), instance(module), files(f?*f:local), store(files,limits), prefs(widget::Defaults(limits)),
+          window(module,[this](dynamic_island::Action action){Action(action);}) {
         window.SetTodoSource(options.todos);
         const auto loaded=store.Load(options.preferencesPath);prefs=loaded.value;load=loaded.state;
         prefs.locked = true;
+        screens=ReadScreens();
         LoadDisplay();
+    }
+    std::vector<IslandMonitor> ReadScreens() const {
+        return options.monitors?options.monitors():ConnectedIslandMonitors();
+    }
+    int PrimaryScreen() const {
+        const auto found=std::find_if(screens.begin(),screens.end(),[](const auto& screen){return screen.primary;});
+        return found==screens.end()?1:static_cast<int>(found-screens.begin())+1;
+    }
+    template<class F> void EachWindow(F action) {
+        action(window);for(const auto& mirror:mirrors)action(*mirror);
+    }
+    bool Expanded() const {
+        return window.Expanded()||std::any_of(mirrors.begin(),mirrors.end(),[](const auto& mirror){return mirror->Expanded();});
+    }
+    void StopWindows() {mirrors.clear();window.Stop();}
+    bool ProjectDisplay(const widget::Preferences& next,const IslandDisplay& value) {
+        if(!next.enabled){StopWindows();return true;}
+        if(screens.empty())return false;
+        auto targets=screens;
+        if(value.screen!=0){
+            const int selected=value.screen>0&&value.screen<=static_cast<int>(screens.size())?value.screen:PrimaryScreen();
+            targets={screens[static_cast<std::size_t>(selected-1)]};
+        }
+        while(mirrors.size()+1<targets.size()){
+            auto mirror=std::make_unique<IslandWindow>(instance,[this](dynamic_island::Action action){
+                // Only the first window polls media and the display inventory.
+                if(action!=dynamic_island::Action::Tick)Action(action);
+            });
+            mirror->SetTodoSource(options.todos);mirrors.push_back(std::move(mirror));
+        }
+        for(std::size_t index=0;index<targets.size();++index){
+            auto& target=index==0?window:*mirrors[index-1];
+            target.SetMonitor(targets[index]);
+            if(!target.SetDisplay(value)||!target.Start(next,value))return false;
+        }
+        mirrors.resize(targets.size()-1);
+        return true;
+    }
+    void RefreshScreens() {
+        screensChecked=GetTickCount64();
+        auto current=ReadScreens();
+        if(current.empty()||current==screens)return;
+        const auto previous=screens;screens=std::move(current);
+        if(prefs.enabled&&!ProjectDisplay(prefs,display)){
+            screens=previous;error=ProjectDisplay(prefs,display)?"runtime":"rollback";
+        }
+        RefreshWeather();Paint();Notify();
     }
     // Display options live beside the shared widget preferences, whose format
     // other widgets use; missing or unreadable files keep the defaults.
@@ -61,6 +113,8 @@ struct DynamicIslandSession::Impl {
         if(path.empty()||!files.Exists(path)||!files.ReadBounded(path,8192,text))return;
         const auto json=nlohmann::json::parse(text,nullptr,false);
         if(!json.is_object()||json.value("version",0)!=1)return;
+        const auto screen=json.find("screen");
+        if(screen!=json.end()&&screen->is_number_integer()&&*screen>=-1&&*screen<=64)display.screen=screen->get<int>();
         const auto flag=[&](const char* key,bool& out){const auto it=json.find(key);if(it!=json.end()&&it->is_boolean())out=it->get<bool>();};
         flag("hideFullscreen",display.hideFullscreen);
         flag("topmost",display.topmost);flag("hoverExpand",display.hoverExpand);flag("autoHide",display.autoHide);
@@ -86,7 +140,7 @@ struct DynamicIslandSession::Impl {
     }
     bool SaveDisplay(const IslandDisplay& next) {
         const auto path=DisplayPath();if(path.empty())return true;
-        const auto text=nlohmann::json{{"version",1},{"hideFullscreen",next.hideFullscreen},
+        const auto text=nlohmann::json{{"version",1},{"screen",next.screen},{"hideFullscreen",next.hideFullscreen},
             {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
             {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},
             {"leftWidget",dynamic_island::CompactWidgetId(next.leftWidget)},
@@ -99,8 +153,8 @@ struct DynamicIslandSession::Impl {
         if(stopped)return false;
         // Apply first: a failed window rebuild must leave the saved file untouched.
         const auto previous=display;
-        if(prefs.enabled&&!window.SetDisplay(next)){error="runtime";return false;}
-        if(!SaveDisplay(next)){if(prefs.enabled)window.SetDisplay(previous);error="save";return false;}
+        if(prefs.enabled&&!ProjectDisplay(prefs,next)){error=ProjectDisplay(prefs,previous)?"runtime":"rollback";Paint();return false;}
+        if(!SaveDisplay(next)){error=!prefs.enabled||ProjectDisplay(prefs,previous)?"save":"rollback";Paint();return false;}
         display=next;SyncWeatherConsumer(prefs.enabled);RefreshWeather();error.clear();return true;
     }
     void SyncWeatherConsumer(bool enabled) {
@@ -120,9 +174,13 @@ struct DynamicIslandSession::Impl {
         }
     }
     std::wstring State(bool applied=false,bool saved=false)const {
+        auto ids=nlohmann::json::array();
+        for(std::size_t index=0;index<screens.size();++index)ids.push_back(index+1);
+        if(ids.empty())ids.push_back(1);
         const auto json=nlohmann::json{{"version",1},{"type","dynamicIsland-state"},
             {"enabled",prefs.enabled},{"running",window.Handle()!=nullptr},{"locked",prefs.locked},
-            {"expanded",window.Expanded()},{"focusing",model.Focusing()},{"finished",model.Finished()},
+            {"expanded",Expanded()},{"focusing",model.Focusing()},{"finished",model.Finished()},
+            {"screen",display.screen<0?PrimaryScreen():display.screen},{"screens",std::move(ids)},
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
             {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},
@@ -137,17 +195,18 @@ struct DynamicIslandSession::Impl {
         wchar_t clock[16]{},date[96]{};
         swprintf_s(clock,L"%02u:%02u",time.wHour,time.wMinute);
         GetDateFormatEx(english?L"en-US":L"zh-CN",DATE_LONGDATE,&time,nullptr,date,96,nullptr);
-        window.Update({model.Playback(),clock,date,model.RemainingSeconds(),model.Focusing(),model.Finished(),english});
+        const IslandPresentation view{model.Playback(),clock,date,model.RemainingSeconds(),model.Focusing(),model.Finished(),english};
+        EachWindow([&](auto& target){target.Update(view);});
     }
     bool Runtime(const widget::Preferences& next) {
-        if(!next.enabled){window.Stop();SyncWeatherConsumer(false);return true;}
-        if(!window.Start(next,display))return false;
-        SyncWeatherConsumer(true);
+        if(!ProjectDisplay(next,display))return false;
+        SyncWeatherConsumer(next.enabled);
         RefreshWeather();Paint();return true;
     }
     void RefreshWeather() {
         if(stopped)return;
-        window.SetWeather(options.weather?options.weather():dynamic_island::Weather{});
+        const auto weather=options.weather?options.weather():dynamic_island::Weather{};
+        EachWindow([&](auto& target){target.SetWeather(weather);});
     }
     bool Commit(widget::Preferences next) {
         if(stopped)return false;
@@ -169,6 +228,7 @@ struct DynamicIslandSession::Impl {
         switch(action) {
         case Action::ExpansionChanged:RefreshWeather();Notify();return;
         case Action::Tick:{
+            RefreshScreens();
             // Lume Music has priority; otherwise follow the current Windows media
             // session every second so position, track and state stay current.
             if((model.Playback().available&&!external)||!options.externalMedia)return;
@@ -210,6 +270,14 @@ struct DynamicIslandSession::Impl {
         using ui::PageCommand;
         auto next=prefs;
         const int number=static_cast<int>(command);
+        if(number>=static_cast<int>(PageCommand::IslandScreenFirst)&&number<=static_cast<int>(PageCommand::IslandScreenLast)){
+            RefreshScreens();
+            const int screen=number-static_cast<int>(PageCommand::IslandScreenFirst);
+            if(screen>static_cast<int>(screens.size())){error="screen";return State(true,false);}
+            auto value=display;value.screen=screen;
+            const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
+            return State(true,saved);
+        }
         const bool left=number>=static_cast<int>(PageCommand::IslandLeftWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandLeftWidgetLast);
         const bool right=number>=static_cast<int>(PageCommand::IslandRightWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandRightWidgetLast);
         if(left||right){
@@ -220,9 +288,10 @@ struct DynamicIslandSession::Impl {
             return State(true,saved);
         }
         switch(command) {
-        case PageCommand::Ready:return State();
+        case PageCommand::Ready:RefreshScreens();return State();
         case PageCommand::IslandPreviewStop:ReleasePreview();return std::wstring{};
         case PageCommand::IslandPreviewCompact:case PageCommand::IslandPreviewExpanded:{
+            if(GetTickCount64()-screensChecked>=1000)RefreshScreens();
             const bool expanded=command==PageCommand::IslandPreviewExpanded;
             previewActive=true;SyncWeatherConsumer(prefs.enabled);
             RefreshWeather();
@@ -280,15 +349,15 @@ struct DynamicIslandSession::Impl {
             return State(true,saved);
         }
         case PageCommand::IslandExpand:case PageCommand::IslandCollapse:
-            window.Expand(command==PageCommand::IslandExpand);return State(true);
+            EachWindow([&](auto& target){target.Expand(command==PageCommand::IslandExpand);});return State(true);
         case PageCommand::IslandFocus:case PageCommand::IslandStopFocus:return {};
         default:return {};
         }
         const bool saved=Commit(next);return State(true,saved);
     }
-    void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))window.Expand(true);Notify();}
+    void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))EachWindow([](auto& target){target.Expand(true);});Notify();}
     void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();previewActive=false;SyncWeatherConsumer(prefs.enabled);}
-    void Shutdown() {if(stopped)return;ReleasePreview();window.SetTodoSource({});window.Stop();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
+    void Shutdown() {if(stopped)return;ReleasePreview();EachWindow([](auto& target){target.SetTodoSource({});});StopWindows();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
     ~Impl(){Shutdown();}
 };
 DynamicIslandSession::DynamicIslandSession(HINSTANCE instance,DynamicIslandSessionOptions options,settings::IFileStore* files)
@@ -314,9 +383,10 @@ void DynamicIslandSession::Update(dynamic_island::Media media){
 void DynamicIslandSession::SetEnglish(bool english){impl_->english=english;if(!impl_->stopped)impl_->Paint();}
 void DynamicIslandSession::Shutdown(){impl_->Shutdown();}
 bool DynamicIslandSession::ShowNotice(const std::string& id,const std::wstring& title,const std::wstring& time){
-    return !impl_->stopped&&impl_->prefs.enabled&&impl_->window.ShowNotice(id,title,time);
+    if(impl_->stopped||!impl_->prefs.enabled)return false;
+    bool shown=false;impl_->EachWindow([&](auto& target){shown=target.ShowNotice(id,title,time)||shown;});return shown;
 }
-void DynamicIslandSession::RefreshTodos(){if(!impl_->stopped)impl_->window.RefreshTodos();}
+void DynamicIslandSession::RefreshTodos(){if(!impl_->stopped)impl_->EachWindow([](auto& target){target.RefreshTodos();});}
 void DynamicIslandSession::RefreshWeather(){impl_->RefreshWeather();}
 void DynamicIslandSession::ReleasePreview(){impl_->ReleasePreview();}
 bool DynamicIslandSession::Running()const{return impl_->window.Handle()!=nullptr;}

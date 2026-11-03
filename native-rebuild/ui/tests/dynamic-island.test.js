@@ -109,3 +109,39 @@ test('shape waits for native confirmation, survives rollback and accepts older s
   assert.equal(state.dynamicIsland.shape,'standard');assert.equal(state.dynamicIslandStatus,'error');
   assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.shape,'capsule');
 });
+
+test('display policy lists connected screens and preserves confirmed selection across save failures',()=>{
+  const sent=[],bridge=createBridge({postMessage:message=>sent.push(message)});
+  for(const screen of [0,1,64])assert.ok(bridge.send('dynamicIsland','screen',screen));
+  for(const screen of [-1,65,1.5,'1',null,NaN])assert.equal(bridge.send('dynamicIsland','screen',screen),false);
+  assert.deepEqual(sent,['v1|dynamicIsland|screen|0','v1|dynamicIsland|screen|1','v1|dynamicIsland|screen|64']);
+  for(const fields of [{screen:0,screens:[1]},{screen:2,screens:[1,2]},{screen:2,screens:[1]}])assert.ok(validHostMessage(snapshot(fields)));
+  for(const fields of [{screen:-1,screens:[1]},{screen:65,screens:[1]},{screen:'1',screens:[1]},
+    {screen:1,screens:[]},{screen:1,screens:[1,1]},{screen:1,screens:[2]},{screen:1},{screens:[1]}])
+    assert.equal(validHostMessage(snapshot(fields)),false);
+  for(const language of ['zh-CN','en']){
+    setLanguage(language);
+    for(const screens of [[1],[1,2],[1,2,3,4]]){
+      const state=reduce(initialState(),{type:'host',message:snapshot({screen:0,screens})});
+      const html=islandPage(state,'home');
+      assert.match(html,/class="island-display"/);
+      assert.ok(html.indexOf('class="island-display"')>html.indexOf('id="island-size-label"'));
+      assert.equal((html.match(/data-island-screen="\d+"/g)||[]).length,screens.length+1);
+      for(const id of screens)assert.match(html,new RegExp(`data-island-screen="${id}"`));
+      assert.match(html,/data-island-screen="0" aria-pressed="true"/);
+      assert.match(html,/显示策略|Display policy/);
+      assert.doesNotMatch(html,new RegExp(`data-island-screen="${screens.length+1}"`));
+    }
+  }
+  setLanguage('zh-CN');
+  let state=reduce(initialState(),{type:'host',message:snapshot({screen:2,screens:[1,2]})});
+  state=reduce(state,{type:'request',scope:'dynamicIsland',key:'screen',value:0});
+  assert.equal(state.dynamicIsland.screen,2,'selection waits for native confirmation');
+  state=reduce(state,{type:'host',message:snapshot({screen:2,screens:[1,2],result:'applied',error:'save'})});
+  assert.equal(state.dynamicIsland.screen,2);assert.equal(state.dynamicIslandStatus,'error');
+  state=reduce(state,{type:'host',message:snapshot({screen:0,screens:[1,2],result:'applied',saved:true,loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.screen,0);assert.equal(state.dynamicIslandStatus,'saved');
+  state=reduce(state,{type:'host',message:snapshot({screen:2,screens:[1]})});
+  assert.match(islandPage(state,'home'),/data-island-screen-unavailable >所选屏幕未连接/);
+  assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.screen,1,'older hosts retain the primary-screen default');
+});

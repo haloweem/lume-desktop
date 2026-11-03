@@ -7,14 +7,16 @@ export function validIslandState(m) {
   const keys=['version','type','enabled','running','locked','expanded','focusing','finished','remaining',
     'hideFullscreen','topmost','hover','autoHide','size','material','loadStatus','error','result','saved'];
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget');
-  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0) &&
+  const screens=Object.hasOwn(m||{},'screen')&&Array.isArray(m.screens);
+  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0) &&
     keys.every(key=>Object.hasOwn(m,key)) && m.version===1 && m.type==='dynamicIsland-state' &&
     ['enabled','running','locked','expanded','focusing','finished','saved','hideFullscreen','topmost','hover','autoHide'].every(key=>typeof m[key]==='boolean') &&
     islandSizes.includes(m.size) && islandMaterials.includes(m.material) &&
     (!Object.hasOwn(m,'shape')||['standard','capsule'].includes(m.shape)) &&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30))&&
+    (!screens||(Number.isInteger(m.screen)&&m.screen>=0&&m.screen<=64&&m.screens.length>=1&&m.screens.length<=64&&m.screens.every((id,index)=>id===index+1)))&&
     Number.isInteger(m.remaining) && m.remaining>=0 && m.remaining<=1500 &&
-    ['fresh','loaded','recovered','failed'].includes(m.loadStatus) && ['','runtime','save','rollback'].includes(m.error) &&
+    ['fresh','loaded','recovered','failed'].includes(m.loadStatus) && ['','runtime','save','rollback','screen'].includes(m.error) &&
     ['snapshot','applied'].includes(m.result) && (!m.running || m.enabled) &&
     (!m.saved || (m.result==='applied' && !m.error && m.loadStatus==='loaded'));
 }
@@ -48,6 +50,7 @@ export function islandStatus(state) {
   if(status==='loading')return t('正在读取设置…','Loading settings…');
   if(status==='saving')return '';
   if(status==='unavailable')return t('桌面宿主未连接，设置未保存','Desktop host disconnected. Settings were not saved.');
+  if(status==='error'&&state.dynamicIslandError==='screen')return t('所选屏幕已断开，请选择其他屏幕','The selected screen was disconnected. Choose another screen.');
   if(status==='error')return state.dynamicIslandError==='runtime'
     ? t('灵动岛启动失败，请重试','Could not start the island. Please try again.')
     : t('设置读取或保存失败，原有配置已保留','Could not load or save settings. Your previous settings were preserved.');
@@ -55,6 +58,11 @@ export function islandStatus(state) {
   return '';
 }
 const busy=state=>['loading','saving','unavailable'].includes(state.dynamicIslandStatus);
+const screenIds=p=>p.screens?.length?p.screens:[1];
+function screenButtons(p,disabled) {
+  return [...screenIds(p).map(id=>[id,`${t('屏幕','Screen')} ${id}`]),[0,t('全部屏幕','All screens')]]
+    .map(([id,label])=>`<button type="button" data-island-screen="${id}" aria-pressed="${(p.screen??1)===id}" ${disabled?'disabled':''}>${label}</button>`).join('');
+}
 function islandHome(state) {
   const p=state.dynamicIsland;
   const expanded=state.dynamicIslandPreviewMode==='expanded';
@@ -82,6 +90,16 @@ function islandHome(state) {
           </div>
         </div>
       </div>
+      <section class="island-display" aria-label="${t('显示','Display')}">
+        <div class="island-appearance__head"><h2>${t('显示','Display')}</h2></div>
+        <div class="island-appearance__body">
+          <div class="island-appearance__row">
+            <div class="island-appearance__label" id="island-screen-label">${t('显示策略','Display policy')}</div>
+            <div class="island-appearance__segments island-display__screens" role="group" aria-labelledby="island-screen-label" data-island-screen-options="${screenIds(p).join(',')}">${screenButtons(p,busy(state))}</div>
+            <p class="island-display__hint" data-island-screen-unavailable ${p.screen>0&&!screenIds(p).includes(p.screen)?'':'hidden'}>${t('所选屏幕未连接，暂在主屏显示','The selected screen is disconnected. Showing on the primary screen for now.')}</p>
+          </div>
+        </div>
+      </section>
     </aside>
     <div class="island-home__main">
     <section class="island-home__preview-shell" aria-label="${t('灵动岛实时预览','Dynamic Island live preview')}">
@@ -187,6 +205,17 @@ export function syncIslandControls(root,state) {
       button.setAttribute('aria-pressed',String(p[button.dataset.islandPreference]===button.dataset.value));
       syncSettingsControlBusy(button,disabled);
     });
+    const screens=home.querySelector('[data-island-screen-options]');
+    if(screens){
+      const ids=screenIds(p).join(',');
+      if(screens.dataset.islandScreenOptions!==ids){screens.dataset.islandScreenOptions=ids;screens.innerHTML=screenButtons(p,disabled);}
+      screens.querySelectorAll('[data-island-screen]').forEach(button=>{
+        button.setAttribute('aria-pressed',String(Number(button.dataset.islandScreen)===(p.screen??1)));
+        syncSettingsControlBusy(button,disabled);
+      });
+    }
+    const unavailable=home.querySelector('[data-island-screen-unavailable]');
+    if(unavailable)unavailable.hidden=!(p.screen>0&&!screenIds(p).includes(p.screen));
     syncCompactWidgetPicker(home,state);
   }
   for(const [action,value] of [['toggle',p.enabled],...displayToggles().map(([a,key])=>[a,p[key]])]) {

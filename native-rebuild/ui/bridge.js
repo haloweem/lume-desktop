@@ -591,6 +591,7 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='shape' && ['standard','capsule'].includes(value)) ||
             (action==='preview' && ['compact','expanded','stop'].includes(value)) ||
             (['leftWidget','rightWidget'].includes(action) && Number.isInteger(value) && value>=0 && value<=30) ||
+            (action==='screen' && integerIn(value,0,64)) ||
             (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)))))) ||
         (kind === "ready" && parts.length === 1) ||
         (kind === 'radial' && ((parts.length===2 && action==='reset') ||

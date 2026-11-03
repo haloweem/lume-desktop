@@ -97,6 +97,8 @@ enum class PageCommand {
     IslandLeftWidgetLast=IslandLeftWidgetFirst+30,
     IslandRightWidgetFirst,
     IslandRightWidgetLast=IslandRightWidgetFirst+30,
+    IslandScreenFirst,
+    IslandScreenLast=IslandScreenFirst+64,
     SpectrumEnable, SpectrumDisable, SpectrumReset, SpectrumStylePulse, SpectrumStyleBlocks, SpectrumStyleWaves,
     SpectrumSizeFirst,
     SpectrumSizeLast = SpectrumSizeFirst + 250,
