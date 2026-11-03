@@ -497,6 +497,7 @@ foreach ($run in $acceptanceRuns) {
         'lume-interface-scale-window-test',
         'lume-window-layer-policy-test',
         'lume-application-tray-menu-test',
+        'lume-dynamic-island-test',
         'lume-widget-layer-stress-test', 'lume-music-system-fonts-test',
         'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test')
     # Quick: a build to try out. Packaging, unpack, payload hashes and the

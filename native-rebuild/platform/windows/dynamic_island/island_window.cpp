@@ -1212,9 +1212,9 @@ struct IslandWindow::Impl {
             using W=dynamic_island::CompactWidget;
             const auto choice=hit==600?display.leftWidget:display.rightWidget;
             if(choice==W::Files){FileMenu();return;}
-            if(choice>=W::Weather){if(act)act(dynamic_island::Action::WeatherSettings);return;}
-            if(choice>=W::Network){if(act)act(dynamic_island::Action::PerformanceSettings);return;}
-            if(todos.openCalendar)todos.openCalendar();
+            // Readouts share the capsule's normal expand action. Opening a
+            // settings manager requires the explicit context-menu command.
+            Expand(!expanded);
             return;
         }
         if (hit == 400 && notice && notice->target) {

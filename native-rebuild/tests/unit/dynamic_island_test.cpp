@@ -30,6 +30,28 @@ struct Files final:settings::IFileStore {
 };
 void Pump(unsigned ms){const auto end=GetTickCount64()+ms;do{MSG m{};while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}MsgWaitForMultipleObjects(0,nullptr,FALSE,5,QS_ALLINPUT);}while(GetTickCount64()<end);}
 void Click(HWND hwnd,int x,int y){const auto dpi=static_cast<int>(GetDpiForWindow(hwnd));const auto at=MAKELPARAM(MulDiv(x,dpi,96),MulDiv(y,dpi,96));SendMessageW(hwnd,WM_LBUTTONDOWN,0,at);SendMessageW(hwnd,WM_LBUTTONUP,0,at);}
+thread_local HWND menuOwner=nullptr;
+LRESULT CALLBACK PreventMenuActivation(int code,WPARAM w,LPARAM l){
+    // This fixture runs on a desktop that is never made the input desktop.
+    if(code==HCBT_ACTIVATE)return 1;
+    return CallNextHookEx(nullptr,code,w,l);
+}
+void CALLBACK SelectSettings(HWND,UINT,UINT_PTR timer,DWORD){
+    KillTimer(nullptr,timer);
+    HWND menu=nullptr;
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND hwnd,LPARAM value)->BOOL{
+        wchar_t name[64]{};GetClassNameW(hwnd,name,64);
+        if(std::wstring(name)==L"LumeWidgetMenuWindow"&&GetWindow(hwnd,GW_OWNER)==menuOwner){
+            *reinterpret_cast<HWND*>(value)=hwnd;return FALSE;
+        }
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&menu));
+    Check(menu&&IsWindowVisible(menu),"explicit island context menu is visible");
+    // Settings, Reset and Close are the menu's final three commands.
+    PostMessageW(menu,WM_KEYDOWN,VK_END,1);
+    PostMessageW(menu,WM_KEYDOWN,VK_UP,1);PostMessageW(menu,WM_KEYDOWN,VK_UP,1);
+    PostMessageW(menu,WM_KEYDOWN,VK_RETURN,1);
+}
 nlohmann::json State(const shell::DynamicIslandSession& s){return nlohmann::json::parse(s.State());}
 void SaveFrame(const platform::windows::WidgetBitmap& frame,const wchar_t* name){
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
@@ -239,8 +261,11 @@ void Scenario(){
     }
     {
         using namespace platform::windows;
-        dynamic_island::Action compactAction=dynamic_island::Action::Tick;
-        IslandWindow window(GetModuleHandleW(nullptr),[&](dynamic_island::Action action){compactAction=action;});
+        unsigned settingsOpened=0,calendarOpened=0;
+        IslandWindow window(GetModuleHandleW(nullptr),[&](dynamic_island::Action action){
+            using dynamic_island::Action;
+            if(action==Action::Settings||action==Action::WeatherSettings||action==Action::PerformanceSettings)++settingsOpened;
+        });
         widget::Preferences prefs;prefs.enabled=true;
         IslandDisplay display;
         Check(window.Start(prefs,display),"preview window starts");
@@ -269,21 +294,39 @@ void Scenario(){
         const auto readings=window.CompactReadings();
         std::ofstream readingsFile(readingsPath,std::ios::binary);
         for(const wchar_t byte:readings)readingsFile.put(static_cast<char>(byte));
-        Click(window.Handle(),20,18);window.Settle();
-        Check(!window.Expanded()&&compactAction==dynamic_island::Action::WeatherSettings,
-              "weather compact widget opens the weather manager without an old page");
-        bool calendarOpened=false;
-        IslandTodoSource navigation;navigation.openCalendar=[&]{calendarOpened=true;};
+        IslandTodoSource navigation;navigation.openCalendar=[&]{++calendarOpened;};
         window.SetTodoSource(navigation);
-        window.Expand(false);window.Settle();
-        Click(window.Handle(),340,18);window.Settle();
-        Check(!window.Expanded()&&calendarOpened,"lunar compact widget opens the calendar manager");
-        display.leftWidget=dynamic_island::CompactWidget::Cpu;
-        Check(window.SetDisplay(display),"system compact widget applies");window.Settle();
-        compactAction=dynamic_island::Action::Tick;
-        Click(window.Handle(),20,18);window.Settle();
-        Check(!window.Expanded()&&compactAction==dynamic_island::Action::PerformanceSettings,
-              "performance compact widget opens the performance manager");
+        using W=dynamic_island::CompactWidget;
+        for(int id=1;id<static_cast<int>(W::Count);++id){
+            const auto choice=static_cast<W>(id);
+            if(choice==W::Files)continue;  // File tray clicks explicitly request its file menu.
+            display.leftWidget=display.rightWidget=choice;
+            Check(window.SetDisplay(display),"compact readout applies to both sides");
+            window.Update({playing,L"",L"",0,false,false,false});window.Settle();
+            for(const int x:{20,340}){
+                window.Expand(false);window.Settle();
+                Click(window.Handle(),x,18);window.Settle();
+                Check(settingsOpened==0&&calendarOpened==0,"ordinary compact clicks never open a settings manager");
+                Check(window.Expanded()&&window.Page()==IslandPage::Music,"either readout expands available music controls");
+            }
+            window.Expand(false);window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
+            for(const int x:{20,340}){
+                Click(window.Handle(),x,18);window.Settle();
+                Check(!window.Expanded()&&settingsOpened==0&&calendarOpened==0,
+                      "idle readout click stays compact without opening settings or a removed page");
+            }
+        }
+        window.Update({playing,L"",L"",0,false,false,false});window.Settle();
+        {
+            const auto hook=SetWindowsHookExW(WH_CBT,PreventMenuActivation,nullptr,GetCurrentThreadId());
+            Check(hook!=nullptr,"keep context menu verification on its isolated desktop");
+            menuOwner=window.Handle();
+            const auto timer=SetTimer(nullptr,0,40,SelectSettings);Check(timer!=0,"arm explicit settings selection");
+            SendMessageW(window.Handle(),WM_RBUTTONUP,0,MAKELPARAM(20,18));
+            KillTimer(nullptr,timer);menuOwner=nullptr;UnhookWindowsHookEx(hook);
+            Check(settingsOpened==1&&calendarOpened==0&&GetCapture()==nullptr,
+                  "only the explicit Open settings menu command requests the island manager");
+        }
         window.Expand(false);window.Settle();
         display.leftWidget=display.rightWidget=dynamic_island::CompactWidget::None;
         Check(window.SetDisplay(display),"mini widget choices can be cleared without rebuilding other settings");window.Settle();
