@@ -667,7 +667,7 @@ struct DesktopApplication::State {
                 try {
                     if(kind==DiagnosticJob::Report)result.report=WriteDiagnosticReport(input);
                     else if(kind==DiagnosticJob::Copy)result.text=DiagnosticText(input);
-                    else result.checks=RunSelfChecks(input.installDirectory);
+                    else result.checks=RunSelfChecks(input.installDirectory,input.modules);
                 } catch(...) {result.report.error="DIAGNOSTIC_JOB_FAILED";}
                 {std::lock_guard<std::mutex> lock(reportMutex);reportResult=std::move(result);}
                 Wake();

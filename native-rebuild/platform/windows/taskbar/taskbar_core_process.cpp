@@ -4,12 +4,26 @@
 #include <windows.h>
 #include <atomic>
 #include <cwchar>
+#include <cwctype>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace lume::platform::windows {
 using taskbar::Error;
+Error TaskbarCoreDialogError(std::wstring_view text) {
+    // The pinned core uses this fixed English stage label; the HRESULT is
+    // stable even when Windows localizes its accompanying description.
+    if (text.find(L"Failed to initialize XAML Diagnostics.") == std::wstring_view::npos)
+        return Error::None;
+    std::wstring lower(text);
+    for (auto& c : lower) c = static_cast<wchar_t>(std::towlower(c));
+    constexpr std::wstring_view code = L"0x80070005";
+    const auto at = lower.find(code);
+    if (at == std::wstring::npos) return Error::None;
+    const auto end = at + code.size();
+    return end == lower.size() || !std::iswxdigit(lower[end]) ? Error::CoreAccessDenied : Error::None;
+}
 namespace {
 HWND CoreWindow(DWORD pid) {
     struct Search { DWORD pid; HWND window; } search{pid, nullptr};
@@ -27,29 +41,32 @@ HWND CoreWindow(DWORD pid) {
 // Diagnostics", 0x800401E3, when Explorer's taskbar XAML is not up yet) in a
 // message box and exits once it is dismissed. Lume restarts the core with
 // backoff, so the box is dismissed here instead of being left to the user.
-bool DismissCoreDialogs(DWORD pid) {
-    struct Search { DWORD pid; bool found; } search{pid, false};
+void DismissCoreDialogs(DWORD pid, std::atomic<Error>& failure) {
+    struct Search { DWORD pid; std::atomic<Error>& failure; bool found; } search{pid, failure, false};
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
         auto& state = *reinterpret_cast<Search*>(data); DWORD owner = 0;
         GetWindowThreadProcessId(window, &owner);
         if (owner != state.pid || !IsWindowVisible(window)) return TRUE;
         wchar_t name[16]{}; GetClassNameW(window, name, 16);
         if (wcscmp(name, L"#32770") != 0) return TRUE;
-        PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
-        PostMessageW(window, WM_CLOSE, 0, 0);
+        // Read and classify before posting close: the message box can disappear
+        // as soon as its owner handles that message.
+        wchar_t message[2048]{};
+        const auto text = GetDlgItem(window, 0xFFFF);
+        if (text) GetWindowTextW(text, message, 2048);
+        const auto error = TaskbarCoreDialogError(message);
+        if (error != Error::None) state.failure = error;
         if (!state.found) {
-            wchar_t message[512]{};
-            const auto text = GetDlgItem(window, 0xFFFF);
-            if (text) GetWindowTextW(text, message, 512);
-            std::string utf8(1024, '\0');
-            const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8.data(), 1024, nullptr, nullptr);
+            std::string utf8(8192, '\0');
+            const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8.data(), 8192, nullptr, nullptr);
             utf8.resize(length > 0 ? static_cast<std::size_t>(length - 1) : 0);
             diag::Log("taskbar", "dismissed core error dialog: " + utf8);
         }
+        PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+        PostMessageW(window, WM_CLOSE, 0, 0);
         state.found = true;
         return TRUE;
     }, reinterpret_cast<LPARAM>(&search));
-    return search.found;
 }
 // Windows 11 hosts the taskbar in XAML; the core attaches to it through XAML
 // Diagnostics, which fails until that island exists (sign-in, Explorer restart).
@@ -79,7 +96,12 @@ struct TaskbarCoreProcess::Impl {
         if (!DuplicateHandle(GetCurrentProcess(), process, GetCurrentProcess(), &copy, SYNCHRONIZE, FALSE, 0)) return;
         try {
             guard = std::thread([this, watched, copy] {
-                while (!guardStop && WaitForSingleObject(copy, 500) == WAIT_TIMEOUT) DismissCoreDialogs(watched);
+                while (!guardStop && WaitForSingleObject(copy, 500) == WAIT_TIMEOUT) {
+                    if (api.readDialogFailure) {
+                        const auto failure = api.readDialogFailure(watched);
+                        if (failure != Error::None) reportedFailure = failure;
+                    } else DismissCoreDialogs(watched, reportedFailure);
+                }
                 CloseHandle(copy);
             });
         } catch (...) { CloseHandle(copy); }
@@ -101,19 +123,26 @@ struct TaskbarCoreProcess::Impl {
         for (;;) {
             if (!recovery && cancel) return Error::Cancelled;
             const auto state = api.wait(process, 0);
-            if (state == WAIT_OBJECT_0) { LogExit("exited before ready"); return Error::CoreExited; }
+            if (state == WAIT_OBJECT_0) { LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
             if (state != WAIT_TIMEOUT) return Error::CoreStart;
             const auto elapsed = GetTickCount64() - launchedAt;
-            if (CoreWindow(pid) && elapsed >= timings.readySettleMs) {
+            if (reportedFailure == Error::None && CoreWindow(pid) && elapsed >= timings.readySettleMs) {
                 ready = true; return Error::None;
             }
-            if (elapsed >= timings.startTimeoutMs) { diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms"); return Error::CoreStart; }
+            if (elapsed >= timings.startTimeoutMs) { diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms"); return FailureOr(Error::CoreStart); }
             const auto waited = api.wait(process, timings.waitSliceMs);
-            if (waited == WAIT_OBJECT_0) { LogExit("exited before ready"); return Error::CoreExited; }
+            if (waited == WAIT_OBJECT_0) { LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
             if (waited != WAIT_TIMEOUT) return Error::CoreStart;
         }
     }
+    Error FailureOr(Error fallback) const {
+        const auto failure = reportedFailure.load();
+        return failure == Error::None ? fallback : failure;
+    }
     Error Start(bool recovery) {
+        // A known access failure will also fail a recovery launch. Keep its
+        // journal, and wait for an explicit user retry instead of another box.
+        if (reportedFailure != Error::None) return reportedFailure.load();
         if (process) {
             const auto state = api.wait(process, 0);
             if (state == WAIT_TIMEOUT) {
@@ -193,6 +222,7 @@ struct TaskbarCoreProcess::Impl {
             if (completed) return Error::None;
         }
         if (!process && (previous || recoveryRequired)) {
+            if (reportedFailure != Error::None) return reportedFailure.load();
             const auto error = Start(true);
             if (error != Error::None) return error;
         }
@@ -220,15 +250,17 @@ struct TaskbarCoreProcess::Impl {
     static constexpr ULONGLONG XamlWaitMs = 15000;
     std::thread guard;
     std::atomic_bool guardStop{false};
+    std::atomic<Error> reportedFailure{Error::None};
 };
 TaskbarCoreProcess::TaskbarCoreProcess(const std::atomic_bool& cancel, Prepare prepare, TaskbarCoreTimings timings,
                                      TaskbarCoreProcessApi api)
     : impl_(std::make_unique<Impl>(cancel, std::move(prepare), timings, api)) {}
 TaskbarCoreProcess::~TaskbarCoreProcess() = default;
 Error TaskbarCoreProcess::Start(bool recovery) { return impl_->Start(recovery); }
+void TaskbarCoreProcess::ResetFailure() { impl_->reportedFailure = Error::None; }
 Error TaskbarCoreProcess::Stop(bool previous) { return impl_->Stop(previous); }
 bool TaskbarCoreProcess::Alive() const { return impl_->Alive(); }
-bool TaskbarCoreProcess::Ready() const { return impl_->ready && !impl_->closeRequested && impl_->Alive(); }
+bool TaskbarCoreProcess::Ready() const { return impl_->reportedFailure == Error::None && impl_->ready && !impl_->closeRequested && impl_->Alive(); }
 bool TaskbarCoreProcess::HasProcess() const { return impl_->process != nullptr; }
 std::uintptr_t TaskbarCoreProcess::ExitSignal() const { return reinterpret_cast<std::uintptr_t>(impl_->process); }
 }  // namespace lume::platform::windows

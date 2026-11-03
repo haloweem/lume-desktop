@@ -48,7 +48,7 @@ test('taskbar state validates the asynchronous schema without saved/result field
   assert.equal(validHostMessage({version:1,type:'navigate',page:'taskbar'}),true);
   for(const error of ['load','save','busy','unsupported','missing-payload','payload-integrity','conflict',
     'discover','read-appearance','apply-appearance','read-auto-hide','apply-auto-hide','core-start',
-    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install'])
+    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install','core-access-denied'])
     assert.equal(validHostMessage(taskbarMessage({error})),true,error);
   for(const fields of [{enabled:1},{applying:'false'},{pendingRecovery:null},{taskbars:-1},{taskbars:1.5},{taskbars:33},
     {revision:-1},{revision:Number.MAX_SAFE_INTEGER+1},{mode:'unknown'},{loadStatus:'recovered'},
@@ -57,6 +57,18 @@ test('taskbar state validates the asynchronous schema without saved/result field
   for(const key of Object.keys(taskbarMessage())) {
     const message=taskbarMessage();delete message[key];assert.equal(validHostMessage(message),false,key);
   }
+});
+
+test('taskbar access failure reaches the page with the precise error and no success notice',()=>{
+  const message=taskbarMessage({enabled:true,error:'core-access-denied',pendingRecovery:true,revision:1});
+  assert.equal(validHostMessage(message),true);
+  const state=reduce(initialState(),{type:'host',message});
+  assert.equal(state.taskbarStatus,'error');
+  assert.equal(state.taskbarError,'core-access-denied');
+  assert.match(taskbarStatus(state),/0x80070005/);
+  assert.match(taskbarStatus(state),/已停止自动重试/);
+  assert.doesNotMatch(taskbarStatus(state),/已应用|已恢复|保存成功/);
+  assert.equal(taskbarNotice(state,{hasInlineStatus:true}),null);
 });
 
 test('animation state validates runtime evidence and keeps legitimate failure snapshots',()=>{

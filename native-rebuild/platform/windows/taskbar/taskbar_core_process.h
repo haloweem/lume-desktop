@@ -5,8 +5,10 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 namespace lume::platform::windows {
+taskbar::Error TaskbarCoreDialogError(std::wstring_view);
 struct TaskbarCoreLaunch {
     std::filesystem::path executable;
     std::wstring arguments;
@@ -23,6 +25,9 @@ struct TaskbarCoreProcessApi {
     decltype(&CreateJobObjectW) createJob = &CreateJobObjectW;
     decltype(&CreateProcessW) createProcess = &CreateProcessW;
     decltype(&WaitForSingleObject) wait = &WaitForSingleObject;
+    // Optional synthetic failure input for isolated lifecycle tests. The
+    // production default reads only dialogs owned by the verified child PID.
+    std::function<taskbar::Error(DWORD)> readDialogFailure;
 };
 // Owns only a prepared child process and its kill-on-close job. The production
 // taskbar port supplies the pinned-payload verifier; tests supply an isolated
@@ -33,6 +38,7 @@ public:
     TaskbarCoreProcess(const std::atomic_bool& cancel, Prepare, TaskbarCoreTimings = {}, TaskbarCoreProcessApi = {});
     ~TaskbarCoreProcess();
     taskbar::Error Start(bool recovery = false);
+    void ResetFailure();
     taskbar::Error Stop(bool recoverPreviousProcess);
     bool Alive() const;
     bool Ready() const;

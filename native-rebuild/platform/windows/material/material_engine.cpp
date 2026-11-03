@@ -2,6 +2,7 @@
 #include "material_diagnostics.h"
 #include "../lume_window_ids.h"
 #include "annular_region.h"
+#include "capture_compatibility.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -12,6 +13,7 @@
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 
@@ -395,6 +397,17 @@ uint32_t SampleTexturePixel(ID3D11Device* device, ID3D11DeviceContext* context,
 bool InitializeAndRun(GlassInstance* glass) {
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LogNative("InitializeAndRun");
+  try {
+    // Windows 10 supports WGC but cannot disable its notification border.
+    // Reject that path before creating a surface, GPU device or capture pool.
+    lume_glass::RequireCaptureBorderControl([] {
+      return winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(
+          L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsBorderRequired");
+    }, [] { return static_cast<HRESULT>(winrt::to_hresult()); });
+  } catch (const lume_glass::CaptureCompatibilityFailure& error) {
+    LogNative("CaptureBorderControlUnavailable", error.error);
+    throw;
+  }
   const int surfaceLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
   const int surfaceTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
   const int surfaceWidth = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
@@ -1250,14 +1263,18 @@ void Run(GlassInstance* raw) {
   try {
     MaterialApartment apartment;
     while(!raw->stop) {
+      bool retryAllowed=true;
       raw->readySources=0;raw->desktopIconSources=0;raw->desktopIconReady=0;
       raw->initialized=false;raw->frameReady=false;raw->lastError=S_OK;
       try {InitializeAndRun(raw);}
+      catch(const lume_glass::CaptureCompatibilityFailure& e){raw->lastError=e.error;SignalInitialization(raw,false);retryAllowed=false;}
       catch(const winrt::hresult_error& e){raw->lastError=e.code();SignalInitialization(raw,false);}
       catch(...){raw->lastError=E_FAIL;SignalInitialization(raw,false);}
       raw->initialized=false;
       if(raw->surface){DestroyWindow(raw->surface);raw->surface=nullptr;}
       raw->scenePixels=0;raw->surfacePixels=0;raw->frameReady=false;
+      raw->sources=0;raw->readySources=0;raw->desktopIconSources=0;raw->desktopIconReady=0;
+      if(!retryAllowed){NotifyStatus(raw);break;}
       if(raw->failed || FAILED(raw->lastError.load())) {
         raw->failed=true;
         NotifyStatus(raw);

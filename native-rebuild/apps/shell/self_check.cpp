@@ -196,7 +196,7 @@ bool OwnCore(const PROCESSENTRY32W& entry, HANDLE process) {
         CompareFileTime(&childCreated, &ownerCreated) >= 0;
 }
 SelfCheck Taskbar(const fs::path& install) {
-    SelfCheck check{"taskbar", CheckStatus::Ok, "透明任务栏", "未发现冲突", {}};
+    SelfCheck check{"taskbar", CheckStatus::Ok, "透明任务栏", "运行环境检查通过，尚未验证透明效果", {}};
     const auto core = install / L"taskbar-runtime" / fs::u8path(Arch()) / L"LumeTaskbarCore.exe";
     std::error_code error;
     std::vector<std::string> problems;
@@ -267,9 +267,36 @@ SelfCheck Taskbar(const fs::path& install) {
     }
     return check;
 }
+void ApplyTaskbarState(SelfCheck& check, const nlohmann::json& modules) {
+    if (!modules.is_object()) return;
+    const auto found = modules.find("taskbar-state");
+    if (found == modules.end() || !found->is_object()) return;
+    const auto& state = *found;
+    const auto flag = [&](const char* name) {
+        const auto item = state.find(name);
+        return item != state.end() && item->is_boolean() && item->get<bool>();
+    };
+    const auto errorValue = state.find("error");
+    const auto error = errorValue != state.end() && errorValue->is_string()
+        ? errorValue->get<std::string>() : std::string{};
+    if (!error.empty() || (flag("pendingRecovery") && !flag("applying"))) {
+        const auto detail = error == "core-access-denied"
+            ? "任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试"
+            : error.empty() ? std::string("原任务栏设置仍待恢复") : "任务栏运行失败（" + error + "）";
+        check.detail = check.status == CheckStatus::Ok ? detail : check.detail + "；" + detail;
+        check.status = CheckStatus::Problem;
+        check.fix += "请导出问题反馈报告，以核对任务栏运行错误和权限信息。";
+    } else if (check.status == CheckStatus::Ok) {
+        if (flag("applying") || (flag("enabled") && !flag("running"))) {
+            check.status = CheckStatus::Unknown;
+            check.detail = "任务栏服务尚未完成初始化，尚未确认效果";
+        } else if (flag("running")) check.detail = "任务栏服务正在运行";
+        else check.detail = "任务栏功能已关闭，运行环境检查通过";
+    }
+}
 }  // namespace
 
-std::vector<SelfCheck> RunSelfChecks(const fs::path& installDirectory) {
+std::vector<SelfCheck> RunSelfChecks(const fs::path& installDirectory, const nlohmann::json& modules) {
     std::vector<SelfCheck> checks;
     const auto guard = [&](SelfCheck (*run)(const fs::path&), const char* id, const char* title) {
         try { checks.push_back(run(installDirectory)); }
@@ -280,6 +307,7 @@ std::vector<SelfCheck> RunSelfChecks(const fs::path& installDirectory) {
     guard(Helpers, "helpers", "辅助程序");
     try { checks.push_back(GpuDecode()); } catch (...) { checks.push_back({"gpu-decode", CheckStatus::Unknown, "壁纸显卡解码", "检查时出错", {}}); }
     guard(Taskbar, "taskbar", "透明任务栏");
+    ApplyTaskbarState(checks.back(), modules);
     return checks;
 }
 

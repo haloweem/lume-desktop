@@ -118,6 +118,7 @@ $settingsAccountProbes = @(
   'lume-wallpaper-session-test',
   'lume-taskbar-controller-test', 'lume-taskbar-store-test', 'lume-taskbar-runtime-test', 'lume-taskbar-session-test',
   'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test',
+  'lume-diagnostic-report-test',
   'lume-organizer-desktop-test', 'lume-organizer-icons-test', 'lume-organizer-model-test',
   'lume-dock-application-layer-test',
   'lume-launchpad-collection-test',
@@ -152,6 +153,7 @@ $updateProbes = @(
 $acceptanceProbes = @(
   'lume-reminder-ledger-test', 'lume-local_reminder_runtime-test', 'lume-reminder_presenter-test',
   'lume-todo-session-test', 'lume-desktop-reminder-test', 'lume-native-material-test', 'lume-material-shader-test',
+  'lume-material-capture-compatibility-test',
   'lume-calendar-todo-editor-test', 'lume-calendar-todo-material-test', 'lume-calendar-todo-render-test',
   'lume-native-calendar-window-test', 'lume-native-widget-window-test', 'lume-native-clock-window-test', 'lume-widget-layer-stress-test',
   'lume-weather-session-test', 'lume-weather-view-test', 'lume-almanac-session-test', 'lume-performance-session-test', 'lume-spectrum-session-test',
@@ -446,9 +448,10 @@ $acceptanceRuns += @($installerProbes | ForEach-Object { [pscustomobject]@{name=
 $acceptanceRuns += @($updateProbes | ForEach-Object { [pscustomobject]@{name=$_; mode=''} })
 $acceptanceRuns += [pscustomobject]@{name='lume-update-presenter-test'; mode='real-material'}
 $acceptanceRuns += [pscustomobject]@{name='lume-widget-layer-stress-test'; mode=''}
+$acceptanceRuns += [pscustomobject]@{name='lume-material-capture-compatibility-test'; mode=''}
 $acceptanceRuns += [pscustomobject]@{name='lume-desktop-icons-session-test'; mode='persistence-only'}
 if (-not $WallpaperValidationOnly) {
-    $acceptanceRuns += @($acceptanceProbes | Where-Object { $_ -ne 'lume-widget-layer-stress-test' } | ForEach-Object { [pscustomobject]@{name=$_; mode=''} })
+    $acceptanceRuns += @($acceptanceProbes | Where-Object { $_ -notin @('lume-widget-layer-stress-test', 'lume-material-capture-compatibility-test') } | ForEach-Object { [pscustomobject]@{name=$_; mode=''} })
     $acceptanceRuns += [pscustomobject]@{name='lume-native-widget-window-test'; mode='snap-system-release'}
     $acceptanceRuns += [pscustomobject]@{name='lume-organizer-session-test'; mode='editor-material'}
     foreach ($name in @('lume-minimize-animation-runtime-test', 'minimize-runtime-test32')) {
@@ -499,7 +502,9 @@ foreach ($run in $acceptanceRuns) {
         'lume-application-tray-menu-test',
         'lume-dynamic-island-test',
         'lume-widget-layer-stress-test', 'lume-music-system-fonts-test',
-        'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test')
+        'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test',
+        'lume-taskbar-runtime-test', 'lume-diagnostic-report-test',
+        'lume-material-capture-compatibility-test')
     # Quick: a build to try out. Packaging, unpack, payload hashes and the
     # install/update probes above still run; the isolated regressions do not.
     if ($VerificationMode -eq 'Quick' -and -not $alwaysRun) {

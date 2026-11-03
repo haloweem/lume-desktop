@@ -21,6 +21,7 @@ const errors=()=>({
   'core-start':t('任务栏透明服务启动失败，请检查安装文件','Could not start the taskbar transparency service. Check the installation files.'),
   'framework-install':t('任务栏所需的 Windows 框架安装失败，请重新启用功能；若仍失败，请导出问题反馈报告','Could not install the Windows frameworks required by the taskbar. Enable the feature again; if it still fails, export a diagnostic report.'),
   'core-exited':t('任务栏透明服务意外退出，效果尚未恢复','The taskbar transparency service exited unexpectedly. Appearance has not been restored.'),
+  'core-access-denied':t('任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试，请导出问题反馈报告','The taskbar transparency service was denied access to the Windows taskbar (0x80070005). Automatic retries have stopped. Export a diagnostic report.'),
   'core-stop':t('任务栏透明服务尚未停止，请再次关闭功能重试','The taskbar transparency service has not stopped. Try disabling it again.'),
   cancelled:t('任务栏操作已取消，尚未确认应用结果','Taskbar operation cancelled. Application is not confirmed.'),
   recovery:t('原任务栏设置尚未完全恢复，请再次关闭功能重试','Original taskbar settings are not fully restored. Try disabling the feature again.'),
@@ -36,7 +37,7 @@ export function taskbarStatus(state) {
   let message=messages[state.taskbarError] || '';
   if(!message && state.taskbarLoadStatus==='failed')message=messages.load;
   // "Not fully restored" only applies when the feature is off. While it is on,
-  // an unfinished apply is retried automatically; show just its reason.
+  // show the actual apply failure, including failures awaiting explicit retry.
   if(state.taskbar.pendingRecovery && !state.taskbar.enabled) {
     const recovery=messages.recovery;
     return message && message!==recovery ? `${message}${t('；','; ')}${recovery}` : recovery;

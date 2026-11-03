@@ -20,8 +20,11 @@ enum class Error {
     None, Load, Save, Busy, Unsupported, MissingPayload, PayloadIntegrity, Conflict,
     Discover, ReadAppearance, ApplyAppearance, ReadAutoHide, ApplyAutoHide,
     CoreStart, CoreExited, CoreStop, Cancelled, Recovery, Watch, SystemEffectsDisabled,
-    ReadVisibility, ApplyVisibility, FrameworkInstall
+    ReadVisibility, ApplyVisibility, FrameworkInstall, CoreAccessDenied
 };
+inline bool RequiresExplicitRetry(Error error) {
+    return error == Error::FrameworkInstall || error == Error::CoreAccessDenied;
+}
 const char* ErrorName(Error);
 const char* ModeName(Mode);
 struct Appearance {

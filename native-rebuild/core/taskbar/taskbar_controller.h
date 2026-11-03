@@ -22,6 +22,9 @@ public:
     virtual Error MakeTransparent(const Appearance&) = 0;
     virtual RestoreResult RestoreAppearance(const Appearance&) = 0;
     virtual Error StartCore() = 0;
+    // Only an explicit transparency request may retry a blocked initialization.
+    // Maintenance, restoration and shutdown must retain the failure.
+    virtual void ResetCoreFailure() {}
     virtual bool CoreAlive() const = 0;
     // If recovery comes from a previous process, the Windows port restores via
     // the same verified core's normal shutdown path, and reports failure honestly.

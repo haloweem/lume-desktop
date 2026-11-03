@@ -20,6 +20,7 @@ public:
     taskbar::Error MakeTransparent(const taskbar::Appearance&) override;
     taskbar::RestoreResult RestoreAppearance(const taskbar::Appearance&) override;
     taskbar::Error StartCore() override;
+    void ResetCoreFailure() override;
     bool CoreAlive() const override;
     taskbar::Error StopCore(bool recoverPreviousProcess) override;
     std::uintptr_t ExitSignal() const override;

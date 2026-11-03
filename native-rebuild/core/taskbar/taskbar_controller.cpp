@@ -50,6 +50,7 @@ bool Controller::Save(Record next) {
 }
 bool Controller::Apply(Preferences preferences) {
     if (loaded_ == LoadState::Failed) return Fail(Error::Load);
+    if (preferences.enabled && preferences.transparentTaskbar) port_.ResetCoreFailure();
     if (!(record_.preferences == preferences)) {
         if (!acquired_ && !Acquire(preferences.enabled && preferences.transparentTaskbar)) return false;
         auto next = record_; next.preferences = preferences;

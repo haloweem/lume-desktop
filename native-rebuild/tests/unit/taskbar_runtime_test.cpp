@@ -167,7 +167,7 @@ public:
     }
 };
 struct Shared {
-    std::atomic_int acquired{0}, applied{0}, released{0}, active{0}, starts{0}, stops{0};
+    std::atomic_int acquired{0}, applied{0}, released{0}, active{0}, starts{0}, stops{0}, resets{0};
     std::atomic_bool autoHide{false}, blockStart{false}, failAutoHide{false};
     std::atomic<Error> startError{Error::None};
 };
@@ -177,6 +177,7 @@ public:
     Shared& shared;
     const std::atomic_bool& cancel;
     bool core = false;
+    Error blocked = Error::None;
     Error Acquire(bool, Mode& mode) override { ++shared.acquired; mode = Mode::Windows11X64; return Error::None; }
     void Release() override { ++shared.released; }
     Error ReadAutoHide(bool& value) override { ++shared.applied; value = shared.autoHide; return Error::None; }
@@ -193,11 +194,16 @@ public:
         while (shared.blockStart && !cancel) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         --shared.active;
         if (cancel) return Error::Cancelled;
-        if (shared.startError != Error::None) return shared.startError.load();
+        if (shared.startError != Error::None) {
+            const auto error = shared.startError.load();
+            if (error == Error::CoreAccessDenied) blocked = error;
+            return error;
+        }
         core = true; return Error::None;
     }
+    void ResetCoreFailure() override { ++shared.resets; blocked = Error::None; }
     bool CoreAlive() const override { return core; }
-    Error StopCore(bool) override { ++shared.stops; core = false; return Error::None; }
+    Error StopCore(bool) override { ++shared.stops; core = false; return blocked; }
 };
 // Win10 classic accent: Explorer can rewrite it without any event, so the
 // worker must keep reapplying while transparency is running.
@@ -264,21 +270,41 @@ void RetryRegression(const TaskbarPaths& paths) {
         Check(Wait([&] { return state.starts == 3; }, 700), "Explorer restart notification permits an immediate retry");
         Check(runtime.Shutdown() && !state.autoHide, "failed startup still restores independent auto-hide ownership");
     }
-    {
-        Files files; Shared state; state.startError = Error::FrameworkInstall;
+    for (const auto failure : {Error::FrameworkInstall, Error::CoreAccessDenied}) {
+        Files files; Shared state; state.startError = failure;
         TaskbarRuntime runtime(paths, {}, &files,
             [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
         Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }),
-              "framework installation failure settles");
+              "explicit-retry failure settles");
         const auto watch = CurrentWatchWindow(); Check(watch != nullptr, "locate framework failure watcher");
         PostMessageW(watch, RegisterWindowMessageW(L"TaskbarCreated"), 0, 0);
+        PostMessageW(watch, WM_DISPLAYCHANGE, 0, 0);
         AppearanceEvents(watch, 1250);
-        Check(state.starts == 1, "framework failure waits for explicit retry despite timer and shell events");
+        Check(state.starts == 1 && state.resets == 1,
+              "framework/access failure waits for explicit retry despite timer and shell events");
         state.startError = Error::None;
         Check(runtime.Apply(on) && Wait([&] { return runtime.Snapshot().state.running; }),
-              "explicit user retry can start after the framework is repaired");
-        Check(state.starts == 2 && runtime.Shutdown() && !state.autoHide,
-              "framework retry succeeds once and retains normal shutdown recovery");
+              "explicit user retry can start after the environment is repaired");
+        Check(state.starts == 2 && state.resets == 2 && runtime.Shutdown() && !state.autoHide,
+              "explicit retry succeeds once and retains normal shutdown recovery");
+    }
+    {
+        Files files; Shared state; state.startError = Error::CoreAccessDenied;
+        TaskbarRuntime runtime(paths, {}, &files,
+            [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
+        Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }),
+              "synthetic access failure owns an independent auto-hide change");
+        Check(runtime.Apply({}) && Wait([&] {
+            const auto snapshot = runtime.Snapshot();
+            return !snapshot.applying && !snapshot.state.preferences.enabled;
+        }) && state.starts == 1 && state.resets == 1 && !state.autoHide,
+              "disabling never clears an access failure or retries its initialization");
+        Check(!runtime.Shutdown() && !state.autoHide && state.starts == 1,
+              "blocked shutdown restores auto-hide without relaunching a denied core");
+        RecordStore store(files);
+        const auto journal = store.Load(paths.stateFile).record;
+        Check(journal.ownsCore && !journal.ownsAutoHide && runtime.Snapshot().state.pendingRecovery,
+              "unconfirmed appearance restoration retains only its own recovery journal");
     }
 }
 struct Resources { DWORD handles = 0, gdi = 0, user = 0, threads = 0; SIZE_T commit = 0; };
@@ -345,6 +371,39 @@ bool ProcessLifecycleRegression() {
     const auto expect = [&](bool value, const char* text) {
         if (!value) { passed = false; std::cerr << "FAIL: " << text << '\n'; }
     };
+    expect(TaskbarCoreDialogError(L"Failed to initialize XAML Diagnostics.\r\n0x80070005: Access is denied.") == Error::CoreAccessDenied,
+           "reported XAML access denial has a distinct error");
+    expect(TaskbarCoreDialogError(L"Failed to initialize XAML Diagnostics.\n0X80070005: 拒绝访问。") == Error::CoreAccessDenied,
+           "HRESULT classification does not depend on the Windows message language");
+    for (const auto text : {L"Failed to initialize XAML Diagnostics. 0x800401E3", L"Other stage: 0x80070005",
+                            L"Failed to initialize XAML Diagnostics. 0x800700050"})
+        expect(TaskbarCoreDialogError(text) == Error::None, "other stages/codes retain their original retry behavior");
+    {
+        // The input below is synthetic test data. This child exits normally;
+        // it never calls XAML Diagnostics or requests access to Explorer.
+        int launches = 0;
+        std::atomic<Error> failure{Error::CoreAccessDenied};
+        TaskbarCoreProcessApi api;
+        api.readDialogFailure = [&](DWORD) { return failure.load(); };
+        auto failureTimings = timings; failureTimings.stopTimeoutMs = 1000;
+        bool healthy = false;
+        TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+            ++launches; launch.executable = path;
+            launch.arguments = healthy ? L"--taskbar-core-fixture delayed-close" : L"--taskbar-synthetic-exit";
+            return Error::None;
+        }, failureTimings, api);
+        expect(core.Start() == Error::CoreAccessDenied && !core.Alive(),
+               "synthetic denial survives the child's normal exit");
+        expect(core.Stop(true) == Error::CoreAccessDenied && !core.HasProcess() && launches == 1,
+               "restoration never relaunches a core already known to be denied");
+        expect(core.Stop(true) == Error::CoreAccessDenied && core.Start(true) == Error::CoreAccessDenied && launches == 1,
+               "repeated recovery requests preserve the failure without another process");
+        failure = Error::None; healthy = true; core.ResetFailure();
+        expect(core.Start() == Error::None && core.Ready() && launches == 2,
+               "explicit retry permits a repaired environment to start");
+        expect(core.Stop(false) == Error::None && !core.HasProcess(),
+               "successful explicit retry still performs normal shutdown");
+    }
     HANDLE containedChild = nullptr;
     {
         int launches = 0;
@@ -398,6 +457,7 @@ bool ProcessLifecycleRegression() {
 }
 }
 int main(int count, char** args) {
+    if (count == 2 && !std::strcmp(args[1], "--taskbar-synthetic-exit")) { Sleep(900); return 0; }
     if (count == 2 && !std::strcmp(args[1], "--taskbar-kernel-fixture")) { Sleep(15000); return 0; }
     if (count == 3 && !std::strcmp(args[1], "--taskbar-atomic-owner-crash"))
         return CrashImmediatelyAfterChildCreation(args[2]);

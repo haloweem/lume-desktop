@@ -14,6 +14,16 @@ to the host. Missing/unsupported capture leaves the existing foreground usable.
 `LumeMaterialStatusChangedMessage` notifies the owner when state changes; the host
 can bind `SetMaterialChanged` to refresh settings without a polling timer.
 
+Decorative capture requires the system's `IsBorderRequired` API (Windows build
+20348 or later). The runtime checks the API before creating material windows,
+devices or frame pools. Missing capability, rejected border configuration or a
+border still required by the system aborts capture and retires the scene without
+automatic retries. The foreground remains usable through transparent fallback;
+this does not reproduce the real-time glass appearance on Windows 10. The saved
+material preference is retained. A later explicit detach/attach can try again.
+Normal source/device failures keep their existing retry handling. No system
+capture permission is bypassed or changed by this fallback.
+
 ## Build and stage
 
 The main application uses MinGW; the capture DLL uses installed MSVC x64 Build

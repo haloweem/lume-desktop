@@ -352,7 +352,7 @@ test("all defined component error codes and recovered settings stay reversible",
     ["icons", desktopIconsStatus, ["runtime", "input-busy", "visibility", "save", "rollback"]],
     ["taskbar", taskbarStatus, ["load", "save", "busy", "unsupported", "missing-payload", "payload-integrity",
       "conflict", "discover", "read-appearance", "apply-appearance", "read-auto-hide", "apply-auto-hide",
-      "core-start", "core-exited", "core-stop", "cancelled", "recovery", "watch", "system-effects-disabled", "runtime", "framework-install"]],
+      "core-start", "core-exited", "core-stop", "cancelled", "recovery", "watch", "system-effects-disabled", "runtime", "framework-install", "core-access-denied"]],
     ["minimize", minimizeStatus, ["save", "rollback", "invalid-settings", "missing-host", "already-running",
       "ipc", "host-start", "hook-install", "stop-timeout", "host-exited", "unsupported-architecture", "runtime"]],
   ];

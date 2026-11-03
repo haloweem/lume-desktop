@@ -17,7 +17,8 @@ struct SelfCheck {
     std::string detail;   // what was found
     std::string fix;      // what the user can do; empty when Ok
 };
-std::vector<SelfCheck> RunSelfChecks(const std::filesystem::path& installDirectory);
+std::vector<SelfCheck> RunSelfChecks(const std::filesystem::path& installDirectory,
+                                   const nlohmann::json& modules = nlohmann::json::object());
 const char* CheckStatusName(CheckStatus);
 nlohmann::json SelfChecksJson(const std::vector<SelfCheck>&);
 // Stable text of the problems only, to notify once per distinct set.

@@ -139,7 +139,7 @@ struct TaskbarRuntime::Impl {
             if (!ok) {
                 // Six bounded retries, then only a new request or shell event can retry.
                 ++failures;
-                due = state.error != taskbar::Error::FrameworkInstall && failures <= 6
+                due = !taskbar::RequiresExplicitRetry(state.error) && failures <= 6
                     ? GetTickCount64() + (std::min)(30000ULL, 1000ULL << (failures - 1)) : 0;
                 settle = false;
             } else {
@@ -175,9 +175,9 @@ struct TaskbarRuntime::Impl {
                     // A failing core's error dialog and exit generate window
                     // events themselves. Those events must not restart its
                     // backoff or turn the bounded retries into a tight loop.
-                    // Missing framework deployment requires an explicit request.
+                    // Framework and access failures require an explicit request.
                     if (change != TaskbarWatch::Change::None &&
-                        state.error != taskbar::Error::FrameworkInstall &&
+                        !taskbar::RequiresExplicitRetry(state.error) &&
                         (!failures || change == TaskbarWatch::Change::Environment)) {
                         if (change == TaskbarWatch::Change::Environment) failures = 0;
                         settle = false;

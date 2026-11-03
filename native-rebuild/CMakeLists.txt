@@ -64,6 +64,7 @@ set(lume_acceptance_probe_targets
   lume-music-provider_credential_lease-test lume-music-desktop_controls-test lume-music-desktop_session-test
   lume-reminder-ledger-test lume-local_reminder_runtime-test lume-reminder_presenter-test
   lume-todo-session-test lume-desktop-reminder-test lume-native-material-test lume-material-shader-test
+  lume-material-capture-compatibility-test
   lume-calendar-todo-editor-test lume-calendar-todo-material-test lume-calendar-todo-render-test
   lume-native-calendar-window-test lume-native-widget-window-test lume-native-clock-window-test lume-widget-layer-stress-test
   lume-weather-session-test lume-weather-view-test lume-almanac-session-test lume-performance-session-test lume-spectrum-session-test
@@ -71,6 +72,7 @@ set(lume_acceptance_probe_targets
   lume-organizer-interaction-test lume-organizer-motion-test lume-organizer-drop-target-test lume-widget-menu-native-test
   lume-desktop-icons-runtime-test lume-desktop-icons-session-test
   lume-taskbar-controller-test lume-taskbar-store-test lume-taskbar-runtime-test lume-taskbar-session-test lume-taskbar-payload-test lume-taskbar-frameworks-test
+  lume-diagnostic-report-test
   lume-minimize-animation-test lume-minimize-animation-runtime-test lume-minimize-animation-session-test
   lume-desktop-taskbar-test)
 # lume-desktop-minimize-test drives the minimize card, hidden while

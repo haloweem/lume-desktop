@@ -29,6 +29,7 @@ const char* ErrorName(Error error) {
         case Error::ReadVisibility: return "read-visibility";
         case Error::ApplyVisibility: return "apply-visibility";
         case Error::FrameworkInstall: return "framework-install";
+        case Error::CoreAccessDenied: return "core-access-denied";
     }
     return "unknown";
 }

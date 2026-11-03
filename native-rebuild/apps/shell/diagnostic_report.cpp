@@ -208,6 +208,42 @@ Json Appearance() {
             {"hideDesktopIcons", Optional(RegistryNumber(HKEY_CURRENT_USER, advanced, L"HideIcons"))}};
 }
 
+// Read-only token metadata distinguishes mismatched launch contexts. No user
+// SID, token contents, privileges or credentials are exported or modified.
+Json ProcessSecurity(DWORD pid) {
+    Json result{{"pid", pid}, {"integrityRid", nullptr}, {"elevated", nullptr},
+                {"uiAccess", nullptr}, {"session", nullptr}};
+    const auto process = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
+    if (!process) { result["queryError"] = pid ? GetLastError() : ERROR_NOT_FOUND; return result; }
+    HANDLE token = nullptr;
+    const bool opened = OpenProcessToken(process, TOKEN_QUERY, &token) != FALSE;
+    const auto openError = opened ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(process);
+    if (!opened) { result["queryError"] = openError; return result; }
+    DWORD bytes = 0;
+    GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &bytes);
+    std::vector<unsigned char> integrity(bytes);
+    if (bytes && GetTokenInformation(token, TokenIntegrityLevel, integrity.data(), bytes, &bytes)) {
+        const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(integrity.data());
+        const auto sid = label->Label.Sid;
+        if (IsValidSid(sid) && *GetSidSubAuthorityCount(sid))
+            result["integrityRid"] = *GetSidSubAuthority(sid, static_cast<DWORD>(*GetSidSubAuthorityCount(sid) - 1));
+    } else result["integrityError"] = GetLastError();
+    TOKEN_ELEVATION elevation{};
+    if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &bytes))
+        result["elevated"] = elevation.TokenIsElevated != 0;
+    else result["elevationError"] = GetLastError();
+    DWORD uiAccess = 0, session = 0;
+    if (GetTokenInformation(token, TokenUIAccess, &uiAccess, sizeof(uiAccess), &bytes))
+        result["uiAccess"] = uiAccess != 0;
+    else result["uiAccessError"] = GetLastError();
+    if (GetTokenInformation(token, TokenSessionId, &session, sizeof(session), &bytes))
+        result["session"] = session;
+    else result["sessionError"] = GetLastError();
+    CloseHandle(token);
+    return result;
+}
+
 // Explorer's non-Windows modules show the taskbar and desktop mods sharing
 // Explorer with Lume (StartAllBack, ExplorerPatcher, Windhawk...).
 Json ShellEnvironment() {
@@ -222,6 +258,8 @@ Json ShellEnvironment() {
     DWORD explorer = 0;
     if (tray) GetWindowThreadProcessId(tray, &explorer);
     result["explorerPid"] = explorer;
+    result["processSecurity"] = {{"lume", ProcessSecurity(GetCurrentProcessId())},
+                                  {"explorer", ProcessSecurity(explorer)}};
     Json modules = Json::array();
     if (explorer) {
         const auto process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, explorer);
@@ -602,7 +640,7 @@ std::string DiagnosticText(const DiagnosticReportInput& input) {
         const auto system = DescribeSystem();
         Json problems = Json::array();
         for (const auto& problem : Problems(input.modules)) problems.push_back(problem);
-        return Summary(input, system, problems, 0, CrashEvents().rows, {}, RunSelfChecks(input.installDirectory), false);
+        return Summary(input, system, problems, 0, CrashEvents().rows, {}, RunSelfChecks(input.installDirectory, input.modules), false);
     } catch (const std::exception& error) {
         return std::string("Lume ") + input.version + " 诊断信息生成失败: " + error.what();
     }
@@ -647,7 +685,7 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
         add("modules.json", dump(input.modules));
         const auto crashes = CrashEvents();
         add("windows-events.txt", crashes.text);
-        const auto checks = RunSelfChecks(input.installDirectory);
+        const auto checks = RunSelfChecks(input.installDirectory, input.modules);
         add("self-check.json", dump(SelfChecksJson(checks)));
 
         std::error_code error;

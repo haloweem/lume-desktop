@@ -51,12 +51,10 @@ public:
       // orphans that buffer in the capture service (one frame per stream).
       view.Reset();
       texture.Reset();
-      try {
-        if (pool && frameArrived.value) pool.FrameArrived(frameArrived);
-        if (retainedFrame) retainedFrame.Close();
-        if (session) session.Close();
-        if (pool) pool.Close();
-      } catch (...) {}
+      try { if (pool && frameArrived.value) pool.FrameArrived(frameArrived); } catch (...) {}
+      try { if (retainedFrame) retainedFrame.Close(); } catch (...) {}
+      try { if (session) session.Close(); } catch (...) {}
+      try { if (pool) pool.Close(); } catch (...) {}
     }
   };
 
@@ -172,10 +170,13 @@ public:
         notifications->Notify();
       });
       capture->session.IsCursorCaptureEnabled(false);
-      try { capture->session.IsBorderRequired(false); } catch (...) {}
-      capture->session.StartCapture();
+      lume_glass::StartMaterialCapture(capture->session,
+          [] { return static_cast<HRESULT>(winrt::to_hresult()); });
       captures_.emplace(hwnd, capture);
       return capture;
+    } catch (const lume_glass::CaptureCompatibilityFailure& error) {
+      LogNative("CaptureBorderConfiguration", error.error);
+      throw;
     } catch (const winrt::hresult_error& error) {
       capture->failed = true;
       capture->retryAfter = GetTickCount64() + 1000;

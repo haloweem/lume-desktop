@@ -23,7 +23,7 @@ const calendarMaterials = [...materials, "solid"];
 const cities = ["auto","beijing","shanghai","guangzhou","shenzhen","hangzhou","chengdu","wuhan","nanjing"];
 const taskbarErrors = ["","load","save","busy","unsupported","missing-payload","payload-integrity","conflict",
   "discover","read-appearance","apply-appearance","read-auto-hide","apply-auto-hide","core-start",
-  "core-exited","core-stop","cancelled","recovery","watch","system-effects-disabled","runtime","read-visibility","apply-visibility","framework-install"];
+  "core-exited","core-stop","cancelled","recovery","watch","system-effects-disabled","runtime","read-visibility","apply-visibility","framework-install","core-access-denied"];
 const minimizeErrors = ["","save","rollback","invalid-settings","missing-host","already-running","ipc",
   "host-start","hook-install","stop-timeout","host-exited","unsupported-architecture","runtime"];
 const integerIn = (value,min,max) => Number.isSafeInteger(value) && value>=min && value<=max;

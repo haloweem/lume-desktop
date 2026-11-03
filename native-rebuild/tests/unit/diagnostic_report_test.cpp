@@ -137,6 +137,24 @@ int main() {
                      {"dock-state", {{"type", "dock-state"}, {"error", ""}, {"materialStatus", "ready"}}},
                      {"performance-state",{{"materialStatus","transparent-fallback"},{"error",""}}},
                      {"wallpaper-state",{{"catalogError","WALLPAPER_CATALOG_CACHED"},{"error",""}}}};
+    auto deniedModules = input.modules;
+    deniedModules["taskbar-state"] = {{"error", "core-access-denied"}, {"enabled", true}, {"running", false},
+                                     {"applying", false}, {"pendingRecovery", true}};
+    bool foundDenied = false;
+    for (const auto& check : shell::RunSelfChecks(root, deniedModules)) if (check.id == "taskbar") {
+        foundDenied = check.status == shell::CheckStatus::Problem && check.detail.find("0x80070005") != std::string::npos;
+        Check(check.detail.find("已停止自动重试") != std::string::npos,
+              "self-check exposes the blocked runtime rather than just checking for conflicts");
+    }
+    Check(foundDenied, "self-check includes the actual taskbar access failure");
+    const auto environment = shell::DescribeSystem();
+    for (const auto* process : {"lume", "explorer"}) {
+        const auto& security = environment.at("shell").at("processSecurity").at(process);
+        Check(security.contains("integrityRid") && security.contains("elevated") && security.contains("uiAccess") &&
+              security.contains("session"), "read-only launch security metadata is present");
+        Check(!security.contains("user") && !security.contains("sid") && !security.contains("token"),
+              "launch diagnostics do not export identities or token contents");
+    }
     const auto result = shell::WriteDiagnosticReport(input);
     Check(result.ok && fs::is_regular_file(result.path), "report written");
     const auto zip = result.ok ? Read(result.path) : std::string{};

@@ -250,6 +250,7 @@ taskbar::RestoreResult WindowsTaskbarPort::RestoreAppearance(const taskbar::Appe
         ? taskbar::RestoreResult::Restored : taskbar::RestoreResult::Failed;
 }
 Error WindowsTaskbarPort::StartCore() { return impl_->StartCore(); }
+void WindowsTaskbarPort::ResetCoreFailure() { impl_->core->ResetFailure(); }
 bool WindowsTaskbarPort::CoreAlive() const { return impl_->core->Ready(); }
 Error WindowsTaskbarPort::StopCore(bool recover) { return impl_->StopCore(recover); }
 std::uintptr_t WindowsTaskbarPort::ExitSignal() const { return impl_->core->ExitSignal(); }
