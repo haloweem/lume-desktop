@@ -22,7 +22,7 @@ struct IslandPresentation {
 };
 enum class IslandSize { Small, Standard, Large };
 enum class IslandShape { Standard, Capsule };
-// Only playback and active reminders have expanded views.
+// Playback includes an idle empty state; active reminders have their own view.
 enum class IslandPage { Music, Reminder };
 struct IslandTodo {
     std::string id;

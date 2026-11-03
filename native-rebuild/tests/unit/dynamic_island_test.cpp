@@ -261,10 +261,11 @@ void Scenario(){
     }
     {
         using namespace platform::windows;
-        unsigned settingsOpened=0,calendarOpened=0;
+        unsigned settingsOpened=0,calendarOpened=0,mediaControls=0;
         IslandWindow window(GetModuleHandleW(nullptr),[&](dynamic_island::Action action){
             using dynamic_island::Action;
             if(action==Action::Settings||action==Action::WeatherSettings||action==Action::PerformanceSettings)++settingsOpened;
+            if(action==Action::Toggle||action==Action::Previous||action==Action::Next)++mediaControls;
         });
         widget::Preferences prefs;prefs.enabled=true;
         IslandDisplay display;
@@ -310,10 +311,11 @@ void Scenario(){
                 Check(window.Expanded()&&window.Page()==IslandPage::Music,"either readout expands available music controls");
             }
             window.Expand(false);window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
-            for(const int x:{20,340}){
+            for(const int x:{20,240}){
+                window.Expand(false);window.Settle();
                 Click(window.Handle(),x,18);window.Settle();
-                Check(!window.Expanded()&&settingsOpened==0&&calendarOpened==0,
-                      "idle readout click stays compact without opening settings or a removed page");
+                Check(window.Expanded()&&window.Page()==IslandPage::Music&&settingsOpened==0&&calendarOpened==0,
+                      "either idle readout opens the empty music view without opening settings");
             }
         }
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();
@@ -448,20 +450,35 @@ void Scenario(){
         window.Expand(false);window.Settle();SaveFrame(window.Frame(),L"shape-capsule-compact.png");
         display.size=IslandSize::Small;window.SetDisplay(display);window.Expand(false);window.Settle();
         SaveFrame(window.Frame(),L"compact-small.png");
-        // A media gap no longer exposes an empty legacy page.
+        display.size=IslandSize::Standard;Check(window.SetDisplay(display),"idle entry uses standard geometry");window.Settle();
+        // Idle entry remains available even without a playback session.
         window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
-        window.Expand(true);window.Settle();
-        Check(!window.Expanded(),"no media or reminders leaves the island compact");
+        const auto clickCentre=[&]{
+            RECT bounds{};GetClientRect(window.Handle(),&bounds);
+            const int dpi=static_cast<int>(GetDpiForWindow(window.Handle()));
+            Click(window.Handle(),MulDiv(bounds.right/2,96,dpi),MulDiv(bounds.bottom/2,96,dpi));window.Settle();
+        };
+        clickCentre();
+        Check(window.Expanded()&&window.Page()==IslandPage::Music,"idle capsule click opens an empty playback view");
+        SaveFrame(window.Frame(),L"idle-expanded.png");
+        clickCentre();Check(!window.Expanded(),"clicking the idle view again collapses it");
+        SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA)),0);window.Settle();
+        Check(window.Expanded()&&window.Page()==IslandPage::Music,"idle capsule wheel opens the same empty playback view");
+        const auto beforeEmptyControls=mediaControls;
+        Click(window.Handle(),186,128);window.Settle();
+        Check(!window.Expanded()&&mediaControls==beforeEmptyControls,"idle view has no invisible playback controls");
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();
         window.Expand(true);window.Settle();
         Check(window.Page()==IslandPage::Music,"music page again after a brief media gap");
         window.Expand(false);window.Settle();
-        // The next track can still open its music controls.
-        window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
+        // A temporary media gap keeps an open panel, then restores its controls.
         window.Expand(true);window.Settle();
-        Check(!window.Expanded(),"media gap cannot open a removed page");
+        window.Update({{},L"09:41",L"",0,false,false,false});window.Settle();
+        Check(window.Expanded()&&window.Page()==IslandPage::Music,"media gap keeps the explicit expansion open");
+        window.Update({{},L"09:41",L"",0,false,false,true});window.Settle();
+        SaveFrame(window.Frame(),L"idle-expanded-en.png");
         window.Update({playing,L"",L"",0,false,false,false});window.Settle();
-        Check(window.Page()==IslandPage::Music,"an open island returns to music once media is back");
+        Check(window.Expanded()&&window.Page()==IslandPage::Music,"an open island returns to music once media is back");
         window.Expand(false);window.Settle();
         IslandTodoSource source;
         window.SetTodoSource(source);

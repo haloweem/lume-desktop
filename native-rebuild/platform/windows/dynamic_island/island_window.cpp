@@ -699,7 +699,14 @@ struct IslandWindow::Impl {
         Triangle(*canvas, cx + (left ? 6.f : -6.f), cy, 10, 15, left, alpha);
     }
     void Expanded(float w, float alpha) {
-        if (alpha <= .01f || !HasMedia()) return;
+        if (alpha <= .01f) return;
+        if (!HasMedia()) {
+            canvas->Text(view.english ? L"Nothing playing" : L"暂无播放内容", {18, 54, w - 36, 24}, 16,
+                         0xffffff, .88f * alpha, WidgetTextWeight::Semibold, WidgetTextAlign::Center);
+            canvas->Text(view.english ? L"Play music to see controls and lyrics" : L"播放音乐后显示控制与歌词", {18, 84, w - 36, 20}, 12,
+                         0xa1a1a6, alpha, WidgetTextWeight::Normal, WidgetTextAlign::Center);
+            return;
+        }
         const auto& media = view.media;
         FadeImage(cover, {18, 18, 58, 58}, 12, alpha);
         const float textWidth = w - 88 - 52;
@@ -854,7 +861,7 @@ struct IslandWindow::Impl {
     }
     std::vector<IslandPage> Pages() const {
         std::vector<IslandPage> pages;
-        if (HasMedia()) pages.push_back(IslandPage::Music);
+        if (HasMedia() || reminders.empty()) pages.push_back(IslandPage::Music);
         if (!reminders.empty()) pages.push_back(IslandPage::Reminder);
         return pages;
     }
@@ -1174,6 +1181,7 @@ struct IslandWindow::Impl {
             }
             return 299;
         }
+        if (!HasMedia()) return 0;
         if (y >= 110 && y < 146) {
             const float cx = width.x / 2;
             if (std::abs(x - (cx - 72)) < 22) return 1;
@@ -1481,8 +1489,6 @@ void IslandWindow::Update(IslandPresentation view) {
     impl_->view = std::move(view);
     impl_->mediaAt = GetTickCount64();
     if (!impl_->hwnd) return;
-    if (had && !impl_->HasMedia() && impl_->expanded && impl_->page == IslandPage::Music)
-        impl_->Expand(false);
     impl_->Pulse();
     // A new track or a play/pause change briefly brings a tucked island out.
     if (oldId != impl_->view.media.id || oldPlaying != impl_->view.media.playing) impl_->Activity();
