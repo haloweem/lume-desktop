@@ -107,6 +107,7 @@ $musicOnlineNotices = [ordered]@{
     'Folia-NOTICE.md' = 'native-rebuild/ui/music-visualizers/vendor/licenses/Folia-NOTICE.md'
 }
 $settingsAccountProbes = @(
+  'lume-ui-integrity-test',
   'lume-interface-scale-window-test',
   'lume-window-layer-policy-test',
   'lume-application-tray-menu-test',
@@ -317,6 +318,7 @@ foreach ($relative in $taskbarFiles) {
 }
 # Use the build's UI manifest so packaging and Release share one resource policy.
 $uiSource = Join-Path $repoRoot 'native-rebuild\ui'
+$uiInstallChecks = [Collections.Generic.List[string]]::new()
 foreach ($relative in Get-Content -LiteralPath (Join-Path $releaseRoot 'ui/payload-manifest.txt')) {
     if (-not $relative -or $relative -match '(^/|(^|/)\.\.(/|$)|:|\\)') { throw "Invalid UI manifest entry: $relative" }
     $sourceUi = Join-Path $uiSource $relative
@@ -325,7 +327,17 @@ foreach ($relative in Get-Content -LiteralPath (Join-Path $releaseRoot 'ui/paylo
     $destination = Join-Path $stage ('ui/' + $relative)
     New-Item -ItemType Directory -Force -Path (Split-Path $destination -Parent) | Out-Null
     Copy-Item -LiteralPath $builtUi -Destination $destination
+    $recoveryDestination=Join-Path $stage ('ui-recovery/' + $relative)
+    New-Item -ItemType Directory -Force -Path (Split-Path $recoveryDestination -Parent) | Out-Null
+    Copy-Item -LiteralPath $builtUi -Destination $recoveryDestination
+    $expectedUiHash=(Get-FileHash -LiteralPath $builtUi -Algorithm SHA256).Hash.ToLowerInvariant()
+    $pascalRelative=$relative.Replace('/', '\').Replace("'", "''")
+    $uiInstallChecks.Add("  VerifyInstalledUiFile('ui\$pascalRelative', '$expectedUiHash');")
+    $uiInstallChecks.Add("  VerifyInstalledUiFile('ui-recovery\$pascalRelative', '$expectedUiHash');")
 }
+$uiIntegrityChecksFile=Join-Path $packageRoot 'ui-integrity-checks.iss'
+$uiInstallChecks | Set-Content -LiteralPath $uiIntegrityChecksFile -Encoding utf8
+'Lume UI integrity boundary' | Set-Content -LiteralPath (Join-Path $stage 'ui-integrity.stamp') -Encoding ascii
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-rebuild\platform\windows\widget_ui\LICENSE') -Destination (Join-Path $stage 'WidgetUI-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-rebuild\platform\windows\widget_ui\SOURCES.md') -Destination (Join-Path $stage 'WidgetUI-SOURCES.md')
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'licenses') | Out-Null
@@ -354,7 +366,7 @@ $iss = Join-Path $repoRoot 'native-rebuild\packaging\LumeSetup.iss'
 $icon = Join-Path $repoRoot 'native-rebuild\packaging\lume.ico'
 $shutdownHelper = Join-Path $releaseRoot 'LumeSetupShutdown.exe'
 Complete-PackagePhase 'stage-and-source-hashes'
-& $iscc "/DSourceDir=$stage" "/DOutputDir=$outputRoot" "/DOutputBaseFilename=$([IO.Path]::GetFileNameWithoutExtension($outputName))" "/DIconFile=$icon" "/DShutdownHelperFile=$shutdownHelper" "/DWebView2RuntimeInstallerFile=$webViewRuntimeInstaller" $iss
+& $iscc "/DSourceDir=$stage" "/DOutputDir=$outputRoot" "/DOutputBaseFilename=$([IO.Path]::GetFileNameWithoutExtension($outputName))" "/DIconFile=$icon" "/DShutdownHelperFile=$shutdownHelper" "/DWebView2RuntimeInstallerFile=$webViewRuntimeInstaller" "/DUiIntegrityChecksFile=$uiIntegrityChecksFile" $iss
 if ($LASTEXITCODE -ne 0) { throw "Inno compilation failed: $LASTEXITCODE" }
 Complete-PackagePhase 'installer-compression'
 $built = Join-Path $outputRoot $outputName
@@ -497,6 +509,7 @@ foreach ($run in $acceptanceRuns) {
     $cacheKey = Get-PackageTextHash ($policyHash + '|' + $probeHashes[$name] + '|' + $logName + '|' + $context)
     $cachePath = Join-Path $cacheRoot ($cacheKey + '.json')
     $alwaysRun = $name -in @('lume-installer-shutdown-test', 'lume-update-presenter-test',
+        'lume-ui-integrity-test',
         'lume-interface-scale-window-test',
         'lume-window-layer-policy-test',
         'lume-application-tray-menu-test',

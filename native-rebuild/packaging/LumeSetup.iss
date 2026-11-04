@@ -16,6 +16,9 @@
 #ifndef WebView2RuntimeInstallerFile
 #error WebView2RuntimeInstallerFile must be supplied by package-original-pages.ps1
 #endif
+#ifndef UiIntegrityChecksFile
+#error UiIntegrityChecksFile must be supplied by package-original-pages.ps1
+#endif
 
 [Setup]
 AppId={{8B29B016-65A4-4F35-8F0A-F6D7B9C10101}
@@ -101,6 +104,9 @@ Source: "{#SourceDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#SourceDir}\WebView2-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\WebView2-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\ui-recovery\*"; DestDir: "{app}\ui-recovery"; Flags: ignoreversion recursesubdirs createallsubdirs
+; This final file hook verifies before non-postinstall [Run] entries, including updates.
+Source: "{#SourceDir}\ui-integrity.stamp"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: VerifyAllInstalledUi
 #endif
 
 [Tasks]
@@ -121,8 +127,8 @@ Name: "{group}\Lume"; Filename: "{app}\LumeShell.exe"; WorkingDir: "{app}"; Icon
 Name: "{autodesktop}\Lume"; Filename: "{app}\LumeShell.exe"; WorkingDir: "{app}"; IconFilename: "{app}\LumeShell.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\LumeShell.exe"; Description: "运行 Lume"; Flags: postinstall nowait skipifsilent
-Filename: "{app}\LumeShell.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: IsLumeUpdate
+Filename: "{app}\LumeShell.exe"; Description: "运行 Lume"; Flags: postinstall nowait skipifsilent; Check: UiWasVerified
+Filename: "{app}\LumeShell.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: IsVerifiedLumeUpdate
 
 [Code]
 function IsLumeUpdate: Boolean;
@@ -130,7 +136,15 @@ begin
   Result := ExpandConstant('{param:LUMEUPDATE|0}') = '1';
 end;
 
+function IsVerifiedLumeUpdate: Boolean; forward;
+
 #include "installer_shutdown.iss"
+#include "installer_ui_integrity.iss"
+
+function IsVerifiedLumeUpdate: Boolean;
+begin
+  Result := IsLumeUpdate and UiWasVerified;
+end;
 
 procedure RemoveOwnedLoginProtocol(RootKey: Integer);
 var
@@ -182,7 +196,7 @@ begin
   RaiseException('WebView2 Runtime 安装失败：未检测到有效版本。请检查网络后重试，或先安装 Microsoft Edge WebView2 Runtime。');
 end;
 
-[event('PrepareToInstall')]
+<event('PrepareToInstall')>
 function PrepareWebView2Runtime(var NeedsRestart: Boolean): String;
 begin
   Result := '';

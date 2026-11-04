@@ -8,6 +8,8 @@
 #include "core/ui/original_window_layout.h"
 #include "core/ui/webview_lifecycle.h"
 #include "platform/windows/webview_process_memory.h"
+#include "platform/windows/ui_integrity.h"
+#include "platform/windows/diagnostics/runtime_log.h"
 #include <WebView2.h>
 #include <shlobj.h>
 #include <shellscalingapi.h>
@@ -20,6 +22,7 @@
 #include <filesystem>
 #include <deque>
 #include <cstdint>
+#include <iostream>
 
 namespace lume::platform::windows {
 using namespace webview_detail;
@@ -166,6 +169,8 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     bool resizingInterface = false;
     unsigned verificationRasterDpi = 0;
     std::wstring error;
+    std::filesystem::path uiDirectory;
+    ULONGLONG startupAt=GetTickCount64();
     std::wstring verificationReadyScript;
     CommandHandler handler;
     WallpaperHandler wallpaperHandler;
@@ -224,12 +229,19 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         visibilityHandler = {};
         musicFontAssetLookup = {};
     }
-    void Fail(const wchar_t* description, HRESULT code) {
+    void Startup(const char* stage){
+        diag::Log("webview-startup",std::string(stage)+" elapsedMs="+std::to_string(GetTickCount64()-startupAt));
+        if(verification)std::cout<<"webview-startup "<<stage<<" elapsedMs="<<GetTickCount64()-startupAt<<'\n';
+    }
+    void Fail(const wchar_t* description, HRESULT code,
+        const wchar_t* hint=L"请检查 Microsoft Edge WebView2 Runtime 和安装包内的 ui 目录。") {
         if (closing) return;
         result = 1;
         wchar_t hex[24]{};
         swprintf(hex, 24, L" (0x%08lX)", static_cast<unsigned long>(code));
-        error = std::wstring(description) + hex + L"\n请检查 Microsoft Edge WebView2 Runtime 和安装包内的 ui 目录。\n按 Alt+F4 关闭窗口。";
+        error = std::wstring(description) + hex + L"\n"+hint+L"\n按 Alt+F4 关闭窗口。";
+        if(verification)std::cerr<<"WebView startup failed hr=0x"<<std::hex<<static_cast<unsigned long>(code)<<std::dec<<'\n';
+        Startup("failed");
         if (controller) controller->put_IsVisible(FALSE);
         if (hwnd) {
             KillTimer(hwnd, kStartupTimeout);
@@ -433,6 +445,7 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         // The page sends ready only after its first-view assets and layout are
         // prepared. Keep the native loading surface offscreen until then.
         if(command==C::Ready&&!closing&&hwnd) {
+            Startup("page-ready");
             ShowWindow(hwnd,SW_SHOWNORMAL);UpdateWindow(hwnd);
         }
         if(command==C::Ready && verification && !closing && view && !verificationReadyScript.empty()) {
@@ -480,7 +493,8 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         if (FAILED(hr)) { Fail(L"WebView2 Runtime 版本过旧", hr); return; }
         lifecycleView.CopyFrom(mapped.Get());
         view->QueryInterface(InterfaceId(kWebView19Id), reinterpret_cast<void**>(memoryView.Put()));
-        const auto root = ExecutableDirectory() / L"ui";
+        Startup("controller-ready");
+        const auto& root = uiDirectory;
         hr = mapped->SetVirtualHostNameToFolderMapping(L"lume.local", root.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
         if(SUCCEEDED(hr)&&!wallpaperMediaDirectory.empty()) {
             hr=mapped->SetVirtualHostNameToFolderMapping(L"lume-wallpaper.local",
@@ -591,7 +605,10 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         auto completed = Handler<ICoreWebView2NavigationCompletedEventHandler, ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*>(
             L"{d33a35bf-1c49-4f98-93ab-006e0533fe1c}", [weak](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) {
                 BOOL success = FALSE; args->get_IsSuccess(&success);
-                if (!success) if (const auto self = weak.lock()) self->Fail(L"界面资源加载失败", E_FAIL);
+                if(const auto self=weak.lock()){
+                    self->Startup(success?"navigation-complete":"navigation-failed");
+                    if(!success)self->Fail(L"界面资源加载失败", E_FAIL);
+                }
                 return S_OK;
             });
         hr = view->add_NavigationCompleted(completed.Get(), &completedToken);
@@ -602,8 +619,22 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     }
     void Initialize() {
         const auto directory = ExecutableDirectory();
-        std::error_code ec;
-        if (!std::filesystem::is_regular_file(directory / L"ui" / L"index.html", ec)) { Fail(L"缺少 ui/index.html", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)); return; }
+        Startup("integrity-check");
+        const auto profile = ProfileDirectory(verification);
+        const auto cache=profile.empty()?std::filesystem::path{}:
+            profile.parent_path()/L"UiRecovery"/BuiltUiIdentity();
+        const auto integrity=PrepareUiDirectory(directory/L"ui",directory/L"ui-recovery",cache,BuiltUiManifest());
+        if(integrity.directory.empty()){
+            if(verification)std::cerr<<"UI integrity failed: "<<std::filesystem::path(integrity.failedFile).u8string()
+                <<" damaged="<<integrity.damaged<<" cacheLength="<<cache.native().size()<<'\n';
+            const auto description=L"界面文件损坏或缺失："+integrity.failedFile;
+            Fail(description.c_str(),HRESULT_FROM_WIN32(ERROR_CRC),
+                L"自动恢复未完成，请使用同版本或更新的 Lume 安装包覆盖安装。账户、设置和壁纸数据可保留。");return;
+        }
+        uiDirectory=integrity.directory;
+        Startup(integrity.recovered?"ui-recovered":"ui-verified");
+        diag::Log("webview-startup",std::string(integrity.recovered?"ui-recovered":"ui-verified")+
+            " files="+std::to_string(BuiltUiManifest().size())+" damaged="+std::to_string(integrity.damaged));
         loader = LoadLibraryExW((directory / L"WebView2Loader.dll").c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!loader) { Fail(L"无法加载 WebView2Loader.dll", HRESULT_FROM_WIN32(GetLastError())); return; }
         using CreateEnvironment = HRESULT(STDAPICALLTYPE*)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
@@ -611,14 +642,17 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         CreateEnvironment create = nullptr; static_assert(sizeof(create) == sizeof(address));
         std::memcpy(&create, &address, sizeof(create));
         if (!create) { Fail(L"WebView2Loader 导出不完整", E_NOINTERFACE); return; }
-        const auto profile = ProfileDirectory(verification);
         if (profile.empty()) { Fail(L"无法定位页面数据目录", E_FAIL); return; }
+        if(!SetTimer(hwnd,kStartupTimeout,15000,nullptr)){
+            Fail(L"无法初始化界面启动期限",HRESULT_FROM_WIN32(GetLastError()));return;
+        }
         // Strong ownership during asynchronous creation; event subscriptions below use weak ownership.
         auto environmentReady = Handler<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, HRESULT, ICoreWebView2Environment*>(
             L"{4e8a3389-c9d8-4bd2-b6b5-124fee6cc14d}", [self = shared_from_this()](HRESULT result, ICoreWebView2Environment* created) {
                 if (self->closing) return S_OK;
                 if (FAILED(result) || !created) { self->Fail(L"WebView2 Runtime 启动失败", result); return S_OK; }
                 self->environment.CopyFrom(created);
+                self->Startup("environment-ready");
                 auto controllerReady = Handler<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller*>(
                     L"{6c4819f3-c9b7-4260-8127-c9f5bde7f68c}", [self](HRESULT hr, ICoreWebView2Controller* controller) {
                         if (self->closing) { if (controller) controller->Close(); return S_OK; }
@@ -810,8 +844,7 @@ int WebViewPageWindow::Run(HINSTANCE instance,CommandHandler handler,bool verifi
         scaled.width,scaled.height,nullptr,nullptr,instance,state_.get());
     if (!hwnd) { state_.reset(); CoUninitialize(); return 1; }
     state_->Layout();
-    if(SetTimer(hwnd,kStartupTimeout,15000,nullptr))state_->Initialize();
-    else state_->Fail(L"无法初始化界面启动期限",HRESULT_FROM_WIN32(GetLastError()));
+    state_->Initialize();
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (!message.hwnd && wakeMessage_ && message.message == wakeMessage_ && wakeHandler_) {

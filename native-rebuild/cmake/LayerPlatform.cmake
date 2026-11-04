@@ -201,6 +201,12 @@ target_compile_definitions(lume-native-calendar PRIVATE UNICODE _UNICODE WIN32_L
 target_link_libraries(lume-native-calendar PUBLIC lume-core PRIVATE lume-widget-ui lume-widget-material d2d1 dwrite windowscodecs ole32 gdiplus user32 gdi32 uuid comctl32 imm32 shcore)
 lume_enable_native_warnings(lume-native-calendar)
 
+add_library(lume-ui-integrity STATIC platform/windows/ui_integrity.cpp)
+target_include_directories(lume-ui-integrity PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} PRIVATE "${CMAKE_BINARY_DIR}/generated")
+target_compile_definitions(lume-ui-integrity PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(lume-ui-integrity PRIVATE bcrypt)
+lume_enable_native_warnings(lume-ui-integrity)
+
 add_library(lume-page-window STATIC
   platform/windows/webview_page_window.cpp
   platform/windows/webview_process_memory.cpp
@@ -209,7 +215,7 @@ target_include_directories(lume-page-window PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(lume-page-window SYSTEM PRIVATE "${LUME_WEBVIEW2_PACKAGE}/build/native/include")
 target_compile_definitions(lume-page-window PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_definitions(lume-page-window PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-page-window PRIVATE lume-core lume-window-surface lume-widget-ui user32 gdi32 ole32 shell32 uuid dwmapi psapi shcore)
+target_link_libraries(lume-page-window PRIVATE lume-core lume-window-surface lume-widget-ui lume-ui-integrity lume-platform-windows user32 gdi32 ole32 shell32 uuid dwmapi psapi shcore)
 lume_enable_native_warnings(lume-page-window)
 
 add_library(lume-native-reminder STATIC

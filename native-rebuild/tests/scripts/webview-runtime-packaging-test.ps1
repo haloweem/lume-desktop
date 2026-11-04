@@ -36,7 +36,7 @@ Require-Match $installer 'Exec\(ExpandConstant\(''\{tmp\}\\MicrosoftEdgeWebView2
 Require-Match $installer 'WebView2 Runtime 安装失败' 'Installer must stop when a required WebView2 runtime cannot be installed'
 
 Require-Match $installer '(?s)ExtractTemporaryFile\(''MicrosoftEdgeWebView2Setup\.exe''\).*?Exec\(ExpandConstant\(''\{tmp\}\\MicrosoftEdgeWebView2Setup\.exe''' 'A dontcopy bootstrapper must be extracted before execution'
-Require-Match $installer '\[event\(''PrepareToInstall''\)\]' 'Runtime prerequisites must be checked before application files are changed'
+Require-Match $installer '<event\(''PrepareToInstall''\)>' 'Runtime prerequisites must be registered before application files are changed'
 Require-Match $installer '(?s)function PrepareWebView2Runtime.*?try.*?EnsureWebView2Runtime.*?except.*?Result := GetExceptionMessage' 'Runtime failures must stop preparation with a retryable error'
 Require-Match $installer 'Result = ''0\.0\.0\.0''' 'An uninstalled runtime registration must not count as an installed runtime'
 if ($installer -match 'WebView2RuntimeVersion\(HKCU') {

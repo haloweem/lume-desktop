@@ -39,11 +39,12 @@ lume_enable_native_warnings(LumeIconHost)
 target_link_libraries(LumeShell PRIVATE lume-page-window)
 target_link_libraries(LumeShell PRIVATE lume-desktop-application)
 add_custom_target(lume-ui-assets ALL
-  COMMAND ${CMAKE_COMMAND} -DUI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/ui -DUI_DESTINATION=${CMAKE_BINARY_DIR}/ui -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageUi.cmake
+  COMMAND ${CMAKE_COMMAND} -DUI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/ui -DUI_DESTINATION=${CMAKE_BINARY_DIR}/ui -DUI_INTEGRITY_HEADER=${CMAKE_BINARY_DIR}/generated/ui_integrity_manifest.h -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageUi.cmake
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LUME_WEBVIEW2_PACKAGE}/build/native/x64/WebView2Loader.dll" "${CMAKE_BINARY_DIR}/WebView2Loader.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LUME_WEBVIEW2_PACKAGE}/LICENSE.txt" "${CMAKE_BINARY_DIR}/WebView2-LICENSE.txt"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LUME_WEBVIEW2_PACKAGE}/NOTICE.txt" "${CMAKE_BINARY_DIR}/WebView2-NOTICE.txt")
 add_dependencies(LumeShell lume-ui-assets)
+add_dependencies(lume-ui-integrity lume-ui-assets)
 add_dependencies(LumeShell LumeMinimizeHost)
 add_custom_target(lume-taskbar-assets ALL
   COMMAND ${CMAKE_COMMAND}

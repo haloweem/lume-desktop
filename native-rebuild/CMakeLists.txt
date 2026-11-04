@@ -25,6 +25,7 @@ add_subdirectory(tests/unit)
 # an acceptance executable by searching output directories for the first match.
 set(lume_acceptance_probe_targets
   lume-interface-scale-window-test
+  lume-ui-integrity-test
   lume-window-layer-policy-test
   lume-application-tray-menu-test
   lume-wallpaper-session-test
