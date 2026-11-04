@@ -132,9 +132,115 @@ void CheckExpansionModes(){
     restored.Shutdown();
     std::cout<<"isolated hover: ignored "<<syntheticHoverLeaves<<" unrelated physical-pointer leave events\n";
 }
+void CheckAnimationSettings(){
+    using namespace platform::windows;
+    Files files;shell::DynamicIslandSessionOptions options;options.preferencesPath="animation.json";
+    const auto delay=[](int ms){return ui::ParsePageCommand(L"v1|dynamicIsland|hoverDelayMs|"+std::to_wstring(ms));};
+    {
+        shell::DynamicIslandSession session(GetModuleHandleW(nullptr),options,&files);
+        Check(session.Restore()&&State(session)["hoverDelayMs"]==320&&State(session)["animationSpeed"]=="normal"&&State(session)["bounce"]=="normal",
+            "older preferences retain the existing animation defaults");
+        for(const auto command:{delay(100),delay(320),delay(1000),PageCommand::IslandAnimationFast,PageCommand::IslandAnimationNormal,
+            PageCommand::IslandAnimationSlow,PageCommand::IslandBounceSubtle,PageCommand::IslandBounceNormal,PageCommand::IslandBounceBouncy}){
+            const auto reply=session.HandlePage(command);
+            Check(reply&&nlohmann::json::parse(*reply)["saved"]==true,"animation commands confirm a successful native save");
+        }
+        const auto saved=files.values["animation-display.json"];
+        Check(!session.Running()&&State(session)["hoverDelayMs"]==1000&&State(session)["animationSpeed"]=="slow"&&State(session)["bounce"]=="bouncy",
+            "animation preferences can be saved without enabling the island");
+        files.fail=true;
+        for(const auto command:{delay(100),PageCommand::IslandAnimationFast,PageCommand::IslandBounceSubtle}){
+            session.HandlePage(command);
+            Check(State(session)["hoverDelayMs"]==1000&&State(session)["animationSpeed"]=="slow"&&State(session)["bounce"]=="bouncy"&&
+                State(session)["error"]=="save"&&files.values["animation-display.json"]==saved,"failed animation saves preserve all confirmed values and the file");
+        }
+        files.fail=false;session.HandlePage(PageCommand::IslandEnable);session.HandlePage(PageCommand::IslandAutoHideOff);
+        const auto hwnd=session.Handle();const int dpi=static_cast<int>(GetDpiForWindow(hwnd));
+        Click(hwnd,32,10);Check(State(session)["expanded"]==true,"the hover delay does not delay a real click");
+        session.HandlePage(PageCommand::IslandCollapse);session.HandlePage(PageCommand::IslandHoverOn);
+        const auto move=[&]{SendMessageW(hwnd,WM_MOUSEMOVE,0,MAKELPARAM(MulDiv(32,dpi,96),MulDiv(10,dpi,96)));};
+        move();Pump(160,hwnd);Check(!State(session)["expanded"].get<bool>(),"one second hover delay does not expand early");
+        session.HandlePage(delay(100));Pump(170,hwnd);
+        Check(State(session)["expanded"]==true,"changing the delay while hovered reschedules the real native timer");
+        session.HandlePage(PageCommand::IslandCollapse);SendMessageW(hwnd,WM_MOUSELEAVE,0,0);
+        session.HandlePage(delay(1000));move();Pump(820,hwnd);
+        Check(State(session)["expanded"]==false,"maximum hover delay still waits near the end of the interval");
+        Pump(250,hwnd);Check(State(session)["expanded"]==true,"one second hover delay eventually expands");
+        session.HandlePage(PageCommand::IslandCollapse);SendMessageW(hwnd,WM_MOUSELEAVE,0,0);
+        session.HandlePage(delay(100));move();SendMessageW(hwnd,WM_MOUSELEAVE,0,0);Pump(170);
+        Check(State(session)["expanded"]==false,"leaving cancels the minimum-delay hover timer");
+        session.HandlePage(delay(1000));session.HandlePage(PageCommand::IslandResetAppearance);
+        Check(State(session)["hoverDelayMs"]==1000&&State(session)["animationSpeed"]=="slow"&&State(session)["bounce"]=="bouncy",
+            "appearance reset preserves all animation choices");
+        session.Shutdown();
+    }
+    {
+        shell::DynamicIslandSession session(GetModuleHandleW(nullptr),options,&files);
+        Check(session.Restore()&&State(session)["hoverDelayMs"]==1000&&State(session)["animationSpeed"]=="slow"&&State(session)["bounce"]=="bouncy",
+            "animation preferences survive a native session restart");
+        session.HandlePage(PageCommand::IslandReset);
+        Check(State(session)["hoverDelayMs"]==320&&State(session)["animationSpeed"]=="normal"&&State(session)["bounce"]=="normal",
+            "full reset restores the animation defaults");session.Shutdown();
+    }
+    for(const auto& bad:{nlohmann::json(-1),nlohmann::json(99),nlohmann::json(1001),nlohmann::json(320.5),nlohmann::json("320"),nlohmann::json(true),nlohmann::json(nullptr)}){
+        Files invalid;invalid.values["animation-display.json"]=nlohmann::json{{"version",1},{"hoverDelayMs",bad},{"animationSpeed",42},{"bounce","invalid"}}.dump();
+        const auto before=invalid.values;
+        shell::DynamicIslandSession session(GetModuleHandleW(nullptr),options,&invalid);
+        Check(session.Restore()&&State(session)["hoverDelayMs"]==320&&State(session)["animationSpeed"]=="normal"&&State(session)["bounce"]=="normal"&&invalid.values==before,
+            "invalid animation fields fall back safely without rewriting preferences");session.Shutdown();
+    }
+    BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+    IslandWindow window(GetModuleHandleW(nullptr),{});widget::Preferences prefs;prefs.enabled=true;
+    IslandDisplay display;display.autoHide=false;display.hideFullscreen=false;
+    Check(window.Start(prefs,display),"animation measurement window starts");window.Settle();
+    if(animations){
+        const auto measure=[&](IslandAnimationSpeed speed,bool expanded){
+            display.animationSpeed=speed;Check(window.SetDisplay(display),"animation speed applies to the real HWND");
+            window.Expand(!expanded);window.Settle();window.Expand(expanded);Pump(140,window.Handle());
+            SendMessageW(window.Handle(),WM_APP+0x6e4,0,0);RECT rect{};GetClientRect(window.Handle(),&rect);window.Settle();return rect.bottom;
+        };
+        const int slowOpen=measure(IslandAnimationSpeed::Slow,true),fastOpen=measure(IslandAnimationSpeed::Fast,true);
+        const int slowClose=measure(IslandAnimationSpeed::Slow,false),fastClose=measure(IslandAnimationSpeed::Fast,false);
+        std::cout<<"native animation heights: expand "<<slowOpen<<" / "<<fastOpen<<", collapse "<<slowClose<<" / "<<fastClose<<'\n';
+        Check(fastOpen>slowOpen+20&&slowClose>fastClose+20,"speed changes both real expand and collapse trajectories");
+        const auto peak=[&](IslandBounce bounce){
+            display.animationSpeed=IslandAnimationSpeed::Fast;display.bounce=bounce;window.SetDisplay(display);
+            window.Expand(false);window.Settle();window.Expand(true);int peak=0;
+            for(int i=0;i<24;++i){Pump(16,window.Handle());RECT rect{};GetClientRect(window.Handle(),&rect);peak=std::max(peak,static_cast<int>(rect.bottom));}
+            window.Settle();return peak;
+        };
+        const auto subtle=peak(IslandBounce::Subtle),bouncy=peak(IslandBounce::Bouncy);
+        std::cout<<"native bounce peaks: "<<subtle<<" / "<<bouncy<<'\n';
+        Check(bouncy>subtle+10,"bounce amount changes the actual native overshoot");
+        for(const auto speed:{IslandAnimationSpeed::Slow,IslandAnimationSpeed::Normal,IslandAnimationSpeed::Fast}){
+            display.animationSpeed=speed;display.bounce=IslandBounce::Normal;window.ReleasePreview();
+            window.Preview(display,false);IslandPreviewFrame frame;
+            for(int i=0;i<7;++i)frame=window.Preview(display,true,.02f);
+            const auto opening=frame.height;
+            window.Preview(display,true);for(int i=0;i<7;++i)frame=window.Preview(display,false,.02f);
+            std::cout<<"preview speed "<<static_cast<int>(speed)<<": "<<opening<<" / "<<frame.height<<'\n';
+            Check(speed!=IslandAnimationSpeed::Slow||opening<100&&frame.height>90,"slow preview changes both directions gradually");
+            Check(speed!=IslandAnimationSpeed::Fast||opening>135&&frame.height<55,"fast preview changes both directions rapidly");
+        }
+        for(const auto speed:{IslandAnimationSpeed::Slow,IslandAnimationSpeed::Normal,IslandAnimationSpeed::Fast})
+          for(const auto bounce:{IslandBounce::Subtle,IslandBounce::Normal,IslandBounce::Bouncy}){
+            display.animationSpeed=speed;display.bounce=bounce;window.ReleasePreview();window.Preview(display,false);
+            unsigned previewPeak=0,count=0;IslandPreviewFrame frame;
+            do{frame=window.Preview(display,true,.02f);previewPeak=std::max(previewPeak,frame.height);++count;}while(frame.animating&&count<200);
+            Check(!frame.animating&&frame.height==156&&previewPeak<260,"every speed and bounce pair settles within the drawing bounds");
+            if(speed==IslandAnimationSpeed::Normal){
+                Check(bounce!=IslandBounce::Subtle||previewPeak<=158,"subtle preview has minimal overshoot");
+                Check(bounce!=IslandBounce::Bouncy||previewPeak>170,"bouncy preview visibly overshoots");
+            }
+          }
+        window.ReleasePreview();
+    }
+    window.Stop();
+}
 void Scenario(){
     Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM initialization");
     CheckExpansionModes();
+    CheckAnimationSettings();
     {
         using namespace platform::windows;
         using W=dynamic_island::CompactWidget;

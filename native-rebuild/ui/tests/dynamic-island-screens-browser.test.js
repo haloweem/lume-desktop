@@ -7,7 +7,7 @@ import {validHostMessage} from '../bridge.js';
 const island={version:1,type:'dynamicIsland-state',enabled:true,running:true,locked:true,
   expanded:false,focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:false,
   hover:false,autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,
-  screen:1,screens:[1],loadStatus:'loaded',error:'',result:'snapshot',saved:false};
+  screen:1,screens:[1],hoverDelayMs:320,animationSpeed:'normal',bounce:'normal',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
 const settings={version:1,type:'app-settings-state',revision:1,language:'zh-CN',balancedMode:true,
   autostart:false,busy:false,error:'',update:{status:'idle',version:'',progress:0}};
 
@@ -43,6 +43,10 @@ function installFixture({island,settings,language}) {
       } else if(typeof command==='string'&&/^v1\|dynamicIsland\|hover\|(true|false)$/.test(command)) {
         if(pending!==null)throw new Error('Duplicate expansion mode request while saving');
         pending={key:'hover',value:command.split('|')[3]==='true'};
+      } else if(typeof command==='string'&&/^v1\|dynamicIsland\|(hoverDelayMs|animationSpeed|bounce)\|[^|]+$/.test(command)) {
+        if(pending!==null)throw new Error('Duplicate animation request while saving');
+        const [, , key, value]=command.split('|');
+        pending={key,value:key==='hoverDelayMs'?Number(value):value};
       } else if(typeof command==='string'&&/^v1\|dynamicIsland\|preview\|(compact|expanded)$/.test(command)) {
         queueMicrotask(()=>receive({version:1,type:'dynamicIsland-preview',mode:command.split('|')[3],
           shape:current.shape,size:current.size,material:current.material,width:0,height:0,image:'',error:'render'}));
@@ -53,7 +57,7 @@ function installFixture({island,settings,language}) {
   }};
 }
 
-test('real settings entry: display policy and expansion mode follow native acknowledgements and layout',{
+test('real settings entry: display, expansion and animation settings follow native acknowledgements and layout',{
   skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:90000,
 },async t=>{
   assert.ok(validHostMessage(island));assert.ok(validHostMessage(settings));
@@ -162,6 +166,51 @@ test('real settings entry: display policy and expansion mode follow native ackno
           const modeCommands=await page.evaluate(()=>window.islandScreensFixture.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dynamicIsland|hover|')));
           assert.deepEqual(modeCommands,['v1|dynamicIsland|hover|true','v1|dynamicIsland|hover|true','v1|dynamicIsland|hover|false']);
           report.expansion={...expansion,commands:modeCommands,passed:true};
+          const animation=page.locator('.island-animation');
+          assert.equal(await animation.locator('h2').textContent(),language==='en'?'Animation settings':'动画设置');
+          const slider=animation.locator('[data-island-hover-delay]'),output=animation.locator('output');
+          const inputDelay=value=>slider.evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
+          assert.equal(await slider.inputValue(),'320');assert.equal(await output.textContent(),'0.32s');
+          await inputDelay(1000);
+          assert.equal(await output.textContent(),'1s','input immediately previews seconds');
+          await slider.dispatchEvent('change');
+          assert.equal(await slider.inputValue(),'1000','submitted slider remains stable while awaiting acknowledgement');
+          assert.equal(await slider.getAttribute('aria-disabled'),'true');
+          await inputDelay(100);await slider.dispatchEvent('change');
+          assert.equal(await slider.inputValue(),'1000','busy slider rejects additional changes');
+          await page.evaluate(()=>window.islandScreensFixture.reply(true));
+          assert.equal(await slider.inputValue(),'320');assert.equal(await output.textContent(),'0.32s','failed save restores confirmed delay');
+          await inputDelay(100);await slider.dispatchEvent('change');await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(await slider.inputValue(),'100');assert.equal(await output.textContent(),'0.1s');
+          for(const [key,values] of [['animationSpeed',['slow','normal','fast']],['bounce',['subtle','normal','bouncy']]]){
+            for(const value of values){
+              const button=animation.locator(`[data-island-preference="${key}"][data-value="${value}"]`);
+              if(await button.getAttribute('aria-pressed')==='true')continue;
+              await button.click();
+              assert.equal(await button.getAttribute('aria-pressed'),'false','animation buttons wait for native acknowledgement');
+              await page.evaluate(()=>window.islandScreensFixture.reply());
+              assert.equal(await button.getAttribute('aria-pressed'),'true');
+            }
+            const failed=animation.locator(`[data-island-preference="${key}"][data-value="normal"]`);
+            await failed.click();await page.evaluate(()=>window.islandScreensFixture.reply(true));
+            assert.equal(await animation.locator(`[data-island-preference="${key}"][data-value="${values.at(-1)}"]`).getAttribute('aria-pressed'),'true','failed animation button saves preserve the last preference');
+          }
+          await page.evaluate(()=>window.islandScreensFixture.navigate());
+          assert.equal(await slider.inputValue(),'100','returning to the page restores the confirmed delay');
+          assert.equal(await animation.locator('[data-island-preference="animationSpeed"][data-value="fast"]').getAttribute('aria-pressed'),'true');
+          assert.equal(await animation.locator('[data-island-preference="bounce"][data-value="bouncy"]').getAttribute('aria-pressed'),'true');
+          await slider.scrollIntoViewIfNeeded();await slider.focus();await slider.press('End');
+          await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(await slider.inputValue(),'1000');assert.equal(await slider.getAttribute('aria-valuetext'),'1s','range keyboard control reaches the upper bound');
+          const animationLayout=await animation.evaluate(card=>{
+            const bounds=card.getBoundingClientRect(),mode=card.previousElementSibling.getBoundingClientRect();
+            return {afterMode:bounds.top>=mode.bottom,overflow:document.documentElement.scrollWidth>innerWidth,
+              labelsFit:[...card.querySelectorAll('button')].every(button=>button.scrollWidth<=button.clientWidth+1),
+              rangeFits:card.querySelector('input').getBoundingClientRect().right<=bounds.right};
+          });
+          assert.ok(animationLayout.afterMode&&!animationLayout.overflow&&animationLayout.labelsFit&&animationLayout.rangeFits);
+          await animation.screenshot({path:path.join(harness.output,`${width}-${language}-animation-settings.png`)});
+          report.animation={...animationLayout,passed:true};
           assert.deepEqual(errors,[]);assert.deepEqual(remoteRequests,[]);
           report.commands=commands;report.passed=true;
         } finally {await page.close();}

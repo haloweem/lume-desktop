@@ -26,19 +26,21 @@ struct Probe {
     unsigned expansionRound=0;
     bool clickModeConfirmed=false;
     bool previewSettled=false;
+    bool animationConfirmed=false;
     ULONGLONG deadline=0,closed=0;
     void Message(const std::wstring& text){
         if(text.find(L"\"type\":\"dynamicIsland-preview\"")!=std::wstring::npos){
             const auto image=nlohmann::json::parse(text);
             Check(image.value("image",std::string{}).rfind("data:image/jpeg;base64,",0)==0,"real manager receives native preview pixels");
             previewSettled=!image.value("animating",false)&&image.value("shape",std::string{})=="standard"&&
-                image.value("material",std::string{})=="frosted-glass";
+                image.value("material",std::string{})=="frosted-glass"&&image.value("animationSpeed",std::string{})=="fast"&&image.value("bounce",std::string{})=="bouncy";
             ++previews;return;
         }
         if(text.find(L"\"type\":\"dynamicIsland-state\"")==std::wstring::npos)return;
         const auto state=nlohmann::json::parse(text);enabled=state.value("enabled",false);
         locked=state.value("locked",false);material=state.value("material",std::string{});
         shape=state.value("shape",std::string{});
+        animationConfirmed=state.value("hoverDelayMs",0)==1000&&state.value("animationSpeed",std::string{})=="fast"&&state.value("bounce",std::string{})=="bouncy";
         previewDecoded=state.value("hover",false)&&state.value("topmost",false)&&state.value("hideFullscreen",false);
         ++snapshots;
         if(state.value("saved",false)&&state.contains("screens")){
@@ -64,7 +66,7 @@ struct Probe {
             std::cerr<<"state: enabled="<<enabled<<" material="<<material<<'\n';
             Check(false,"real manager lifecycle deadline");app->Exit();return;
         }
-        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&previews>ready&&previewDecoded&&previewSettled&&expansionRound>ready){
+        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&previews>ready&&previewDecoded&&previewSettled&&animationConfirmed&&expansionRound>ready){
             ++ready;
             Check(Island()!=nullptr,"real settings page creates island window");
             Check((GetWindowLongPtrW(Island(),GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"real display-layer dropdown applies native overlay state");
@@ -135,6 +137,20 @@ int main(){
           if(hover.getAttribute('aria-pressed')!=='true'){hover.click();return;}
           hoverMode=true;
         }
+        const delay=section.querySelector('[data-island-hover-delay]');
+        if(delay){
+          if(delay.disabled||delay.getAttribute('aria-disabled')==='true')return;
+          if(delay.value!=='1000'){
+            delay.value='1000';delay.dispatchEvent(new Event('input',{bubbles:true}));delay.dispatchEvent(new Event('change',{bubbles:true}));return;
+          }
+        }
+        for(const [key,value] of [['animationSpeed','fast'],['bounce','bouncy']]){
+          const choice=section.querySelector(`[data-island-preference="${key}"][data-value="${value}"]`);
+          if(choice){
+            if(choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
+            if(choice.getAttribute('aria-pressed')!=='true'){choice.click();return;}
+          }
+        }
         const preview=section.querySelector('[data-island-native-preview]');
         if(material&&shape&&preview&&!preview.hidden&&preview.complete&&preview.naturalWidth===960&&!layer){
           section.querySelector('[data-tab="settings"]').click();return;
@@ -166,6 +182,7 @@ int main(){
     Check(result==0&&probe.ready==2&&probe.stage==2,"complete real manager reopen and native close");
     Check(probe.allScreenChecks>=2&&probe.singleScreenChecks>=2,"real display policy buttons work before and after reopening the manager");
     Check(probe.expansionRound==2,"real click and hover mode buttons finish before each manager close");
+    Check(probe.animationConfirmed,"real animation controls persist through the manager close and reopen");
     Check(!Island()&&!app.ManagerHandle(),"application releases all island windows");
     std::cout<<(passed?"PASS":"FAIL")<<" island manager protocol, real UI controls, close/reopen and message-loop lifetime\n";
     return passed?0:1;

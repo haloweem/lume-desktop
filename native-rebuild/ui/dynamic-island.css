@@ -21,7 +21,20 @@
 .island-appearance__segments button { flex: 1; min-width: 0; min-height: 28px; padding: 4px 7px; border: 0; border-radius: 6px; background: transparent; color: #e0e4ed; font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .island-appearance__segments button[aria-pressed="true"] { background: #5b7bea; color: white; box-shadow: 0 1px 3px #0003; }
 .island-appearance button:disabled { opacity: .5; }
-.island-display, .island-expansion { margin-top: 24px; }
+.island-display, .island-expansion, .island-animation { margin-top: 24px; }
+.island-animation .setting-range { margin: 0; }
+.island-animation .setting-range > label { margin-bottom: 0; }
+.island-animation__delay { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 10px; background: #25282e; }
+.island-animation__delay output { flex: 0 0 42px; min-width: 42px; font-size: 12px; color: #aab2bf; }
+.island-animation__delay input[type="range"] { flex: 1; min-width: 0; height: 26px; }
+.island-animation__delay input[type="range"]::-webkit-slider-runnable-track { height: 24px; border-radius: 0; background: radial-gradient(circle, #8e96a2 2px, transparent 2.6px) left center / 12px 8px repeat-x; }
+.island-animation__delay input[type="range"]::-webkit-slider-thumb { width: 10px; height: 24px; margin-top: 0; border: 0; border-radius: 6px; background: #5b7bea; box-shadow: 0 1px 3px #0002; }
+.island-animation__delay input[type="range"]::-moz-range-track { height: 24px; background: radial-gradient(circle, #8e96a2 2px, transparent 2.6px) left center / 12px 8px repeat-x; }
+.island-animation__delay input[type="range"]::-moz-range-progress { background: transparent; }
+.island-animation__delay input[type="range"]::-moz-range-thumb { width: 10px; height: 24px; border: 0; border-radius: 6px; background: #5b7bea; }
+.island-animation__delay input[type="range"]:focus-visible { outline: none; }
+.island-animation__delay:focus-within { outline: 2px solid #5b7bea; outline-offset: 2px; }
+.island-animation__hint { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .island-display__screens { flex-wrap: wrap; gap: 4px; }
 .island-display__screens button { flex: 1 1 64px; }
 .island-display__hint { margin: 8px 0 0; color: #a1a8b4; font-size: 12px; line-height: 1.5; }

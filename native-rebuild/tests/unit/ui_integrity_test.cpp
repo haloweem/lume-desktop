@@ -18,6 +18,8 @@ void Zero(const fs::path& root,const UiIntegrityEntry& entry){
 int main(){
     wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
     const auto built=fs::path(executable).parent_path();
+    const auto healthy=PrepareUiDirectory(built/L"ui",{}, {},BuiltUiManifest());
+    Check(healthy.directory==built/L"ui"&&!healthy.recovered,"all staged UI files match the compiled manifest after a single build");
     const auto root=built/L"verification"/L"ui-integrity"/(std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
     const auto ui=root/L"ui",backup=root/L"ui-recovery",cache=root/L"private-cache";
     std::vector<UiIntegrityEntry> entries;

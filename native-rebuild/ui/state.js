@@ -65,7 +65,7 @@ export const initialState = () => ({
   dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
   dockStatus:"loading",dockError:"",dockLoadStatus:"fresh",dockMaterialStatus:"inactive",
   dynamicIsland:{enabled:false,running:false,locked:false,expanded:false,focusing:false,finished:false,remaining:0,
-    hideFullscreen:true,topmost:false,hover:false,autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,screen:1,screens:[1]},
+    hideFullscreen:true,topmost:false,hover:false,hoverDelayMs:320,animationSpeed:'normal',bounce:'normal',autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,screen:1,screens:[1]},
   dynamicIslandStatus:"loading",dynamicIslandError:"",dynamicIslandLoadStatus:"fresh",
   dynamicIslandPreview:null,
   dynamicIslandPreviewMode:'compact',
@@ -244,7 +244,7 @@ export function reduce(state, event) {
         const {enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material}=m;
         const failed=!!m.error||m.loadStatus==='failed';
         const pending=state.dynamicIslandStatus==='saving'&&m.result==='snapshot'&&!failed;
-        return {...state,dynamicIsland:{enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material,shape:m.shape||'capsule',leftWidget:m.leftWidget??0,rightWidget:m.rightWidget??0,screen:m.screen??1,screens:m.screens??[1]},
+        return {...state,dynamicIsland:{enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material,shape:m.shape||'capsule',leftWidget:m.leftWidget??0,rightWidget:m.rightWidget??0,screen:m.screen??1,screens:m.screens??[1],hoverDelayMs:m.hoverDelayMs??320,animationSpeed:m.animationSpeed??'normal',bounce:m.bounce??'normal'},
           dynamicIslandError:m.error,dynamicIslandLoadStatus:m.loadStatus,
           dynamicIslandStatus:pending?'saving':failed?'error':m.saved?'saved':m.loadStatus==='recovered'?'recovered':'idle'};
       }

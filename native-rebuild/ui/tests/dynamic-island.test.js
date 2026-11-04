@@ -169,3 +169,47 @@ test('display policy lists connected screens and preserves confirmed selection a
   assert.match(islandPage(state,'home'),/data-island-screen-unavailable >所选屏幕未连接/);
   assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.screen,1,'older hosts retain the primary-screen default');
 });
+
+test('animation commands and snapshots validate their bounds and preserve older hosts',()=>{
+  const sent=[],bridge=createBridge({postMessage:message=>sent.push(message)});
+  for(const value of [100,320,1000])assert.ok(bridge.send('dynamicIsland','hoverDelayMs',value));
+  for(const value of [99,1001,NaN,Infinity,300.5,'320',null])assert.equal(bridge.send('dynamicIsland','hoverDelayMs',value),false);
+  for(const value of ['slow','normal','fast'])assert.ok(bridge.send('dynamicIsland','animationSpeed',value));
+  for(const value of ['subtle','normal','bouncy'])assert.ok(bridge.send('dynamicIsland','bounce',value));
+  for(const [key,value] of [['animationSpeed','Slow'],['animationSpeed',1],['bounce','large'],['bounce',true]])assert.equal(bridge.send('dynamicIsland',key,value),false);
+  assert.equal(sent.length,9);
+  const animation={hoverDelayMs:320,animationSpeed:'normal',bounce:'normal'};
+  assert.ok(validHostMessage(snapshot(animation)));
+  assert.ok(validHostMessage(snapshot({...animation,hoverDelayMs:100,animationSpeed:'slow',bounce:'bouncy'})));
+  assert.ok(validHostMessage(snapshot({...animation,hoverDelayMs:1000,animationSpeed:'fast',bounce:'subtle'})));
+  for(const patch of [{hoverDelayMs:99},{hoverDelayMs:1001},{hoverDelayMs:100.1},{hoverDelayMs:'320'},
+    {animationSpeed:'quick'},{animationSpeed:1},{bounce:'large'},{bounce:false}])assert.equal(validHostMessage(snapshot({...animation,...patch})),false);
+  for(const field of Object.keys(animation)){
+    const partial={...animation};delete partial[field];assert.equal(validHostMessage(snapshot(partial)),false);
+  }
+  const older=reduce(initialState(),{type:'host',message:snapshot()}).dynamicIsland;
+  assert.equal(older.hoverDelayMs,320);assert.equal(older.animationSpeed,'normal');assert.equal(older.bounce,'normal');
+});
+
+test('animation settings follow confirmed saves, retain preferences on failure and render in both languages',()=>{
+  const animation={hoverDelayMs:1000,animationSpeed:'slow',bounce:'bouncy'};
+  let state=reduce(initialState(),{type:'host',message:snapshot()});
+  for(const [key,value] of Object.entries(animation)){
+    state=reduce(state,{type:'request',scope:'dynamicIsland',key,value});
+    assert.equal(state.dynamicIsland[key],initialState().dynamicIsland[key]);
+    state=reduce(state,{type:'host',message:snapshot({result:'applied',error:'save'})});
+    assert.equal(state.dynamicIslandStatus,'error');assert.equal(state.dynamicIsland[key],initialState().dynamicIsland[key]);
+  }
+  state=reduce(state,{type:'host',message:snapshot({...animation,result:'applied',saved:true,loadStatus:'loaded'})});
+  for(const [key,value] of Object.entries(animation))assert.equal(state.dynamicIsland[key],value);
+  for(const language of ['zh-CN','en']){
+    setLanguage(language);const html=islandPage(state,'home');
+    assert.ok(html.indexOf('class="island-animation"')>html.indexOf('class="island-expansion"'));
+    assert.match(html,/data-island-hover-delay type="range" min="100" max="1000" step="10" value="1000"/);
+    assert.match(html,/output for="island-hover-delay">1s/);
+    assert.match(html,/data-island-preference="animationSpeed" data-value="slow" aria-pressed="true"/);
+    assert.match(html,/data-island-preference="bounce" data-value="bouncy" aria-pressed="true"/);
+    for(const label of language==='en'?['Animation settings','Hover delay','Expand / collapse speed','Bounce amount','Very slow','Very fast','Subtle','Bouncy']:['动画设置','悬停延迟','展开 / 收缩速度','弹动幅度','非常慢','非常快','轻微','常规','弹动'])assert.ok(html.includes(label));
+  }
+  setLanguage('zh-CN');
+});

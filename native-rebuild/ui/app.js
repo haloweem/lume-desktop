@@ -38,7 +38,7 @@ import { taskbarPage, taskbarNotice, syncTaskbarControls } from "./taskbar.js";
 import { minimizePage, minimizeNotice, syncMinimizeControls } from "./minimize.js";
 import { radialPage, radialNotice, syncRadialControls, mountRadialShortcut } from "./radial.js";
 import { dockPage, dockNotice, syncDockControls } from "./dock.js";
-import { islandPage, islandStatus, syncIslandControls } from './dynamic-island.js';
+import { islandPage, islandStatus, syncIslandControls, validIslandHoverDelay, previewIslandHoverDelay } from './dynamic-island.js';
 import {createIslandPreviewController} from './island-preview-controller.js';
 import {
   selectedWallpaper,
@@ -367,7 +367,7 @@ function dispatch(event) {
   if((event.type==='host'&&event.message.type==='dynamicIsland-state') ||
      (['request','unavailable'].includes(event.type)&&event.scope==='dynamicIsland')) {
     syncIslandControls(content,state);
-    if(['shape','size','material','leftWidget','rightWidget'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
+    if(['shape','size','material','leftWidget','rightWidget','animationSpeed','bounce'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
     if(['error','unavailable','recovered'].includes(state.dynamicIslandStatus) &&
       !content.querySelector('[data-settings-scope="dynamicIsland"]'))showNotice(islandStatus(state));
     return;
@@ -977,7 +977,7 @@ content.addEventListener("click", (event) => {
     }
   } else if (button.dataset.islandPreference) {
     const key=button.dataset.islandPreference;
-    if(['material','size'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
+    if(['material','size','animationSpeed','bounce'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
   } else if (button.dataset.islandScreen!==undefined) {
     const screen=Number(button.dataset.islandScreen);
     if(Number.isInteger(screen)&&screen>=0&&screen<=64&&screen!==state.dynamicIsland.screen)request('dynamicIsland','screen',screen);
@@ -1095,6 +1095,11 @@ document.addEventListener("keydown",event=>{
   }
 });
 content.addEventListener("input", (event) => {
+  if(event.target.matches('[data-island-hover-delay]')){
+    if(event.target.disabled||event.target.getAttribute('aria-disabled')==='true')syncIslandControls(content,state);
+    else previewIslandHoverDelay(event.target,event.target.valueAsNumber);
+    return;
+  }
   if(event.target.matches('[data-setting-slider],[data-setting-number]'))return;
   const range=event.target.closest?.("[data-dock-range],[data-organizer-range]");
   if(range) {
@@ -1122,6 +1127,14 @@ content.addEventListener("submit", (event) => {
   else if (query) dispatch({ type: "navigate", view: "search", query });
 });
 content.addEventListener("change", (event) => {
+  if(event.target.matches('[data-island-hover-delay]')){
+    const slider=event.target,value=slider.valueAsNumber;
+    if(slider.disabled||slider.getAttribute('aria-disabled')==='true'||!validIslandHoverDelay(value)){syncIslandControls(content,state);return;}
+    if(value!==(state.dynamicIsland.hoverDelayMs??320)){
+      slider.dataset.submitted=String(value);request('dynamicIsland','hoverDelayMs',value);
+    }
+    return;
+  }
   if(event.target.matches('[data-setting-slider],[data-setting-number]'))return;
   if(event.target.matches("[data-organizer-range]")){
     const value=event.target.valueAsNumber;

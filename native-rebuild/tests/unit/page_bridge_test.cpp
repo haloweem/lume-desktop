@@ -103,6 +103,15 @@ void TestExactVersionedCommands() {
         {L"v1|dynamicIsland|screen|0", PageCommand::IslandScreenFirst},
         {L"v1|dynamicIsland|screen|1", static_cast<PageCommand>(static_cast<int>(PageCommand::IslandScreenFirst)+1)},
         {L"v1|dynamicIsland|screen|64", PageCommand::IslandScreenLast},
+        {L"v1|dynamicIsland|hoverDelayMs|100", PageCommand::IslandHoverDelayFirst},
+        {L"v1|dynamicIsland|hoverDelayMs|320", static_cast<PageCommand>(static_cast<int>(PageCommand::IslandHoverDelayFirst)+220)},
+        {L"v1|dynamicIsland|hoverDelayMs|1000", PageCommand::IslandHoverDelayLast},
+        {L"v1|dynamicIsland|animationSpeed|slow", PageCommand::IslandAnimationSlow},
+        {L"v1|dynamicIsland|animationSpeed|normal", PageCommand::IslandAnimationNormal},
+        {L"v1|dynamicIsland|animationSpeed|fast", PageCommand::IslandAnimationFast},
+        {L"v1|dynamicIsland|bounce|subtle", PageCommand::IslandBounceSubtle},
+        {L"v1|dynamicIsland|bounce|normal", PageCommand::IslandBounceNormal},
+        {L"v1|dynamicIsland|bounce|bouncy", PageCommand::IslandBounceBouncy},
     };
     for (const auto& item : islandMaterials) {
         Expect(ParsePageCommand(item.first) == item.second, "dynamic island material command fits protocol bounds");
@@ -111,6 +120,10 @@ void TestExactVersionedCommands() {
         Expect(ParsePageCommand(std::wstring(item.first) + L"|extra") == PageCommand::Invalid,
                "dynamic island material command still rejects trailing fields");
     }
+    for(const auto* message:{L"v1|dynamicIsland|hoverDelayMs|99",L"v1|dynamicIsland|hoverDelayMs|1001",
+        L"v1|dynamicIsland|hoverDelayMs|0100",L"v1|dynamicIsland|hoverDelayMs|100.0",L"v1|dynamicIsland|hoverDelayMs|+100",
+        L"v1|dynamicIsland|hoverDelayMs|-100",L"v1|dynamicIsland|animationSpeed|Slow",L"v1|dynamicIsland|bounce|large"})
+        Expect(ParsePageCommand(message)==PageCommand::Invalid,"invalid island animation preferences rejected");
     for (auto message : {L"v1|calendar|theme|Split", L"v1|calendar|enabled|TRUE", L"v1|Calendar|reset", L"v1|calendar|textcolor", L"v1|calendar|textColor|#ffffff", L"v1|calendar|material|Frosted-glass", L"v1|calendar|theme|unknown"})
         Expect(ParsePageCommand(message) == PageCommand::Invalid, "calendar unknown spelling rejected");
     struct Case { std::wstring_view message; PageCommand command; };

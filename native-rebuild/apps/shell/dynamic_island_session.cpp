@@ -106,6 +106,8 @@ struct DynamicIslandSession::Impl {
     static const char* MaterialName(IslandMaterial value){return value==IslandMaterial::Liquid?"liquid-glass":value==IslandMaterial::Frosted?"frosted-glass":"none";}
     static const char* SizeName(IslandSize size){return size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";}
     static const char* ShapeName(IslandShape shape){return shape==IslandShape::Standard?"standard":"capsule";}
+    static const char* SpeedName(IslandAnimationSpeed speed){return speed==IslandAnimationSpeed::Slow?"slow":speed==IslandAnimationSpeed::Fast?"fast":"normal";}
+    static const char* BounceName(IslandBounce bounce){return bounce==IslandBounce::Subtle?"subtle":bounce==IslandBounce::Bouncy?"bouncy":"normal";}
     void LoadDisplay() {
         std::string text;const auto path=DisplayPath();
         // Earlier builds included custom side/workspace data. Ignore those
@@ -119,6 +121,18 @@ struct DynamicIslandSession::Impl {
         flag("hideFullscreen",display.hideFullscreen);
         flag("topmost",display.topmost);flag("hoverExpand",display.hoverExpand);flag("autoHide",display.autoHide);
         flag("messages",display.messages);
+        const auto delay=json.find("hoverDelayMs");
+        if(delay!=json.end()&&delay->is_number_integer()&&*delay>=100&&*delay<=1000)display.hoverDelayMs=delay->get<unsigned>();
+        const auto speed=json.find("animationSpeed");
+        if(speed!=json.end()&&speed->is_string()){
+            if(*speed=="slow")display.animationSpeed=IslandAnimationSpeed::Slow;
+            else if(*speed=="fast")display.animationSpeed=IslandAnimationSpeed::Fast;
+        }
+        const auto bounce=json.find("bounce");
+        if(bounce!=json.end()&&bounce->is_string()){
+            if(*bounce=="subtle")display.bounce=IslandBounce::Subtle;
+            else if(*bounce=="bouncy")display.bounce=IslandBounce::Bouncy;
+        }
         for(const auto* key:{"leftWidget","rightWidget"}){
             const auto field=json.find(key);if(field==json.end()||!field->is_string())continue;
             const auto value=dynamic_island::ParseCompactWidget(field->get<std::string>());
@@ -143,6 +157,7 @@ struct DynamicIslandSession::Impl {
         const auto text=nlohmann::json{{"version",1},{"screen",next.screen},{"hideFullscreen",next.hideFullscreen},
             {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
             {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},
+            {"hoverDelayMs",next.hoverDelayMs},{"animationSpeed",SpeedName(next.animationSpeed)},{"bounce",BounceName(next.bounce)},
             {"leftWidget",dynamic_island::CompactWidgetId(next.leftWidget)},
             {"rightWidget",dynamic_island::CompactWidgetId(next.rightWidget)}}.dump();
         const auto temporary=path+".tmp";
@@ -184,6 +199,7 @@ struct DynamicIslandSession::Impl {
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
             {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},
+            {"hoverDelayMs",display.hoverDelayMs},{"animationSpeed",SpeedName(display.animationSpeed)},{"bounce",BounceName(display.bounce)},
             {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
@@ -270,6 +286,11 @@ struct DynamicIslandSession::Impl {
         using ui::PageCommand;
         auto next=prefs;
         const int number=static_cast<int>(command);
+        if(number>=static_cast<int>(PageCommand::IslandHoverDelayFirst)&&number<=static_cast<int>(PageCommand::IslandHoverDelayLast)){
+            auto value=display;value.hoverDelayMs=100+number-static_cast<int>(PageCommand::IslandHoverDelayFirst);
+            const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
+            return State(true,saved);
+        }
         if(number>=static_cast<int>(PageCommand::IslandScreenFirst)&&number<=static_cast<int>(PageCommand::IslandScreenLast)){
             RefreshScreens();
             const int screen=number-static_cast<int>(PageCommand::IslandScreenFirst);
@@ -303,6 +324,7 @@ struct DynamicIslandSession::Impl {
             if(!readings.is_array())readings=nlohmann::json::array();
             const auto value=nlohmann::json{{"version",1},{"type","dynamicIsland-preview"},{"mode",expanded?"expanded":"compact"},
                 {"shape",ShapeName(display.shape)},{"material",MaterialName(display.material)},{"size",SizeName(display.size)},
+                {"animationSpeed",SpeedName(display.animationSpeed)},{"bounce",BounceName(display.bounce)},
                 {"width",image.empty()?0u:frame.width},{"height",image.empty()?0u:frame.height},{"image",image},
                 {"animating",foreground.animating&&!image.empty()},
                 {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
@@ -320,6 +342,8 @@ struct DynamicIslandSession::Impl {
         case PageCommand::IslandTopmostOn:case PageCommand::IslandTopmostOff:
         case PageCommand::IslandHoverOn:case PageCommand::IslandHoverOff:
         case PageCommand::IslandAutoHideOn:case PageCommand::IslandAutoHideOff:
+        case PageCommand::IslandAnimationSlow:case PageCommand::IslandAnimationNormal:case PageCommand::IslandAnimationFast:
+        case PageCommand::IslandBounceSubtle:case PageCommand::IslandBounceNormal:case PageCommand::IslandBounceBouncy:
         case PageCommand::IslandSizeSmall:case PageCommand::IslandSizeStandard:case PageCommand::IslandSizeLarge:
         case PageCommand::IslandMaterialNone:case PageCommand::IslandMaterialLiquid:case PageCommand::IslandMaterialFrosted:
         case PageCommand::IslandShapeStandard:case PageCommand::IslandShapeCapsule:case PageCommand::IslandResetAppearance:{
@@ -331,6 +355,12 @@ struct DynamicIslandSession::Impl {
             case PageCommand::IslandTopmostOff:value.topmost=false;break;
             case PageCommand::IslandHoverOn:value.hoverExpand=true;break;
             case PageCommand::IslandHoverOff:value.hoverExpand=false;break;
+            case PageCommand::IslandAnimationSlow:value.animationSpeed=IslandAnimationSpeed::Slow;break;
+            case PageCommand::IslandAnimationNormal:value.animationSpeed=IslandAnimationSpeed::Normal;break;
+            case PageCommand::IslandAnimationFast:value.animationSpeed=IslandAnimationSpeed::Fast;break;
+            case PageCommand::IslandBounceSubtle:value.bounce=IslandBounce::Subtle;break;
+            case PageCommand::IslandBounceNormal:value.bounce=IslandBounce::Normal;break;
+            case PageCommand::IslandBounceBouncy:value.bounce=IslandBounce::Bouncy;break;
             case PageCommand::IslandAutoHideOn:value.autoHide=true;break;
             case PageCommand::IslandAutoHideOff:value.autoHide=false;break;
             case PageCommand::IslandSizeSmall:value.size=IslandSize::Small;break;

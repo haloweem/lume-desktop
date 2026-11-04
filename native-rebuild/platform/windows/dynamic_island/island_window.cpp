@@ -51,7 +51,8 @@ constexpr UINT NoticeMilliseconds = 9000;
 constexpr int MaxReminders = 10;
 // The canvas keeps this fixed size during animations, so no bitmap or render
 // target is reallocated per frame; each frame presents only the live area.
-constexpr float CanvasWidth = 420, CanvasHeight = 216;
+// Leave room for the strongest bounce on the 404 x 208 reminder panel.
+constexpr float CanvasWidth = 480, CanvasHeight = 260;
 constexpr std::uint32_t Green = 0x30d158;
 constexpr float TopMargin = 8;
 // Auto-hide: how long without activity before tucking, and what stays visible.
@@ -170,6 +171,18 @@ struct Spring {
     }
     bool Settled() const { return std::abs(x - target) < .05f && std::abs(v) < .05f; }
 };
+struct SpringParameters { float stiffness, damping; };
+// Scaling stiffness by rate squared and damping by rate changes duration
+// without changing the damping ratio. Only the size springs gain overshoot.
+SpringParameters MotionParameters(int axis, const IslandDisplay& display) {
+    static constexpr float stiffness[6] = {210,260,300,170,260,230};
+    static constexpr float damping[6] = {21,24,34,24,30,30};
+    const float rate=display.animationSpeed==IslandAnimationSpeed::Slow?.55f:
+        display.animationSpeed==IslandAnimationSpeed::Fast?1.75f:1.f;
+    const float bounce=axis<2?(display.bounce==IslandBounce::Subtle?1.25f:
+        display.bounce==IslandBounce::Bouncy?.64f:1.f):1.f;
+    return {stiffness[axis]*rate*rate,damping[axis]*rate*bounce};
+}
 }  // namespace
 
 std::vector<IslandMonitor> ConnectedIslandMonitors() {
@@ -340,6 +353,8 @@ struct IslandWindow::Impl {
     std::vector<Motion> trajectory;
     LONGLONG trajectoryStart = 0;
     float trajectoryTargets[6]{};
+    IslandAnimationSpeed trajectorySpeed=IslandAnimationSpeed::Normal;
+    IslandBounce trajectoryBounce=IslandBounce::Normal;
     Motion sampled{};
     std::vector<LumeMaterialKeyframe> keyframes;
     std::vector<float> shapeFrames;
@@ -378,14 +393,16 @@ struct IslandWindow::Impl {
         keyframes.clear();
         shapeFrames.clear();
         trajectoryStart = start;
+        trajectorySpeed=display.animationSpeed;trajectoryBounce=display.bounce;
         Spring work[6];
         Motion m{};
         for (int i = 0; i < 6; ++i) { work[i] = *s[i]; m.x[i] = work[i].x; m.v[i] = work[i].v; trajectoryTargets[i] = work[i].target; }
         trajectory.push_back(m);
         sampled = m;
-        static constexpr float stiffness[6] = {210, 260, 300, 170, 260,230}, damping[6] = {21, 24, 34, 24, 30,30};
+        SpringParameters parameters[6];
+        for(int i=0;i<6;++i)parameters[i]=MotionParameters(i,display);
         for (int n = 0; n < 2000 && !Resting(m); ++n) {
-            for (int i = 0; i < 6; ++i) work[i].Step(TrajectoryStepMs / 1000, stiffness[i], damping[i]);
+            for (int i = 0; i < 6; ++i) work[i].Step(TrajectoryStepMs / 1000, parameters[i].stiffness, parameters[i].damping);
             work[2].x = std::clamp(work[2].x, 0.f, 1.f);
             for (int i = 0; i < 6; ++i) { m.x[i] = work[i].x; m.v[i] = work[i].v; }
             trajectory.push_back(m);
@@ -413,7 +430,7 @@ struct IslandWindow::Impl {
         bool untouched = !trajectory.empty();
         for (int i = 0; i < 6 && untouched; ++i) untouched = s[i]->x == sampled.x[i] && s[i]->v == sampled.v[i];
         if (untouched) SampleTrajectory(shownAt);
-        bool retarget = !untouched;
+        bool retarget = !untouched || trajectorySpeed!=display.animationSpeed || trajectoryBounce!=display.bounce;
         for (int i = 0; i < 6; ++i) retarget |= s[i]->target != trajectoryTargets[i];
         if (retarget) BuildTrajectory(shownAt);
         const bool done = TrajectoryIndex(shownAt) >= static_cast<double>(trajectory.size() - 1);
@@ -1322,7 +1339,8 @@ struct IslandWindow::Impl {
     void SyncHoverExpansion() {
         if(!hwnd)return;
         KillTimer(hwnd,HoverTimer);
-        if(display.hoverExpand&&hovered&&!expanded&&!suppressed&&!menuOpen)SetTimer(hwnd,HoverTimer,320,nullptr);
+        if(display.hoverExpand&&hovered&&!expanded&&!suppressed&&!menuOpen)
+            SetTimer(hwnd,HoverTimer,std::clamp(display.hoverDelayMs,100u,1000u),nullptr);
     }
     void Hover(bool inside) {
         if (inside == hovered) return;
@@ -1526,7 +1544,7 @@ bool IslandWindow::SetDisplay(const IslandDisplay& d) {
     }
     if (startAutoHide || d.shape!=previous.shape || d.size!=previous.size || d.material!=previous.material)
         impl_->Activity();  // Show changed appearance briefly before tucking again.
-    if(d.hoverExpand!=previous.hoverExpand){
+    if(d.hoverExpand!=previous.hoverExpand||d.hoverDelayMs!=previous.hoverDelayMs){
         impl_->SyncHoverExpansion();
         if(!d.hoverExpand&&impl_->hoverExpanded){
             impl_->hoverExpanded=false;
@@ -1604,10 +1622,13 @@ IslandPreviewFrame IslandWindow::Preview(const IslandDisplay& display,bool expan
     if(first||advanceSeconds<=0||!Impl::Animations()) {
         p.width.Snap(p.width.target);p.height.Snap(p.height.target);p.shape.Snap(p.shape.target);p.previewScale.Snap(p.previewScale.target);
     } else {
-        const float dt=std::clamp(advanceSeconds,.001f,.05f)/6;
-        for(int i=0;i<6;++i) {
-            p.width.Step(dt,210,21);p.height.Step(dt,260,24);
-            p.shape.Step(dt,230,30);p.previewScale.Step(dt,230,30);
+        const float advance=std::clamp(advanceSeconds,.001f,.05f);
+        const int steps=static_cast<int>(std::ceil(advance/(Impl::TrajectoryStepMs/1000)));
+        const float dt=advance/static_cast<float>(steps);
+        const auto width=MotionParameters(0,display),height=MotionParameters(1,display),shape=MotionParameters(5,display);
+        for(int i=0;i<steps;++i) {
+            p.width.Step(dt,width.stiffness,width.damping);p.height.Step(dt,height.stiffness,height.damping);
+            p.shape.Step(dt,shape.stiffness,shape.damping);p.previewScale.Step(dt,shape.stiffness,shape.damping);
         }
     }
     const bool moving=!p.width.Settled()||!p.height.Settled()||

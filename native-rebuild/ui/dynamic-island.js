@@ -8,13 +8,15 @@ export function validIslandState(m) {
     'hideFullscreen','topmost','hover','autoHide','size','material','loadStatus','error','result','saved'];
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget');
   const screens=Object.hasOwn(m||{},'screen')&&Array.isArray(m.screens);
-  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0) &&
+  const animation=['hoverDelayMs','animationSpeed','bounce'].some(key=>Object.hasOwn(m||{},key));
+  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0)+(animation?3:0) &&
     keys.every(key=>Object.hasOwn(m,key)) && m.version===1 && m.type==='dynamicIsland-state' &&
     ['enabled','running','locked','expanded','focusing','finished','saved','hideFullscreen','topmost','hover','autoHide'].every(key=>typeof m[key]==='boolean') &&
     islandSizes.includes(m.size) && islandMaterials.includes(m.material) &&
     (!Object.hasOwn(m,'shape')||['standard','capsule'].includes(m.shape)) &&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30))&&
     (!screens||(Number.isInteger(m.screen)&&m.screen>=0&&m.screen<=64&&m.screens.length>=1&&m.screens.length<=64&&m.screens.every((id,index)=>id===index+1)))&&
+    (!animation||(validIslandHoverDelay(m.hoverDelayMs)&&islandAnimationSpeeds.includes(m.animationSpeed)&&islandBounces.includes(m.bounce)))&&
     Number.isInteger(m.remaining) && m.remaining>=0 && m.remaining<=1500 &&
     ['fresh','loaded','recovered','failed'].includes(m.loadStatus) && ['','runtime','save','rollback','screen'].includes(m.error) &&
     ['snapshot','applied'].includes(m.result) && (!m.running || m.enabled) &&
@@ -22,10 +24,23 @@ export function validIslandState(m) {
 }
 export const islandSizes=['small','standard','large'];
 export const islandMaterials=['none','liquid-glass','frosted-glass'];
+export const islandAnimationSpeeds=['slow','normal','fast'];
+export const islandBounces=['subtle','normal','bouncy'];
+export const validIslandHoverDelay=value=>Number.isInteger(value)&&value>=100&&value<=1000;
+const delayLabel=value=>`${value/1000}s`;
+export function previewIslandHoverDelay(slider,value) {
+  if(!validIslandHoverDelay(value))return false;
+  slider.value=String(value);slider.setAttribute('aria-valuetext',delayLabel(value));
+  const output=slider.closest('[data-island-delay-range]')?.querySelector('output');
+  if(output)output.textContent=delayLabel(value);
+  return true;
+}
 export function validIslandPreview(m) {
   const keys=['version','type','mode','shape','material','size','width','height','image','error'];
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget')&&Array.isArray(m.readings);
-  return !!m&&typeof m==='object'&&!Array.isArray(m)&&Object.keys(m).length===keys.length+(Object.hasOwn(m,'animating')?1:0)+(compact?3:0)&&keys.every(key=>Object.hasOwn(m,key))&&
+  const animation=Object.hasOwn(m||{},'animationSpeed')||Object.hasOwn(m||{},'bounce');
+  return !!m&&typeof m==='object'&&!Array.isArray(m)&&Object.keys(m).length===keys.length+(Object.hasOwn(m,'animating')?1:0)+(compact?3:0)+(animation?2:0)&&keys.every(key=>Object.hasOwn(m,key))&&
+    (!animation||(islandAnimationSpeeds.includes(m.animationSpeed)&&islandBounces.includes(m.bounce)))&&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30&&
       m.readings.length<=30&&m.readings.every(row=>row&&typeof row==='object'&&Object.keys(row).length===5&&
         Number.isInteger(row.id)&&row.id>=1&&row.id<=30&&typeof row.text==='string'&&row.text.length<=80&&
@@ -106,6 +121,33 @@ function islandHome(state) {
           <div class="island-appearance__row">
             <div class="island-appearance__segments" role="group" aria-labelledby="island-expansion-label">
               ${[['click',t('点击展开','Click to expand')],['hover',t('悬停展开','Hover to expand')]].map(([mode,label])=>`<button type="button" data-island-expansion="${mode}" aria-pressed="${p.hover===(mode==='hover')}" ${busy(state)?'disabled':''}>${label}</button>`).join('')}
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="island-animation" aria-labelledby="island-animation-label">
+        <div class="island-appearance__head"><h2 id="island-animation-label">${t('动画设置','Animation settings')}</h2></div>
+        <div class="island-appearance__body">
+          <div class="island-appearance__row">
+            <div class="setting-range" data-island-delay-range>
+              <label class="island-appearance__label" for="island-hover-delay">${t('悬停延迟','Hover delay')}</label>
+              <div class="island-animation__delay">
+                <input id="island-hover-delay" data-island-hover-delay type="range" min="100" max="1000" step="10" value="${p.hoverDelayMs??320}" aria-valuetext="${delayLabel(p.hoverDelayMs??320)}" aria-describedby="island-hover-delay-hint" ${busy(state)?'disabled':''}>
+                <output for="island-hover-delay">${delayLabel(p.hoverDelayMs??320)}</output>
+              </div>
+              <span class="island-animation__hint" id="island-hover-delay-hint">${t('鼠标悬停后自动展开的等待时间，0.1～1 秒','Wait before expanding on hover, from 0.1 to 1 second')}</span>
+            </div>
+          </div>
+          <div class="island-appearance__row">
+            <div class="island-appearance__label" id="island-speed-label">${t('展开 / 收缩速度','Expand / collapse speed')}</div>
+            <div class="island-appearance__segments" role="group" aria-labelledby="island-speed-label">
+              ${[['slow',t('非常慢','Very slow')],['normal',t('适中','Moderate')],['fast',t('非常快','Very fast')]].map(([value,label])=>`<button type="button" data-island-preference="animationSpeed" data-value="${value}" aria-pressed="${(p.animationSpeed??'normal')===value}" ${busy(state)?'disabled':''}>${label}</button>`).join('')}
+            </div>
+          </div>
+          <div class="island-appearance__row">
+            <div class="island-appearance__label" id="island-bounce-label">${t('弹动幅度','Bounce amount')}</div>
+            <div class="island-appearance__segments" role="group" aria-labelledby="island-bounce-label">
+              ${[['subtle',t('轻微','Subtle')],['normal',t('常规','Normal')],['bouncy',t('弹动','Bouncy')]].map(([value,label])=>`<button type="button" data-island-preference="bounce" data-value="${value}" aria-pressed="${(p.bounce??'normal')===value}" ${busy(state)?'disabled':''}>${label}</button>`).join('')}
             </div>
           </div>
         </div>
@@ -191,6 +233,7 @@ export function syncIslandControls(root,state) {
       stage.dataset.islandMaterial=p.material;
       const frame=state.dynamicIslandPreview;
       const matches=frame&&!frame.error&&frame.mode===(expanded?'expanded':'compact')&&frame.shape===(p.shape||'capsule')&&frame.material===p.material&&frame.size===p.size&&
+        (frame.animationSpeed===undefined||frame.animationSpeed===(p.animationSpeed??'normal')&&frame.bounce===(p.bounce??'normal'))&&
         (frame.leftWidget===undefined||frame.leftWidget===(p.leftWidget??0)&&frame.rightWidget===(p.rightWidget??0));
       presentPreview(stage,frame,matches);
       const scale=p.size==='small'?.86:p.size==='large'?1.16:1;
@@ -230,6 +273,14 @@ export function syncIslandControls(root,state) {
       button.setAttribute('aria-pressed',String(p.hover===(button.dataset.islandExpansion==='hover')));
       syncSettingsControlBusy(button,disabled);
     });
+    const delay=home.querySelector('[data-island-hover-delay]');
+    if(delay){
+      const submitted=Number(delay.dataset.submitted);
+      const pending=state.dynamicIslandStatus==='saving';
+      previewIslandHoverDelay(delay,pending&&validIslandHoverDelay(submitted)?submitted:(p.hoverDelayMs??320));
+      if(!pending)delete delay.dataset.submitted;
+      syncSettingsControlBusy(delay,disabled);
+    }
     syncCompactWidgetPicker(home,state);
   }
   for(const [action,value] of [['toggle',p.enabled],...displayToggles().map(([a,key])=>[a,p[key]])]) {

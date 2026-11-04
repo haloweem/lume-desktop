@@ -39,6 +39,9 @@ lume_enable_native_warnings(LumeIconHost)
 target_link_libraries(LumeShell PRIVATE lume-page-window)
 target_link_libraries(LumeShell PRIVATE lume-desktop-application)
 add_custom_target(lume-ui-assets ALL
+  # Ninja must know who generates this included header, so a UI-only edit
+  # rebuilds the compiled manifest in the same invocation after staging.
+  BYPRODUCTS "${CMAKE_BINARY_DIR}/generated/ui_integrity_manifest.h"
   COMMAND ${CMAKE_COMMAND} -DUI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/ui -DUI_DESTINATION=${CMAKE_BINARY_DIR}/ui -DUI_INTEGRITY_HEADER=${CMAKE_BINARY_DIR}/generated/ui_integrity_manifest.h -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/StageUi.cmake
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LUME_WEBVIEW2_PACKAGE}/build/native/x64/WebView2Loader.dll" "${CMAKE_BINARY_DIR}/WebView2Loader.dll"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LUME_WEBVIEW2_PACKAGE}/LICENSE.txt" "${CMAKE_BINARY_DIR}/WebView2-LICENSE.txt"

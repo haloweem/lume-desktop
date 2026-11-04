@@ -52,6 +52,9 @@ test('native preview protocol permits bounded image frames and exact modes',()=>
   assert.ok(validHostMessage({...frame,image:'data:image/jpeg;base64,YQ=='}));
   assert.ok(validHostMessage({...frame,animating:true}));
   assert.equal(validHostMessage({...frame,animating:'true'}),false);
+  assert.ok(validHostMessage({...frame,animationSpeed:'fast',bounce:'bouncy'}));
+  for(const patch of [{animationSpeed:'fast'},{bounce:'normal'},{animationSpeed:'invalid',bounce:'normal'},{animationSpeed:'normal',bounce:1}])
+    assert.equal(validHostMessage({...frame,...patch}),false);
   for(const patch of [{width:20000},{image:'https://example.com/a.png'},{image:'data:image/svg+xml,abc'},{mode:'anything'},{extra:true},{image:'a'.repeat(2800001)}])
     assert.equal(validHostMessage({...frame,...patch}),false);
   assert.equal(reduce(initialState(),{type:'host',message:frame}).dynamicIslandPreview,frame);

@@ -47,6 +47,8 @@ struct IslandTodoSource {
 };
 // None keeps the classic opaque black capsule.
 enum class IslandMaterial { None, Liquid, Frosted };
+enum class IslandAnimationSpeed { Slow, Normal, Fast };
+enum class IslandBounce { Subtle, Normal, Bouncy };
 struct IslandMonitor {
     std::wstring device;
     RECT bounds{}, work{};
@@ -62,6 +64,9 @@ struct IslandDisplay {
     bool hideFullscreen = true;  // Step aside for fullscreen apps, games and presentations.
     bool topmost = false;        // Explicitly chosen overlay above ordinary applications.
     bool hoverExpand = false;    // Expand after resting the pointer on the island.
+    unsigned hoverDelayMs = 320; // 100..1000 ms; retain the existing default delay.
+    IslandAnimationSpeed animationSpeed = IslandAnimationSpeed::Normal;
+    IslandBounce bounce = IslandBounce::Normal;
     bool autoHide = true;        // Idle: tuck against the screen top, leaving a sliver to hover.
     bool messages = true;        // Show new QQ / WeChat / ... messages (their taskbar button flashing).
     IslandSize size = IslandSize::Standard;
@@ -72,7 +77,8 @@ struct IslandDisplay {
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
     return a.screen==b.screen&&a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
-           a.hoverExpand == b.hoverExpand && a.size == b.size && a.material == b.material &&
+           a.hoverExpand == b.hoverExpand && a.hoverDelayMs == b.hoverDelayMs &&
+           a.animationSpeed == b.animationSpeed && a.bounce == b.bounce && a.size == b.size && a.material == b.material &&
            a.autoHide == b.autoHide && a.messages == b.messages && a.shape == b.shape;
 }
 inline bool operator!=(const IslandDisplay& a, const IslandDisplay& b) { return !(a == b); }

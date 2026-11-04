@@ -26,6 +26,8 @@ bool GlassShown(HWND island){
 void Material(IslandMaterial material,bool topmost,const char* reason){
     platform::windows::IslandWindow window(GetModuleHandleW(nullptr),{});
     IslandDisplay display;display.material=material;display.topmost=topmost;
+    display.animationSpeed=platform::windows::IslandAnimationSpeed::Fast;
+    display.bounce=platform::windows::IslandBounce::Bouncy;
     widget::Preferences prefs;prefs.enabled=true;
     Check(window.Start(prefs,display),"island starts");
     bool shown=false;
