@@ -94,7 +94,8 @@ int main(int argc,char** argv){
     const auto saved=store.Load((root/L"organizer.json").u8string());
     Check(saved.state==organizer::LoadState::Loaded&&saved.value.collections[0].enabled==false&&!saved.value.collections[0].frosted,
         "organizer native close persisted disabled and material");
-    Check(saved.value.collections[0].iconScale==73&&saved.value.collections[0].mode==organizer::Mode::Expanded,"real slider saves icon size and legacy compact mode is retired");
+    Check(saved.value.collections[0].iconScale==73&&saved.value.collections[0].mode==
+        (narrow?organizer::Mode::Collapsed:organizer::Mode::Expanded),"real slider saves icon size without changing the persisted folding mode");
     if(narrow)Check(saved.value.collections[0].bounds&&saved.value.collections[0].bounds->width==120,
         "narrow state roundtrip preserves the user's one-column width");
     return passed?0:1;

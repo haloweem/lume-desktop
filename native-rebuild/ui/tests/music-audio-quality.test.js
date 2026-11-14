@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createBridge,validHostMessage} from '../bridge.js';
-import {initialMusicState,musicCommand,musicPage} from '../music.js';
+import {initialMusicState,musicCommand,musicPage,musicPlaybackError} from '../music.js';
+
+test('playback failures distinguish platform refusals, network and preview permissions',()=>{
+  assert.match(musicPlaybackError('music-source-netease-code--460'),/-460/);
+  for(const error of ['music-source-network','music-source-service','music-source-timeout',
+    'music-source-rate-limited','music-source-unavailable','music-source-netease-code--460'])
+    assert.doesNotMatch(musicPlaybackError(error),/会员|下架/);
+  assert.match(musicPlaybackError('music-source-preview-only'),/试听/);
+  assert.match(musicPlaybackError('music-source-entitlement'),/权限/);
+});
 
 const qualities=['standard','high','lossless','hires','jyeffect','sky','jymaster'];
 const track=provider=>({id:`${provider}:1`,title:'Song',artist:'Artist',album:'',artwork:'',

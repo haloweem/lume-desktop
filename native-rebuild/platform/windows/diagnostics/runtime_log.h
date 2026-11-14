@@ -15,7 +15,8 @@ void Initialize(const std::filesystem::path& directory);
 std::filesystem::path Directory();
 void Log(std::string_view module, std::string_view message);
 // Writes a minidump of LumeShell on an unhandled exception, std::terminate,
-// a pure virtual call or an invalid CRT parameter (newest three kept) and logs
+// a pure virtual call or an invalid CRT parameter (newest three, each at most
+// 16 MiB, retained; larger dumps discarded) and logs
 // the exception code and address.
 void InstallCrashHandler();
 // Probes the UI thread through `window` every five seconds; after fifteen

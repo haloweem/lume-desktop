@@ -96,16 +96,21 @@ struct WallpaperMediaServer::Impl {
         std::thread thread;
         ~PipeClient(){if(pipe!=INVALID_HANDLE_VALUE)CloseHandle(pipe);if(cancel)CloseHandle(cancel);}
         void Shutdown(){if(cancel)SetEvent(cancel);}
-        bool Io(bool write,void* data,DWORD size) {
+        bool Io(bool write,void* data,DWORD size,DWORD timeout=30000) {
             auto* bytes=static_cast<char*>(data);
+            const auto started=GetTickCount64();
             while(size) {
+                if(!cancel||WaitForSingleObject(cancel,0)==WAIT_OBJECT_0)return false;
                 OVERLAPPED overlapped{};overlapped.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
                 if(!overlapped.hEvent)return false;
                 DWORD moved=0;
                 BOOL ok=write?WriteFile(pipe,bytes,size,nullptr,&overlapped):ReadFile(pipe,bytes,size,nullptr,&overlapped);
                 if(!ok&&GetLastError()==ERROR_IO_PENDING) {
                     HANDLE waits[]={overlapped.hEvent,cancel};
-                    if(WaitForMultipleObjects(2,waits,FALSE,30000)!=WAIT_OBJECT_0){
+                    const auto elapsed=GetTickCount64()-started;
+                    const DWORD remaining=timeout==INFINITE?INFINITE:
+                        elapsed>=timeout?0:timeout-static_cast<DWORD>(elapsed);
+                    if(WaitForMultipleObjects(2,waits,FALSE,remaining)!=WAIT_OBJECT_0){
                         CancelIoEx(pipe,&overlapped);GetOverlappedResult(pipe,&overlapped,&moved,TRUE);
                         CloseHandle(overlapped.hEvent);return false;
                     }
@@ -141,7 +146,10 @@ struct WallpaperMediaServer::Impl {
         PlaintextBuffer buffer;
         while(!stopping&&!lease->revoked) {
             wallpaper_pipe::Request request{};
-            if(!client.Io(false,&request,sizeof(request)))return;
+            // An authenticated player can remain paused indefinitely. Only the
+            // wait for a new request is idle; partial requests retain a deadline.
+            if(!client.Io(false,&request,1,INFINITE)||
+               !client.Io(false,reinterpret_cast<char*>(&request)+1,sizeof(request)-1))return;
             std::uint32_t count=0;
             if(request.offset<size) {
                 const auto capacity=static_cast<std::size_t>(std::min<std::uint64_t>(
@@ -185,7 +193,10 @@ struct WallpaperMediaServer::Impl {
             try {
                 client->thread=std::thread([this,client]{
                     try{ServePipe(*client);}catch(...){}
-                    FlushFileBuffers(client->pipe);DisconnectNamedPipe(client->pipe);
+                    // Cancellation/failure must not wait for a paused client to
+                    // drain unread bytes. Successful replies are consumed before
+                    // that client sends its next request on this protocol.
+                    DisconnectNamedPipe(client->pipe);
                     {std::lock_guard<std::mutex> lock(mutex);client->leaseId.clear();}
                     client->done=true;
                 });

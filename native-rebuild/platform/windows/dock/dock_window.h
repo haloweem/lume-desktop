@@ -71,7 +71,7 @@ public:
     // (BarHeight = IconSize + 2 * IconBottom) and Padding on each side.
     static constexpr float BarHeight = 100, Headroom = 72, IconSize = 58, Gap = 10, Padding = 24,
                            CornerRadius = 34, BottomMargin = 10, IconBottom = 21, MaxScale = 1.5f,
-                           ExtraWidth = 200, SystemTrayWidth = 330;
+                           ExtraWidth = 200, SystemTrayWidth = IconSize;  // control center: an icon tile
     // Magnification reaches two icons on each side and none beyond.
     static constexpr float Reach = 2.8f;
     static constexpr std::size_t None = static_cast<std::size_t>(-1);
@@ -82,6 +82,8 @@ public:
     bool Show(std::vector<dock::Item>, const DockAppearance&);
     void Stop();
     bool Paint();
+    // Coalesce asynchronous icon completions into one queued redraw.
+    void RequestPaint();
     HWND Handle() const;       // icon layer (input)
     HWND BarHandle() const;    // glass bar
     bool Visible() const;
@@ -120,6 +122,9 @@ public:
     bool Removing() const;
     // Testing: the window drawn as a live thumbnail for items[index], if any.
     bool HasThumbnail(std::size_t index) const;
+    // Testing: retained minimize snapshots, including entries without pixels.
+    std::size_t CachedSnapshotCount() const;
+    bool HasCachedSnapshot(std::uint64_t window) const;
     // The displayed snapshot can lag the session during a drag. Resolve actions
     // by this item's identity, never by an index into a newer session snapshot.
     std::optional<dock::Item> ItemAt(std::size_t index) const;

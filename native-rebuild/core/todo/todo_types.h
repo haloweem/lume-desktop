@@ -56,6 +56,14 @@ inline bool operator==(const Recurrence &a, const Recurrence &b) noexcept {
     return a.frequency == b.frequency && a.interval == b.interval;
 }
 inline bool operator!=(const Recurrence &a, const Recurrence &b) noexcept { return !(a == b); }
+// A small step of a task; stored in the task's existing "subtasks" array.
+struct Subtask {
+    std::string id, title;
+    bool completed = false;
+};
+inline bool operator==(const Subtask &a, const Subtask &b) noexcept {
+    return a.id == b.id && a.title == b.title && a.completed == b.completed;
+}
 struct TaskView {
     std::string id, title, notes;
     bool completed = false;
@@ -65,6 +73,7 @@ struct TaskView {
     ReminderDraft reminder;
     std::optional<calendar::Date> day;
     std::optional<Recurrence> recurrence;
+    std::vector<Subtask> subtasks;
     // A computed later occurrence of a repeating schedule; never stored. Its id
     // is the stored task's, so commands act on the whole series.
     bool projected = false;
@@ -80,6 +89,8 @@ struct TaskPatch {
     std::optional<ReminderDraft> reminder;
     // Omit to preserve; an empty inner value stops repeating.
     std::optional<std::optional<Recurrence>> recurrence;
+    // Omit to preserve; at most 100 steps, titles 1..500 UTF-16 units, unique ids.
+    std::optional<std::vector<Subtask>> subtasks;
 };
 struct Scope {
     std::string accountKey;

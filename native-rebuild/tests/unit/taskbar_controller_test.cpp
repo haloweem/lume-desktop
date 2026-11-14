@@ -29,7 +29,7 @@ public:
 class Port final : public ITaskbarPort {
 public:
     Files* files = nullptr;
-    int touches = 0, starts = 0, stops = 0, writes = 0, releases = 0;
+    int touches = 0, starts = 0, stops = 0, writes = 0, releases = 0, resetFailures = 0;
     bool autoHide = false, core = false, failRestore = false, failStart = false;
     bool fullyHidden = false, failHide = false;
     std::vector<Visibility> visibility;
@@ -84,6 +84,7 @@ public:
                              "durable core recovery precedes launch");
         ++starts; ++touches; if (failStart) return Error::CoreStart; core = true; return Error::None;
     }
+    void ResetCoreFailure() override { ++resetFailures; }
     bool CoreAlive() const override { return core; }
     Error StopCore(bool previous) override {
         ++stops; ++touches;
@@ -229,6 +230,66 @@ int main() {
         restored.SetAutoHideDemand(true);
         Check(restored.Tick() && restored.Shutdown() && classic.autoHide,
               "shutdown keeps a taskbar the user had already auto-hidden");
+    }
+    {
+        // Transparency payload or access errors must not discard hiding edits.
+        for (const auto failure : {Error::MissingPayload, Error::PayloadIntegrity, Error::FrameworkInstall,
+                                   Error::Conflict, Error::CoreAccessDenied}) {
+            Files hideFiles; RecordStore hideStore(hideFiles);
+            Port denied; denied.files = &hideFiles; denied.mode = Mode::Windows11X64;
+            denied.transparencyAcquireError = failure;
+            Visibility window; window.window = 201; window.process = 20; window.processCreated = 30;
+            denied.visibility = {window};
+            Controller c(hideStore, "taskbar.json", denied);
+            Preferences hidden; hidden.enabled = true; hidden.autoHideTaskbar = true;
+            hidden.hideBehavior = HideBehavior::FullyHidden;
+            Check(!c.Apply(hidden) && c.Snapshot().error == failure && denied.autoHide && denied.fullyHidden &&
+                  c.Snapshot().hideApplied && c.Snapshot().effectiveAutoHide && c.Snapshot().fullyHidden,
+                  "transparency acquisition failure preserves applied hiding");
+            Check(c.Journal().preferences == hidden && c.Journal().hiddenTaskbars.size() == 1 && denied.starts == 0,
+                  "hiding preference is durable even when transparency cannot acquire");
+            const auto starts = denied.starts, stops = denied.stops, resets = denied.resetFailures;
+            denied.autoHide = false; denied.fullyHidden = false;
+            Check(c.MaintainHiding() && denied.autoHide && denied.fullyHidden && c.Snapshot().hideApplied &&
+                  c.Snapshot().error == failure && !c.Snapshot().running && denied.starts == starts &&
+                  denied.stops == stops && denied.resetFailures == resets,
+                  "paused transparency still maintains hiding without a core retry");
+            denied.visibility.clear();
+            Check(!c.MaintainHiding() && !c.Snapshot().hideApplied && c.Snapshot().error == failure &&
+                  c.Journal().hiddenTaskbars.size() == 1 && denied.starts == starts && denied.stops == stops,
+                  "temporarily missing taskbars invalidate hiding evidence while retaining both recoveries");
+            denied.visibility = {window};
+            Check(c.MaintainHiding() && c.Snapshot().hideApplied, "hiding recovers when the taskbar returns");
+            const auto resetFailures = denied.resetFailures;
+            hidden.autoHideTaskbar = false;
+            Check(!c.Apply(hidden) && !denied.autoHide && !denied.fullyHidden && c.Snapshot().hideApplied &&
+                  !c.Snapshot().effectiveAutoHide && c.Journal().hiddenTaskbars.empty(),
+                  "turning hiding off restores the taskbar while transparency remains denied");
+            Check(denied.resetFailures == resetFailures,
+                  "a hiding-only edit does not unblock a known transparency failure");
+            hidden.transparentTaskbar = false;
+            Check(c.Apply(hidden) && c.Snapshot().running && c.Shutdown(),
+                  "hiding-only operation does not require transparency payloads");
+        }
+    }
+    {
+        Files hideFiles; RecordStore hideStore(hideFiles);
+        Record abandoned; abandoned.ownsCore = true;
+        Check(hideStore.Save("taskbar.json", abandoned), "write previous-core-only recovery");
+        Port denied; denied.files = &hideFiles; denied.mode = Mode::Windows11X64;
+        denied.transparencyAcquireError = Error::CoreAccessDenied;
+        Controller c(hideStore, "taskbar.json", denied);
+        Preferences hidden; hidden.enabled = true; hidden.transparentTaskbar = false; hidden.autoHideTaskbar = true;
+        Check(!c.Apply(hidden) && denied.autoHide && c.Snapshot().hideApplied && c.Journal().ownsCore,
+              "previous core recovery failure does not block a new hiding request");
+        const auto hideWrites = denied.writes;
+        Check(!c.Tick() && denied.autoHide && denied.writes == hideWrites && c.Snapshot().hideApplied,
+              "pending core recovery does not toggle hiding during maintenance");
+        hidden.autoHideTaskbar = false;
+        Check(!c.Apply(hidden) && !denied.autoHide && c.Snapshot().hideApplied,
+              "hiding can be turned off even with an unrecoverable old core");
+        denied.transparencyAcquireError = Error::None;
+        Check(c.Tick() && !c.Journal().ownsCore && c.Shutdown(), "old core recovery can finish independently");
     }
     {
         files.data["taskbar.json"] = "corrupt";

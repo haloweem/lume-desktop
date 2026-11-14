@@ -30,6 +30,7 @@ struct Probe {
     ULONGLONG started = 0;
     bool failed = false, opened = false, migrated = false, migratedV2 = false;
     bool applied = false, changed = false, effectChanged = false, reset = false, saved = false;
+    unsigned barriers = 0;
     void Check(bool value, const char* reason) {
         if (!value) { failed = true; std::cerr << "FAIL: " << reason << '\n'; }
     }
@@ -37,6 +38,8 @@ struct Probe {
         const auto json = Json::parse(text);
         if (json.value("type", "") != "music-preferences-state") return;
         const auto request = json.value("request", 0);
+        std::cout << "music-preferences-probe request=" << request << " revision=" << json.value("revision", 0)
+                  << " status=" << json.value("status", "") << " error=" << json.value("error", "") << '\n';
         Check(json.value("version", 0) == 1, "preference state envelope stays v1");
         const auto& preferences = json.at("preferences");
         if (request == 0 && !migrated) {
@@ -45,6 +48,13 @@ struct Probe {
             Check(json.value("status", "") == "ready" && json.value("revision", 0) == 4 && preferences == expected,
                   "native bridge starts with migrated v1 settings, no effect and original Sonnet defaults");
             migrated = true;
+        } else if (request >= 100 && request <= 108) {
+            auto expected = LegacyPreferences();
+            expected["version"] = 3; expected["sonnetColors"] = SonnetDefaults(); expected["effectMode"] = "none";
+            Check(request == 100 + static_cast<int>(barriers) && json.value("status", "") == "error" &&
+                  json.value("error", "") == "conflict" && json.value("revision", 0) == 4 &&
+                  preferences == expected, "ordered stale-revision barriers preserve the migrated preferences between invalid commands");
+            ++barriers;
         } else if (request == 38) {
             auto expected = AppliedPreferences(); expected["effectMode"] = "none";
             Check(migrated && json.value("status", "") == "ready" && json.value("revision", 0) == 5 &&
@@ -83,6 +93,9 @@ struct Probe {
     }
     void Tick() {
         if (GetTickCount64() - started > 20000) {
+            std::cerr << "music-preferences-probe stages opened=" << opened << " migrated=" << migrated
+                      << " v2=" << migratedV2 << " applied=" << applied << " changed=" << changed
+                      << " effect=" << effectChanged << " reset=" << reset << " saved=" << saved << '\n';
             Check(false, "music preferences integration deadline"); app->Exit(); return;
         }
         if (!opened) { opened = true; app->Open(lume::shell::ManagerPage::Music); }
@@ -120,7 +133,17 @@ int main() {
                 version:1, scope:'music-preferences', action, request, revision,
                 ...(value ? {preferences:value} : {})});
             const receive = ({data}) => {
-                if (data.type !== 'music-preferences-state' || data.status !== 'ready') return;
+                if (data.type !== 'music-preferences-state') return;
+                if (data.request >= 100 && data.request <= 108) {
+                    if (data.status !== 'error' || data.error !== 'conflict' || data.revision !== 4) return;
+                    if (nextInvalid < invalid.length) {
+                        const [request, value] = invalid[nextInvalid++];
+                        post('apply', request, 4, value);
+                        post('apply', 100 + nextInvalid, 3, preferences);
+                    } else post('apply', 38, 4, {...withoutEffect,version:2});
+                    return;
+                }
+                if (data.status !== 'ready') return;
                 if (data.request === 38) {
                     post('apply', 41, 5, preferences);
                 } else if (data.request === 41) {
@@ -137,18 +160,22 @@ int main() {
                     webview.removeEventListener('message', receive);
                 }
             };
-            webview.addEventListener('message', receive);
             const {effectMode, ...withoutEffect} = preferences;
             const {sonnetColors, ...v1} = withoutEffect;
-            post('apply', 30, 4, {...preferences,effectMode:'rain'});
-            post('apply', 31, 4, withoutEffect);
-            post('apply', 32, 4, {...preferences,version:2});
-            post('apply', 33, 4, {...v1,version:1,effectMode:'none'});
-            post('apply', 34, 4, {...preferences,effectMode:null});
-            post('apply', 35, 4, {...preferences,version:4});
-            post('apply', 39, 4, {...preferences,sonnetColors:{...preferences.sonnetColors,unknown:'#ffffff'}});
-            post('apply', 40, 4, {...preferences,sonnetColors:{...preferences.sonnetColors,glowColor:'invalid'}});
-            post('apply', 38, 4, {...withoutEffect,version:2});
+            const invalid = [
+                [30, {...preferences,effectMode:'rain'}], [31, withoutEffect],
+                [32, {...preferences,version:2}], [33, {...v1,version:1,effectMode:'none'}],
+                [34, {...preferences,effectMode:null}], [35, {...preferences,version:4}],
+                [39, {...preferences,sonnetColors:{...preferences.sonnetColors,unknown:'#ffffff'}}],
+                [40, {...preferences,sonnetColors:{...preferences.sonnetColors,glowColor:'invalid'}}],
+            ];
+            let nextInvalid = 0;
+            webview.addEventListener('message', receive);
+            // The native application-command queue is bounded at 16 entries.
+            // Pace the eight rejected inputs with checked conflict replies so
+            // music startup traffic cannot silently drop the final v2 apply.
+            // Stale revisions are read-only, and every negative case remains.
+            post('apply', 100, 3, preferences);
         })();
     )JS";
     Probe probe;
@@ -161,7 +188,7 @@ int main() {
         probe.Check(app.Run() == 0, "isolated shell exited");
         KillTimer(nullptr, timer); active = nullptr;
     }
-    probe.Check(probe.migrated && probe.migratedV2 && probe.applied && probe.changed && probe.effectChanged &&
+    probe.Check(probe.barriers == 9 && probe.migrated && probe.migratedV2 && probe.applied && probe.changed && probe.effectChanged &&
                 probe.reset && probe.saved, "WebView v1/v2 migration, apply, independent changes and reset reached native session");
     lume::shell::MusicPreferencesSession reopened(path, files);
     const auto restored = Json::parse(reopened.State());

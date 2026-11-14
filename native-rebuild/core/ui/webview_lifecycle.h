@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <optional>
 
 namespace lume::ui {
 
@@ -20,6 +21,7 @@ public:
     std::vector<Action> OnHidden() noexcept;
     std::vector<Action> OnVisible() noexcept;
     std::vector<Action> OnCleanupAcknowledged(std::uint32_t generation) noexcept;
+    std::vector<Action> OnCleanupTimeout() noexcept;
     std::vector<Action> OnSuspendCompleted(std::uint32_t generation, bool success) noexcept;
     void Close() noexcept;
 
@@ -28,6 +30,9 @@ private:
     Phase phase_ = Phase::Cold;
     std::uint32_t generation_ = 0;
     bool suspendRequested_ = false;
+    bool cleanupAcknowledged_ = false;
+    unsigned suspendAttempts_ = 0;
+    std::optional<std::uint32_t> inFlight_;
 };
 
 }  // namespace lume::ui

@@ -459,6 +459,11 @@ struct MusicDesktopControls::Impl {
         ports.interactiveAt = [this](float x, float y) { return Hit(x, y) >= 0; };
         ports.event = [this](HWND hwnd, UINT msg, WPARAM w, LPARAM l) { return Input(hwnd, msg, w, l); };
         ports.action = [this](WidgetAction action, const widget::Preferences& bounds) {
+            const auto request = materialHandler;
+            if (request && (action == WidgetAction::Liquid || action == WidgetAction::Frosted)) {
+                try { request(action == WidgetAction::Frosted, window->Handle()); } catch (...) {}
+                return;
+            }
             prefs = bounds;
             switch (action) {
             case WidgetAction::Close: Hide(); break;
@@ -540,6 +545,13 @@ struct MusicDesktopControls::Impl {
     void Update(const music::MusicSnapshot& snapshot) {
         if (stopped) return;
         auto next = ProjectMusicDesktopState(snapshot);
+        const bool changedState=next.session!=state.session||next.trackId!=state.trackId||
+            next.title!=state.title||next.artist!=state.artist||next.album!=state.album||
+            next.status!=state.status||next.duration!=state.duration||next.position!=state.position||
+            next.playing!=state.playing||next.canToggle!=state.canToggle||next.canSkip!=state.canSkip||next.canSeek!=state.canSeek;
+        const bool changedTooltip=next.title!=state.title||next.artist!=state.artist||next.album!=state.album||
+            next.playing!=state.playing||next.canToggle!=state.canToggle;
+        bool changedCover=false;
         if (next.session != state.session || next.trackId != state.trackId ||
             next.canToggle != state.canToggle || next.canSeek != state.canSeek) {
             ++generation;
@@ -555,6 +567,7 @@ struct MusicDesktopControls::Impl {
         state = std::move(next);
         currentTrack = snapshot.current;
         if (changedTrack) {
+            changedCover=true;
             coverBytes.clear();
             cover.reset();
             coverAttempted = false;
@@ -567,12 +580,14 @@ struct MusicDesktopControls::Impl {
              artwork->compare(0, 23, "data:image/jpeg;base64,") == 0);
         const std::string_view nextArtwork = accepted ? std::string_view(*artwork) : std::string_view{};
         if (nextArtwork != artworkData) {
+            changedCover=true;
             artworkData = nextArtwork;
             cover.reset(); coverAttempted = false; metadataDirty = true;
         }
         if (snapshot.current && state.canToggle && !accepted && window->Handle()) {
             coverWorker.Request(*snapshot.current);
             if (auto bytes = coverWorker.Take(*snapshot.current)) {
+                changedCover=true;
                 coverBytes = std::move(*bytes);
                 cover = DecodeCover(coverBytes);
                 coverAttempted = true;
@@ -584,8 +599,11 @@ struct MusicDesktopControls::Impl {
         }
         if (state.title != published.title || state.artist != published.artist ||
             state.album != published.album || state.trackId != published.trackId) metadataDirty = true;
-        if (controls) Publish();
-        if (window->Handle()) { UpdateTooltips(); window->Paint(); }
+        if (controls&&(changedState||metadataDirty)) Publish();
+        if (window->ContentVisible()) {
+            if(changedTooltip)UpdateTooltips();
+            if(changedState||changedCover)window->Paint();
+        }
     }
     bool Show() {
         if (stopped) return false;
@@ -928,6 +946,7 @@ struct MusicDesktopControls::Impl {
     HINSTANCE instance;
     CommandHandler handler;
     WidgetHandler widgetHandler;
+    MaterialHandler materialHandler;
     std::unique_ptr<NativeWidgetWindow> window;
     widget::Preferences prefs = widget::Defaults(MusicDesktopControls::Limits);
     MusicDesktopState state, published;
@@ -997,6 +1016,7 @@ bool MusicDesktopControls::Configure(const widget::Preferences& prefs) {
     if (impl_->stopped || !impl_->window->Configure(prefs)) return false;
     impl_->prefs = prefs; return true;
 }
+void MusicDesktopControls::SetMaterialSelectionHandler(MaterialHandler handler) { impl_->materialHandler = std::move(handler); }
 bool MusicDesktopControls::Show() { return impl_->Show(); }
 void MusicDesktopControls::Hide() { impl_->Hide(); }
 bool MusicDesktopControls::Visible() const { return impl_->window->Handle() != nullptr; }

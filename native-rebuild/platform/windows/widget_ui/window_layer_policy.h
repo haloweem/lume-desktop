@@ -1,5 +1,7 @@
 #pragma once
 #include "platform/windows/lume_window_ids.h"
+#include "platform/windows/shell_surface.h"
+#include "platform/windows/widget_ui/desktop_peek.h"
 #include <windows.h>
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -7,6 +9,7 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
+#include <cwchar>
 #include <vector>
 
 namespace lume::platform::windows::window_layer {
@@ -17,6 +20,9 @@ struct Context {
     bool allDisplays = false;
     bool exclusive = false;
     std::vector<RECT> fullscreen;
+    // Cached with the foreground policy, independently of fullscreen hiding.
+    // Used only to suspend invisible desktop content, never to hide overlays.
+    RECT foregroundBounds{};
 };
 inline bool Covers(const RECT& window, const RECT& monitor) {
     return window.left <= monitor.left && window.top <= monitor.top &&
@@ -31,9 +37,44 @@ inline bool ShellDesktop(HWND window) {
     wchar_t name[64]{}; GetClassNameW(window, name, 64);
     return shell && pid == shell && (!wcscmp(name, L"Progman") || !wcscmp(name, L"WorkerW"));
 }
+using shell_surface::ShellSurfaceImage;
+using shell_surface::ExplorerSurfaceClass;
+using shell_surface::ShellSurface;
+inline bool ExclusiveNotificationState(QUERY_USER_NOTIFICATION_STATE state) {
+    return state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE;
+}
+inline bool ForegroundCoversMonitor(const RECT& bounds, const RECT& monitor, bool maximized, DWORD style,
+                                   QUERY_USER_NOTIFICATION_STATE notification) {
+    // Changing taskbar/work-area visibility can give an ordinary maximized
+    // window the full monitor rectangle for a few frames. Chromium custom
+    // frames may retain THICKFRAME without CAPTION, so account for both.
+    // A borderless/POPUP fullscreen can also report IsZoomed: its geometry,
+    // and genuine exclusive/presentation state, must continue to protect.
+    const bool ordinaryFrame = !(style & WS_POPUP) &&
+        ((style & WS_THICKFRAME) || (style & WS_CAPTION) == WS_CAPTION);
+    return Covers(bounds, monitor) &&
+        (!maximized || !ordinaryFrame || ExclusiveNotificationState(notification));
+}
+// Keep geometry and notification-state decisions together. Clearing only the
+// monitor list for a taskbar thumbnail would let stale QUNS fullscreen state
+// immediately turn that same shell foreground into global suppression.
+inline void ApplyForegroundProtection(Context& result, bool shellForeground, QUERY_USER_NOTIFICATION_STATE state) {
+    result.exclusive = false;
+    result.allDisplays = false;
+    if (shellForeground) {
+        result.fullscreen.clear();
+        return;
+    }
+    if (ExclusiveNotificationState(state)) {
+        result.exclusive = true;
+        result.allDisplays = result.fullscreen.empty();
+    }
+}
 inline Context Capture() {
     Context result; result.foreground = GetForegroundWindow();
     const HWND foreground = result.foreground;
+    QUERY_USER_NOTIFICATION_STATE state = QUNS_ACCEPTS_NOTIFICATIONS;
+    if (FAILED(SHQueryUserNotificationState(&state))) state = QUNS_ACCEPTS_NOTIFICATIONS;
     DWORD pid = 0; GetWindowThreadProcessId(foreground, &pid);
     const bool application = foreground && IsWindowVisible(foreground) && !IsIconic(foreground) &&
         pid && pid != GetCurrentProcessId() && !ShellDesktop(foreground);
@@ -44,20 +85,27 @@ inline Context Capture() {
         const bool hidden = SUCCEEDED(DwmGetWindowAttribute(foreground, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked;
         if (!hidden && (SUCCEEDED(DwmGetWindowAttribute(foreground, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) ||
                         GetWindowRect(foreground, &bounds))) {
-            struct Scan { RECT bounds; std::vector<RECT>* displays; } scan{bounds, &result.fullscreen};
+            const auto style = GetWindowLongPtrW(foreground, GWL_STYLE);
+            const auto exStyle = GetWindowLongPtrW(foreground, GWL_EXSTYLE);
+            if (!(style & WS_POPUP) && !(exStyle & (WS_EX_LAYERED | WS_EX_TRANSPARENT))) result.foregroundBounds = bounds;
+            struct Scan {
+                RECT bounds; bool maximized; DWORD style; QUERY_USER_NOTIFICATION_STATE notification;
+                std::vector<RECT>* displays;
+            } scan{bounds, IsZoomed(foreground) != FALSE,
+                   static_cast<DWORD>(GetWindowLongPtrW(foreground, GWL_STYLE)), state, &result.fullscreen};
             EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
                 auto& value = *reinterpret_cast<Scan*>(data); MONITORINFO info{sizeof(info)};
-                if (GetMonitorInfoW(monitor, &info) && Covers(value.bounds, info.rcMonitor)) value.displays->push_back(info.rcMonitor);
+                if (GetMonitorInfoW(monitor, &info) && ForegroundCoversMonitor(value.bounds, info.rcMonitor,
+                    value.maximized, value.style, value.notification)) value.displays->push_back(info.rcMonitor);
                 return TRUE;
             }, reinterpret_cast<LPARAM>(&scan));
         }
     }
-    QUERY_USER_NOTIFICATION_STATE state{};
-    if (SUCCEEDED(SHQueryUserNotificationState(&state)) &&
-        (state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE)) {
-        result.exclusive = true;
-        if(result.fullscreen.empty())result.allDisplays = true;
-    }
+    bool shellForeground = ShellDesktop(foreground) || ShellDesktop(GetAncestor(foreground, GA_ROOT));
+    // Avoid opening the foreground process on ordinary windowed-app refreshes.
+    if (!shellForeground && (!result.fullscreen.empty() || ExclusiveNotificationState(state)))
+        shellForeground = ShellSurface(foreground);
+    ApplyForegroundProtection(result, shellForeground, state);
     return result;
 }
 inline bool Protected(const RECT& bounds, const Context& state, bool hideFullscreen = true) {
@@ -68,12 +116,14 @@ inline thread_local Context context;
 inline thread_local bool enabled = false, applying = false;
 inline thread_local std::function<void(HWND, Kind, bool)> observer;
 inline thread_local std::function<HWND()> applicationCeiling;
+inline thread_local std::function<bool()> desktopForeground;
 // Injection seam for isolated tests; production always reads the actual desktop.
 inline thread_local std::function<Context()> contextReader;
 inline Context ReadContext() { return contextReader ? contextReader() : Capture(); }
 struct Entry {
     Kind kind; HWND owner; bool wanted; bool suppressed; bool pending = false;
     bool aboveApplications = false, hideFullscreen = true;
+    bool contentOccluded = false;
 };
 inline thread_local std::unordered_map<HWND, Entry> windows;
 inline const Entry* IslandPolicy(const Entry& entry) {
@@ -96,6 +146,29 @@ inline bool Suppressed(HWND window) {
 inline bool Registered(HWND window) {
     return window && GetPropW(window, lume::window_ids::LayerRoleProp) != nullptr;
 }
+inline bool ResidentDesktop(const Entry& entry) {
+    return !entry.owner && (entry.kind == Kind::Desktop || (entry.kind == Kind::Island && !Overlay(entry)));
+}
+inline bool WantsDesktop(HWND window) {
+    const auto found = windows.find(window);
+    return found != windows.end() && ResidentDesktop(found->second) && found->second.wanted;
+}
+// Explicit lifecycle hiding (for example a suspended clock) differs from
+// Explorer minimizing/hiding a still-enabled resident surface during Win+D.
+inline void WantHidden(HWND window) {
+    const auto found = windows.find(window);
+    if (found != windows.end()) found->second.wanted = false;
+}
+inline void RestoreDesktop(HWND window) {
+    const auto found = windows.find(window);
+    if (found == windows.end() || !ResidentDesktop(found->second) || !found->second.wanted ||
+        found->second.suppressed || Suppressed(window) || !desktopForeground || !desktopForeground() ||
+        (!IsIconic(window) && IsWindowVisible(window))) return;
+    // Restore without activation. The module's restack handler immediately
+    // places it inside its desktop band, under the same application ceiling.
+    // No topmost transition is needed to undo Show Desktop minimization.
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+}
 inline bool DesktopFamily(HWND window) {
     const auto role=reinterpret_cast<ULONG_PTR>(GetPropW(window,lume::window_ids::LayerRoleProp));
     return role==static_cast<ULONG_PTR>(Kind::Desktop)+1 || role==static_cast<ULONG_PTR>(Kind::Popup)+1 ||
@@ -116,7 +189,7 @@ inline void HideCompanions(HWND owner) {
         if (GetPropW(window, lume::window_ids::GlassSurfaceOwnerProp) == parent) {
             // The material worker owns this HWND and checks the owner's current
             // suppression flag before every show; never wait on that thread here.
-            PostMessageW(window, WM_APP + 1, 0, 0);
+            PostMessageW(window, lume::window_ids::GlassRestackMessage, 0, 0);
             ShowWindowAsync(window, SW_HIDE);
         } else if (GetPropW(window, lume::window_ids::DesktopCompanionOwnerProp) == parent) {
             ShowWindowAsync(window, SW_HIDE);
@@ -126,8 +199,38 @@ inline void HideCompanions(HWND owner) {
 }
 inline UINT RestackMessage() { static const UINT value = RegisterWindowMessageW(L"Lume.DesktopLevel.v1"); return value; }
 inline UINT PolicyMessage() { static const UINT value = RegisterWindowMessageW(L"Lume.DisplayPolicy.v1"); return value; }
+inline UINT ContentVisibilityMessage() { static const UINT value = RegisterWindowMessageW(L"Lume.ContentVisibility.v1"); return value; }
+inline bool ContentOccluded(HWND window) {
+    if (!enabled || !context.foreignForeground || IsRectEmpty(&context.foregroundBounds)) return false;
+    const auto found = windows.find(window);
+    if (found == windows.end()) return false;
+    const Entry* entry=&found->second;
+    for(unsigned depth=0;entry->owner&&depth<8;++depth) {
+        const auto owner=windows.find(entry->owner);if(owner==windows.end())return false;entry=&owner->second;
+    }
+    if(!ResidentDesktop(*entry))return false;
+    RECT bounds{};
+    return GetWindowRect(window, &bounds) && !IsRectEmpty(&bounds) && Covers(context.foregroundBounds, bounds);
+}
+inline bool ContentVisible(HWND window) {
+    return window && IsWindowVisible(window) && !IsIconic(window) && !Suppressed(window) && !ContentOccluded(window);
+}
 inline void Apply(HWND window) {
     const auto found = windows.find(window); if (found == windows.end() || !IsWindow(window)) return;
+    const bool occluded = ContentOccluded(window);
+    if (found->second.contentOccluded != occluded) {
+        found->second.contentOccluded = occluded;
+        if(occluded)SetPropW(window,lume::window_ids::ContentOccludedProp,reinterpret_cast<HANDLE>(1));
+        else RemovePropW(window,lume::window_ids::ContentOccludedProp);
+        PostMessageW(window, ContentVisibilityMessage(), 0, 0);
+        // Only on coverage transitions. Wake worker-owned material HWNDs
+        // without restacking, hiding or waiting for their message threads.
+        EnumWindows([](HWND surface,LPARAM owner)->BOOL {
+            if(GetPropW(surface,lume::window_ids::GlassSurfaceOwnerProp)==reinterpret_cast<HWND>(owner))
+                PostMessageW(surface,ContentVisibilityMessage(),0,0);
+            return TRUE;
+        },reinterpret_cast<LPARAM>(window));
+    }
     const Entry previous = found->second;
     const bool blocked = Blocked(window, previous, context);
     if (blocked == previous.suppressed && !(Suppressed(window) && !blocked) &&
@@ -174,14 +277,17 @@ inline void WantVisible(HWND window) {
     Apply(window);
 }
 inline void Start() { enabled = true; Refresh(); }
-inline void Stop() { enabled = false; Update({}); observer = {}; }
+inline void Stop() { enabled = false; Update({}); observer = {}; desktopForeground = {}; }
 inline LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (message == RestackMessage()) RestoreDesktop(window);
     if(message==PolicyMessage()) {
         const auto i=windows.find(window);if(i!=windows.end())i->second.pending=false;
         if(enabled)context=ReadContext();Apply(window);return 0;
     }
     if (message == WM_NCDESTROY) {
         windows.erase(window); RemovePropW(window, lume::window_ids::LayerSuppressedProp);
+        RemovePropW(window,lume::window_ids::ContentOccludedProp);
+        desktop_peek::Forget(window);
         RemovePropW(window, lume::window_ids::LayerRoleProp); RemoveWindowSubclass(window, Procedure, id);
         return DefSubclassProc(window, message, w, l);
     }
@@ -189,7 +295,11 @@ inline LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l,
         auto* position = reinterpret_cast<WINDOWPOS*>(l);
         auto found = windows.find(window);
         if (found != windows.end() && !applying) {
-            if (position->flags & SWP_HIDEWINDOW) found->second.wanted = false;
+            if (position->flags & SWP_HIDEWINDOW) {
+                const bool desktopTransition = ResidentDesktop(found->second) &&
+                    (IsIconic(window) || (desktopForeground && desktopForeground()));
+                if (!desktopTransition) found->second.wanted = false;
+            }
             if (position->flags & SWP_SHOWWINDOW) {
                 found->second.wanted = true;
                 if (enabled) context = ReadContext();
@@ -234,6 +344,12 @@ inline bool Register(HWND window, Kind kind, HWND owner = nullptr, bool aboveApp
     const auto inserted=windows.emplace(window, Entry{kind,owner,IsWindowVisible(window)!=FALSE,false,false,
         kind==Kind::Island&&aboveApplications,hideFullscreen});
     SetPropW(window, lume::window_ids::LayerRoleProp, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kind) + 1));
+    // Aero Peek previews another application by fading ordinary windows. The
+    // Dock, widgets and their display companions remain part of the desktop,
+    // including an island the user keeps above apps. Editors and transient
+    // popups retain normal preview behavior; the manager is never registered
+    // as a desktop surface. Fullscreen suppression still hides these HWNDs.
+    if (kind == Kind::Desktop || kind == Kind::Island) desktop_peek::SetExcluded(window, true);
     if (kind != Kind::ExplicitTool && !Overlay(inserted.first->second) && (GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST))
         SetWindowPos(window,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
     if (enabled) { context = ReadContext(); Apply(window); }

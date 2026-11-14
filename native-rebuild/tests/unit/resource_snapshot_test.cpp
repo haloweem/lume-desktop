@@ -59,6 +59,11 @@ int main() {
           "wallpaper working set is separate");
     Check(snapshot.webview.processCount == 3, "all WebView2 helpers are grouped");
     Check(snapshot.music.processCount == 1, "music process is grouped");
+    auto helpers=samples;
+    helpers.push_back(Process(106,100,L"LumeIconHost.exe",L"",70));
+    const auto withHelper=Aggregate(helpers);
+    Check(withHelper.nonWallpaper.processCount==6&&withHelper.nonWallpaper.workingSetBytes==220,
+        "other owned helpers count exactly once in the non-wallpaper aggregate");
 
     auto missing = samples;
     missing[2].workingSetBytes.reset();

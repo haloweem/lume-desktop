@@ -16,6 +16,7 @@ int main(){
     const TextKey key=[](std::string_view text){std::string out(text);for(char& c:out)if(c>='A'&&c<='Z')c+=32;return out;};
     const auto id=[](unsigned index){char text[37]{};std::snprintf(text,sizeof(text),"00000000-0000-4000-8000-%012u",index);return std::string(text);};
     Expect(Valid(state,key)&&state.collections[0].enabled&&state.collections[0].items.empty(),"original reference-store defaults");
+    Expect(state.collections[0].accent==Accent::None,"new collections have no optional color marker");
     Expect(NormalizeLocalPath("c:/Docs/../Work//file.txt")==std::optional<std::string>("c:\\Work\\file.txt"),"Windows paths normalized without touching target");
     Expect(NormalizeLocalPath("C:/../../")==std::optional<std::string>("C:\\"),"path traversal cannot escape drive root");
     for(const auto path:{"relative.txt","C:relative","\\\\server\\share\\a","\\\\?\\C:\\file","C:\\file:stream","C:\\a\nb","https://example.test"})
@@ -24,6 +25,8 @@ int main(){
     Expect(SanitizeTitle(u8"　 桌面\n收纳　")==std::optional<std::string>(u8"桌面 收纳"),"source control replacement and Unicode trim");
     std::string emoji;for(int i=0;i<80;++i)emoji+=u8"📁";
     Expect(SanitizeTitle(emoji).has_value()&&!SanitizeTitle(emoji+u8"📁"),"title limit counts Unicode codepoints like Array.from");
+    Expect(!NormalizeLocalPath("C:\\"+std::string(32765,'x')),"larger state budget does not relax the Windows path length");
+    Expect(!SanitizeTitle("x"+std::string(1024*1024,' ')),"larger state budget keeps the original text validation bound");
     auto* collection=Find(state,"default");Expect(collection!=nullptr,"default lookup");
     std::vector<Item> batch={{id(1),"C:/Docs/Report 2026.TXT","ignored",ItemKind::File},
         {id(2),"C:/Tools/编辑器.LNK","ignored",ItemKind::Shortcut},{id(3),"D:/Folder/","ignored",ItemKind::Folder}};
@@ -41,8 +44,10 @@ int main(){
     Expect(!HasSearchTerms(u8"　 \t",key)&&HasSearchTerms(std::string(200,'x'),key),
         "whitespace query permits reorder and the full 200-character query stays a filter");
     collection->enabled=false;collection->mode=Mode::Collapsed;collection->layout=Layout::List;collection->bounds=Bounds{20,20,420,392};
+    collection->accent=Accent::Rose;
     Expect(Rename(*collection,u8"资料")==Change::Changed&&Reset(*collection)==Change::Changed,"reset original presentation");
-    Expect(collection->items.size()==3&&!collection->enabled&&!collection->bounds&&collection->mode==Mode::Expanded&&collection->layout==Layout::Icons,
+    Expect(collection->items.size()==3&&!collection->enabled&&!collection->bounds&&collection->mode==Mode::Expanded&&
+        collection->layout==Layout::Icons&&collection->accent==Accent::None,
         "reset retains targets and explicit enabled state");
     Expect(RemoveItem(*collection,id(1))==Change::Changed&&collection->items.size()==2&&RemoveItem(*collection,id(1))==Change::Unchanged,
         "removal only changes in-memory reference list; domain has no filesystem delete capability");
@@ -51,16 +56,38 @@ int main(){
     Expect(CreateCollection(state,id(10))==Change::Invalid&&RemoveCollection(state,id(10))==Change::Changed,"duplicate collection ID rejected");
     Expect(Valid(state,key),"model remains valid after mixed operations");
     auto full=Defaults();auto& filled=full.collections[0];batch.clear();
-    for(unsigned i=0;i<MaxItems;++i)batch.push_back({id(i+20),"C:\\files\\"+std::to_string(i),{},ItemKind::File});
-    Expect(AddItems(filled,batch,key)==Change::Changed&&filled.items.size()==120,"original 120-item capacity");
-    batch={{id(200),"C:\\extra",{},ItemKind::File}};
-    Expect(AddItems(filled,batch,key)==Change::Limit&&filled.items.size()==120,"overflow preserves all old references");
+    for(unsigned i=0;i<1200;++i)batch.push_back({id(i+20),"C:\\files\\"+std::to_string(i),{},ItemKind::File});
+    Expect(AddItems(filled,batch,key)==Change::Changed&&filled.items.size()==1200,
+        "one batch exceeds both former 120-item and 1024-input count limits");
+    batch={{id(2000),"C:\\extra",{},ItemKind::File}};
+    Expect(AddItems(filled,batch,key)==Change::Changed&&filled.items.size()==1201&&
+        filled.items.front().id==id(20)&&filled.items[1199].id==id(1219)&&filled.items.back().id==id(2000),
+        "a second append preserves every prior reference and adds the new item");
     for(unsigned i=1;i<MaxCollections;++i)Expect(CreateCollection(full,id(300+i))==Change::Changed,"collection capacity insertion");
     Expect(CreateCollection(full,id(400))==Change::Limit&&full.collections.size()==64,"original 64-collection capacity");
-    Expect(Valid(full,key),"bounded full state is valid");
+    Expect(Valid(full,key),"64 collections with more than 120 references remain valid");
+    {
+        auto moving=Defaults();const auto other=id(5000);
+        Expect(CreateCollection(moving,other)==Change::Changed,"large move destination fixture");
+        std::vector<Item> sourceItems,targetItems;std::vector<std::string> selected;
+        for(unsigned i=0;i<150;++i){
+            sourceItems.push_back({id(6000+i),"C:\\source\\"+std::to_string(i),{},ItemKind::File});
+            targetItems.push_back({id(7000+i),"C:\\target\\"+std::to_string(i),{},ItemKind::File});
+            selected.push_back(id(6000+i));
+        }
+        Expect(AddItems(*Find(moving,"default"),sourceItems,key)==Change::Changed&&
+            AddItems(*Find(moving,other),targetItems,key)==Change::Changed,"both move collections exceed the old item limit");
+        Expect(MoveItems(moving,"default",other,selected,key)==Change::Changed&&Find(moving,"default")->items.empty()&&
+            Find(moving,other)->items.size()==300&&Find(moving,other)->items[149].id==id(7149)&&
+            Find(moving,other)->items[150].id==id(6000)&&Find(moving,other)->items.back().id==id(6149)&&Valid(moving,key),
+            "moving into a large target keeps original order and all selected references");
+    }
     struct Files:lume::settings::IFileStore{
         std::map<std::string,std::string> data;bool fail=false;
         bool Read(const std::string& p,std::string& out)const override{auto i=data.find(p);if(i==data.end())return false;out=i->second;return true;}
+        bool ReadBounded(const std::string& p,std::size_t limit,std::string& out)const override{
+            auto i=data.find(p);if(i==data.end()||i->second.size()>limit)return false;out=i->second;return true;
+        }
         bool Exists(const std::string& p)const override{return data.count(p)!=0;}
         bool Write(const std::string& p,const std::string& v)override{if(fail)return false;data[p]=v;return true;}
         bool Rename(const std::string& a,const std::string& b)override{if(fail||!Exists(a))return false;data[b]=data[a];data.erase(a);return true;}
@@ -88,6 +115,39 @@ int main(){
         Expect(Decode(legacy.dump(),decoded,key)&&decoded.collections.front().iconScale==100,"legacy state defaults to original icon size");
         invalid["collections"][0]["iconScale"]=150;Expect(Decode(invalid.dump(),decoded,key)&&decoded.collections.front().iconScale==120,"old larger icons migrate to new maximum");
         Expect(Reset(scaled.collections.front())==Change::Changed&&scaled.collections.front().iconScale==70,"reset restores icon size");
+    }
+    {
+        const auto legacy=nlohmann::json::parse(encoded);
+        Expect(!legacy["collections"][0].contains("accent")&&Decode(encoded,decoded,key)&&
+            decoded.collections.front().accent==Accent::None,"old configurations without accent retain the original appearance");
+        for(const auto accent:{Accent::None,Accent::Blue,Accent::Green,Accent::Amber,Accent::Rose,Accent::Purple}){
+            auto colored=state;colored.collections.front().accent=accent;
+            std::string text,restored;
+            Expect(Encode(colored,text)&&store.Save("accent.json",colored),"each supported accent saves");
+            Store reopenedStore(files,key);const auto reopened=reopenedStore.Load("accent.json");
+            Expect(reopened.state==LoadState::Loaded&&reopened.value.collections.front().accent==accent&&
+                Encode(reopened.value,restored)&&restored==text,"accent and existing references survive a fresh store reload");
+            Expect(nlohmann::json::parse(text)["collections"][0].contains("accent")==(accent!=Accent::None),
+                "only chosen accents add a field to the saved configuration");
+        }
+        auto explicitNone=legacy;explicitNone["collections"][0]["accent"]="none";
+        std::string normalized;
+        Expect(Decode(explicitNone.dump(),decoded,key)&&decoded.collections.front().accent==Accent::None&&
+            Encode(decoded,normalized)&&!nlohmann::json::parse(normalized)["collections"][0].contains("accent"),
+            "explicit none is accepted and normalized to the compatible omitted field");
+        auto sentinel=state;sentinel.collections.front().accent=Accent::Rose;
+        std::string expected;Expect(Encode(sentinel,expected),"accent rejection sentinel encodes");
+        for(const auto& value:{nlohmann::json("unknown"),nlohmann::json("Blue"),nlohmann::json(""),
+                nlohmann::json(1),nlohmann::json(true),nlohmann::json(nullptr),nlohmann::json::array(),nlohmann::json::object()}){
+            auto invalid=legacy;invalid["collections"][0]["accent"]=value;auto unchanged=sentinel;
+            Expect(!Decode(invalid.dump(),unchanged,key)&&Encode(unchanged,normalized)&&normalized==expected,
+                "unknown or wrongly typed accents are rejected without replacing state");
+        }
+        auto invalid=state;invalid.collections.front().accent=static_cast<Accent>(99);normalized="keep";
+        Expect(!Valid(invalid,key)&&!Encode(invalid,normalized)&&normalized=="keep","invalid in-memory accent never encodes");
+        auto reset=Defaults().collections.front();reset.accent=Accent::Blue;
+        Expect(Reset(reset)==Change::Changed&&reset.accent==Accent::None&&Reset(reset)==Change::Unchanged,
+            "reset clears an accent even when all other presentation fields already match defaults");
     }
     Expect(!Decode("{\"version\":2,\"version\":2,\"collections\":[]}",decoded,key),"duplicate keys rejected");
     auto bad=nlohmann::json::parse(encoded);
@@ -125,6 +185,14 @@ int main(){
         Find(groups,id(202))->items.push_back({id(301),"C:\\Games\\a.lnk","a",ItemKind::Shortcut});
         Find(groups,"default")->items.push_back({id(302),"C:\\Docs\\b.txt","b.txt",ItemKind::File});
         Find(groups,id(201))->iconScale=73;
+        Find(groups,"default")->accent=Accent::Blue;Find(groups,id(201))->accent=Accent::Green;
+        Find(groups,id(202))->accent=Accent::Purple;
+        const std::map<std::string,Accent> ownAccents{{"default",Accent::Blue},{id(201),Accent::Green},{id(202),Accent::Purple}};
+        const auto accentsPreserved=[&](const State& value){
+            for(const auto& [tabId,accent]:ownAccents)
+                if(const auto* tab=Find(value,tabId);tab&&tab->accent!=accent)return false;
+            return true;
+        };
         Expect(MergeGroup(groups,id(202),id(201))==Change::Changed&&Find(groups,id(202))->iconScale==73,"merge inherits host icon size");
         Expect(Find(groups,id(202))->parent==id(201)&&!Find(groups,id(202))->bounds&&Find(groups,id(201))->active==id(202),
             "merged box becomes the active tab and drops its window bounds");
@@ -135,9 +203,17 @@ int main(){
         const auto tabs=Tabs(groups,id(201));
         Expect(tabs.size()==3&&tabs[1]->id==id(202)&&tabs[2]->id=="default","tabs keep drop order");
         Expect(Find(groups,"default")->items.size()==1,"merge keeps every item");
+        SyncGroups(groups);
+        Expect(accentsPreserved(groups),"merging and synchronizing group settings preserve each tab's own accent");
         std::string groupedText;Expect(Encode(groups,groupedText),"grouped state encodes");
         State reloaded;Expect(Decode(groupedText,reloaded,key)&&Tabs(reloaded,id(201)).size()==3&&
-            ActiveTab(reloaded,id(201))->id=="default","tab groups survive a save and reload");
+            ActiveTab(reloaded,id(201))->id=="default"&&accentsPreserved(reloaded),"tab groups and independent accents survive a save and reload");
+        auto resetGroup=groups;const auto retained=Find(resetGroup,id(202))->items.size();
+        Expect(Reset(*Find(resetGroup,id(202)))==Change::Changed,"reset a colored child tab");
+        SyncGroups(resetGroup);
+        Expect(Find(resetGroup,id(202))->accent==Accent::None&&Find(resetGroup,id(202))->items.size()==retained&&
+            Find(resetGroup,id(201))->accent==Accent::Green&&Find(resetGroup,"default")->accent==Accent::Blue,
+            "reset clears only the chosen tab's accent and preserves all group references and other colors");
         auto orphan=nlohmann::json::parse(groupedText);
         for(auto& row:orphan["collections"])if(row["id"]==id(202))row["parent"]=id(999);
         Expect(!Decode(orphan.dump(),reloaded,key),"a tab whose host is missing is rejected");
@@ -161,6 +237,7 @@ int main(){
             // Now [202,default,201]; move default to the end.
             Expect(MoveTab(moved,"default",2)==Change::Changed&&Tabs(moved,id(202))[2]->id=="default","move a tab to the end");
             Expect(MoveTab(moved,"default",9)==Change::Unchanged&&MoveTab(moved,id(999),0)==Change::Invalid,"clamped and invalid moves");
+            Expect(accentsPreserved(moved),"reordering and promoting group hosts never copy the host's accent over a tab");
         }
         Expect(MoveItems(groups,id(202),"default",{id(301)},key)==Change::Changed&&
             Find(groups,"default")->items.size()==2&&Find(groups,id(202))->items.empty(),"move icons between tabs");
@@ -168,14 +245,14 @@ int main(){
             Find(groups,"default")->bounds->x==50,"detach a tab into its own window");
         Expect(DetachTab(groups,id(201),Bounds{10,10,420,392})==Change::Changed&&Find(groups,id(202))->parent.empty()&&
             Find(groups,id(202))->bounds&&Find(groups,id(202))->bounds->width==500,"detaching a host promotes the next tab with the window size");
-        Expect(Valid(groups,key),"state stays valid after detaches");
+        Expect(Valid(groups,key)&&accentsPreserved(groups),"detaching a tab or host preserves its independent accent");
         Expect(MergeGroup(groups,id(202),"default")==Change::Changed&&DeleteTab(groups,"default")==Change::Invalid,
             "the default box can be a tab but is never deleted");
         Expect(DeleteTab(groups,id(202))==Change::Changed&&!Find(groups,id(202))&&Valid(groups,key)&&
             ActiveTab(groups,"default")->id=="default","deleting the active tab falls back to the host");
         Expect(MergeGroup(groups,"default",id(201))==Change::Changed&&DeleteTab(groups,id(201))==Change::Changed&&
-            Find(groups,"default")->parent.empty()&&Find(groups,"default")->bounds&&Valid(groups,key),
-            "deleting a host promotes its tab, even the default box");
+            Find(groups,"default")->parent.empty()&&Find(groups,"default")->bounds&&Valid(groups,key)&&accentsPreserved(groups),
+            "deleting a host promotes its tab with its own accent, even the default box");
         State pruned=Defaults();
         Expect(CreateCollection(pruned,id(401),u8"空")==Change::Changed&&CreateCollection(pruned,id(402),u8"有")==Change::Changed,"pruning fixture");
         Find(pruned,id(401))->enabled=false;Find(pruned,id(402))->enabled=false;
@@ -243,8 +320,17 @@ int main(){
             "existing desktop references move to correct category without duplicate or ID change");
         State reloaded;std::string text;Expect(Encode(legacy,text)&&Decode(text,reloaded,key)&&reloaded.collections[1].items[0].desktop&&
             reloaded.collections[1].desktopRole==DesktopRole::Files,"automatic role and provenance survive restart");
-        for(unsigned i=0;i<MaxItems;++i)classify.entries.push_back({{id(1000+i),"C:\\Desktop\\file"+std::to_string(i)+".txt",{},ItemKind::File},false});
-        Expect(SyncDesktop(legacy,classify,key).limited&&legacy.collections[1].items.size()==MaxItems,"category capacity reports overflow without unbounded allocation");
+        for(unsigned i=0;i<1200;++i)classify.entries.push_back({{id(1000+i),"C:\\Desktop\\file"+std::to_string(i)+".txt",{},ItemKind::File},false});
+        const auto many=SyncDesktop(legacy,classify,key);
+        Expect(many.changed&&!many.limited&&legacy.collections[1].items.size()==1201,
+            "automatic desktop classification retains more than one thousand entries without truncation");
+        Expect(store.Save("desktop-large.json",legacy),"large automatic classification saves");
+        const auto reopened=store.Load("desktop-large.json");
+        Expect(reopened.state==LoadState::Loaded&&Encode(legacy,text)&&Encode(reopened.value,after)&&text==after,
+            "large automatic classification restores every ID path and order");
+        auto stable=reopened.value;
+        Expect(!SyncDesktop(stable,classify,key).changed&&Encode(stable,after)&&text==after,
+            "repeating a complete large snapshot does not duplicate or reorder references");
     }
     {
         // An icon the user takes out (删除图标, or dragged onto the desktop)
@@ -309,6 +395,58 @@ int main(){
         Expect(RestoreDesktopCollections(reopened)&&filesTab(reopened)&&!reopened.filesRetired,"organizer reset restores it");
         auto invalid=Defaults();invalid.collections[0].dismissed={"D:\\x.txt"};
         Expect(!Valid(invalid,key),"only desktop collections may hold dismissals");
+    }
+    {
+        DesktopSnapshot source;source.complete=true;
+        for(unsigned i=0;i<400;++i)source.entries.push_back({{id(10000+i),
+            "C:\\Desktop\\dismiss"+std::to_string(i)+".txt",{},ItemKind::File},false});
+        auto desktop=DesktopDefaults();const auto filesId=desktop.collections[1].id;
+        Expect(SyncDesktop(desktop,source,key).changed,"large dismissal fixture is collected");
+        for(unsigned i=0;i<300;++i)
+            Expect(RemoveItem(*Find(desktop,filesId),id(10000+i))==Change::Changed,"remove more than 240 automatic references");
+        Expect(Find(desktop,filesId)->dismissed.size()==300&&Find(desktop,filesId)->items.size()==100,
+            "removal never evicts an older dismissal");
+        Expect(store.Save("desktop-dismissed.json",desktop),"all dismissals save");
+        auto reopened=store.Load("desktop-dismissed.json");
+        Expect(reopened.state==LoadState::Loaded&&Find(reopened.value,filesId)->dismissed.size()==300&&
+            !SyncDesktop(reopened.value,source,key).changed&&Find(reopened.value,filesId)->items.size()==100,
+            "all dismissed desktop references stay out after restart and synchronization");
+        auto indirect=DesktopDefaults();
+        for(unsigned i=0;i<300;++i)DismissDesktopPath(indirect,source.entries[i].item.path);
+        const auto synchronized=SyncDesktop(indirect,source,key);
+        Expect(synchronized.changed&&!synchronized.limited&&indirect.collections[0].dismissed.size()==300&&
+            Find(indirect,filesId)->items.size()==100,
+            "dismissals from custom collections also retain all earlier exclusions");
+    }
+    {
+        auto large=Defaults();std::vector<Item> references;
+        const std::string directory="C:\\Fixtures\\"+std::string(200,'d')+"\\"+std::string(200,'e')+"\\"+std::string(200,'f')+"\\";
+        for(unsigned i=0;i<1600;++i)references.push_back({id(20000+i),directory+"file"+std::to_string(i)+".txt",{},ItemKind::File});
+        Expect(AddItems(large.collections[0],references,key)==Change::Changed,"large serialized fixture retains every input");
+        std::string text;Expect(Encode(large,text)&&text.size()>1024*1024&&text.size()<MaxStateBytes,
+            "a valid configuration can exceed the former one MiB boundary");
+        Expect(store.Save("large.json",large),"valid configuration above one MiB saves");
+        auto reopened=store.Load("large.json");std::string restored;
+        Expect(reopened.state==LoadState::Loaded&&Encode(reopened.value,restored)&&text==restored,
+            "configuration above one MiB restores without losing references");
+        Expect(MaxStateBytes==32u*1024*1024,"serialized-state damage protection remains 32 MiB");
+        // One padded payload tests the byte guard without building hundreds of
+        // thousands of model objects or parsing a huge JSON document.
+        auto& oversized=files.data["oversized.json"];oversized=text;oversized.resize(MaxStateBytes+1,' ');
+        files.data["oversized.json.bak"]=text;
+        auto untouched=state;std::string expected;Expect(Encode(untouched,expected),"oversize sentinel encodes");
+        Expect(!Decode(oversized,untouched,key)&&Encode(untouched,restored)&&restored==expected,
+            "oversized input is rejected without replacing the caller's existing state");
+        const auto recovered=store.Load("oversized.json");
+        Expect(recovered.state==LoadState::Recovered&&Encode(recovered.value,restored)&&restored==text,
+            "oversized primary recovers a complete valid backup");
+        Expect(!store.Save("oversized.json",state),"oversized original refuses a replacement save");
+        const auto primary=files.data.find("oversized.json");
+        Expect(primary!=files.data.end()&&primary->second.size()==MaxStateBytes+1&&
+            primary->second.compare(0,text.size(),text)==0&&primary->second.find_first_not_of(' ',text.size())==std::string::npos&&
+            files.data["oversized.json.bak"]==text&&!files.Exists("oversized.json.tmp")&&!files.Exists("oversized.json.corrupt"),
+            "byte-protection save failure preserves the original and backup without partial output");
+        files.data.erase("oversized.json");files.data.erase("oversized.json.bak");
     }
     std::cout<<"organizer model reference semantics passed\n";
 }

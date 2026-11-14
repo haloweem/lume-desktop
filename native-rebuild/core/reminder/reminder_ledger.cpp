@@ -110,22 +110,32 @@ Plan ReminderLedger::Evaluate(const todo::RepositorySnapshot &snapshot, todo::Mi
 bool ReminderLedger::MarkHandled(const std::vector<Key> &keys) {
     if (!ready_)
         return false;
-    auto candidate = handled_;
+    Keys additions;
     for (const auto &key : keys) {
         if (key.taskId.empty()) {
             error_ = ErrorCode::InvalidKey;
             return false;
         }
-        candidate.emplace(key.taskId, key.at);
+        if (!Handled(key)) additions.emplace(key.taskId, key.at);
     }
-    if (candidate == handled_)
+    if (additions.empty())
         return true;
     std::string encoded;
     try {
-        Json entries = Json::array();
-        for (const auto &key : candidate)
-            entries.push_back({{"taskId", key.first}, {"at", key.second}});
-        encoded = Json{{"version", 1}, {"handled", std::move(entries)}}.dump();
+        // Merge the existing history and this transaction while encoding. The
+        // ledger keeps every deduplication key without cloning the full set or
+        // building a second JSON tree proportional to all previous reminders.
+        encoded = "{\"handled\":[";
+        auto existing = handled_.begin(), added = additions.begin();
+        bool comma = false;
+        while (existing != handled_.end() || added != additions.end()) {
+            const auto& key = added == additions.end() ||
+                (existing != handled_.end() && *existing < *added) ? *existing++ : *added++;
+            if (comma) encoded += ',';
+            comma = true;
+            encoded += "{\"at\":" + std::to_string(key.second) + ",\"taskId\":" + Json(key.first).dump() + '}';
+        }
+        encoded += "],\"version\":1}";
     } catch (const Json::exception &) {
         error_ = ErrorCode::InvalidKey;
         return false;
@@ -140,7 +150,7 @@ bool ReminderLedger::MarkHandled(const std::vector<Key> &keys) {
         error_ = ErrorCode::ReplaceFailed;
         return false;
     }
-    handled_ = std::move(candidate);
+    handled_.merge(additions);
     error_ = ErrorCode::None;
     if (!files_.Write(path_ + ".bak.tmp", encoded)) {
         files_.Remove(path_ + ".bak.tmp");

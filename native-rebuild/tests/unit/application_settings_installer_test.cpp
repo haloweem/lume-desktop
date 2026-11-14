@@ -12,7 +12,7 @@ using lume::ui::ApplicationSettingsAction;
 namespace windows = lume::platform::windows;
 namespace {
 void Check(bool value, const char* why) { if (!value) throw std::runtime_error(why); }
-const std::string manifest = R"({"version":"1.0.9","runtime":"native-win32","channel":"native-verification","downloadUrl":"https://static.lumedesktop.com/lume/downloads/LumeSetup-1.0.9.exe","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3})";
+const std::string manifest = R"({"version":"1.2.0","runtime":"native-win32","channel":"native-verification","downloadUrl":"https://static.lumedesktop.com/lume/downloads/LumeSetup-1.2.0.exe","sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3})";
 struct File final : IPreferencesFile {
     FileRead Read() override { return {ReadStatus::Loaded, EncodePreferences({"en", true, false})}; }
     bool WriteAtomically(const std::string&) override { return true; }

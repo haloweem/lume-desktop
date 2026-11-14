@@ -1,3 +1,4 @@
+import {validTodoBoardCommand,validTodoBoardState} from "./todo-board.js";
 import {
   validAccountCommand, validAccountState,
   validApplicationSettingsCommand, validApplicationSettingsState,
@@ -15,6 +16,8 @@ import {validNotesCommand,validNotesMessage} from './notes.js';
 import {validRadialShortcut,validRadialState} from './radial.js';
 import {validDockState} from './dock.js';
 import {validIslandState,validIslandPreview} from './dynamic-island.js';
+import {validIslandNotificationCommand,validIslandNotificationState} from './island-notifications-protocol.js';
+import {validExpandedLayout} from './expanded-widgets.js';
 const styles = ["welfare", "mond", "insideDream"];
 const themes = ["spacious", "split", "todo"];
 const materials = ["liquid-glass", "frosted-glass"];
@@ -23,7 +26,8 @@ const calendarMaterials = [...materials, "solid"];
 const cities = ["auto","beijing","shanghai","guangzhou","shenzhen","hangzhou","chengdu","wuhan","nanjing"];
 const taskbarErrors = ["","load","save","busy","unsupported","missing-payload","payload-integrity","conflict",
   "discover","read-appearance","apply-appearance","read-auto-hide","apply-auto-hide","core-start",
-  "core-exited","core-stop","cancelled","recovery","watch","system-effects-disabled","runtime","read-visibility","apply-visibility","framework-install","core-access-denied"];
+  "core-exited","core-stop","cancelled","recovery","watch","system-effects-disabled","runtime","read-visibility","apply-visibility","framework-install","core-access-denied",
+  "core-restart-required","core-attach-timeout","core-effect-unconfirmed"];
 const minimizeErrors = ["","save","rollback","invalid-settings","missing-host","already-running","ipc",
   "host-start","hook-install","stop-timeout","host-exited","unsupported-architecture","runtime"];
 const integerIn = (value,min,max) => Number.isSafeInteger(value) && value>=min && value<=max;
@@ -106,7 +110,7 @@ function validWallpaperEngagement(m) {
     typeof m.error==="string" && /^[A-Za-z0-9_-]{0,64}$/.test(m.error);
 }
 function validWallpaperCommand(action, fields) {
-  if (["snapshot","refresh","import","stopAll","cancel","endPreview","endStats"].includes(action)) return exactKeys(fields,[]);
+  if (["snapshot","refresh","refreshVideos","import","stopAll","cancel","endPreview","endStats"].includes(action)) return exactKeys(fields,[]);
   if (["download","remove","preview","applyAll","stats"].includes(action)) return exactKeys(fields,["id"]) && wallpaperId(fields.id);
   if (action === "like") return exactKeys(fields,["id","value"]) && wallpaperId(fields.id) && typeof fields.value==="boolean";
   if (action === "apply") return exactKeys(fields,["id","display"]) && wallpaperId(fields.id) && wallpaperDisplay(fields.display);
@@ -329,7 +333,9 @@ function validResourceSnapshot(m) {
     Array.isArray(m.processes) && m.processes.length <= 4096 && m.processes.every(validResourceProcess);
 }
 export function validHostMessage(m) {
+  if(m?.type==='island-notifications-state')return validIslandNotificationState(m);
   if (!m || m.version !== 1) return false;
+  if (m.type === "todo-board-state") return validTodoBoardState(m);
   if (m.type === 'radial-state') return validRadialState(m);
   if (m.type === 'dock-state') return validDockState(m);
   if (m.type === 'dynamicIsland-state') return validIslandState(m);
@@ -378,8 +384,16 @@ export function validHostMessage(m) {
     : exactKeys(m,["version","type","page"]) && ["clock","calendar","performance","spectrum","almanac","todayTodo","weather","organizer","icons","taskbar","minimize","music","dock","dynamicIsland"].includes(m.page);
   if(m.type==='taskbar-state') {
     return exactKeys(m,['version','type','enabled','running','transparentTaskbar','autoHideTaskbar','hideBehavior',
-      'applying','pendingRecovery','taskbars','mode','error','loadStatus','revision']) &&
+      'applying','pendingRecovery','taskbars','mode','error','loadStatus','revision'],
+      ['effectStatus','taskbarType','stage','hresult','registeredTaskbars','backgrounds','appliedTaskbars',
+        'hideApplied','effectiveAutoHide','fullyHidden','autoHideDemand']) &&
       ['enabled','running','transparentTaskbar','autoHideTaskbar','applying','pendingRecovery'].every(key=>typeof m[key]==='boolean') &&
+      ['hideApplied','effectiveAutoHide','fullyHidden','autoHideDemand'].every(key=>!Object.hasOwn(m,key)||typeof m[key]==='boolean') &&
+      (!Object.hasOwn(m,'effectStatus')||['inactive','initializing','applied','pending','failed'].includes(m.effectStatus)) &&
+      (!Object.hasOwn(m,'taskbarType')||['unknown','classic','mixed','xaml'].includes(m.taskbarType)) &&
+      (!Object.hasOwn(m,'stage')||(typeof m.stage==='string'&&m.stage.length<=96)) &&
+      (!Object.hasOwn(m,'hresult')||integerIn(m.hresult,-2147483648,2147483647)) &&
+      ['registeredTaskbars','backgrounds','appliedTaskbars'].every(key=>!Object.hasOwn(m,key)||integerIn(m[key],0,32)) &&
       ['auto-hide','fully-hidden'].includes(m.hideBehavior) &&
       integerIn(m.taskbars,0,32) && integerIn(m.revision,0,Number.MAX_SAFE_INTEGER) &&
       ['unavailable','classic','windows11-x64','windows11-arm64'].includes(m.mode) &&
@@ -421,16 +435,16 @@ export function validHostMessage(m) {
       (Object.hasOwn(m,"iconScale")&&!integerIn(m.iconScale,50,120)))return false;
     const title=value=>typeof value==="string"&&value.length>0&&[...value].length<=80;
     const collapsed=m.mode==="collapsed";
-    if(!validWidgetState(m,216,120,["","runtime","save","rollback","editor","open","invalid","target","limit"],1200,720) ||
-      (collapsed && (m.width!==180 || m.height!==216)) || !title(m.title) ||
-      !integerIn(m.count,0,120) || !["expanded","collapsed"].includes(m.mode) || !["icons","list"].includes(m.layout) ||
+    if(!validWidgetState(m,collapsed?44:216,120,["","runtime","save","rollback","editor","open","invalid","target","limit"],1200,720) ||
+      (collapsed && (m.width!==260 || m.height!==44)) || !title(m.title) ||
+      !integerIn(m.count,0,Number.MAX_SAFE_INTEGER) || !["expanded","collapsed"].includes(m.mode) || !["icons","list"].includes(m.layout) ||
       !Array.isArray(m.collections) || m.collections.length<1 || m.collections.length>64)return false;
     const ids=new Set();
     for(const collection of m.collections) {
       if(!exactKeys(collection,["id","title","enabled","running","count"]) ||
         typeof collection.id!=="string" || (collection.id!=="default" && !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(collection.id)) ||
         ids.has(collection.id) || !title(collection.title) || typeof collection.enabled!=="boolean" ||
-        typeof collection.running!=="boolean" || !integerIn(collection.count,0,120))return false;
+        typeof collection.running!=="boolean" || !integerIn(collection.count,0,Number.MAX_SAFE_INTEGER))return false;
       ids.add(collection.id);
     }
     const main=m.collections.find(collection=>collection.id==="default");
@@ -490,6 +504,13 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
     },
     applicationSettings(action, fields = {}) {
       return postScoped("app-settings", action, fields, validApplicationSettingsCommand);
+    },
+    // Shared to-do store used by the island and to-do list board pages.
+    todoBoard(action, fields = {}) {
+      return postScoped("todo-board", action, fields, validTodoBoardCommand);
+    },
+    islandNotifications(action,fields={}) {
+      return postScoped('island-notifications',action,fields,validIslandNotificationCommand);
     },
     diagnostics(action) {
       if (!["snapshot", "clear"].includes(action) || typeof webview?.postMessage !== "function") return false;
@@ -590,9 +611,12 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='size' && ['small','standard','large'].includes(value)) ||
             (action==='shape' && ['standard','capsule'].includes(value)) ||
             (action==='preview' && ['compact','expanded','stop'].includes(value)) ||
-            (['leftWidget','rightWidget'].includes(action) && Number.isInteger(value) && value>=0 && value<=30) ||
+            (['leftWidget','rightWidget'].includes(action) && Number.isInteger(value) && value>=0 && value<=30 && value!==18) ||
             (action==='screen' && integerIn(value,0,64)) ||
             (action==='hoverDelayMs' && integerIn(value,100,1000)) ||
+            (action==='expandedLayout' && validExpandedLayout(value)) ||
+            (action==='clockStyle' && ['simple','progress','digital','date','flip','pixel'].includes(value)) ||
+            (action==='calendarStyle' && ['default','chinese-almanac'].includes(value)) ||
             (action==='animationSpeed' && ['slow','normal','fast'].includes(value)) ||
             (action==='bounce' && ['subtle','normal','bouncy'].includes(value)) ||
             (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)))))) ||
@@ -602,7 +626,7 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='material' && materials.includes(value)) ||
             (action==='shortcut' && validRadialShortcut(value)))))) ||
         (kind === 'dock' && ((parts.length===2 && action==='reset') ||
-          (parts.length===3 && ((['enabled','reflection','systemTray'].includes(action) && typeof value==='boolean') ||
+          (parts.length===3 && ((['enabled','reflection','showRunning','systemTray'].includes(action) && typeof value==='boolean') ||
             (action==='iconScale' && integerIn(value,50,120)) ||
             (action==='launchpadScale' && integerIn(value,60,140)) ||
             (action==='launchpadIconScale' && integerIn(value,50,120)) ||

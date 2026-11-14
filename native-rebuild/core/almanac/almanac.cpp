@@ -4,6 +4,7 @@
 namespace lume::almanac {
 namespace {
 #include "core/almanac/almanac_data.inc"
+#include "core/almanac/almanac_directions.inc"
 int BeforeYear(int year){const int y=year-1;return y*365+y/4-y/100+y/400;}
 std::string_view String(std::uint16_t index){return kStrings+kOffsets[index];}
 std::vector<std::string_view> Activities(std::uint16_t index){
@@ -21,6 +22,8 @@ std::optional<Day> Lookup(calendar::Date date){
     day.cycle=std::string(String(kCycles[kDayCycles[index*3+1]]))+u8"月 "+
         std::string(String(kCycles[kDayCycles[index*3+2]]))+u8"日 周"+std::string(week[calendar::Weekday(date)]);
     day.yi=Activities(kDayLists[index*2]);day.ji=Activities(kDayLists[index*2+1]);
+    const auto cycle=String(kCycles[kDayCycles[index*3+2]]);
+    for(const auto& row:kDirections)if(cycle.substr(0,row.stem.size())==row.stem){day.directions=row.positions;break;}
     return day;
 }
 }

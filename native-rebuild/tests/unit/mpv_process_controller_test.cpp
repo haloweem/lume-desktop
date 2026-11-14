@@ -98,6 +98,8 @@ int RunControlledPlayer(const std::vector<std::string>& arguments) {
             parent = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(std::stoull(argument.substr(6))));
     }
     if (pipeName.empty() || !IsWindow(parent)) return 2;
+    bool hostVisibleBeforeFrame=IsWindowVisible(parent)!=FALSE;
+    bool firstFrameReported=false;
     if (const auto* output = std::getenv("LUME_TEST_MPV_ARGUMENTS"); output && *output)
         std::ofstream(std::filesystem::u8path(output)) << Json(arguments).dump();
     const auto child = CreateWindowExW(0, L"STATIC", L"Controlled mpv",
@@ -117,6 +119,9 @@ int RunControlledPlayer(const std::vector<std::string>& arguments) {
     std::string pendingMedia;
     bool pause = false;
     bool mismatch = false;
+    bool timelineFrozen = false;
+    double timelineSeconds = 0;
+    auto timelineTick = GetTickCount64();
     Json filters = Json::array({{{"name", "hflip"}, {"label", "fixture-other"}}});
     // Match the packaged MPV defaults so missing launch options remain visible.
     Json properties = {{"scale", "lanczos"}, {"cscale", ""},
@@ -146,6 +151,22 @@ int RunControlledPlayer(const std::vector<std::string>& arguments) {
             if (mismatch) ++id;
             Json response{{"request_id", id}, {"error", "success"}};
             const auto name = command.at(0).get<std::string>();
+            if(!firstFrameReported)hostVisibleBeforeFrame|=IsWindowVisible(parent)!=FALSE;
+            const auto now = GetTickCount64();
+            if (!pause && !timelineFrozen) timelineSeconds += static_cast<double>(now - timelineTick) / 1000;
+            timelineTick = now;
+            if (!media.empty() && media.find("http://") != 0) {
+                const auto control = std::filesystem::path(media + ".control.json");
+                if (std::filesystem::is_regular_file(control)) {
+                    std::ifstream source(control);
+                    const auto injected = Json::parse(source, nullptr, false);
+                    source.close();std::filesystem::remove(control);
+                    if (injected.is_object()) {
+                        if (injected.contains("pause") && injected["pause"].is_boolean()) pause = injected["pause"].get<bool>();
+                        if (injected.contains("frozen") && injected["frozen"].is_boolean()) timelineFrozen = injected["frozen"].get<bool>();
+                    }
+                }
+            }
             bool quit = false;
             bool reject = false;
             bool finishLoad = false;
@@ -209,10 +230,20 @@ int RunControlledPlayer(const std::vector<std::string>& arguments) {
                     response["data"] = media;
                     finishLoad = !pendingMedia.empty();
                 }
-                else if (property == "pause") response["data"] = pause;
+                else if (property == "pause") {
+                    const auto failure = std::filesystem::path(media + ".reject-pause-read");
+                    if (std::filesystem::is_regular_file(failure)) {
+                        std::filesystem::remove(failure);
+                        response["error"] = "controlled pause read failure";
+                    } else response["data"] = pause;
+                }
+                else if (property == "time-pos") response["data"] = timelineSeconds;
                 else if (property == "vf") response["data"] = filters;
                 else if (properties.contains(property)) response["data"] = properties[property];
-                else if (property == "video-frame-info") response["data"] = Json{{"picture-type", "I"}};
+                else if (property == "video-frame-info") {
+                    response["data"] = Json{{"picture-type", "I"}};
+                    firstFrameReported=true;
+                }
                 else response["error"] = "property not found";
             } else if (name == "set_property") {
                 if (command.at(1) == "pause") {
@@ -246,7 +277,8 @@ int RunControlledPlayer(const std::vector<std::string>& arguments) {
                 {
                     std::ofstream output(std::filesystem::path(statePath + L".tmp"));
                     output << Json{{"media", media}, {"running", !quit}, {"vf", filters},
-                                   {"properties", properties}, {"pause", pause}}.dump();
+                                   {"properties", properties}, {"pause", pause},
+                                   {"hostVisibleBeforeFrame",hostVisibleBeforeFrame}}.dump();
                 }
                 MoveFileExW((statePath + L".tmp").c_str(), statePath.c_str(), MOVEFILE_REPLACE_EXISTING);
                 std::ofstream runtime(file.parent_path() / "runtime-state.json.tmp");
@@ -521,6 +553,28 @@ void TestCommandRequiresStartedPlayer() {
            "recovery must fail when there is no owned display or remembered media");
 }
 
+void ExpectWallpaperHostInputSafety(HWND parent) {
+    const auto host = GetWindow(parent, GW_CHILD);
+    DWORD process = 0;
+    if (host) GetWindowThreadProcessId(host, &process);
+    Expect(host && process == GetCurrentProcessId() && GetParent(host) == parent,
+        "wallpaper host stays embedded in its owned verification parent");
+    if (!host || process != GetCurrentProcessId()) return;
+    const auto style = GetWindowLongPtrW(host, GWL_STYLE);
+    const auto extended = GetWindowLongPtrW(host, GWL_EXSTYLE);
+    Expect((style & WS_CHILD) && !(style & WS_POPUP) &&
+           (extended & WS_EX_NOACTIVATE) && !(extended & WS_EX_TOPMOST),
+        "wallpaper host is a nonactivating child without global topmost");
+    const auto active = GetActiveWindow(), focus = GetFocus(), capture = GetCapture();
+    Expect(SendMessageW(host, WM_NCHITTEST, 0, MAKELPARAM(-30000, -30000)) == HTTRANSPARENT,
+        "actual wallpaper host declines mouse hit testing");
+    Expect(SendMessageW(host, WM_MOUSEACTIVATE, reinterpret_cast<WPARAM>(parent),
+                       MAKELPARAM(HTCLIENT, WM_LBUTTONDOWN)) == MA_NOACTIVATE,
+        "actual wallpaper host declines pointer activation");
+    Expect(GetActiveWindow() == active && GetFocus() == focus && GetCapture() == capture,
+        "wallpaper pointer queries do not take activation focus or capture");
+}
+
 void TestControlledPlayerLifecycle() {
     TemporaryMedia files;
     VerificationWindow window;
@@ -533,8 +587,10 @@ void TestControlledPlayerLifecycle() {
     }
     const auto processes = ChildProcesses(window.handle);
     Expect(processes.size() == 1, "player is embedded only in the owned verification window");
+    ExpectWallpaperHostInputSafety(window.handle);
     const auto process = processes.empty() ? nullptr : OpenProcess(SYNCHRONIZE, FALSE, processes.front());
     Expect(controller.EnsureAttached(display), "healthy player attachment is verified");
+    ExpectWallpaperHostInputSafety(window.handle);
     Expect(controller.Command(display, MpvCommand::Pause), "pause response and actual pause state verified");
     Expect(controller.SetVolume(display, 30), "explicit positive volume enables an audio track");
     Expect(controller.SetVolume(display, 0), "zero volume disables audio decoding");
@@ -557,6 +613,9 @@ void TestControlledPlayerLifecycle() {
         Expect(contains("--audio=no") && contains("--hwdec=auto-safe"), "original silent hardware-decoded defaults retained");
         Expect(contains("--d3d11va-zero-copy=yes"), "ordinary local video retains zero-copy");
         Expect(contains("--access-references=no") && contains("--load-scripts=no"), "external references and scripts disabled");
+        Expect(contains("--cursor-autohide=no") && contains("--input-cursor=no") &&
+               contains("--input-default-bindings=no") && contains("--no-window-dragging") && contains("--no-osc"),
+            "actual player launch disables automatic cursor hiding and wallpaper input controls");
         for (const auto& argument : arguments) {
             Expect(argument.get<std::string>().find("fps=") == std::string::npos, "no implicit frame-rate downgrade");
         }
@@ -569,6 +628,34 @@ void TestControlledPlayerLifecycle() {
         CloseHandle(process);
     }
     Expect(GetWindow(window.handle, GW_CHILD) == nullptr, "stop destroys the verification container");
+}
+
+void TestStartupPresentationGate() {
+    TemporaryMedia files;
+    VerificationWindow window;
+    // Show only the offscreen test parent so IsWindowVisible observes the
+    // child's real effective visibility, not a hidden-ancestor false positive.
+    ShowWindow(window.handle,SW_SHOWNOACTIVATE);
+    const auto display=Display();
+    Controller controller(ThisExecutable(),window.handle);
+    for(int cycle=0;cycle<2;++cycle){
+        Expect(controller.Start(display,files.media.u8string()),"startup visibility fixture obtains a decoded frame");
+        const auto state=PlayerState(files.media);
+        Expect(state.is_object()&&state.contains("hostVisibleBeforeFrame")&&
+               !state["hostVisibleBeforeFrame"].get<bool>(),
+               "wallpaper host stays hidden until the first decoded frame is ready");
+        const auto host=GetWindow(window.handle,GW_CHILD);
+        Expect(host&&IsWindowVisible(host),"ready wallpaper is visible after startup");
+        controller.Stop(display);
+        Expect(!GetWindow(window.handle,GW_CHILD),"startup and stop remove the owned wallpaper host");
+    }
+    const auto rejected=files.root/L"reject.mp4";
+    std::ofstream(rejected)<<"rejected first frame fixture";
+    Expect(!controller.Start(display,rejected.u8string()),"first-frame load failure is returned");
+    const auto failed=PlayerState(rejected);
+    Expect(failed.is_object()&&failed.contains("hostVisibleBeforeFrame")&&
+           !failed["hostVisibleBeforeFrame"].get<bool>(),"failed startup never exposes a blank wallpaper host");
+    Expect(!GetWindow(window.handle,GW_CHILD),"failed startup cleans its hidden host");
 }
 
 void TestFailuresAndRecovery() {
@@ -602,6 +689,54 @@ void TestFailuresAndRecovery() {
     }
     controller.Stop(display);
     Expect(!controller.Recover(display), "explicit stop forgets the display");
+}
+
+void TestPlaybackHealthAndPauseDrift() {
+    TemporaryMedia files;
+    VerificationWindow window;
+    const auto display = Display();
+    Controller controller(ThisExecutable(), window.handle);
+    Expect(controller.Start(display, files.media.u8string()), "playback health fixture starts");
+    if (!controller.IsRunning(display)) return;
+    const auto processes = ChildProcesses(window.handle);
+    const auto inject = [&](const Json& state) {
+        std::ofstream(std::filesystem::path(files.media.wstring() + L".control.json")) << state.dump();
+    };
+    Expect(controller.EnsurePlayback(display, false), "expected playback starts its health baseline");
+    Sleep(80);
+    Expect(controller.EnsurePlayback(display, false), "advancing playback remains healthy");
+    inject({{"pause", true}});
+    Expect(controller.EnsurePlayback(display, false) && PlayerState(files.media)["pause"] == false,
+        "an external pause is corrected when desktop playback is expected");
+    inject({{"pause", false}});
+    Expect(controller.EnsurePlayback(display, true) && PlayerState(files.media)["pause"] == true,
+        "manual pause remains authoritative when the player drifts to playing");
+    Expect(controller.EnsurePlayback(display, false), "desktop return resumes expected playback");
+    // mpv can apply set_property before the confirming read fails. Its actual
+    // pause must still be reconciled even though the cached flag stayed false.
+    std::ofstream(std::filesystem::path(files.media.wstring() + L".reject-pause-read")) << "fail once";
+    Expect(!controller.Command(display, MpvCommand::Pause) && PlayerState(files.media)["pause"] == true,
+        "a rejected confirming read can leave the actual player paused");
+    Expect(controller.EnsurePlayback(display, false) && PlayerState(files.media)["pause"] == false,
+        "desktop playback recovers after a pause applied without acknowledgement");
+    inject({{"frozen", true}});
+    Expect(controller.EnsurePlayback(display, false), "a single stationary sample is not a stalled player");
+    const auto before = GetTickCount64();
+    while (GetTickCount64() - before < 12200) Sleep(20);
+    Expect(!controller.EnsurePlayback(display, false) && controller.LastError() == "MPV_PLAYBACK_STALLED",
+        "a live IPC player with no timeline progress for twelve seconds is stalled");
+    Expect(controller.IsRunning(display) && ChildProcesses(window.handle) == processes,
+        "health detection reports the owned frozen player without creating duplicates");
+    Expect(controller.EnsurePlayback(display, true), "pausing a frozen timeline clears its progress baseline");
+    Expect(controller.EnsurePlayback(display, false), "resuming clears the old stall before observing new progress");
+    inject({{"frozen", false}});
+    Sleep(80);
+    Expect(controller.EnsurePlayback(display, false), "new timeline progress clears the frozen sample");
+    Expect(controller.Recover(display) && controller.EnsurePlayback(display, false),
+        "player recovery starts a new timeline baseline");
+    controller.Stop(display);
+    Expect(controller.ActiveDisplays().empty() && GetWindow(window.handle, GW_CHILD) == nullptr,
+        "health tests reclaim only their own player and container");
 }
 
 void TestUrlCapabilityAndDestructor() {
@@ -938,6 +1073,8 @@ void TestNativeStaticWithoutPlayer() {
     Expect(CoverPixels(window.handle), "native host paints the cover-fitted image");
     Expect(controller.EnsureAttached(display) && CoverPixels(window.handle),
         "native attachment check does not need IPC");
+    Expect(controller.EnsurePlayback(display, false) && controller.EnsurePlayback(display, true) &&
+        ChildProcesses(window.handle).empty(), "native static images need no moving timeline or IPC health sample");
     Expect(controller.Command(display, MpvCommand::Pause) && controller.Command(display, MpvCommand::Resume),
         "pause and resume are accepted as remembered state");
     Expect(controller.SetVolume(display, 30) && !controller.SetVolume(display, 101),
@@ -1039,11 +1176,18 @@ int main(int argc, char** argv) {
     if (std::any_of(arguments.begin(), arguments.end(), [](const auto& argument) {
         return argument.find("--input-ipc-server=") == 0;
     })) return RunControlledPlayer(arguments);
+    if(arguments==std::vector<std::string>{"--startup-visibility-only"}){
+        TestStartupPresentationGate();
+        std::cout<<"startup presentation gate: "<<failures<<" failure(s)\n";
+        return failures?1:0;
+    }
+    TestStartupPresentationGate();
     TestUnavailableMpv();
     TestExistingFileIsNotAPlayer();
     TestCommandRequiresStartedPlayer();
     TestControlledPlayerLifecycle();
     TestFailuresAndRecovery();
+    TestPlaybackHealthAndPauseDrift();
     TestUrlCapabilityAndDestructor();
     TestProtectedVideoUsesVideoPolicy();
     TestFailedMediaSwitchKeepsPreviousPlayer();

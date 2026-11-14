@@ -23,6 +23,9 @@ struct Surface {
     Surface &operator=(const Surface &)=delete;
     HWND Add(HWND parent,HWND keyTarget,const wchar_t *kind,const wchar_t *text,int id,DWORD style=0);
     void Attach(HWND,bool popoverShadow=false);
+    // Flatten the native input tree into an opaque, antialiased panel. No
+    // material lease or desktop capture is created for this presentation.
+    void AttachOpaque(HWND,float cornerRadius=24.f);
     void Show(HWND initialFocus);
     void Refresh();
     void Clear(HDC,RECT) const;
@@ -43,6 +46,8 @@ private:
     std::unique_ptr<MaterialLayer> material_;
     calendar::Preferences preferences_;
     bool capturing_=false;
+    bool opaque_=false;
+    float opaqueRadius_=24.f;
     bool popoverShadow_=false;
     COLORREF matte_=RGB(0,0,0);
     ULONG_PTR graphicsToken_=0;

@@ -16,6 +16,7 @@ int main() {
     Check(module(PageCommand::WeatherCityNanjing) == "weather" && module(PageCommand::WeatherLocationSettings) == "-", "weather");
     Check(module(PageCommand::RadialCaptureBegin) == "-" && module(PageCommand::RadialShortcutLast) == "radial", "radial");
     Check(module(PageCommand::DockLaunchpadIconScaleLast) == "dock" && module(PageCommand::TaskbarReset) == "taskbar", "dock, taskbar");
+    Check(module(PageCommand::DockShowRunningOn) == "dock" && module(PageCommand::DockShowRunningOff) == "dock", "running section commands retain Dock diagnostics");
     Check(module(PageCommand::Ready) == "-" && module(PageCommand::Invalid) == "-", "non-module commands");
     Check(shell::DiagnosticModuleForMessage({{"type", "settings"}}) == "clock", "clock settings message");
     Check(shell::DiagnosticModuleForMessage({{"type", "calendar-settings"}}) == "calendar", "calendar settings message");

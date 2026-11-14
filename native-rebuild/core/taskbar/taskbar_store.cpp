@@ -30,6 +30,9 @@ const char* ErrorName(Error error) {
         case Error::ApplyVisibility: return "apply-visibility";
         case Error::FrameworkInstall: return "framework-install";
         case Error::CoreAccessDenied: return "core-access-denied";
+        case Error::CoreRestartRequired: return "core-restart-required";
+        case Error::CoreAttachTimeout: return "core-attach-timeout";
+        case Error::CoreEffectUnconfirmed: return "core-effect-unconfirmed";
     }
     return "unknown";
 }

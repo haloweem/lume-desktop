@@ -11,11 +11,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cwctype>
 #include <filesystem>
 #include <map>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -26,6 +29,7 @@ constexpr wchar_t kHostClass[] = L"Lume.Native.WallpaperHost";
 constexpr DWORD kStartupTimeout = 10000;
 constexpr DWORD kCommandTimeout = 1200;
 constexpr DWORD kBalancedTimeout = 2400;
+constexpr ULONGLONG kPlaybackStallMs = 12000;
 constexpr std::array<const char*, 4> kSamplingOptions = {"scale", "cscale", "dscale", "tscale"};
 constexpr std::size_t kMaxReplyBytes = 65536;
 
@@ -314,6 +318,11 @@ struct Player {
     bool paused = false;
     int volume = 0;
     bool cover = true;
+    std::optional<double> position;
+    std::uint64_t playbackEpoch = 0, observedEpoch = 0;
+    ULONGLONG progressAt = 0, cpuSampleAt = 0;
+    std::uint64_t cpuTicks = 0;
+    double cpuPercent = 0;
     // Native static backend: no process, pipe or job. The source is kept only
     // to re-fit the bitmap after fit or size changes; it holds no plaintext.
     std::unique_ptr<wallpaper::StaticImage> image;
@@ -325,6 +334,22 @@ struct Player {
         return process && WaitForSingleObject(process.Get(), 0) == WAIT_TIMEOUT;
     }
     bool Active() const { return Native() ? OwnedWindow(host) : Running(); }
+    void ResetProgress() { position.reset(); progressAt = 0; observedEpoch = playbackEpoch; }
+    void SampleCpu(ULONGLONG now) {
+        if (!process) return;
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (!GetProcessTimes(process.Get(), &created, &exited, &kernel, &user)) return;
+        const auto ticks = [](const FILETIME& value) {
+            return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime;
+        };
+        const auto total = ticks(kernel) + ticks(user);
+        if (cpuSampleAt && now > cpuSampleAt && total >= cpuTicks) {
+            const auto processors = std::max<DWORD>(1, GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+            cpuPercent = static_cast<double>(total - cpuTicks) /
+                (static_cast<double>(now - cpuSampleAt) * 10000.0 * processors) * 100.0;
+        }
+        cpuSampleAt = now; cpuTicks = total;
+    }
     ~Player() {
         pipe.Reset();
         // This job contains only this display's suspended-then-assigned player.
@@ -513,7 +538,7 @@ struct MpvProcessController::Impl {
         return true;
     }
 
-    bool Attach(Player& player, const MpvDisplay& display) {
+    bool Attach(Player& player, const MpvDisplay& display, bool show = true) {
         if (!OwnedWindow(player.host)) return Fail("MPV_HOST_WINDOW_LOST");
         DesktopParent desktop;
         RECT target = display.bounds;
@@ -555,7 +580,8 @@ struct MpvProcessController::Impl {
             OffsetRect(&target, -parentBounds.left, -parentBounds.top);
         }
         if (target.right <= target.left || target.bottom <= target.top) return Fail("MPV_HOST_BOUNDS_FAILED");
-        if (GetParent(player.host) != desktop.parent) {
+        const bool reparent=GetParent(player.host)!=desktop.parent;
+        if (reparent) {
             auto style = GetWindowLongPtrW(player.host, GWL_STYLE);
             style = (style | WS_CHILD) & ~static_cast<LONG_PTR>(WS_POPUP);
             SetWindowLongPtrW(player.host, GWL_STYLE, style);
@@ -569,14 +595,20 @@ struct MpvProcessController::Impl {
             if (!SetParent(player.host, desktop.parent) && GetLastError() != ERROR_SUCCESS)
                 return Fail("MPV_DESKTOP_ATTACH_FAILED");
         }
-        if (!SetWindowPos(player.host, nullptr, target.left, target.top,
+        RECT before{};
+        const bool haveBounds=GetWindowRect(player.host,&before)!=FALSE;
+        if(haveBounds)MapWindowPoints(nullptr,desktop.parent,reinterpret_cast<POINT*>(&before),2);
+        const bool moved=!haveBounds||!EqualRect(&before,&target);
+        const bool ownVisible=(GetWindowLongPtrW(player.host,GWL_STYLE)&WS_VISIBLE)!=0;
+        if ((reparent||moved||ownVisible!=show) && !SetWindowPos(player.host, nullptr, target.left, target.top,
                           target.right - target.left, target.bottom - target.top,
-                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW))
+                          SWP_NOZORDER | SWP_NOACTIVATE | (reparent?SWP_FRAMECHANGED:0) |
+                          (show ? SWP_SHOWWINDOW : SWP_HIDEWINDOW)))
             return Fail("MPV_DESKTOP_ATTACH_FAILED");
         if (desktop.raised && desktop.shellView) {
-            SetWindowPos(player.host, desktop.shellView, 0, 0, 0, 0,
+            if(GetWindow(player.host,GW_HWNDPREV)!=desktop.shellView)SetWindowPos(player.host, desktop.shellView, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            if (desktop.worker) SetWindowPos(desktop.worker, HWND_BOTTOM, 0, 0, 0, 0,
+            if (desktop.worker&&GetWindow(desktop.worker,GW_HWNDNEXT)) SetWindowPos(desktop.worker, HWND_BOTTOM, 0, 0, 0, 0,
                                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         if (GetParent(player.host) != desktop.parent) return Fail("MPV_DESKTOP_ATTACH_FAILED");
@@ -659,6 +691,7 @@ struct MpvProcessController::Impl {
             if (event != reply.end() && event->is_string()) {
                 if (*event == "file-loaded") player.loaded = true;
                 if (*event == "start-file") player.loaded = false;
+                if (*event == "playback-restart") ++player.playbackEpoch;
             }
             const auto id = reply.find("request_id");
             if (id == reply.end()) continue;
@@ -723,6 +756,7 @@ struct MpvProcessController::Impl {
     bool Load(Player& player, const std::string& media) {
         const auto deadline = GetTickCount64() + kStartupTimeout;
         player.loaded = false;
+        player.ResetProgress();
         // Protected media goes through the stream plugin's named pipe rather
         // than loopback HTTP, which some security software blocks for mpv.
         const auto piped = player.streamPlugin ? wallpaper_pipe::PlayerUrl(media) : std::string{};
@@ -782,6 +816,7 @@ struct MpvProcessController::Impl {
         Json actual;
         if (!Request(player, Json::array({"get_property", "pause"}), &actual)) return false;
         if (!actual.is_boolean() || actual.get<bool>() != pause) return Fail("MPV_PAUSE_NOT_APPLIED");
+        if (player.paused != pause) player.ResetProgress();
         player.paused = pause;
         return true;
     }
@@ -965,6 +1000,7 @@ struct MpvProcessController::Impl {
 
     bool Launch(Player& player, const MpvDisplay& display, const std::string& media,
                 bool localVideo, const std::filesystem::path& program) {
+        const auto startedAt=GetTickCount64();
         if (!CheckCancellation()) return false;
         if (verificationParent && !OwnedWindow(verificationParent))
             return Fail("MPV_VERIFICATION_PARENT_NOT_OWNED");
@@ -973,7 +1009,9 @@ struct MpvProcessController::Impl {
                                       WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                                       -32000, -32000, 1, 1, nullptr, nullptr,
                                       GetModuleHandleW(nullptr), nullptr);
-        if (!player.host || !Attach(player, display)) return false;
+        // Size and parent the video surface before launching, but keep the
+        // desktop showing its existing image until Load confirms a first frame.
+        if (!player.host || !Attach(player, display, false)) return false;
         player.videoMedia = IsVideoMedia(media);
         player.job.Reset(CreateJobObjectW(nullptr, nullptr));
         if (!player.job) return Fail("MPV_JOB_CREATE_FAILED");
@@ -1045,6 +1083,9 @@ struct MpvProcessController::Impl {
         if (!Connect(player, GetTickCount64() + kStartupTimeout)) return false;
         if (!Load(player, media)) return false;
         player.media = media;
+        diag::Log("wallpaper","first-frame-ready pid="+std::to_string(player.processId)+
+            " elapsedMs="+std::to_string(GetTickCount64()-startedAt)+
+            " hostVisible="+std::to_string(IsWindowVisible(player.host)!=FALSE));
         return true;
     }
 
@@ -1090,7 +1131,7 @@ struct MpvProcessController::Impl {
             if (!Launch(*player, *display, media, localVideo, *program) ||
                 (native.volume && !Volume(*player, native.volume)) ||
                 (!native.cover && !Fit(*player, false)) ||
-                (native.paused && !Pause(*player, true))) {
+                (native.paused && !Pause(*player, true)) || !Attach(*player, *display)) {
                 const auto failure = error;
                 StopPlayer(*player, true);
                 error = failure;
@@ -1126,7 +1167,7 @@ struct MpvProcessController::Impl {
         auto player = std::make_unique<Player>();
         if (!Launch(*player, *display, media, localVideo, *program) ||
             (volume && !Volume(*player, volume)) || (!cover && !Fit(*player, false)) ||
-            (paused && !Pause(*player, true))) {
+            (paused && !Pause(*player, true)) || !Attach(*player, *display)) {
             // Existing remembered media can still be explicitly recovered.
             return false;
         }
@@ -1198,6 +1239,15 @@ std::uint64_t MpvProcessController::PrivateBytes(std::uint64_t id) const {
     if (!K32GetProcessMemoryInfo(found->second->process.Get(),
             reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) return 0;
     return counters.PrivateUsage;
+}
+
+std::optional<MpvPlayerIdentity> MpvProcessController::PlayerIdentity(std::uint64_t id) const {
+    const auto found = impl_->players.find(id);
+    if (found == impl_->players.end() || !found->second->Running()) return {};
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(found->second->process.Get(), &created, &exited, &kernel, &user)) return {};
+    return MpvPlayerIdentity{found->second->processId,
+        (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime};
 }
 
 bool MpvProcessController::SaveFrame(std::uint64_t id, const std::wstring& path) {
@@ -1311,6 +1361,100 @@ bool MpvProcessController::EnsureAttached(std::uint64_t id) {
     Json pause;
     return impl_->Request(*player, Json::array({"get_property", "pause"}), &pause) &&
         (pause.is_boolean() || impl_->Fail("MPV_IPC_INVALID_REPLY"));
+}
+
+bool MpvProcessController::EnsurePlayback(std::uint64_t id, bool paused) {
+    impl_->error.clear();
+    if (!impl_->CheckThread()) return false;
+    const auto player = impl_->FindPlayer(id);
+    if (!player) return false;
+    const auto display = impl_->FindDisplay(id);
+    if (!display || !impl_->Attach(*player, *display)) return false;
+    if (player->Native()) {
+        player->paused = paused;
+        return impl_->RefitNative(*player, player->cover, false);
+    }
+    player->SampleCpu(GetTickCount64());
+    Json actual;
+    if (!impl_->Request(*player, Json::array({"get_property", "pause"}), &actual)) return false;
+    if (!actual.is_boolean()) return impl_->Fail("MPV_IPC_INVALID_REPLY");
+    if (actual.get<bool>() != paused) {
+        // A set may have succeeded even when its confirmation was lost. The
+        // desired policy, rather than a remembered command acknowledgement,
+        // decides whether the desktop should be moving now.
+        player->ResetProgress();
+        if (!impl_->Pause(*player, paused)) return false;
+        diag::Log("wallpaper", "display " + std::to_string(id) + " corrected player pause to " +
+            (paused ? "true" : "false"));
+    } else {
+        if (player->paused != paused) player->ResetProgress();
+        player->paused = paused;
+    }
+    if (paused || !player->videoMedia) {
+        player->ResetProgress();
+        return true;
+    }
+    Json position;
+    if (!impl_->Request(*player, Json::array({"get_property", "time-pos"}), &position)) return false;
+    const auto now = GetTickCount64();
+    if (position.is_number() && std::isfinite(position.get<double>())) {
+        const auto seconds = position.get<double>();
+        // A backwards jump at a loop boundary is progress too. A paused or
+        // restarted player starts a fresh observation window.
+        if (!player->position || std::abs(seconds - *player->position) > .0001 ||
+            player->observedEpoch != player->playbackEpoch) {
+            player->position = seconds;
+            player->progressAt = now;
+            player->observedEpoch = player->playbackEpoch;
+            return true;
+        }
+    }
+    if (!player->progressAt) player->progressAt = now;
+    if (now - player->progressAt < kPlaybackStallMs) return true;
+    // A short loop can land on the same timestamp on successive two-second
+    // polls. Re-sample out of phase before treating that alias as a freeze.
+    BriefWait(player->host, player->process.Get(), 137);
+    Json confirmed;
+    if (!impl_->Request(*player, Json::array({"get_property", "time-pos"}), &confirmed)) return false;
+    if (confirmed.is_number() && std::isfinite(confirmed.get<double>()) &&
+        (!player->position || std::abs(confirmed.get<double>() - *player->position) > .0001 ||
+         player->observedEpoch != player->playbackEpoch)) {
+        player->position = confirmed.get<double>();
+        player->progressAt = GetTickCount64();
+        player->observedEpoch = player->playbackEpoch;
+        return true;
+    }
+    return impl_->Fail("MPV_PLAYBACK_STALLED");
+}
+
+std::string MpvProcessController::PlaybackDiagnostics(std::uint64_t id) {
+    if (!impl_->CheckThread()) return "unavailable";
+    const auto found = impl_->players.find(id);
+    if (found == impl_->players.end()) return "stopped";
+    auto& player = *found->second;
+    if (player.Native()) return "backend=static";
+    if (!player.Running()) return "stopped";
+    // A missing optional property must not overwrite the actionable failure
+    // that the session may currently be reporting.
+    const auto savedError = impl_->error;
+    const auto deadline = GetTickCount64() + kCommandTimeout;
+    std::ostringstream line;
+    line << "pid=" << player.processId << " cpu=" << std::fixed << std::setprecision(1)
+         << player.cpuPercent << "%";
+    for (const auto* property : {"hwdec-current", "current-vo"}) {
+        Json value;
+        if (impl_->Request(player, Json::array({"get_property", property}), &value, deadline) && value.is_string()) {
+            auto name = value.get<std::string>();
+            if (name.size() > 64) name.resize(64);
+            std::replace_if(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; }, '?');
+            line << ' ' << property << '=' << name;
+        }
+        if (GetTickCount64() >= deadline) break;
+    }
+    if (player.position) line << " time=" << std::setprecision(3) << *player.position;
+    line << " pause=" << (player.paused ? "true" : "false");
+    impl_->error = savedError;
+    return line.str();
 }
 
 }  // namespace lume::platform::windows

@@ -158,6 +158,7 @@ bool Valid(const Preferences& value, const TextKey& pathKey) {
            ValidPosition(value.position) && ValidBottomOffset(value.bottomOffset) && ValidIconSpacing(value.iconSpacing) &&
            ValidLumePosition(value.lumePosition, value.pinned.size()) &&
            ValidPaths(value.pinned, MaxPinned, pathKey) && ValidPaths(value.added, MaxAdded, pathKey) &&
+           ValidPaths(value.removed, MaxOrder, pathKey) &&
            ValidOrder(value.order, value.collections, pathKey) && ValidCollections(value.collections, pathKey);
 }
 
@@ -168,9 +169,10 @@ bool Encode(const Preferences& value, std::string& output) {
             collections.push_back({{"id", collection.id}, {"title", collection.title}, {"paths", collection.paths}});
         auto text = Json{{"version", 1}, {"enabled", value.enabled}, {"frosted", value.frosted},
                          {"transparent", value.transparent}, {"reflection", value.reflection},
-                         {"systemTray", value.systemTray},
+                         {"systemTray", value.systemTray}, {"controlCenter", value.controlCenter}, {"showRunning", value.showRunning},
                          {"iconScale", value.iconScale},
                          {"launchpadScale",value.launchpadScale},{"launchpadIconScale",value.launchpadIconScale},
+                         {"launchpadMaximized", value.launchpadMaximized}, {"removed", value.removed},
                          {"position", value.position}, {"bottomOffset", value.bottomOffset}, {"iconSpacing", value.iconSpacing},
                          {"lumeVisible", value.lumeVisible}, {"lumePosition", value.lumePosition},
                          {"pinned", value.pinned}, {"added", value.added}, {"order", value.order},
@@ -193,7 +195,9 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
         std::size_t optional = ordered ? 1 : 0;
         optional += hasCollections ? 1 : 0;
         optional += json.contains("dockCollections") ? 1 : 0;
-        for (const auto* key : {"transparent", "reflection", "systemTray", "iconScale", "position", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
+        optional += json.contains("removed") ? 1 : 0;
+        optional += json.contains("launchpadMaximized") ? 1 : 0;
+        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning", "iconScale", "position", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
                                 "lumeVisible", "lumePosition"})
             optional += json.contains(key) ? 1 : 0;
         if (json.size() != 5u + optional || !json.contains("version") || json.at("version") != 1 ||
@@ -201,11 +205,13 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
         Preferences value;
         value.enabled = json.at("enabled").get<bool>();
         value.frosted = json.at("frosted").get<bool>();
-        for (const auto* key : {"transparent", "reflection", "systemTray"})
+        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning"})
             if (json.contains(key) && !json.at(key).is_boolean()) return false;
         if (json.contains("transparent")) value.transparent = json.at("transparent").get<bool>();
         if (json.contains("reflection")) value.reflection = json.at("reflection").get<bool>();
         if (json.contains("systemTray")) value.systemTray = json.at("systemTray").get<bool>();
+        if (json.contains("controlCenter")) value.controlCenter = json.at("controlCenter").get<bool>();
+        if (json.contains("showRunning")) value.showRunning = json.at("showRunning").get<bool>();
         if (json.contains("iconScale")) {
             if (!json.at("iconScale").is_number_integer()||json.at("iconScale")<50||json.at("iconScale")>140) return false;
             value.iconScale = std::min(120,json.at("iconScale").get<int>());
@@ -220,6 +226,11 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
             if(json.at(field.first)<0||json.at(field.first)>10000)return false;
             *field.second = json.at(field.first).get<int>();
         }
+        if (json.contains("launchpadMaximized")) {
+            if (!json.at("launchpadMaximized").is_boolean()) return false;
+            value.launchpadMaximized = json.at("launchpadMaximized").get<bool>();
+        }
+        if (json.contains("removed") && !ReadPaths(json.at("removed"), value.removed)) return false;
         if (json.contains("lumeVisible")) {
             if (!json.at("lumeVisible").is_boolean()) return false;
             value.lumeVisible = json.at("lumeVisible").get<bool>();
@@ -266,11 +277,13 @@ std::vector<Entry> CollectionItems(const Collection& collection, const TextKey& 
 
 std::vector<Entry> LaunchpadItems(const std::vector<std::string>& desktop, const std::vector<std::string>& added,
                                   const std::vector<std::string>& order, const TextKey& pathKey, const TextKey& searchKey,
-                                  const std::vector<Collection>& collections) {
+                                  const std::vector<Collection>& collections,
+                                  const std::vector<std::string>& removed) {
     std::vector<Entry> items;
     if (!pathKey) return items;
     std::map<std::string, std::size_t> seen;
-    std::set<std::string> hidden;
+    std::set<std::string> hidden, dismissed;
+    for (const auto& path : removed) dismissed.insert(pathKey(path));
     for (const auto& collection : collections)
         for (const auto& path : collection.paths) hidden.insert(pathKey(path));
     const auto append = [&](const std::string& path, bool isAdded) {
@@ -282,7 +295,8 @@ std::vector<Entry> LaunchpadItems(const std::vector<std::string>& desktop, const
         items.push_back({path, EntryName(path), isAdded});
     };
     // Desktop entries first, so a shared path keeps the file's actual casing.
-    for (const auto& path : desktop) append(path, false);
+    for (const auto& path : desktop)
+        if (!dismissed.count(pathKey(path))) append(path, false);
     for (const auto& path : added) append(path, true);
     for (const auto& collection : collections) {
         Entry entry{CollectionKey(collection.id), collection.title, true, true, collection.id};
@@ -355,7 +369,7 @@ std::vector<Entry> PageItems(const std::vector<Entry>& items, int page) {
 
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            bool lumeVisible, int lumePosition, std::string_view lumePath, bool systemTray) {
+                            bool lumeVisible, int lumePosition, std::string_view lumePath, bool systemTray, bool showRunning) {
     std::vector<Item> items{{Kind::Launchpad, {}, "\xe5\x90\xaf\xe5\x8a\xa8\xe5\x8f\xb0", false}};
     const auto lumeSlot = std::clamp(lumePosition, 0, static_cast<int>(pinned.size()));
     const auto addLume = [&] {
@@ -386,21 +400,23 @@ std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::v
         }
     }
     if (lumeSlot == static_cast<int>(pinned.size())) addLume();
-    std::vector<Item> extra;
-    std::set<std::string> shown;
-    for (const auto& app : running) {
-        const auto key = pathKey(app.executable);
-        if (key.empty() || !shown.insert(key).second) continue;
-        if (app.asWindows) continue;  // its window thumbnails stand for it
-        extra.push_back({Kind::Running, app.executable, app.name.empty() ? EntryName(app.executable) : app.name, true});
-    }
-    if (!extra.empty()) {
-        items.push_back({Kind::Separator, {}, {}, false});
-        items.insert(items.end(), extra.begin(), extra.end());
+    if (showRunning) {
+        std::vector<Item> extra;
+        std::set<std::string> shown;
+        for (const auto& app : running) {
+            const auto key = pathKey(app.executable);
+            if (key.empty() || !shown.insert(key).second) continue;
+            if (app.asWindows) continue;  // its window thumbnails stand for it
+            extra.push_back({Kind::Running, app.executable, app.name.empty() ? EntryName(app.executable) : app.name, true});
+        }
+        if (!extra.empty()) {
+            items.push_back({Kind::Separator, {}, {}, false});
+            items.insert(items.end(), extra.begin(), extra.end());
+        }
     }
     if (systemTray) {
         if (!items.empty() && items.back().kind != Kind::Separator) items.push_back({Kind::Separator, {}, {}, false});
-        items.push_back({Kind::SystemTray, {}, "系统快捷设置", false});
+        items.push_back({Kind::SystemTray, {}, "控制中心", false});
     }
     return items;
 }
@@ -428,9 +444,16 @@ void AppendWindows(std::vector<Item>& items, const std::vector<ProgramWindow>& w
 
 std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            std::string_view lumePath) {
-    auto items = DockItems(prefs.pinned, targets, running, pathKey, prefs.lumeVisible, prefs.lumePosition, lumePath,
-                           SystemTrayAvailable && prefs.systemTray);
+                            std::string_view lumePath, bool managerOpen) {
+    auto openApps = running;
+    // Window enumeration excludes our own process so resident widgets never
+    // become running apps. Add only the open manager, even if its pin is hidden.
+    if (managerOpen && !lumePath.empty() && pathKey && !pathKey(lumePath).empty() &&
+        std::none_of(openApps.begin(), openApps.end(), [&](const auto& app) {
+            return pathKey(app.executable) == pathKey(lumePath);
+        })) openApps.push_back({std::string(lumePath), "Lume"});
+    auto items = DockItems(prefs.pinned, targets, openApps, pathKey, prefs.lumeVisible, prefs.lumePosition, lumePath,
+                           SystemTrayAvailable && prefs.controlCenter, prefs.showRunning);
     std::vector<Item> groups;
     for (const auto& id : prefs.dockCollections) {
         const auto* collection = FindCollection(prefs, id);
@@ -443,6 +466,15 @@ std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::
     }
     items.insert(items.begin() + 1, groups.begin(), groups.end());
     return items;
+}
+
+void KeepControlCenterLast(std::vector<Item>& items) {
+    const auto found = std::find_if(items.begin(), items.end(), [](const Item& item) { return item.kind == Kind::SystemTray; });
+    if (found == items.end() || found + 1 == items.end()) return;
+    const auto center = *found;
+    items.erase(found);
+    if (!items.empty() && items.back().kind != Kind::Separator) items.push_back({Kind::Separator, {}, {}, false});
+    items.push_back(center);
 }
 
 Change Unpin(Preferences& value, std::string_view path, const TextKey& pathKey) {
@@ -465,10 +497,14 @@ bool IsPinned(const Preferences& value, std::string_view path, const TextKey& pa
 Change Add(Preferences& value, const std::vector<std::string>& paths, const TextKey& pathKey) {
     if (!pathKey) return Change::Invalid;
     auto next = value.added;
+    auto removed = value.removed;
     bool changed = false;
     for (const auto& path : paths) {
         const auto normalized = organizer::NormalizeLocalPath(path);
         if (!normalized || pathKey(*normalized).empty()) return Change::Invalid;
+        // Adding a path the user removed from the launchpad shows it again.
+        for (auto found = FindPath(removed, *normalized, pathKey); found != removed.end();
+             found = FindPath(removed, *normalized, pathKey)) { removed.erase(found); changed = true; }
         if (FindPath(next, *normalized, pathKey) != next.end()) continue;
         if (next.size() >= MaxAdded) return Change::Limit;
         next.push_back(*normalized);
@@ -476,6 +512,7 @@ Change Add(Preferences& value, const std::vector<std::string>& paths, const Text
     }
     if (!changed) return Change::Unchanged;
     value.added = std::move(next);
+    value.removed = std::move(removed);
     return Change::Changed;
 }
 
@@ -626,6 +663,30 @@ Change RemoveAdded(Preferences& value, std::string_view path, const TextKey& pat
     const auto found = FindPath(value.added, path, pathKey);
     if (found == value.added.end()) return Change::Unchanged;
     value.added.erase(found);
+    return Change::Changed;
+}
+Change RemoveFromLaunchpad(Preferences& value, std::string_view path, const std::vector<std::string>& desktop,
+                           const TextKey& pathKey) {
+    if (!pathKey || path.empty() || pathKey(path).empty()) return Change::Invalid;
+    auto next = value;
+    bool changed = false;
+    if (const auto found = FindPath(next.added, path, pathKey); found != next.added.end()) {
+        next.added.erase(found);
+        changed = true;
+    }
+    auto onDesktop = desktop;
+    if (FindPath(onDesktop, path, pathKey) != onDesktop.end() &&
+        FindPath(next.removed, path, pathKey) == next.removed.end()) {
+        if (next.removed.size() >= MaxOrder) return Change::Limit;
+        next.removed.emplace_back(path);
+        changed = true;
+    }
+    if (!changed) return Change::Unchanged;
+    const auto key = pathKey(path);
+    next.order.erase(std::remove_if(next.order.begin(), next.order.end(),
+                                    [&](const std::string& item) { return !IsCollectionKey(item) && pathKey(item) == key; }),
+                     next.order.end());
+    value = std::move(next);
     return Change::Changed;
 }
 Change PinCollection(Preferences& value, std::string_view id, const TextKey& pathKey) {

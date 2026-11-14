@@ -1,4 +1,6 @@
 #include "apps/shell/today_todo_session.h"
+#include "core/todo/todo_sheet.h"
+#include "platform/windows/calendar/todo_sheet_window.h"
 #include "apps/shell/todo_session.h"
 #include "platform/windows/today_todo/today_todo_view.h"
 #include "core/todo/todo_time.h"
@@ -46,8 +48,11 @@ void Menu(HWND owner,bool row,int selection,std::function<void()> before={}){
  SendMessageW(owner,WM_CONTEXTMENU,reinterpret_cast<WPARAM>(owner),MAKELPARAM(point.x,point.y));KillTimer(nullptr,timer);menuDrive=nullptr;Check(drive.driven,"real checklist context menu opened");
 }
 std::vector<HWND> Checklists(){std::vector<HWND> out;EnumThreadWindows(GetCurrentThreadId(),[](HWND h,LPARAM p)->BOOL{wchar_t title[80]{};GetWindowTextW(h,title,80);if(std::wstring(title)==L"Lume 今日待办")reinterpret_cast<std::vector<HWND>*>(p)->push_back(h);return TRUE;},reinterpret_cast<LPARAM>(&out));return out;}
-HWND Editor(HWND owner){HWND found=nullptr;while((found=FindWindowExW(nullptr,found,L"LumeCalendarTodoEditor",nullptr))){if(GetWindow(found,GW_OWNER)==owner)return found;}return nullptr;}
-HWND Control(HWND parent,int id){struct Search{int id;HWND out=nullptr;} value{id};EnumChildWindows(parent,[](HWND h,LPARAM l)->BOOL{auto& s=*reinterpret_cast<Search*>(l);if(GetDlgCtrlID(h)==s.id){s.out=h;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&value));return value.out;}
+HWND Editor(HWND owner){HWND found=nullptr;while((found=FindWindowExW(nullptr,found,L"LumeTodoSheetWindow",nullptr))){if(GetWindow(found,GW_OWNER)==owner)return found;}return nullptr;}
+// The shared task sheet is a WebView page; tests post its messages directly.
+bool SheetSave(HWND editor,const std::string& action,const std::string& fields){
+ return lume::platform::windows::TodoSheetWindow::Receive(editor,R"({"version":1,"scope":"todo-editor","action":"save","commands":[{"action":")"+action+R"(","fields":)"+fields+"}]}");}
+[[maybe_unused]] HWND Control(HWND parent,int id){struct Search{int id;HWND out=nullptr;} value{id};EnumChildWindows(parent,[](HWND h,LPARAM l)->BOOL{auto& s=*reinterpret_cast<Search*>(l);if(GetDlgCtrlID(h)==s.id){s.out=h;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&value));return value.out;}
 void Presented(HWND hwnd){const auto deadline=GetTickCount64()+5000;while(IsWindow(hwnd)&&!IsWindowVisible(hwnd)&&GetTickCount64()<deadline)Pump(10);Check(IsWindow(hwnd)&&IsWindowVisible(hwnd),"shared calendar editor presents");}
 void Click(HWND h,int x=31,int y=56){const auto p=Point(h,x,y);SendMessageW(h,WM_LBUTTONDOWN,MK_LBUTTON,p);SendMessageW(h,WM_LBUTTONUP,0,p);}
 LRESULT CALLBACK Backdrop(HWND h,UINT m,WPARAM w,LPARAM l){
@@ -158,16 +163,16 @@ int main(int argc,char** argv){try{
   Menu(hwnd,true,0,[&]{todo::Command change;change.scope=repository.Read().scope;change.id=first;change.type=todo::CommandType::Update;change.patch.title="changed while menu open";Check(repository.Dispatch(change).ok,"change task while modal menu is open");});
   Check(!Editor(hwnd),"stale menu target cannot edit a replaced task snapshot");
   Menu(hwnd,true,0);auto editor=Editor(hwnd);Check(editor&&!IsWindowEnabled(hwnd),"row context menu opens shared calendar editor");Presented(editor);
-  auto titleControl=Control(editor,101),saveControl=Control(editor,106);Check(titleControl&&saveControl,"real shared editor controls");
-  SetWindowTextW(titleControl,L"修改后的今日待办");failTask=true;SendMessageW(saveControl,BM_CLICK,0,0);Pump(60);
-  Check(IsWindow(editor)&&todo_ui::Text(titleControl)==L"修改后的今日待办"&&repository.Read().tasks.front().title!=u8"修改后的今日待办","failed edit retains draft and old shared data");
-  failTask=false;SendMessageW(saveControl,BM_CLICK,0,0);Pump(60);
+  const std::string edited=R"({"id":")"+repository.Read().tasks.front().id+R"(","title":"修改后的今日待办"})";
+  failTask=true;Check(SheetSave(editor,"update",edited),"real shared task sheet");Pump(60);
+  Check(IsWindow(editor)&&repository.Read().tasks.front().title!=u8"修改后的今日待办","failed edit keeps the sheet open and old shared data");
+  failTask=false;SheetSave(editor,"update",edited);Pump(60);
   Check(!IsWindow(editor)&&IsWindowEnabled(hwnd)&&repository.Read().tasks.front().title==u8"修改后的今日待办","successful direct edit persists to calendar and releases editor");
   failTask=true;Menu(hwnd,true,1);Check(!repository.Read().tasks.front().deletedAt,"failed delete preserves shared task");
   failTask=false;Menu(hwnd,true,1);Check(repository.Read().tasks.front().deletedAt.has_value(),"bin deletes the original shared task");
   calendar.Update(repository.Read());Check(calendar.ForDay(today).size()==4,"calendar immediately excludes task deleted from checklist");
   const auto countBeforeCreate=repository.Read().tasks.size();Menu(hwnd,false,0);editor=Editor(hwnd);Check(editor!=nullptr,"background menu creates a new task");Presented(editor);
-  SetWindowTextW(Control(editor,101),L"菜单新建的今日待办");SendMessageW(Control(editor,106),BM_CLICK,0,0);Pump(60);
+  SheetSave(editor,"add",R"({"title":"菜单新建的今日待办","date":")"+todo::SheetDate(today)+R"(","allDay":true,"days":1})");Pump(60);
   Check(!IsWindow(editor)&&repository.Read().tasks.size()==countBeforeCreate+1,"new task saves directly into shared repository");
   Check(repository.Read().tasks.back().day==std::optional<calendar::Date>{today},"new task defaults to today");
   files.fail=true;reply=session.HandlePage(ui::PageCommand::TodayTodoLiquidGlass);Check(reply&&reply->find(L"\"error\":\"save\"")!=std::wstring::npos&&session.Snapshot().frosted&&session.Running(),"preference failure rolls back material");files.fail=false;
@@ -185,6 +190,31 @@ int main(int argc,char** argv){try{
   shell::TodayTodoSession restored(GetModuleHandleW(nullptr),"widget",{},[]{},port,&files);
   Check(restored.Restore()&&restored.Running()&&Checklists().size()==1,"restart restores the enabled checklist");
   restored.Shutdown();Check(Checklists().empty(),"restored checklist closes cleanly");
+ }
+ {
+  Files isolated;widget::PreferencesStore multiStore(isolated,{320,152,220,152,720,720});
+  auto rootPrefs=widget::Defaults({320,152,220,152,720,720});rootPrefs.enabled=true;rootPrefs.solid=true;
+  auto childPrefs=rootPrefs;childPrefs.x=420;childPrefs.y=180;childPrefs.placed=true;
+  Check(multiStore.Save("multi",rootPrefs)&&multiStore.Save("multi.instance-1.json",childPrefs),"seed two independent checklist materials");
+  shell::TodayTodoSession multi(GetModuleHandleW(nullptr),"multi",{},[]{},port,&isolated);
+  Check(multi.Restore()&&Checklists().size()==2,"restore both material selection targets");
+  const auto rootHandle=multi.Handle();const auto windows=Checklists();
+  const auto child=std::find_if(windows.begin(),windows.end(),[&](HWND h){return h!=rootHandle;});
+  Check(child!=windows.end(),"find the child checklist window");
+  unsigned requests=0;multi.SetMaterialSelectionHandler([&](ui::PageCommand,HWND){++requests;});
+  Check(multi.HandleMaterialSelection(ui::PageCommand::TodayTodoLiquidGlass,*child).has_value(),"host replay targets a child checklist");
+  Check(multi.Snapshot().solid&&!multiStore.Load("multi.instance-1.json").value.solid&&!multiStore.Load("multi.instance-1.json").value.frosted,"child material replay leaves root material unchanged");
+  Check(multi.HandleMaterialSelection(ui::PageCommand::TodayTodoFrostedGlass,rootHandle).has_value(),"host replay targets the root checklist alone");
+  Check(multi.Snapshot().frosted&&!multi.Snapshot().solid&&!multiStore.Load("multi.instance-1.json").value.frosted,"root native replay leaves the child material unchanged");
+  Check(requests==0,"host replay never re-enters the material request port");
+  Check(!multi.HandleMaterialSelection(ui::PageCommand::TodayTodoDisable,*child)&&!multi.HandleMaterialSelection(ui::PageCommand::TodayTodoSolid,nullptr),"targeted material replay rejects unrelated commands and missing windows");
+  isolated.fail=true;
+  const auto failed=multi.HandleMaterialSelection(ui::PageCommand::TodayTodoFrostedGlass,*child);
+  Check(failed&&failed->find(L"\"error\":\"save\"")!=std::wstring::npos&&!multiStore.Load("multi.instance-1.json").value.frosted,"targeted material save failure preserves the child's previous material");
+  isolated.fail=false;multi.SetMaterialSelectionHandler({});
+  multi.HandlePage(ui::PageCommand::TodayTodoSolid);
+  Check(multi.Snapshot().solid&&multiStore.Load("multi.instance-1.json").value.solid,"page material commands still apply to every checklist");
+  multi.Shutdown();Check(!multi.HandleMaterialSelection(ui::PageCommand::TodayTodoSolid,rootHandle),"destroyed checklist source cannot be replayed");
  }
  if(background)DestroyWindow(background);
  CoUninitialize();std::cout<<"TODAY_TODO_PASS\n";return 0;

@@ -59,24 +59,24 @@ function renderCases(state = initialState()) {
 
 // 中文渲染基线：内页移除重复主开关，音乐卡片接通开关，图标卡片文案与默认值同步当前要求。
 const chineseBaseline = {
-  "home": "b8f20b67d2e3f24038f28f3ad4838a508b6e6f2f32ee91eb7bb5eb9de65a680c",
-  "toolbar": "3c07a88f94e923086c3a240a8100f0cdf976a4a1977fde470eb2dce64db5a39e",
-  "catalog": "5dd152880ff45690f2ff9fa9aa5e724bfe644fc9b61a8334ed03d6523c142ddd",
-  "widgets": "a5e57d55f69097bdd643737430e44725169adcf615da3dc656fae22396336b09",
-  "library": "74785ec620bbd6fe42547319b96a3b4fa2eb88ac97bd2d58bd533cbd2fb97bb1",
-  "search": "49860e2b7c44f67c0576eea72d2163402f2794e095825ac381903d2e3ba0d03b",
+  "home": "6cc6fe7f974db49b809b2d7fc26197a2c80e7900c7dee8ff1b729b49b2686488",
+  "toolbar": "2ae4730a5623e7f3d7db37e22545c304a05fac90a86f0b0be652388a38f8f496",
+  "catalog": "a1417cf25766cd2c5608f9a326fcd70b3abcbf80f0da24f7da83e13b015f42f5",
+  "widgets": "b8a04903586c0fe748635ae2eed9fa5607fc15fbf44614f2d8849483064b7049",
+  "library": "370bde7cdf8853465370f4ab5d78059f7ecad158d78153d1fb28de9b7a2f2e42",
+  "search": "0f499759efb157a665eb1b4da3e9b3c406dc713c017cd49411e53f85c19a74d6",
   "detail": "e7aa3f2e4af81c04d10a86c0f6465160b9ca2aca8ff37ed277f71aa4da91878b",
   "clock-settings": "d4f9eb23f4ce032ca5fbe183933d246e952489ea5e9745ff5cc4470b0560837e",
   "clock-details": "bdaa72cb322056bf93e3a0058a8f82b06f976a590c3f0af804bbdfa233f99c08",
   "calendar-settings": "8fcfb6494e4d0d09560fe31d699a58a42fad982ce2a9e9404f91d0aac71f44bf",
   "calendar-details": "892efb79cd162174c3ea9acc1151d63f7c038896f6fd84f93126cdab0728ba0a",
-  "performance-settings": "bc7b5af2df3773c3b41faa7722277017a21560f1e1369486a07f7747d7275d51",
-  "performance-details": "dd8c618605dc00e8a0053b7d3d524ea275a1277d38083c6425ecc8bb04a100b4",
+  "performance-settings": "4c254fe4457b0c37883170b644c842ffb5dbac56caa58298ff49187dd6d7943c",
+  "performance-details": "bf17cce03e2a81bfff6887c3b2cc505c64f43fc0b55960fece7842a4ea51e36e",
   "almanac-settings": "440f0000bf02a8691358aa509cda25fbf0f4e906c956c87e395c52f091cc60c0",
   "almanac-details": "01dcdac8027b34e329a6ff89feb91b6d27f06a6ddc288ad49893b1e0e138a2c3",
-  "weather-settings": "b4e2d483788c755a80c6c21bd94ccbf0260033cfb9c6fd799e6c1eaab621377e",
-  "weather-details": "58ed96f0367d7d79de8f830060b14cf7dcf1c4ad260dfb55611c9f867e8ad575",
-  "organizer-settings": "da8f2fdf39707e2d01704ac34e31b510518d3dc3de67a5c2fd06a0cf261c3a60",
+  "weather-settings": "ea4107fa19c4a9efc4ff2563001cdaf73efea1591905ae3f6480c1536777de8e",
+  "weather-details": "8d12dd2863357843a3e9a3e33e1294fbd353351c3a845898a18f4412fa347b1e",
+  "organizer-settings": "ddddb7c2976a39e78f745bfbb4a399a2b2c1525e49b8bd970a4dea6d7718c36c",
   "organizer-details": "c393785abc3e1e0ec44cf50a5ca94a3528bb5f66ebb766587409a27c017ef5d3",
   "icons-settings": "44f4069aea80854aad733975e3dcf41fd6574a17a6ec963da27e4ab16f096d26",
   "icons-details": "c8a8ece8dc85f2598b4681c3ef5c554d6792e7bf9c30aa743aee709a99134447",
@@ -170,9 +170,10 @@ test("wallpaper pagination and detail actions translate without changing names, 
   for (const label of ["Previous page", "Next page", "9 pages, go to", 'aria-label="Page number"']) assert.ok(pagination.includes(label), label);
   const detail = pages.wallpaperDetail(state);
   for (const label of ["Download and apply", "Download wallpaper", "Remove from My wallpapers", "Wallpaper settings",
-    "Play preview", "All displays", "Resolution", "Size", "Duration"]) assert.ok(detail.includes(label), label);
+    "Play preview", "Select screen", "Screen 1", "Resolution", "Size", "Duration"]) assert.ok(detail.includes(label), label);
   assert.match(detail, /天气 &amp; &lt;我的收藏&gt;/);
-  assert.match(detail, /工作显示器/);
+  assert.match(detail, /data-wallpaper-action="apply"[^>]*data-wallpaper-display="1"/);
+  assert.equal(state.wallpaper.displays[0].name, "工作显示器");
   assert.deepEqual(selectors(detail), selectors(chineseDetail));
   assert.match(pages.home(state), /Dynamic wallpapers/);
   assert.match(pages.home(state), /天气 &amp; &lt;我的收藏&gt;/);
@@ -192,8 +193,8 @@ test("every component settings and details page resolves translations at render 
     calendar: ["Calendar theme", "Classic", "Spacious", "Text color", "Highlight color"],
     performance: ["Performance", "Material", "Liquid glass", "Frosted glass"],
     almanac: ["Almanac", "Material"],
-    weather: ["Weather", "City", "Automatic location"],
-    organizer: ["Icon organizer", "Collected items", "0 items"],
+    weather: ["Weather", "Material"],
+    organizer: ["Icon organizer", "Material", "Icon size"],
     icons: ["Auto-hide idle desktop icons", "Auto-hide delay", "Restore icons on any input"],
     taskbar: ["Taskbar transparency", "Automatically hide taskbar"],
     minimize: ["Animation duration (ms)", "Animation style", "Modern", "Classic"],
@@ -249,7 +250,7 @@ test("language round trips restore every captured page and leave user data untou
     assert.equal(render(), chinese, name);
   }
   setLanguage("en");
-  assert.match(weatherPage(state), /<span>上海<\/span>/);
+  assert.doesNotMatch(weatherPage(state), /weather-city/);
   assert.deepEqual(weatherCities, cities);
   assert.deepEqual(state, before);
 });
@@ -301,7 +302,8 @@ test("translated apply labels still require confirmed playback and preserve disa
   assert.match(pages.wallpaperDetail(state), />Apply<\/span>/);
   state.wallpaper.displays[0].state = "playing";
   state.wallpaper.displays[0].wallpaperId = "local-1";
-  assert.match(pages.wallpaperDetail(state), />Applied<\/span>/);
+  assert.match(pages.wallpaperDetail(state), />Unapply<\/span>/);
+  assert.match(pages.wallpaperDetail(state), /data-wallpaper-action="stop" data-wallpaper-display="1"/);
   state.wallpaper.displays[0].error = "WALLPAPER_PLAYER_EXITED";
   assert.match(pages.wallpaperDetail(state), />Apply<\/span>/);
   for (const [change, expected] of [
@@ -314,7 +316,7 @@ test("translated apply labels still require confirmed playback and preserve disa
     assert.ok(html.includes(expected), expected);
     assert.match(html, /data-wallpaper-panel="targets"[^>]* disabled>/);
   }
-  state.wallpaper.likedIds = ["custom-1"];
+  state.wallpaperEngagement = { ...state.wallpaperEngagement, id: "custom-1", status: "ready", liked: true };
   assert.match(pages.wallpaperDetail(state), /aria-label="Unlike"/);
 });
 
@@ -352,7 +354,8 @@ test("all defined component error codes and recovered settings stay reversible",
     ["icons", desktopIconsStatus, ["runtime", "input-busy", "visibility", "save", "rollback"]],
     ["taskbar", taskbarStatus, ["load", "save", "busy", "unsupported", "missing-payload", "payload-integrity",
       "conflict", "discover", "read-appearance", "apply-appearance", "read-auto-hide", "apply-auto-hide",
-      "core-start", "core-exited", "core-stop", "cancelled", "recovery", "watch", "system-effects-disabled", "runtime", "framework-install", "core-access-denied"]],
+      "core-start", "core-exited", "core-stop", "cancelled", "recovery", "watch", "system-effects-disabled", "runtime", "framework-install", "core-access-denied",
+      "core-restart-required", "core-attach-timeout", "core-effect-unconfirmed"]],
     ["minimize", minimizeStatus, ["save", "rollback", "invalid-settings", "missing-host", "already-running",
       "ipc", "host-start", "hook-install", "stop-timeout", "host-exited", "unsupported-architecture", "runtime"]],
   ];
@@ -397,8 +400,8 @@ test("carousel partial updates retain original titles, IDs and query isolation",
   } };
   Object.defineProperty(globalThis, "document", { configurable: true, value: {
     createElement: tag => {
-      assert.equal(tag, "div");
-      return { style: { setProperty() {} } };
+      assert.ok(["div","img"].includes(tag));
+      return { dataset:{},style: { setProperty() {} },append(){} };
     },
   } });
   try {
@@ -515,6 +518,7 @@ test("pending preview failures use the current language without changing error s
   const surface = { view: "wallpaperDetail", nativeVisible: true, documentVisible: true, id: item.id };
   try {
     for (const language of ["en", "zh-CN", "en"]) {
+      const beforeChanges = changes.length;
       const pending = controller.play(item, surface);
       setLanguage(language);
       rejectPlay(Error("后端原始解码错误"));
@@ -523,7 +527,7 @@ test("pending preview failures use the current language without changing error s
         ? "Preview playback failed. Check the network or media file." : "预览播放失败，请检查网络或媒体文件");
       assert.equal(video.src, "");
       assert.equal(controller.playing, false);
-      assert.deepEqual(changes.slice(-2), [true, false]);
+      assert.deepEqual(changes.slice(beforeChanges), [false], "failed buffering never reports successful playback");
       assert.equal(item.title, "时间");
     }
     const count = messages.length;
@@ -606,12 +610,13 @@ test("running component DOM retains language through pending, error and confirme
           assert.equal(control.querySelector("span").textContent,
             selected.firstChild.textContent, `${scope}: trigger and menu keep the same language`);
         }
-        if (scope === "weather") assert.equal(root.querySelector("#weather-city span").textContent, "上海");
+        if (scope === "weather") assert.equal(root.querySelector("#weather-city"), null);
         if (scope === "clock") assert.equal(root.querySelector("#clock-style span").textContent, english ? "Style 2" : "样式二");
         if (scope === "calendar") assert.equal(root.querySelector("#calendar-theme span").textContent, english ? "Spacious" : "舒展");
         if (scope === "minimize") assert.equal(root.querySelector("#minimize-engine span").textContent, english ? "Modern" : "现代样式");
         const material = root.querySelector(`#${scope}-material span`);
-        if (material) assert.equal(material.textContent, english ? "Liquid glass" : "液态玻璃", scope);
+        if (material) assert.equal(material.textContent, state[scope].material === "frosted-glass"
+          ? english ? "Frosted glass" : "磨砂玻璃" : english ? "Liquid glass" : "液态玻璃", scope);
       }
     }
   } finally {
@@ -696,7 +701,7 @@ test("real app language callbacks rerender every component and roll back failed 
     assert.equal(find(".settings").getAttribute("aria-label"), "时间");
     assert.match(find('[data-settings-scope="clock"] .status').textContent, /桌面时钟启动失败/);
     assert.equal(find("#clock-style span").textContent, "样式二");
-    assert.deepEqual(commands.filter(command => typeof command === "string" &&
+    assert.deepEqual(commands.filter(command => typeof command === "string" && command !== "v1|performance|resource-snapshot" &&
       /^v1\|(clock|calendar|performance|almanac|weather|organizer|icons|taskbar|minimize)\|/.test(command)), [],
     "switching language never sends component settings or restart commands");
     assert.deepEqual(failures, []);
@@ -731,9 +736,7 @@ async function withFeedbackApp(exercise, { startupFailure = false } = {}) {
   const { document, Event } = dom.window;
   const finishStartup = installStartupBrowserApis(dom.window);
   let rejectFonts, offline = false, revision = 1;
-  if (startupFailure) Object.defineProperty(document, "fonts", {
-    configurable: true, value: { ready: new Promise((_, reject) => { rejectFonts = reject; }) },
-  });
+  if (startupFailure) document.fonts.ready = new Promise((_, reject) => { rejectFonts = reject; });
   dom.window.HTMLMediaElement.prototype.pause = function () {};
   dom.window.HTMLMediaElement.prototype.load = function () {};
   dom.window.HTMLMediaElement.prototype.play = () => Promise.reject(Error("test decode failure"));
@@ -806,6 +809,8 @@ test("real app fixed feedback and unavailable module titles switch languages wit
     find('[data-view="desktopBeauty"]').click();
     find('[data-open="widgets"]').click();
     find('[data-open="music"]').click();
+    await import("../music-entry.js");
+    for(let index=0;index<8;index++)await Promise.resolve();
     const beforeLanguage = commands.length;
     for (const value of ["zh-CN", "en", "zh-CN"]) {
       language(value);
@@ -815,6 +820,8 @@ test("real app fixed feedback and unavailable module titles switch languages wit
       assert.equal(document.querySelector(".MusicRoot"),null,"titlebar leaves the music surface");
       assert.equal(find("[data-titlebar-music]").getAttribute("aria-label"),english?"Music":"音乐");
       find("[data-titlebar-music]").click();
+      await import("../music-entry.js");
+      for(let index=0;index<8;index++)await Promise.resolve();
       assert.ok(find(".MusicRoot"),"titlebar re-enters the music surface");
       assert.equal(find("[data-titlebar-music]").getAttribute("aria-label"),english?"Wallpaper":"壁纸");
       assert.doesNotMatch(find("#notice").textContent, /Music is not yet available|音乐暂未接入/);

@@ -675,6 +675,7 @@ test('生产 app/bridge 接线：合成账号登录更新账户面板，隐藏�
   await page.goto(origin+'/index.html');
   await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
   await page.locator('[data-titlebar-music]').click();
+  await page.locator('[data-music-root]').waitFor();
   await page.evaluate(()=>accountsReply(['netease']));
   assert.equal(await page.locator('.MusicTopbar select, .MusicTopbar [data-music-provider-open]').count(),0);
   await openPlatforms(page);
@@ -703,7 +704,7 @@ test('生产 app/bridge 接线：合成账号登录更新账户面板，隐藏�
   await page.evaluate(async()=>{
     const {initialMusicState}=await import('/music.js');
     const {validHostMessage}=await import('/bridge.js');
-    const {query,nav,lyrics,...initial}=initialMusicState();
+    const {query,nav,lyrics,score,...initial}=initialMusicState();
     const online={id:'qq:source-free',title:'Public online title',artist:'Fixture',album:'',artwork:'',duration:180};
     const local={...online,id:'local-123',title:'Public local title'};
     const message={...initial,version:1,type:'music-state',session:8,revision:1,pageOpen:true,pageVisible:true,
@@ -790,7 +791,7 @@ test('桌面音乐组件沿用组件设置页，开关回执原位更新且不�
   assert.match(await page.locator('.status').innerText(),/未运行/);
   await toggle.click();
   assert.deepEqual(await page.evaluate(()=>desktopFixture.commands.at(-1)),{action:'setEnabled',value:false});
-  await page.locator('[data-action="back"] svg').click();
+  await page.locator('[data-action="back"] img').click();
   assert.deepEqual(await page.evaluate(()=>desktopFixture.navigation),{back:1,bubbled:0});
   await page.evaluate(()=>{desktopFixture.view.dispose();desktopFixture.desktop.dispose();});
   const count=await page.evaluate(()=>desktopFixture.commands.length);
@@ -874,6 +875,7 @@ for(const width of [1440,390])test(`生产 app：音乐卡片启停、失败回�
   await checkCard(true,false);
   await card.evaluate(node=>window.musicCardNode=node);
   await card.click();
+  await page.waitForFunction(()=>harness.commands.some(command=>command?.scope==='music-desktop'&&command.action==='setEnabled'));
   assert.deepEqual((await commands()).at(-1),{version:1,scope:'music-desktop',action:'setEnabled',value:false});
   await checkCard(true,true);
   const sent=await commands();
@@ -986,7 +988,7 @@ test('生产 app：组件卡片和原生导航打开桌面设置，返回及标�
   await page.evaluate(()=>desktopReply(true));
   assert.equal(await page.locator('[data-music-action="desktop-enabled"]').getAttribute('aria-checked'),'true');
   await page.locator('[data-tab="details"]').click();
-  await page.locator('[data-music-root] [data-action="back"] svg').click();
+  await page.locator('[data-music-root] [data-action="back"] img').click();
   await page.locator('.widget-catalog [data-open="music"]').waitFor();
   assert.equal(await page.locator('[data-music-root]').count(),0);
   assert.deepEqual(await page.evaluate(()=>musicCounts()),{open:before.open+1,close:before.close+1});

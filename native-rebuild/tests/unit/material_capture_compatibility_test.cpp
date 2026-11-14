@@ -60,31 +60,59 @@ int main() {
 
     lume_glass::RequireCaptureBorderControl([] { return true; }, [] { return E_FAIL; });
     Session healthy;
-    lume_glass::StartMaterialCapture(healthy,[] { return E_FAIL; });
+    lume_glass::StartMaterialCapture(healthy,[] { return 4; },[] { return E_FAIL; });
     Expect(healthy.starts==1&&healthy.calls=="SGC"&&!healthy.borderRequired,
            "supported session verifies border configuration before starting once");
 
     for(const HRESULT error : {E_NOINTERFACE,E_ACCESSDENIED}) {
         Session denied;denied.setterFails=true;
-        ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(denied,[&] { return error; }); },
+        ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(denied,[] { return 4; },[&] { return error; }); },
                                    error,"failed border configuration aborts capture");
         Expect(denied.starts==0&&denied.calls=="S","configuration failure never starts capture");
     }
     Session ignored;ignored.ignored=true;
-    ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(ignored,[] { return E_FAIL; }); },
+    ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(ignored,[] { return 4; },[] { return E_FAIL; }); },
                                E_ACCESSDENIED,"system retaining its border rejects decorative capture");
     Expect(ignored.starts==0&&ignored.calls=="SG","ignored configuration never starts capture");
 
     Session unreadable;unreadable.getterFails=true;
-    ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(unreadable,[] { return E_UNEXPECTED; }); },
+    ExpectCompatibilityFailure([&] { lume_glass::StartMaterialCapture(unreadable,[] { return 4; },[] { return E_UNEXPECTED; }); },
                                E_UNEXPECTED,"failed border readback aborts capture");
     Expect(unreadable.starts==0,"unverified border state never starts capture");
 
     Session unavailable;unavailable.startFails=true;
     bool ordinaryFailure=false;
-    try { lume_glass::StartMaterialCapture(unavailable,[] { return E_FAIL; }); }
+    try { lume_glass::StartMaterialCapture(unavailable,[] { return 4; },[] { return E_FAIL; }); }
     catch (const std::runtime_error&) { ordinaryFailure=true; }
     Expect(ordinaryFailure&&unavailable.starts==1,
            "source start failure retains ordinary error handling rather than terminal compatibility state");
+    for (const int status : {0, 1, 2, 3, 5, -1}) {
+        Session deceptive;deceptive.borderRequired=false;deceptive.ignored=true;
+        ExpectCompatibilityFailure([&] {
+            lume_glass::StartMaterialCapture(deceptive,[status] { return status; },[] { return E_FAIL; });
+        },E_ACCESSDENIED,"only an explicit Allowed permission can start a capture");
+        Expect(deceptive.starts==0&&deceptive.calls=="SG",
+               "successful setter and false getter cannot bypass denied/prompt/missing permission");
+    }
+    Session permissionError;
+    volatile bool permissionQueryFails=true;
+    ExpectCompatibilityFailure([&] {
+        lume_glass::StartMaterialCapture(permissionError,[&]() -> int { if (permissionQueryFails) throw std::runtime_error("permission unavailable"); return 4; },
+                                       [] { return E_NOINTERFACE; });
+    },E_NOINTERFACE,"permission query error fails closed");
+    Expect(permissionError.starts==0,"permission query exception never starts a capture");
+    unsigned permissionResources=0;
+    volatile int startupPermission=3;
+    ExpectCompatibilityFailure([&] {
+        lume_glass::RequireCapturePermission([&] { return startupPermission; },[] { return E_FAIL; });
+        ++permissionResources;
+    },E_ACCESSDENIED,"startup prompt-required gate fails before creating graphics resources");
+    Expect(permissionResources==0,"ungranted permission creates no capture resources");
+    int livePermission=4;
+    lume_glass::RequireCapturePermission([&] { return livePermission; },[] { return E_FAIL; });
+    livePermission=2;
+    ExpectCompatibilityFailure([&] {
+        lume_glass::RequireCapturePermission([&] { return livePermission; },[] { return E_FAIL; });
+    },E_ACCESSDENIED,"permission recheck detects a grant revoked after initialization");
     std::cout << "PASS material capture capability, permission and start ordering\n";
 }

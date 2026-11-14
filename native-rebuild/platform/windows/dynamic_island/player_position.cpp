@@ -71,6 +71,13 @@ struct PlayerPosition::Impl {
     Com<IUIAutomationElement> elapsed, length;
     HWND window = nullptr;
     std::wstring windowTitle;
+    ULONGLONG locateAfter=0;
+    unsigned locateFailures=0;
+    void LocateFailed(){
+        window=nullptr;
+        locateFailures=std::min(locateFailures+1,6u);
+        locateAfter=GetTickCount64()+std::min<ULONGLONG>(30000,250ull<<locateFailures);
+    }
 
     HWND FindWindowFor(const std::wstring& wanted) {
         struct Search { std::wstring wanted; HWND found = nullptr; } search{wanted};
@@ -114,17 +121,21 @@ struct PlayerPosition::Impl {
                 return true;
             }
             previous = value;
+            last.Reset();
             last.value = item.value; item.value = nullptr;
             if (value < 0) last.Reset();
         }
         return false;
     }
     void Sample(const std::wstring& wanted) {
+        if(wanted!=windowTitle){locateAfter=0;locateFailures=0;}
         if (!window || !IsWindow(window) || wanted != windowTitle) {
+            if(GetTickCount64()<locateAfter)return;
             elapsed.Reset(); length.Reset();
             window = FindWindowFor(wanted);
             windowTitle = wanted;
-            if (!window || !Locate(window)) { window = nullptr; std::lock_guard lock(mutex); valid = false; return; }
+            if (!window || !Locate(window)) { LocateFailed(); std::lock_guard lock(mutex); valid = false; return; }
+            locateAfter=0;locateFailures=0;
         }
         Bstr a, b;
         int now = -1, all = -1;
@@ -132,7 +143,7 @@ struct PlayerPosition::Impl {
         if (length && SUCCEEDED(length->get_CurrentName(&b.value))) all = Clock(b.Text());
         const auto tick = GetTickCount64();
         std::lock_guard lock(mutex);
-        if (now < 0) { valid = false; window = nullptr; return; }
+        if (now < 0) { valid = false; LocateFailed(); return; }
         // A one-second step happened just now; anything else (first read,
         // seek, new track) leaves the fraction unknown: assume half a second.
         if (now != seconds) changedAt = valid && now == seconds + 1 ? tick : tick - 500;
@@ -157,7 +168,7 @@ struct PlayerPosition::Impl {
                 if (!active) valid = false;
             }
             if (!active || !uia) { elapsed.Reset(); length.Reset(); window = nullptr; continue; }
-            try { Sample(wanted); } catch (...) { window = nullptr; }
+            try { Sample(wanted); } catch (...) { LocateFailed(); }
         }
         elapsed.Reset(); length.Reset(); uia.Reset();
         CoUninitialize();

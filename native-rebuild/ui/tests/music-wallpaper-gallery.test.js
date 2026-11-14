@@ -149,6 +149,8 @@ test('gallery traps focus, paginates, tags thumbnails and only closes after conf
   f.key('Tab',true);assert.equal(f.document.activeElement,f.find('[data-gallery-more]'));
   f.find('[data-gallery-more]').click();assert.equal(f.queries[1].fields.offset,1);
   f.queries[1].resolve(catalog(2,{total:2,items:[item('two',{type:'video'})]}));await flush();
+  assert.equal(f.find('[data-wallpaper-id=one]'),selected,'paging retains the existing card');
+  assert.equal(f.find('[data-wallpaper-id=one]').firstElementChild,preview,'paging retains thumbnail subtree');
   assert.equal(f.document.querySelectorAll('[data-wallpaper-id]').length,2);
   assert.match(f.find('[data-wallpaper-id=two]').textContent,/动态/);
   f.find('img').dispatchEvent(new f.dom.window.Event('error'));assert.equal(f.find('img').hidden,true);

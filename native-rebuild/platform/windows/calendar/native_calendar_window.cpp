@@ -62,7 +62,7 @@ bool NativeCalendarWindow::Start(bool preservePosition) {
     const auto alive=alive_;const auto refresh=todoPort_.refreshTime;
     if(refresh)refresh();
     if(!*alive)return false;
-    RefreshTodos();
+    ReadTodos();
     if(!*alive)return false;
     if(window_)return true;
     model_.UpdateToday(todayProvider_());
@@ -88,6 +88,7 @@ void NativeCalendarWindow::Stop() {
     if(window_)KillTimer(window_,kAgendaTimer);
     if(window_) {const auto old=window_;KillTimer(old,kMidnightTimer);KillTimer(old,kHighlightTimer);dragging_=false;sizing_=false;if(GetCapture()==old)ReleaseCapture();DestroyWindow(old);window_=nullptr;}
     renderer_.reset();bitmap_={};view_={};snap_={};confirmedBounds_.reset();interactionBounds_.reset();remoteEdges_=0;remoteSource_=nullptr;initialPending_=false;stopping_=false;
+    todos_.Update({});agenda_={};
 }
 calendar::Profile NativeCalendarWindow::CurrentBounds() const {
     auto result=*preferences_.Active();if(!window_)return result;
@@ -457,7 +458,7 @@ LRESULT CALLBACK NativeCalendarWindow::WindowProc(HWND w,UINT message,WPARAM wp,
         self->material_.Detach();
         KillTimer(w,kMidnightTimer);KillTimer(w,kHighlightTimer);KillTimer(w,kRemoteHighlightTimer);KillTimer(w,kAgendaTimer);self->CancelTodoEditor();
         self->ClearSnap();RemovePropW(w,lume::window_ids::DesktopWidgetProp);RemovePropW(w,widget_snap::Capability);RemovePropW(w,widget_snap::ActiveEdges);
-        SetWindowLongPtrW(w,GWLP_USERDATA,0);self->window_=nullptr;self->picker_.Close();self->renderer_.reset();self->bitmap_={};
+        SetWindowLongPtrW(w,GWLP_USERDATA,0);self->window_=nullptr;self->picker_.Close();self->renderer_.reset();self->bitmap_={};self->todos_.Update({});self->agenda_={};
         self->dragging_=false;self->sizing_=false;self->view_={};self->snap_={};self->confirmedBounds_.reset();self->interactionBounds_.reset();self->remoteEdges_=0;self->remoteSource_=nullptr;break;
     default:break;
     }

@@ -62,7 +62,7 @@ test('Sonnet colors preview, commit, reset and survive wallpaper navigation with
       await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
       await page.evaluate(async()=>{
         const {initialMusicState}=await import('./music.js');
-        const {query,nav,lyrics,...native}=initialMusicState();
+        const {query,nav,lyrics,score,...native}=initialMusicState();
         const track={id:'sonnet-colors',title:'Color fixture',artist:'Lume',album:'',source:'C:/fixture.wav',artwork:'',duration:72};
         harness.receive({...native,version:1,type:'music-state',session:9,revision:1,pageOpen:true,pageVisible:true,
           status:'paused',playing:false,current:track,queue:[track],timeline:{position:25,duration:72},

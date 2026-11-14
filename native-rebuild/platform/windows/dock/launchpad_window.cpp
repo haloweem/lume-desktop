@@ -138,9 +138,32 @@ WidgetBitmap Blur(const WidgetBitmap& source, int radius) {
     WidgetBitmap result{source.width, source.height, std::move(output)};
     return result;
 }
+// Blurring spreads alpha outside the original round corners. Clip the final
+// foreground too, so neither the snapshot nor its dimming tint squares them off.
+void ClipRoundCorners(WidgetBitmap& frame, float radius) {
+    radius = std::min(radius, std::min(frame.width, frame.height) / 2.f);
+    if (radius <= 0) return;
+    const auto edge = static_cast<unsigned>(std::ceil(radius));
+    for (unsigned y = 0; y < edge; ++y)
+        for (unsigned x = 0; x < edge; ++x) {
+            const float dx = radius - (static_cast<float>(x) + .5f);
+            const float dy = radius - (static_cast<float>(y) + .5f);
+            const auto coverage = static_cast<unsigned>(std::lround(
+                std::clamp(radius + .5f - std::sqrt(dx * dx + dy * dy), 0.f, 1.f) * 255));
+            if (coverage == 255) continue;
+            for (const auto row : {y, frame.height - 1 - y})
+                for (const auto column : {x, frame.width - 1 - x}) {
+                    auto& pixel = frame.pixels[static_cast<std::size_t>(row) * frame.width + column];
+                    std::uint32_t clipped = 0;
+                    for (const auto shift : {0, 8, 16, 24})
+                        clipped |= (((pixel >> shift & 255) * coverage + 127) / 255) << shift;
+                    pixel = clipped;
+                }
+        }
+}
 }  // namespace
 
-LaunchpadWindow::Layout LaunchpadWindow::LayoutFor(float width, float height, bool collection,int iconScale) {
+LaunchpadWindow::Layout LaunchpadWindow::LayoutFor(float width, float height, bool collection,int iconScale, bool maximized) {
     Layout layout;
     layout.width = width;
     layout.height = height;
@@ -151,8 +174,11 @@ LaunchpadWindow::Layout LaunchpadWindow::LayoutFor(float width, float height, bo
         layout.rows = 3;
         layout.panel = {0, 0, width, height};
         layout.back = {22, 20, 38, 38};
-        layout.search = {width / 2 - 120, height - 44, 240, 30};
+        layout.search = LayoutFor(width, height, false, iconScale, maximized).search;
+        layout.search.x = std::max(layout.search.x, layout.back.x + layout.back.width + 16);
+        layout.search.width = std::min(layout.search.width, width - layout.search.x - 36);
         layout.add = {-1000, -1000, 0, 0};
+        layout.maximize = {-1000, -1000, 0, 0};
         layout.grid = {width * .12f, 74, width * .76f, std::max(120.f, height - 174)};
         layout.page = {width / 2 - 50, height - 82, 100, 28};
         layout.previous = {layout.page.x - 46, layout.page.y - 1, 30, 30};
@@ -165,11 +191,28 @@ LaunchpadWindow::Layout LaunchpadWindow::LayoutFor(float width, float height, bo
     layout.panel = {0, 0, width, height};
     layout.columns = dock::Columns;
     layout.rows = dock::Rows;
-    const float addSize = 38, searchWidth = std::max(160.f, std::min(640.f, width - 96 - addSize - 12));
+    // The maximize button sits alone at the top right; the search field and
+    // add button stay centred and keep clear of it.
+    const float addSize = 38, maxSize = 34;
+    const float reserve = MaximizeAvailable ? 2 * (maxSize + 24) : 0.f;
+    const float searchWidth = std::max(160.f, std::min(maximized ? 520.f : 640.f, width - 96 - addSize - 12 - reserve));
     const float left = (width - searchWidth - 12 - addSize) / 2;
-    layout.back = {left, 23, 38, 38};
-    layout.search = {left, 24, searchWidth, 36};
-    layout.add = {left + searchWidth + 12, 23, addSize, addSize};
+    const float top = maximized ? 28.f : 0.f;
+    layout.back = {left, 23 + top, 38, 38};
+    layout.search = {left, 24 + top, searchWidth, 36};
+    layout.add = {left + searchWidth + 12, 23 + top, addSize, addSize};
+    layout.maximize = MaximizeAvailable ? WidgetRect{width - maxSize - 22, 25 + top, maxSize, maxSize} : WidgetRect{-1000, -1000, 0, 0};
+    if (maximized) {
+        const float side = std::max(36.f, width * .07f);
+        layout.grid = {side, 80 + top + 24, width - 2 * side, std::max(60.f, height - 80 - top - 24 - 72)};
+        layout.page = {width / 2 - 50, height - 56, 100, 30};
+        layout.previous = {width / 2 - 96, height - 56, 30, 30};
+        layout.next = {width / 2 + 66, height - 56, 30, 30};
+        const float icon=IconSize*static_cast<float>(std::clamp(iconScale,50,120))/100;
+        layout.columns=std::clamp(static_cast<int>(layout.grid.width/(icon+32)),1,dock::Columns);
+        layout.rows=std::clamp(static_cast<int>(layout.grid.height/(icon+64)),1,MaximizedRows);
+        return layout;
+    }
     layout.grid = {36, 80, width - 72, std::max(60.f, height - 80 - 56)};
     layout.page = {width / 2 - 50, height - 46, 100, 30};
     layout.previous = {width / 2 - 96, height - 46, 30, 30};
@@ -202,6 +245,7 @@ LaunchpadWindow::HitResult LaunchpadWindow::Hit(const Layout& layout, std::size_
     if (collection) {
         if (Inside(layout.back, x, y)) return {HitKind::Back, -1};
     } else if (Inside(layout.add, x, y)) return {HitKind::Add, -1};
+    else if (Inside(layout.maximize, x, y)) return {HitKind::Maximize, -1};
     if (pages > 1 && page > 0 && Inside(layout.previous, x, y)) return {HitKind::Previous, -1};
     if (pages > 1 && page + 1 < pages && Inside(layout.next, x, y)) return {HitKind::Next, -1};
     for (std::size_t i = 0; i < itemsOnPage; ++i) {
@@ -226,6 +270,7 @@ struct LaunchpadWindow::Impl {
     unsigned dpi = 96, searchDpi = 0;
     bool visible = false, closing = false, frosted = false, modal = false, composing = false, reducedMotion = false;
     bool searchPainting = false, searchPaintPending = false, searchShown = false, preparingSearch = false;
+    bool searchTimerPending = false;
     // The live EDIT is shown and focused as the opening starts but draws
     // nothing yet (the panel draws its raster); the hand-off at rest then only
     // swaps pixels, instead of showing and activating a window mid-glide.
@@ -250,6 +295,9 @@ struct LaunchpadWindow::Impl {
     RECT final{};
     float width = 0, height = 0;
     int panelScale=100,iconScale=100;RECT dockAnchor{};
+    bool maximized = false;
+    bool Full() const { return MaximizeAvailable && maximized && !compact; }
+    float Radius() const { return Full() ? 0.f : CornerRadius; }
     DockSpring presence, spreadX{1, 0}, spreadY{1, 0};
     DockSpring collectionExpand;
     WidgetRect collectionFrom;
@@ -547,7 +595,7 @@ struct LaunchpadWindow::Impl {
         // arrived first. It starts once the panel is half in and leaves first.
         const float c = std::clamp((fade - .3f) / .6f, 0.f, 1.f);
         k.contentOpacity = c * c * (3 - 2 * c);
-        k.cornerRadius = CornerRadius * std::min(s, 1.f);
+        k.cornerRadius = Radius() * std::min(s, 1.f);
         k.panelCount = flatPanelCount;
         for (unsigned i = 0; i < flatPanelCount; ++i) {
             const auto& r = flatPanels[i];
@@ -588,7 +636,12 @@ struct LaunchpadWindow::Impl {
     Impl(HINSTANCE i, LaunchpadPorts p, Presentation presentation)
         : compact(presentation == Presentation::CollectionPopup), instance(i), ports(std::move(p)) {}
     ~Impl() { Stop(); }
-    Layout CurrentLayout() const { return compact ? PopupLayoutFor(width, height) : LayoutFor(width, height, collectionView,iconScale); }
+    Layout CurrentLayout() const { return compact ? PopupLayoutFor(width, height) : LayoutFor(width, height, collectionView,iconScale,Full()); }
+    WidgetRect TitleField() const { return compact ? CurrentLayout().search : WidgetRect{width / 2 - 120, height - 44, 240, 30}; }
+    bool SearchReady() const {
+        return visible && !closing && !renaming && !presenceMoving && !collectionMoving && !collectionClosing &&
+               (!collectionView || !compact);
+    }
     float IconSide(WidgetRect cell)const{return std::max(1.f,std::min({IconSize*static_cast<float>(compact?100:iconScale)/100,cell.width-20,cell.height-LabelHeight-14}));}
     WidgetRect CollectionPanel() const {
         const float e = std::clamp(collectionExpand.value, 0.f, 1.f);
@@ -781,10 +834,15 @@ struct LaunchpadWindow::Impl {
             if (visible) { Animate(); Paint(); }
             return;
         }
+        if (!id.empty() && collectionView && !collectionClosing && id == collectionId) {
+            collectionTitle = OrganizerWide(title);
+            Refresh();
+            if (visible) Paint();
+            return;
+        }
         if (id.empty() && collectionView && visible) {
             collectionClosing = true;
-            if (search) ShowWindow(search, SW_HIDE);
-            searchShown = searchMasked = false;
+            FreezeSearch();
             SetFocus(window);
             Animate();
             if (reducedMotion) FinishCollectionClose();
@@ -832,15 +890,25 @@ struct LaunchpadWindow::Impl {
         query.clear();
         typed.clear();
         page = 0;
+        if (search) {
+            preparingSearch = true;
+            SetWindowTextW(search, L"");
+            preparingSearch = false;
+            PositionSearch();
+            PresentSearch();
+        }
         Refresh();
         if (visible) {
             SetFocus(window);
+            collectionMoving = opening && !reducedMotion;
+            if (reducedMotion) collectionExpand = {collectionView ? 1.f : 0.f, 0};
             Animate();
             Paint();
+            if (SearchReady()) BeginSearch();
         }
     }
     void FinishCollectionClose() {
-        collectionClosing = collectionView = false;
+        collectionClosing = collectionView = collectionMoving = false;
         collectionId.clear(); collectionTitle.clear();
         collectionExpand = {}; collectionFrom = {};
         collectionBackground.reset(); collectionSharp.reset();
@@ -937,7 +1005,7 @@ struct LaunchpadWindow::Impl {
             PositionSearch();
         }
         if (visible) {
-            if (!collectionView) BeginSearch();
+            if (!collectionView || !compact) BeginSearch();
             else SetFocus(window);
         }
         Paint();
@@ -977,9 +1045,19 @@ struct LaunchpadWindow::Impl {
         if (!dpi) dpi = 96;
         const auto px = [&](float dip) { return static_cast<int>(std::lround(dip * static_cast<float>(dpi) / 96)); };
         const int workWidth = info.rcWork.right - info.rcWork.left;
-        const int w = std::min(px(compact ? 390.f : PreferredWidth*static_cast<float>(panelScale)/100), workWidth - px(40));
         const int gap = px(16);
         const int below = dockBounds.bottom > dockBounds.top ? dockBounds.top - gap : info.rcWork.bottom - gap;
+        if (Full()) {
+            // The whole work area above the Dock, so dragging an item down to
+            // the Dock still hands it over.
+            const int bottom = std::min(static_cast<int>(info.rcWork.bottom), below + gap / 2);
+            if (bottom - info.rcWork.top < px(320.f) || workWidth < px(480.f)) return false;
+            final = {info.rcWork.left, info.rcWork.top, info.rcWork.right, bottom};
+            width = static_cast<float>(workWidth) * 96 / dpi;
+            height = static_cast<float>(bottom - info.rcWork.top) * 96 / dpi;
+            dockAnchor=dockBounds;return true;
+        }
+        const int w = std::min(px(compact ? 390.f : PreferredWidth*static_cast<float>(panelScale)/100), workWidth - px(40));
         const int h = std::min(px(compact ? 400.f : PreferredHeight*static_cast<float>(panelScale)/100), static_cast<int>(below - info.rcWork.top - gap));
         if (w < px(compact ? 280.f : 480.f) || h < px(compact ? 280.f : 320.f)) return false;
         const int x = compact ? std::clamp(static_cast<int>((dockBounds.left + dockBounds.right - w) / 2),
@@ -1000,6 +1078,19 @@ struct LaunchpadWindow::Impl {
         if(!Geometry(dockAnchor)){panelScale=oldPanel;iconScale=oldIcon;return false;}
         if(dragged>=0){FinishDragDiagnostics("appearance-changed");FlushDragDiagnostics();dragged=drop=pressed=-1;if(GetCapture()==window)ReleaseCapture();}
         collectionSharp.reset();collectionBackground.reset();motion.clear();
+        page=std::clamp(page,0,Pages()-1);
+        if(!visible)return true;
+        PositionSearch();return Paint();
+    }
+    bool SetMaximized(bool next){
+        if constexpr(!MaximizeAvailable)return true;
+        if(compact||maximized==next)return true;
+        maximized=next;
+        if(!window)return true;
+        if(!Geometry(dockAnchor)){maximized=!next;Geometry(dockAnchor);return false;}
+        if(dragged>=0){FinishDragDiagnostics("maximize-changed");FlushDragDiagnostics();dragged=drop=pressed=-1;if(GetCapture()==window)ReleaseCapture();}
+        collectionSharp.reset();collectionBackground.reset();motion.clear();
+        hoverKind=HitKind::None;hover=-1;
         page=std::clamp(page,0,Pages()-1);
         if(!visible)return true;
         PositionSearch();return Paint();
@@ -1271,6 +1362,7 @@ struct LaunchpadWindow::Impl {
         started = true;
         if (collectionClosing) FinishCollectionClose();
         collectionExpand = {collectionView ? 1.f : 0.f, 0};
+        collectionMoving = false;
         const auto layout = CurrentLayout();
         const auto items = PageEntries();
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -1278,7 +1370,7 @@ struct LaunchpadWindow::Impl {
             auto& m = motion[items[i].path];
             m.x = {cell.x, 0}; m.y = {cell.y, 0}; m.scale = {1, 0}; m.placed = true;
         }
-        if (visible && !searchShown && !collectionView) { if (!BeginSearch()) Paint(); }
+        if (SearchReady() && !searchShown) { if (!BeginSearch()) Paint(); }
         else Paint();
     }
     // Screen rectangle for the current presence, scaled about the final centre.
@@ -1297,10 +1389,10 @@ struct LaunchpadWindow::Impl {
         if (collectionView && !compact) {
             if (collectionSharp) canvas->ImageFrame(collectionSharp, {0, 0, width, height}, 1 - alpha);
             if (collectionBackground) canvas->ImageFrame(collectionBackground, {0, 0, width, height}, alpha);
-            else canvas->Rounded({0, 0, width, height}, 0, 0x07111f, .72f);
-            canvas->Rounded({0, 0, width, height}, 0, 0x000000, .34f * alpha);
+            else canvas->Rounded({0, 0, width, height}, Radius(), 0x07111f, .72f);
+            canvas->Rounded({0, 0, width, height}, Radius(), 0x000000, .34f * alpha);
         }
-        canvas->Rounded({0, 0, width * s, height * s}, CornerRadius * s, 0xffffff, 1.f / 255);
+        canvas->Rounded({0, 0, width * s, height * s}, Radius() * s, 0xffffff, 1.f / 255);
         const auto field = R(layout.search);
         if (collectionView) {
             const auto back = R(layout.back);
@@ -1310,34 +1402,56 @@ struct LaunchpadWindow::Impl {
                 canvas->Line(cx + 5 * s, cy - 8 * s, cx - 3 * s, cy, 0xffffff, .9f, 1.8f * s);
                 canvas->Line(cx - 3 * s, cy, cx + 5 * s, cy + 8 * s, 0xffffff, .9f, 1.8f * s);
             }
+            const auto title = R(TitleField());
             if (!(renaming && !renameTile))
-                canvas->Text(collectionTitle, {field.x + 4 * s, field.y, field.width - 8 * s, field.height}, 17 * s,
+                canvas->Text(collectionTitle, {title.x + 4 * s, title.y, title.width - 8 * s, title.height}, 17 * s,
                              0xffffff, .95f * alpha, false, WidgetTextAlign::Center);
-        } else {
+        }
+        if (!collectionView || !compact) {
             // Search field and add button sit on frosted glass panels (as the calendar's
             // round buttons do); only their glyphs are drawn here.
             const float gx = field.x + 22 * s, gy = field.y + field.height / 2 - 1 * s;
-            canvas->AnnularSector(gx, gy, 5.2f * s, 6.6f * s, 0, 360, 0xffffff, .8f);
-            canvas->Line(gx + 4.6f * s, gy + 4.6f * s, gx + 8.6f * s, gy + 8.6f * s, 0xffffff, .8f, 1.5f * s);
-            const auto add = R(layout.add);
-            const float cx = add.x + add.width / 2, cy = add.y + add.height / 2, arm = 7.5f * s;
-            if (hoverKind == HitKind::Add) canvas->Rounded(add, add.width / 2, 0xffffff, .10f);
-            canvas->Line(cx - arm, cy, cx + arm, cy, 0xffffff, .92f, 1.7f * s);
-            canvas->Line(cx, cy - arm, cx, cy + arm, 0xffffff, .92f, 1.7f * s);
+            canvas->AnnularSector(gx, gy, 5.2f * s, 6.6f * s, 0, 360, 0xffffff, .8f * alpha);
+            canvas->Line(gx + 4.6f * s, gy + 4.6f * s, gx + 8.6f * s, gy + 8.6f * s, 0xffffff, .8f * alpha, 1.5f * s);
+            if (!collectionView) {
+                const auto add = R(layout.add);
+                const float cx = add.x + add.width / 2, cy = add.y + add.height / 2, arm = 7.5f * s;
+                if (hoverKind == HitKind::Add) canvas->Rounded(add, add.width / 2, 0xffffff, .10f);
+                canvas->Line(cx - arm, cy, cx + arm, cy, 0xffffff, .92f, 1.7f * s);
+                canvas->Line(cx, cy - arm, cx, cy + arm, 0xffffff, .92f, 1.7f * s);
+                if (!compact && MaximizeAvailable) {
+                    // Maximize / restore: two diagonal arrows pointing out of
+                    // (or back into) the centre.
+                    const auto m = R(layout.maximize);
+                    const float mx = m.x + m.width / 2, my = m.y + m.height / 2;
+                    if (hoverKind == HitKind::Maximize) canvas->Rounded(m, m.width / 2, 0xffffff, .10f);
+                    const float inner = 1.6f * s, outer = 6.6f * s, head = 3.8f * s, stroke = 1.5f * s;
+                    for (const float d : {1.f, -1.f}) {
+                        // d = 1: towards the top right; d = -1: towards the bottom left.
+                        const float ax = mx + d * inner, ay = my - d * inner, bx = mx + d * outer, by = my - d * outer;
+                        canvas->Line(ax, ay, bx, by, 0xffffff, .92f, stroke);
+                        // The arrowhead sits at the outer end to maximize, the inner end to restore.
+                        const float tx = maximized ? ax : bx, ty = maximized ? ay : by;
+                        const float back = maximized ? d : -d;
+                        canvas->Line(tx, ty, tx + back * head, ty, 0xffffff, .92f, stroke);
+                        canvas->Line(tx, ty, tx, ty - back * head, 0xffffff, .92f, stroke);
+                    }
+                }
+            }
             if (!searchShown || SearchInPanel() || (renaming && renameTile)) {
                 // Where PositionSearch puts the EDIT, so its raster lands 1:1.
                 const WidgetRect text = compact ? WidgetRect{field.x, field.y + 2 * s, field.width, field.height - 4 * s}
                                                 : WidgetRect{field.x + 40 * s, field.y + 8 * s, field.width - 56 * s, field.height - 16 * s};
-                if (searchFrame && typed.empty() && !renaming) canvas->ImageFrame(searchFrame, text);
+                if (searchFrame && typed.empty() && !renaming) canvas->ImageFrame(searchFrame, text, alpha);
                 else if (renaming && !query.empty()) canvas->Text(OrganizerWide(query), text, 14 * s, 0xffffff, .95f);
                 else if (!typed.empty()) canvas->Text(typed, text, 14 * s, 0xffffff, .95f);
-                else canvas->Text(L"搜索桌面项目", text, 14 * s, 0xffffff, .55f);
+                else canvas->Text(collectionView ? L"搜索当前收纳" : L"搜索桌面项目", text, 14 * s, 0xffffff, .55f * alpha);
             }
         }
         // Items; the dragged one floats above the rest.
         const auto items = PageEntries();
         if (items.empty())
-            canvas->Text(collectionView ? L"这个收纳还是空的" : query.empty() ? L"桌面上没有项目" : L"没有找到匹配的项目",
+            canvas->Text(!query.empty() ? L"没有找到匹配的项目" : collectionView ? L"这个收纳还是空的" : L"桌面上没有项目",
                          R(layout.grid), 15 * s, 0xffffff, .6f, false, WidgetTextAlign::Center);
         int floating = -1;
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -1419,6 +1533,7 @@ struct LaunchpadWindow::Impl {
         const bool finished = canvas->Finish(bitmap);
         if (traceStarted) { dragDiagnostics.readbackMs += ui_stall::Now() - phaseStarted; phaseStarted = ui_stall::Now(); }
         if (!finished) return false;
+        if (collectionView && !compact) ClipRoundCorners(bitmap, Radius() * static_cast<float>(dpi) / 96);
         const bool uploaded = surface.Upload(bitmap);
         if (traceStarted) dragDiagnostics.uploadMs += ui_stall::Now() - phaseStarted;
         if (!uploaded) return false;
@@ -1513,7 +1628,7 @@ struct LaunchpadWindow::Impl {
         // Dock profile, because the liquid shader derives refraction from it.
         p.opticalProfile = frosted ? 1 : 3;
         p.lightForeground = 1;
-        p.cornerRadius = CornerRadius * std::min(s, 1.f);
+        p.cornerRadius = Radius() * std::min(s, 1.f);
         p.reducedMotion = reducedMotion;
         p.opacityEnabled = 1;
         p.opacity = preparing ? 0.f : alpha;
@@ -1528,10 +1643,20 @@ struct LaunchpadWindow::Impl {
         const auto layout = CurrentLayout();
         const auto& q = layout.search;
         const auto& a = layout.add;
-        if (!collectionView && !closing) {
+        if (!closing && collectionView) {
+            flatPanelCount = 0;
+            if (!compact) {
+                const auto field = MapCollectionRect(q);
+                flatPanels[flatPanelCount++] = {field.x, field.y, field.width, field.height, field.height / 2};
+            }
+        } else if (!closing) {
             flatPanelCount = 2;
             flatPanels[0] = {q.x, q.y, q.width, q.height, q.height / 2};
             flatPanels[1] = {a.x, a.y, a.width, a.height, -1};
+            if (!compact && MaximizeAvailable) {
+                const auto& m = layout.maximize;
+                flatPanels[flatPanelCount++] = {m.x, m.y, m.width, m.height, -1};
+            }
             // A collection tile uses the same frosted panel material as the
             // search field and add button, instead of a plain canvas fill.
             const auto entries = PageEntries();
@@ -1785,7 +1910,9 @@ struct LaunchpadWindow::Impl {
         return true;
     }
     bool BeginSearch() {
-        if (collectionView) return true;
+        if ((collectionView && compact) || collectionClosing) return true;
+        if (window) KillTimer(window, SearchTimer);
+        searchTimerPending = false;
         if (searchShown) return true;
         if (searchMasked && search) {
             // Already shown and focused: reveal its pixels and drop the panel's copy.
@@ -1797,6 +1924,7 @@ struct LaunchpadWindow::Impl {
             return true;
         }
         if (!search && !PrepareSearch()) return false;
+        PositionSearch();
         if (!typed.empty()) {
             preparingSearch = true;
             const bool set = SetWindowTextW(search, typed.c_str()) != FALSE;
@@ -1820,6 +1948,8 @@ struct LaunchpadWindow::Impl {
         return true;
     }
     void FreezeSearch() {
+        if (window) KillTimer(window, SearchTimer);
+        searchTimerPending = false;
         if (!search || (!searchShown && !searchMasked)) return;
         searchMasked = false;
         PresentSearch();
@@ -1829,6 +1959,8 @@ struct LaunchpadWindow::Impl {
         caretInterval = 0;
     }
     void DestroySearch() {
+        if (window) KillTimer(window, SearchTimer);
+        searchTimerPending = false;
         const auto old = search;
         search = nullptr;
         if (old && IsWindow(old)) { KillTimer(old, CaretTimer); DestroyWindow(old); }
@@ -1849,13 +1981,15 @@ struct LaunchpadWindow::Impl {
         if (!search || !window) return;
         const auto layout = CurrentLayout();
         const float scale = static_cast<float>(dpi) / 96;
-        const WidgetRect r = compact ? WidgetRect{layout.search.x, layout.search.y + 2, layout.search.width, layout.search.height - 4}
+        const auto field = renaming && collectionView ? TitleField() : layout.search;
+        const WidgetRect r = renaming && collectionView && !compact ? WidgetRect{field.x + 4, field.y, field.width - 8, field.height}
+                            : compact ? WidgetRect{layout.search.x, layout.search.y + 2, layout.search.width, layout.search.height - 4}
                                     : WidgetRect{layout.search.x + 40, layout.search.y + 8, layout.search.width - 56, layout.search.height - 16};
         SetWindowPos(search, nullptr, final.left + static_cast<int>(r.x * scale), final.top + static_cast<int>(r.y * scale),
                      static_cast<int>(r.width * scale), static_cast<int>(r.height * scale), SWP_NOACTIVATE | SWP_NOZORDER);
         if (searchDpi != dpi) {
             searchDpi = dpi;
-            const auto replacement = CreateFontW(-MulDiv(compact ? 17 : 14, static_cast<int>(dpi), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            const auto replacement = CreateFontW(-MulDiv(compact || (renaming && collectionView) ? 17 : 14, static_cast<int>(dpi), 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                                                  DEFAULT_PITCH, ui_font::Family(L"搜索"));
             if (replacement) {
@@ -1876,7 +2010,7 @@ struct LaunchpadWindow::Impl {
     // The live EDIT stays blank and only takes input. Handing its pixels over
     // to the EDIT window once the opening settled made the field change subtly
     // apart from the panel. Renaming a collection still shows the EDIT.
-    bool SearchInPanel() const { return !collectionView && !renaming; }
+    bool SearchInPanel() const { return (!collectionView || !compact) && !renaming; }
     bool PresentSearch() {
         if (!search || searchPainting) return false;
         RECT rect{};
@@ -1916,7 +2050,7 @@ struct LaunchpadWindow::Impl {
                 const BYTE channel = pass ? 255 : 140;
                 direct_write::Style style;
                 style.size = 14.f * static_cast<float>(dpi) / 96.f;
-                direct_write::Draw(dib.dc, L"搜索桌面项目", text, RGB(channel, channel, channel), style);
+                direct_write::Draw(dib.dc, collectionView ? L"搜索当前收纳" : L"搜索桌面项目", text, RGB(channel, channel, channel), style);
             }
             GUITHREADINFO caret{};
             caret.cbSize = sizeof(caret);
@@ -1973,6 +2107,14 @@ struct LaunchpadWindow::Impl {
         const auto items = PageEntries();
         if (!items.empty()) OpenEntry(items.front());
     }
+    void Escape() {
+        if (collectionView && !compact && (!query.empty() || !typed.empty())) {
+            typed.clear();
+            if (search) SetWindowTextW(search, L"");
+            else { query.clear(); page = 0; Filter(); Animate(); Paint(); }
+        } else if (collectionView && ports.back) Modal([&] { ports.back(); });
+        else Hide();
+    }
     static LRESULT CALLBACK SearchProcedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Impl*>(GetPropW(hwnd, L"LumeLaunchpadSearch"));
         if (!self) return DefWindowProcW(hwnd, message, w, l);
@@ -1999,7 +2141,7 @@ struct LaunchpadWindow::Impl {
                 if (w == VK_ESCAPE) { self->EndRename(false); return 0; }
                 if (w == VK_RETURN) { self->EndRename(true); return 0; }
             } else {
-                if (w == VK_ESCAPE) { self->Hide(); return 0; }
+                if (w == VK_ESCAPE) { self->Escape(); return 0; }
                 if (w == VK_RETURN) { self->OpenFirst(); return 0; }
                 if (w == VK_PRIOR || w == VK_NEXT) { self->Turn(w == VK_PRIOR ? -1 : 1); return 0; }
             }
@@ -2040,7 +2182,7 @@ struct LaunchpadWindow::Impl {
         modal = true;
         action();
         modal = false;
-        if (visible) SetFocus(collectionView || (!searchShown && !searchMasked) ? window : search);
+        if (visible) SetFocus((compact && collectionView) || (!searchShown && !searchMasked) ? window : search);
     }
     static LRESULT CALLBACK Procedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -2075,7 +2217,8 @@ struct LaunchpadWindow::Impl {
         case WM_TIMER:
             if (w == SearchTimer) {
                 KillTimer(hwnd, SearchTimer);
-                if (self->visible && !self->searchShown && !self->collectionView && !self->presenceMoving) self->BeginSearch();
+                self->searchTimerPending = false;
+                if (self->SearchReady() && !self->searchShown) self->BeginSearch();
                 return 0;
             }
             if (w == RefreshTimer) {
@@ -2131,8 +2274,8 @@ struct LaunchpadWindow::Impl {
                 }
                 if (self->dirty) { self->dirty = false; self->Paint(); }
             }
-            if (self->visible && !self->searchShown && !self->collectionView && !self->presenceMoving)
-                SetTimer(hwnd, SearchTimer, static_cast<UINT>(SearchSettleSeconds * 1000), nullptr);
+            if (self->SearchReady() && !self->searchShown && !self->searchTimerPending)
+                self->searchTimerPending = SetTimer(hwnd, SearchTimer, static_cast<UINT>(SearchSettleSeconds * 1000), nullptr) != 0;
             return 0;
         }
         case WM_CHAR:
@@ -2285,6 +2428,12 @@ struct LaunchpadWindow::Impl {
                 return 0;
             }
             if (GetCapture() == hwnd) ReleaseCapture();
+            if (!self->compact && self->collectionView &&
+                Inside(self->CurrentLayout().search, self->LayoutX(l), self->LayoutY(l))) {
+                if (self->SearchReady()) self->BeginSearch();
+                if (self->searchShown) SetFocus(self->search);
+                return 0;
+            }
             const auto hit = self->HitAt(l);
             if (!self->compact && self->collectionView && hit.kind == HitKind::None &&
                 self->ports.back) {
@@ -2298,6 +2447,9 @@ struct LaunchpadWindow::Impl {
                 const int index = self->page * self->PageSize() + hit.index;
                 if (index == pressed && hit.index >= 0 && static_cast<std::size_t>(hit.index) < items.size())
                     self->OpenEntry(items[static_cast<std::size_t>(hit.index)]);
+            } else if (hit.kind == HitKind::Maximize) {
+                const bool next = !self->maximized;
+                if (self->SetMaximized(next) && self->ports.maximized) self->ports.maximized(next);
             } else if (hit.kind == HitKind::Add && self->ports.add) {
                 const auto layout = self->CurrentLayout();
                 const float scale = static_cast<float>(self->dpi) / 96;
@@ -2336,8 +2488,7 @@ struct LaunchpadWindow::Impl {
         case WM_KEYDOWN:
             if (w == VK_ESCAPE) {
                 if (self->dragged >= 0) { ReleaseCapture(); return 0; }
-                if (self->collectionView && self->ports.back) self->Modal([&] { self->ports.back(); });
-                else self->Hide();
+                self->Escape();
                 return 0;
             }
             if (w == VK_PRIOR || w == VK_LEFT) { self->Turn(-1); return 0; }
@@ -2376,6 +2527,8 @@ void LaunchpadWindow::Refresh() {
 }
 void LaunchpadWindow::SetFrosted(bool frosted) { impl_->frosted = frosted; if (impl_->visible) impl_->Paint(); }
 bool LaunchpadWindow::SetAppearance(int panelScale,int iconScale){return impl_->SetAppearance(panelScale,iconScale);}
+bool LaunchpadWindow::SetMaximized(bool maximized) { return impl_->SetMaximized(maximized); }
+bool LaunchpadWindow::Maximized() const { return impl_->maximized; }
 bool LaunchpadWindow::Paint() { return impl_->Paint(); }
 void LaunchpadWindow::Stop() { impl_->Stop(); }
 HWND LaunchpadWindow::Handle() const { return impl_->window; }
@@ -2402,5 +2555,6 @@ void LaunchpadWindow::Settle() { impl_->Settle(); }
 float LaunchpadWindow::Presence() const { return impl_->presence.value; }
 float LaunchpadWindow::CollectionPresence() const { return impl_->collectionExpand.value; }
 WidgetRect LaunchpadWindow::CollectionBounds() const { return impl_->CollectionPanel(); }
+WidgetBitmap LaunchpadWindow::ContentSnapshot() const { return impl_->bitmap; }
 }  // namespace lume::platform::windows
 

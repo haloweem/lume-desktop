@@ -85,5 +85,15 @@ int main() {
     snapshot.tasks = {Task("ancient", std::numeric_limits<Millis>::min())};
     Expect(extremeLedger.Evaluate(snapshot, std::numeric_limits<Millis>::max()).expired.size() == 1,
            "signed timestamp difference cannot overflow");
+    Files historyFiles;ReminderLedger history(historyFiles,"history");Expect(history.Load(),"large ledger starts fresh");
+    std::vector<Key> historyKeys;for(int i=0;i<10000;++i)historyKeys.push_back({"task-"+std::to_string(i),i});
+    Expect(history.MarkHandled(historyKeys),"large reminder history commits");
+    const auto savedHistory=historyFiles.data["history"];historyFiles.calls.clear();
+    Expect(history.MarkHandled(historyKeys)&&historyFiles.calls.empty(),"duplicate reminder batch performs no persistence");
+    Expect(!history.MarkHandled({{"new",10001},{"",10002}})&&!history.Handled({"new",10001})&&historyFiles.data["history"]==savedHistory,"invalid mixed batch leaves full history unchanged");
+    const Key escaped{"quote\"slash\\line\n",-1};
+    Expect(history.MarkHandled({escaped,{"task-1",99999}}),"incremental keys and escaped IDs commit");
+    ReminderLedger historyRestart(historyFiles,"history");Expect(historyRestart.Load()&&historyRestart.Handled(escaped)&&historyRestart.Handled({"task-1",99999}),"streamed ledger remains compatible with decoder");
+    for(const auto& key:historyKeys)Expect(historyRestart.Handled(key),"full old reminder history survives new transaction and restart");
     std::cout << "reminder_ledger_test passed\n";
 }

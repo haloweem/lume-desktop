@@ -10,7 +10,9 @@ void Model::Update(Media media) {
     if (!std::isfinite(media.duration) || media.duration < 0) media.duration = 0;
     media.duration = std::min(media.duration,604800.0);
     if (!std::isfinite(media.position)) media.position = 0;
-    media.position = std::clamp(media.position, 0.0, media.duration);
+    const bool measured = media.positionKnown || (media.app.empty() && media.duration > 0);
+    media.position = std::clamp(media.position, 0.0, measured ? (media.duration > 0 ? media.duration : 604800.0) : 0.0);
+    if (!measured) media.lyrics.reset();
     media.energy = std::isfinite(media.energy) ? std::clamp(media.energy, 0.0f, 1.0f) : 0.0f;
     for (auto& value : media.spectrum)
         value = std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f;

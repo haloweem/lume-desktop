@@ -10,6 +10,8 @@ void Expect(bool value,const char* why) {
 }
 }
 int main() {
+    const auto videos=ParseWallpaperPageJson(LR"({"version":1,"scope":"wallpaper","action":"refreshVideos"})");
+    Expect(videos&&videos->action==WallpaperAction::RefreshVideos,"video catalog refresh is explicit and carries no source URL");
     const auto apply=ParseWallpaperPageJson(LR"({"version":1,"scope":"wallpaper","action":"apply","id":"local-12_a","display":"18446744073709551615"})");
     Expect(apply&&apply->action==WallpaperAction::Apply&&apply->id=="local-12_a"&&apply->display==UINT64_MAX,
         "accept an internal media id and a canonical uint64 monitor id");
@@ -44,6 +46,7 @@ int main() {
         LR"({"version":1,"scope":"wallpaper","action":"volume","display":"1","value":1.5})",
         LR"({"version":1,"scope":"wallpaper","action":"download","id":"ok","url":"https://elsewhere/video"})",
         LR"({"version":1,"scope":"wallpaper","action":"import","path":"C:/private"})",
+        LR"({"version":1,"scope":"wallpaper","action":"refreshVideos","url":"https://elsewhere/manifest.json"})",
         LR"({"version":1,"scope":"wallpaper","action":"stopAll","action":"import"})",
         LR"({"version":2,"scope":"wallpaper","action":"snapshot"})",
         LR"({"version":1,"scope":"wallpaper","action":"snapshot","nested":{}})",

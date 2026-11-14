@@ -163,13 +163,6 @@ void DrawAgenda(Canvas& c,const CalendarLayout& layout,const calendar::CalendarM
 }
 // Helpers shared by the todo theme's views.
 std::wstring Clock(const todo::LocalDateTime& s){wchar_t b[8]{};swprintf(b,8,L"%02d:%02d",s.hour,s.minute);return std::wstring(b);}
-std::vector<std::size_t> Sorted(const CalendarTodoView& todos,calendar::Date day){
-    auto list=todos.ForDay(day);
-    std::stable_sort(list.begin(),list.end(),[&](auto x,auto y){const auto& p=todos.Snapshot().tasks[x];const auto& q=todos.Snapshot().tasks[y];
-        if(p.completed!=q.completed)return p.completed<q.completed;
-        return (p.schedule?p.schedule->startAt:INT64_MAX)<(q.schedule?q.schedule->startAt:INT64_MAX);});
-    return list;
-}
 D2D1_COLOR_F Tint(const todo::TaskView& t,D2D1_COLOR_F accent,float alpha){
     // Items without a colour label stay neutral rather than taking the accent.
     (void)accent;
@@ -218,7 +211,7 @@ void DrawBoardMonth(Canvas& c,const CalendarLayout& l,const calendar::CalendarMo
         if(view.keyboardFocus&&view.focus==i+3)c.Rounded({r.x+1,r.y+1,r.width-2,r.height-2},4,text,1.5f);
         if(!view.todos||!view.todoAvailable)continue;
         // Items as coloured bars filling the cell, without times.
-        const auto list=Sorted(*view.todos,cell.date);
+        const auto& list=view.todos->SortedForDay(cell.date);
         constexpr float barH=17,barGap=2;
         // Items past the cell's height scroll inside it with the wheel.
         const CalendarRect area{r.x,r.y+24,r.width,std::max(0.0f,r.height-26)};
@@ -268,7 +261,7 @@ void DrawTimeGrid(Canvas& c,const CalendarLayout& l,const calendar::CalendarMode
     }
     // Items without a time: one line per day above the hours.
     std::vector<std::vector<std::size_t>> timed(dates.size()),untimed(dates.size());
-    for(std::size_t k=0;k<dates.size()&&usable;++k)for(const auto i:Sorted(*view.todos,dates[k]))
+    for(std::size_t k=0;k<dates.size()&&usable;++k)for(const auto i:view.todos->SortedForDay(dates[k]))
         (view.todos->Snapshot().tasks[i].schedule&&view.time?timed:untimed)[k].push_back(i);
     const bool strip=std::any_of(untimed.begin(),untimed.end(),[](const auto& v){return !v.empty();});
     const float stripH=strip?24.0f:0.0f;
@@ -313,28 +306,9 @@ void DrawTimeGrid(Canvas& c,const CalendarLayout& l,const calendar::CalendarMode
     }
     for(std::size_t k=0;k<dates.size();++k)c.Line(column(k),grid.y,column(k),grid.Bottom(),D2D1::ColorF(1,1,1,.06f));
     for(std::size_t k=0;k<dates.size();++k){
-        // Overlapping items share the column side by side.
-        struct Block{std::size_t task;float start,end;int lane=0,lanes=1;};
-        std::vector<Block> blocks;
-        for(const auto i:timed[k]){
-            const auto& t=view.todos->Snapshot().tasks[i];const auto s=local(t.schedule->startAt),e=local(t.schedule->endAt);
-            if(!s)continue;
-            const float start=s->date==dates[k]?s->hour*60.0f+s->minute:0.0f;
-            const float end=e&&e->date==dates[k]?e->hour*60.0f+e->minute:1440.0f;
-            blocks.push_back({i,start,std::max(end,start+15)});
-        }
-        std::sort(blocks.begin(),blocks.end(),[](const Block& p,const Block& q){return p.start<q.start;});
-        for(std::size_t b=0;b<blocks.size();){
-            std::size_t e=b;float end=blocks[b].end;std::vector<float> lanes;
-            for(;e<blocks.size()&&(e==b||blocks[e].start<end);++e){
-                auto& block=blocks[e];int lane=0;
-                while(lane<static_cast<int>(lanes.size())&&lanes[static_cast<std::size_t>(lane)]>block.start)++lane;
-                if(lane==static_cast<int>(lanes.size()))lanes.push_back(block.end);else lanes[static_cast<std::size_t>(lane)]=block.end;
-                block.lane=lane;end=std::max(end,block.end);
-            }
-            for(std::size_t m=b;m<e;++m)blocks[m].lanes=static_cast<int>(lanes.size());
-            b=e;
-        }
+        // Date/time metadata and overlap lanes are cached with the todo snapshot.
+        static const std::vector<CalendarTimeBlock> emptyBlocks;
+        const auto& blocks=usable&&view.time?view.todos->TimeBlocksForDay(dates[k],*view.time):emptyBlocks;
         for(const auto& block:blocks){
             const auto& t=view.todos->Snapshot().tasks[block.task];
             const float laneW=(colW-4)/static_cast<float>(block.lanes);
@@ -342,7 +316,7 @@ void DrawTimeGrid(Canvas& c,const CalendarLayout& l,const calendar::CalendarMode
             if(!Intersects(r,grid))continue;
             c.Rounded(r,6,Tint(t,accent,t.completed?.2f:.34f));
             c.Rounded({r.x,r.y+2,3,r.height-4},1.5f,Tint(t,accent,t.completed?.55f:1));
-            const auto s=local(t.schedule->startAt),e=local(t.schedule->endAt);
+            const auto& s=block.localStart;const auto& e=block.localEnd;
             const auto foreground=Color(prefs.textColor,t.completed?.55f:1);
             c.Clip(Clipped(r,grid));
             const std::wstring start=s?Clock(*s):L"";
@@ -550,6 +524,14 @@ bool CalendarRenderer::Initialize() {
 }
 bool CalendarRenderer::Render(const calendar::Preferences& prefs,const calendar::CalendarModel& model,unsigned dpi,CalendarBitmap& bitmap,const CalendarRenderState& view,CalendarLayout* outputLayout,CalendarAgendaLayout* agenda) {
     if(!calendar::ValidPreferences(prefs)||dpi<48||dpi>768||!Initialize()) return false;
+    if(view.todos){
+        std::vector<calendar::Date> dates;dates.reserve(63);
+        for(const auto& cell:model.Grid())dates.push_back(cell.date);
+        const auto week=WeekStart(model.Selected(),calendar::WeekStartsOn(prefs.theme));
+        for(int i=0;i<7;++i)if(const auto day=calendar::AddDays(week,i))dates.push_back(*day);
+        for(int i=0;i<14;++i)if(const auto day=calendar::AddDays(model.Today(),i))dates.push_back(*day);
+        dates.push_back(model.Selected());view.todos->PrepareDays(std::move(dates));
+    }
     const auto profile=*prefs.Active(); const float w=static_cast<float>(profile.width),h=static_cast<float>(profile.height);
     Canvas c(state_->write.get(),state_->draw.get(),state_->wic.get(),w,h,dpi); if(!c.ready) return false;
     auto l=CalculateCalendarLayout(prefs.theme,w,h,0,view.agendaOpen,prefs.boardView); const auto date=model.BrowseAnchor();

@@ -5,6 +5,7 @@ import {initialState,reduce} from '../state.js';
 import {card,catalog,search} from '../pages.js';
 import {modules,widgets} from '../catalog.js';
 import {organizerPage,organizerNotice,organizerStatus} from '../organizer.js';
+import {setLanguage} from '../localization.js';
 const message=(fields={})=>{
   const value={version:1,type:'organizer-state',enabled:false,running:false,locked:false,
   material:'liquid-glass',materialStatus:'inactive',loadStatus:'fresh',error:'',width:420,height:392,
@@ -27,7 +28,7 @@ test('organizer bridge and state use a strict native contract',()=>{
   for(const c of [['enabled',true],['enabled',false],['material','frosted-glass'],['material','liquid-glass'],['reset']])
     assert.equal(bridge.send('organizer',...c),true);
   assert.equal(validHostMessage(message()),true);assert.equal(validHostMessage({version:1,type:'navigate',page:'organizer'}),true);
-  for(const fields of [{width:119},{width:1201},{height:215},{count:-1},{count:121},{mode:'other'},{layout:'grid'},{title:''},{extra:true},{saved:true},
+  for(const fields of [{width:119},{width:1201},{height:215},{count:-1},{count:1.5},{count:Number.MAX_SAFE_INTEGER+1},{mode:'other'},{layout:'grid'},{title:''},{extra:true},{saved:true},
     {material:'solid'},{error:'arbitrary'}])assert.equal(validHostMessage(message(fields)),false,JSON.stringify(fields));
   assert.deepEqual(sent,['v1|organizer|enabled|true','v1|organizer|enabled|false','v1|organizer|material|frosted-glass','v1|organizer|material|liquid-glass','v1|organizer|reset']);
   let state=reduce(initialState(),{type:'request',scope:'organizer'});assert.equal(state.organizerStatus,'saving');
@@ -68,20 +69,31 @@ test('narrow native organizer snapshots and applied replies reach the real bridg
   unsubscribe();
 });
 test('organizer accepts collapsed native geometry and complete collection snapshots without relaxing other widgets',()=>{
-  const collapsed=message({mode:'collapsed',width:180,height:216});
+  const collapsed=message({mode:'collapsed',width:260,height:44});
   assert.equal(validHostMessage(collapsed),true);
+  let receive;
+  const bridge=createBridge({addEventListener:(_,listener)=>{receive=listener;},removeEventListener:()=>{}});
+  let collapsedState=reduce(initialState(),{type:'request',scope:'organizer'});
+  const unsubscribe=bridge.subscribe(host=>{collapsedState=reduce(collapsedState,{type:'host',message:host});});
+  receive({data:{...collapsed,enabled:true,running:true,loadStatus:'loaded',result:'applied',saved:true,
+    collections:[{...collapsed.collections[0],enabled:true,running:true}]}});
+  assert.equal(collapsedState.organizerStatus,'saved','44 DIP native strip acknowledgement must settle a pending request');
+  assert.equal(collapsedState.organizer.mode,'collapsed');assert.equal(collapsedState.organizer.height,44);
+  unsubscribe();
   const second={id:'12345678-1234-1234-1234-1234567890ab',title:'工作资料',enabled:true,running:true,count:8};
   const multi=message({enabled:true,running:true,collections:[{id:'default',title:'桌面收纳',enabled:true,running:true,count:0},second]});
   assert.equal(validHostMessage(multi),true);
   const state=reduce(initialState(),{type:'host',message:multi});
   assert.deepEqual(state.organizer.collections,multi.collections);
-  for(const fields of [{mode:'collapsed',width:180,height:215},{mode:'collapsed',width:181,height:216},
+  for(const fields of [{mode:'collapsed',width:180,height:216},{mode:'collapsed',width:259,height:44},
+    {mode:'collapsed',width:261,height:44},{mode:'collapsed',width:260,height:43},{mode:'collapsed',width:260,height:45},
+    {mode:'collapsed',width:260.5,height:44},{mode:'expanded',width:260,height:44},
     {mode:'expanded',width:119,height:216},{mode:'expanded',width:1201,height:216},{mode:'expanded',width:180,height:215},
     {collections:[]},{collections:[second]},
     {collections:[...multi.collections,second]},
     {collections:[{...multi.collections[0],extra:true}]},
     {collections:[{...multi.collections[0],enabled:'true'}]},
-    {collections:[{...multi.collections[0],count:121}]},
+    {collections:[{...multi.collections[0],count:1.5}]},
     {collections:[{...multi.collections[0],id:'not-a-guid'}]}])
     assert.equal(validHostMessage(message(fields)),false,JSON.stringify(fields));
   for(const error of ['editor','open','invalid','target','limit']) {
@@ -94,6 +106,26 @@ test('organizer accepts collapsed native geometry and complete collection snapsh
       materialStatus:'inactive',loadStatus:'fresh',error:'',width:180,height:216,result:'snapshot',saved:false};
     assert.equal(validHostMessage(other),false,'small organizer bounds do not weaken unrelated widgets');
   }
+});
+test('large organizer counts reach subscribers and finish pending requests',()=>{
+  let receive;
+  const bridge=createBridge({postMessage:()=>{},addEventListener:(_,listener)=>{receive=listener;},removeEventListener:()=>{}});
+  let state=initialState(),delivered=0;
+  const unsubscribe=bridge.subscribe(host=>{++delivered;state=reduce(state,{type:'host',message:host});});
+  for(const count of [121,256,257,1025,10000]){
+    state=reduce(state,{type:'request',scope:'organizer',key:'enabled',value:true});
+    const reply=message({count,enabled:true,running:true,loadStatus:'loaded',result:'applied',saved:true});
+    reply.collections.push({id:'12345678-1234-1234-1234-1234567890ab',title:'文件',enabled:true,running:true,count:count+1});
+    const before=delivered;receive({data:reply});
+    assert.equal(delivered,before+1);assert.equal(state.organizer.count,count);
+    assert.equal(state.organizer.collections[1].count,count+1);
+    assert.equal(state.organizerStatus,'saved');assert.equal(state.organizerPending,null);
+  }
+  for(const count of [-1,1.5,Number.MAX_SAFE_INTEGER+1,'1025',null]){
+    const reply=message({count:1025});reply.collections[0].count=count;
+    assert.equal(validHostMessage(reply),false,'invalid or inconsistent counts remain rejected');
+  }
+  unsubscribe();
 });
 test('organizer settings explain reference-only removal and confirmed state',()=>{
   const state=reduce(initialState(),{type:'host',message:message({enabled:true,running:true,count:7,locked:true,material:'frosted-glass',width:520,height:400})});
@@ -109,6 +141,23 @@ test('organizer settings explain reference-only removal and confirmed state',()=
   const closed=reduce(pending,{type:'host',message:message({enabled:false,running:false,result:'applied',saved:true,loadStatus:'loaded'})});
   assert.match(organizerNotice(closed,{previousStatus:'saving'}),/已关闭/);
   assert.equal(organizerNotice(closed,{previousStatus:'saved'}),null,'no repeated close notice on routine snapshots');
+});
+
+test('organizer settings omit collected-item statistics while retaining controls and native counts',()=>{
+  try {
+    for(const language of ['zh-CN','en'])for(const count of [0,1,73]){
+      setLanguage(language);
+      const state=reduce(initialState(),{type:'host',message:message({count,iconScale:70,loadStatus:'loaded'})});
+      const html=organizerPage(state);
+      assert.equal(state.organizer.count,count,'native count data is still retained');
+      assert.doesNotMatch(html,/已收纳项目|Collected items|\d+ 个项目|\d+ items?/);
+      assert.equal((html.match(/class="setting-row"/g)||[]).length,2,'remove the entire statistics row');
+      assert.ok(html.indexOf('id="organizer-material"')<html.indexOf('id="organizer-icon-scale"'));
+      assert.ok(html.indexOf('id="organizer-icon-scale"')<html.indexOf('data-action="organizer-reset"'));
+      assert.match(html,/data-settings-scope="organizer"/);
+      assert.match(html,/id="organizer-icon-scale-number" type="number"/);
+    }
+  } finally {setLanguage('zh-CN');}
 });
 test('organizer icon size is bounded, acknowledged and exposed as a slider',()=>{
   assert.equal(initialState().organizer.iconScale,70);

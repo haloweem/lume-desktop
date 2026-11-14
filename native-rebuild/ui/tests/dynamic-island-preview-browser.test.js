@@ -1,65 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
-import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {createBrowserHarness} from './component-settings-browser.mjs';
-import {setTimeout as delay} from 'node:timers/promises';
 
-test('native island frames follow shape, material, size and expansion controls',{
-  skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:60000,
+// The previous live-preview acceptance now guards its removal from the real
+// product entry. Static style thumbnails must stay independent of appearance.
+test('island appearance changes never recreate the removed live preview',{
+  skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:30000,
 },async()=>{
-  const harness=await createBrowserHarness();
+  const harness=await createBrowserHarness(fileURLToPath(new URL('../../../build-artifacts/island-styles-20261109/no-preview-browser',import.meta.url)));
   try {
-    for(const width of [1536,680]) {
-      const page=await harness.browser.newPage({viewport:{width,height:864},reducedMotion:'reduce'});
-      let delayNext=false;
-      await page.route('**/__preview/native?*',async route=>{
-        const query=new URL(route.request().url()).searchParams;
-        const file=path.resolve('build-artifacts/native-preview',
-          `island-native-${query.get('shape')}-${query.get('size')}-${query.get('material')}-${query.get('mode')}.png`);
-        if(delayNext){delayNext=false;await delay(500);}
-        await route.fulfill({contentType:'image/png',body:await readFile(file)});
-      });
-      await page.goto(harness.origin+'/dynamic-island-preview.html');
-      await page.waitForFunction(()=>{const image=document.querySelector('[data-island-native-preview]');return image&&!image.hidden&&image.complete&&image.naturalWidth===960;});
-      const previous=await page.locator('[data-island-native-preview]').getAttribute('src');
-      delayNext=true;
-      await page.locator('[data-island-preference="size"][data-value="small"]').click();
-      assert.equal(await page.locator('[data-island-native-preview]').getAttribute('src'),previous);
-      assert.equal(await page.locator('[data-island-preview-wait]').isVisible(),false,'retain the previous frame while settings render');
-      await page.waitForFunction(previous=>document.querySelector('[data-island-native-preview]').src!==previous,previous);
-      await page.locator('button[data-island-shape="standard"]').click();
-      for(const mode of ['compact','expanded']) {
-        await page.locator(`[data-island-preview-mode="${mode}"]`).click();
-        for(const size of ['small','standard','large']) {
-          await page.locator(`[data-island-preference="size"][data-value="${size}"]`).click();
-          for(const material of ['none','liquid-glass','frosted-glass']) {
-            await page.locator(`[data-island-preference="material"][data-value="${material}"]`).click();
-            await page.waitForFunction(({mode,size,material})=>{
-              const image=document.querySelector('[data-island-native-preview]');
-              return !image.hidden&&image.complete&&image.naturalWidth===960&&image.naturalHeight===300&&
-                document.querySelector(`[data-island-preview-mode="${mode}"]`).getAttribute('aria-pressed')==='true'&&
-                document.querySelector(`[data-island-preference="size"][data-value="${size}"]`).getAttribute('aria-pressed')==='true'&&
-                document.querySelector(`[data-island-preference="material"][data-value="${material}"]`).getAttribute('aria-pressed')==='true';
-            },{mode,size,material});
-            assert.equal(await page.locator('[data-island-preview-wait]').isVisible(),false);
+    const page=await harness.browser.newPage({viewport:{width:1536,height:864}});
+    await page.addInitScript(()=>{
+      const listeners=new Set();
+      let island={version:1,type:'dynamicIsland-state',enabled:true,running:true,locked:true,expanded:false,
+        focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:false,hover:false,autoHide:true,
+        size:'standard',material:'none',shape:'capsule',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
+      const emit=message=>listeners.forEach(listener=>listener({data:message}));
+      window.previewRemoval={commands:[],emit};
+      window.chrome={webview:{addEventListener(type,listener){listeners.add(listener);},removeEventListener(type,listener){listeners.delete(listener);},
+        postMessage(command){window.previewRemoval.commands.push(command);
+          if(command==='v1|ready')queueMicrotask(()=>{emit(island);emit({version:1,type:'navigate',page:'dynamicIsland'});});
+          else if(typeof command==='string'&&/^v1\|dynamicIsland\|(shape|size|material)\|/.test(command)){
+            const [,,key,value]=command.split('|');island={...island,[key]:value,result:'applied',saved:true};queueMicrotask(()=>emit(island));
           }
+        }}};
+    });
+    await page.goto(harness.origin);await page.locator('[data-island-styles]').waitFor();
+    const before=await page.locator('[data-island-style-card] img').evaluateAll(images=>images.map(image=>image.getAttribute('src')));
+    for(const shape of ['standard','capsule']){
+      await page.locator(`button[data-island-shape="${shape}"]`).click();
+      for(const size of ['small','standard','large']){
+        await page.locator(`[data-island-preference="size"][data-value="${size}"]`).click();
+        for(const material of ['liquid-glass','frosted-glass','none']){
+          await page.locator(`[data-island-preference="material"][data-value="${material}"]`).click();
+          assert.equal(await page.locator(`[data-island-preference="material"][data-value="${material}"]`).getAttribute('aria-pressed'),'true');
+          assert.equal(await page.locator('[data-island-native-preview],[data-island-preview-mode],[data-island-compact-widget]').count(),0);
         }
       }
-      const computed=await page.evaluate(()=>({
-        title:getComputedStyle(document.querySelector('.island-appearance__head h2')).color,
-        option:getComputedStyle(document.querySelector('.island-appearance__segments button:not([aria-pressed="true"])')).color,
-        hint:getComputedStyle(document.querySelector('.island-home__components-heading p')).color,
-        labels:[...document.querySelectorAll('[data-island-preview-mode]')].map(e=>e.textContent.trim()),
-        overflow:document.documentElement.scrollWidth>innerWidth,
-      }));
-      assert.deepEqual(computed.labels,['收缩','展开']);assert.equal(computed.overflow,false);
-      for(const value of [computed.title,computed.option,computed.hint]) {
-        const components=value.match(/\d+/g).map(Number);
-        assert.ok(Math.min(...components)>=170,`${value} should remain legible on dark backgrounds`);
-      }
-      await page.screenshot({path:path.resolve(`build-artifacts/island-native-web-${width}.png`)});
-      await page.close();
     }
+    assert.deepEqual(await page.locator('[data-island-style-card] img').evaluateAll(images=>images.map(image=>image.getAttribute('src'))),before);
+    await page.evaluate(()=>window.previewRemoval.emit({version:1,type:'dynamicIsland-preview',mode:'compact',shape:'capsule',material:'none',size:'standard',width:0,height:0,image:'',error:'render'}));
+    assert.equal(await page.locator('[data-island-native-preview]').count(),0,'legacy unsolicited frames do not restore the preview');
+    await page.locator('[data-tab="settings"]').click();await page.locator('[data-tab="home"]').click();
+    assert.deepEqual(await page.evaluate(()=>window.previewRemoval.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dynamicIsland|preview|'))),[]);
+    await page.close();
   } finally {await harness.close();}
 });

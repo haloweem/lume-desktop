@@ -49,7 +49,8 @@ test('真实 Edge 验证播放器右侧面板的 tab、关闭焦点、iframe 连
     await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
     await page.evaluate(async()=>{
       const {initialMusicState}=await import('./music.js');
-      const {query,nav,lyrics,...native}=initialMusicState();
+      const {query,nav,lyrics,score,...native}=initialMusicState();
+      const {validHostMessage}=await import('./bridge.js');
       const track={id:'panel-fixture',title:'Panel fixture',artist:'Lume',album:'Reference',
         source:'C:/Music/panel-fixture.mp3',artwork:'',duration:180};
       window.panelSnapshot={...native,version:1,type:'music-state',session:22,revision:1,
@@ -59,6 +60,7 @@ test('真实 Edge 验证播放器右侧面板的 tab、关闭焦点、iframe 连
       window.panelLyrics={version:1,type:'music-lyrics',session:22,trackId:track.id,
         lines:[{startTime:0,endTime:180,fullText:'Panel continuity line',translation:'',words:[]}]};
       harness.receive({version:1,type:'navigate',page:'music'});
+      if(!validHostMessage(panelSnapshot))throw new Error('Player panel fixture must use the native music-state schema');
       harness.receive(panelSnapshot);
       harness.receive(panelLyrics);
     });

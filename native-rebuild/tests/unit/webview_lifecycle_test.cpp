@@ -32,14 +32,16 @@ void TestVisibilityLifecycle() {
         restore[1].type == Action::Type::NotifyVisibility && restore[1].visible &&
         restore[1].generation == 2 && restore[2].type == Action::Type::RequestStateSync,
         "restore wins while suspension is in flight");
-    Expect(lifecycle.OnSuspendCompleted(1, true).empty(), "late suspend completion cannot win");
+    const auto late=lifecycle.OnSuspendCompleted(1,true);
+    Expect(late.size()==1&&late[0].type==Action::Type::Resume,"late successful suspension restores the currently visible page");
 
     const auto hiddenAgain = lifecycle.OnHidden();
     Expect(hiddenAgain.size() == 1 && hiddenAgain.front().generation == 3,
         "second hide receives a fresh generation");
     Expect(lifecycle.OnCleanupAcknowledged(2).empty(), "old cleanup cannot suspend a new hide");
     Expect(lifecycle.OnCleanupAcknowledged(3).size() == 1, "new cleanup starts new suspension");
-    Expect(lifecycle.OnSuspendCompleted(3, false).empty(), "failed suspension falls back silently");
+    Expect(lifecycle.OnSuspendCompleted(3, false).size()==1, "failed suspension gets one bounded retry");
+    Expect(lifecycle.OnSuspendCompleted(3, false).empty(), "repeated failure stops retrying");
     Expect(lifecycle.OnVisible().size() == 3, "fallback hidden state still restores normally");
 
     lifecycle.OnHidden();
@@ -47,6 +49,23 @@ void TestVisibilityLifecycle() {
     const auto trimmed = lifecycle.OnSuspendCompleted(5, true);
     Expect(trimmed.size() == 1 && trimmed.front().type == Action::Type::TrimWorkingSet &&
         trimmed.front().generation == 5, "successful suspension requests one working-set trim");
+}
+void TestDeferredSuspend() {
+    using L=lume::ui::WebViewLifecycle;
+    L lifecycle;lifecycle.OnReady();lifecycle.OnHidden();lifecycle.OnCleanupAcknowledged(1);
+    lifecycle.OnVisible();lifecycle.OnHidden();
+    Expect(lifecycle.OnCleanupAcknowledged(3).empty(),"new hide defers while older suspension is in flight");
+    const auto next=lifecycle.OnSuspendCompleted(1,false);
+    Expect(next.size()==1&&next[0].type==L::Action::Type::TrySuspend&&next[0].generation==3,
+        "old completion starts the latest acknowledged hide instead of losing it");
+    Expect(lifecycle.OnSuspendCompleted(3,true).size()==1,"deferred hide eventually suspends");
+    lifecycle.OnVisible();lifecycle.OnHidden();
+    const auto timeout=lifecycle.OnCleanupTimeout();
+    Expect(timeout.size()==1&&timeout[0].type==L::Action::Type::TrySuspend,
+        "missing page cleanup ACK has a bounded suspension fallback");
+    Expect(lifecycle.OnCleanupTimeout().empty(),"cleanup timeout cannot create parallel suspend attempts");
+    lifecycle.Close();
+    Expect(lifecycle.OnCleanupTimeout().empty(),"closed window rejects delayed cleanup timeout");
 }
 
 void TestCloseInvalidatesCallbacks() {
@@ -77,6 +96,7 @@ void TestLifecycleProtocol() {
 
 int main() {
     TestVisibilityLifecycle();
+    TestDeferredSuspend();
     TestCloseInvalidatesCallbacks();
     TestLifecycleProtocol();
     std::cout << "PASS WebView lifecycle state machine and protocol\n";

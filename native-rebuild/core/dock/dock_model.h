@@ -7,9 +7,9 @@
 #include <vector>
 
 namespace lume::dock {
-// Paused product feature. Keep saved preferences and implementation for later development.
-// Re-enable together with systemTrayAvailable in ui/dock.js.
-inline constexpr bool SystemTrayAvailable = false;
+// The control center at the Dock's right end (Kind::SystemTray), shown while
+// Preferences::controlCenter is on. Paired with systemTrayAvailable in ui/dock.js.
+inline constexpr bool SystemTrayAvailable = true;
 inline constexpr std::size_t MaxPinned = 32, MaxAdded = 200, MaxOrder = 1000,
                                  MaxPreferencesBytes = 512 * 1024, MaxCollections = 32;
 inline constexpr int Columns = 7, Rows = 3, PageSize = Columns * Rows;
@@ -36,18 +36,22 @@ struct Preferences {
     bool frosted = false;
     bool transparent = false;  // no material: a fully transparent bar ("无")
     bool reflection = false;   // mirrored icons below the row
-    bool systemTray = false;   // compact Windows status area at the right edge
+    bool systemTray = false;   // retired status strip; kept only so old files round-trip
+    bool controlCenter = true; // Lume control center at the right edge
+    bool showRunning = true;   // separate running-app section; pinned running state is retained
     int iconScale = DefaultIconScale;
     int position = DefaultPosition;  // horizontal percentage of available desktop space
     int bottomOffset = DefaultBottomOffset;  // extra distance above the default bottom margin, in DIPs
     int iconSpacing = DefaultIconSpacing;  // DIPs before iconScale is applied
     int launchpadScale=DefaultLaunchpadScale;
     int launchpadIconScale=DefaultLaunchpadIconScale;
+    bool launchpadMaximized = false;      // the launchpad fills the work area above the Dock
     bool lumeVisible = true;              // whether the Lume manager icon is shown
     int lumePosition = 0;                 // insertion slot among pinned items (0 = first)
     std::vector<std::string> pinned;  // Dock order around the optional Lume item.
     std::vector<std::string> added;   // Launchpad items besides the desktop.
     std::vector<std::string> order;   // Launchpad arrangement; unlisted items follow by name.
+    std::vector<std::string> removed; // Desktop paths the user removed from the launchpad.
     std::vector<Collection> collections;  // launchpad folders; their paths are hidden from the flat grid
     std::vector<std::string> dockCollections;  // collection ids, immediately after the launchpad
 };
@@ -72,7 +76,8 @@ const Collection* FindCollection(const Preferences&, std::string_view id);
 // Paths contained in a collection are replaced by one collection entry.
 std::vector<Entry> LaunchpadItems(const std::vector<std::string>& desktop, const std::vector<std::string>& added,
                                   const std::vector<std::string>& order, const TextKey& pathKey, const TextKey& searchKey,
-                                  const std::vector<Collection>& collections = {});
+                                  const std::vector<Collection>& collections = {},
+                                  const std::vector<std::string>& removed = {});
 // Current contents of one collection, in stored order.
 std::vector<Entry> CollectionItems(const Collection&, const TextKey& pathKey);
 // The arrangement after moving items[from] to index `to` (paths, at most MaxOrder).
@@ -116,17 +121,19 @@ bool Removable(const Item&);
 // Several minimized windows can share one program.
 std::string MotionKey(const Item&);
 // Program windows follow everything else, after a separator, in the order given.
+// Moves the control center back to the right end after windows were appended.
+void KeepControlCenterLast(std::vector<Item>& items);
 void AppendWindows(std::vector<Item>&, const std::vector<ProgramWindow>&);
 // targets[i] is pinned[i] with a shortcut resolved to its program (or the
-// pinned path itself). Running programs that match no pinned target follow a
-// separator in first-seen order.
+// pinned path itself). Running programs follow a separator in first-seen order
+// when showRunning is on; pinned running dots and activation targets are always kept.
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
                             bool lumeVisible = true, int lumePosition = 0,
-                            std::string_view lumePath = {}, bool systemTray = false);
+                            std::string_view lumePath = {}, bool systemTray = false, bool showRunning = true);
 std::vector<Item> DockItemsFor(const Preferences&, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            std::string_view lumePath = {});
+                            std::string_view lumePath = {}, bool managerOpen = false);
 
 enum class Change { Invalid, Unchanged, Changed, Limit };
 Change Pin(Preferences&, std::string_view path, const TextKey& pathKey);
@@ -134,6 +141,11 @@ Change Unpin(Preferences&, std::string_view path, const TextKey& pathKey);
 bool IsPinned(const Preferences&, std::string_view path, const TextKey& pathKey);
 Change Add(Preferences&, const std::vector<std::string>& paths, const TextKey& pathKey);
 Change RemoveAdded(Preferences&, std::string_view path, const TextKey& pathKey);
+// Removes an item from the flat launchpad: drops it from `added` and, when it
+// is on the desktop, hides it there (the file itself is untouched). Adding the
+// path again shows it once more.
+Change RemoveFromLaunchpad(Preferences&, std::string_view path, const std::vector<std::string>& desktop,
+                           const TextKey& pathKey);
 Change MovePinned(Preferences&, std::size_t from, std::size_t to);
 // Pins at `index` (clamped), or moves an already pinned path there.
 Change PinAt(Preferences&, std::string_view path, std::size_t index, const TextKey& pathKey);

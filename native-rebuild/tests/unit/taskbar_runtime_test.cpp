@@ -1,5 +1,6 @@
 #include "platform/windows/taskbar/taskbar_runtime.h"
 #include "platform/windows/taskbar/taskbar_core_process.h"
+#include "vendor/nlohmann/json.hpp"
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <cwchar>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -168,7 +170,7 @@ public:
 };
 struct Shared {
     std::atomic_int acquired{0}, applied{0}, released{0}, active{0}, starts{0}, stops{0}, resets{0};
-    std::atomic_bool autoHide{false}, blockStart{false}, failAutoHide{false};
+    std::atomic_bool autoHide{false}, blockStart{false}, failAutoHide{false}, proofApplied{false}, reloadReady{false};
     std::atomic<Error> startError{Error::None};
 };
 class Port final : public ITaskbarPort {
@@ -203,6 +205,15 @@ public:
     }
     void ResetCoreFailure() override { ++shared.resets; blocked = Error::None; }
     bool CoreAlive() const override { return core; }
+    TransparencyStatus Transparency() const override {
+        TransparencyStatus value;
+        value.effectStatus = shared.proofApplied ? "applied" : "pending";
+        value.stage = "isolated-proof-fixture";
+        value.registeredTaskbars = value.backgrounds = 1;
+        value.appliedTaskbars = shared.proofApplied ? 1 : 0;
+        return value;
+    }
+    bool CoreReloadResolved() const override { return shared.reloadReady; }
     Error StopCore(bool) override { ++shared.stops; core = false; return blocked; }
 };
 // Win10 classic accent: Explorer can rewrite it without any event, so the
@@ -255,6 +266,18 @@ void AppearanceEvents(HWND watch, DWORD duration) {
 void RetryRegression(const TaskbarPaths& paths) {
     Preferences on; on.enabled = true; on.autoHideTaskbar = true;
     {
+        Files files; Shared state;
+        TaskbarRuntime runtime(paths, {}, &files,
+            [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
+        Check(runtime.Apply(on) && Wait([&] { return runtime.Snapshot().state.running; }), "isolated service starts with pending effect evidence");
+        Check(runtime.Snapshot().transparency.effectStatus == "pending", "live service alone cannot confirm effect");
+        state.proofApplied = true;
+        Check(Wait([&] { return runtime.Snapshot().transparency.effectStatus == "applied"; }, 1700), "late effect evidence reaches the host without a shell event");
+        state.proofApplied = false;
+        Check(Wait([&] { return runtime.Snapshot().transparency.effectStatus == "pending"; }, 1700), "overwritten background revokes earlier confirmation");
+        Check(runtime.Shutdown(), "effect observation fixture restores independently");
+    }
+    {
         Files files; Shared state; state.startError = Error::CoreExited;
         TaskbarRuntime runtime(paths, {}, &files,
             [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
@@ -270,7 +293,7 @@ void RetryRegression(const TaskbarPaths& paths) {
         Check(Wait([&] { return state.starts == 3; }, 700), "Explorer restart notification permits an immediate retry");
         Check(runtime.Shutdown() && !state.autoHide, "failed startup still restores independent auto-hide ownership");
     }
-    for (const auto failure : {Error::FrameworkInstall, Error::CoreAccessDenied}) {
+    for (const auto failure : {Error::FrameworkInstall, Error::CoreAccessDenied, Error::CoreRestartRequired}) {
         Files files; Shared state; state.startError = failure;
         TaskbarRuntime runtime(paths, {}, &files,
             [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
@@ -282,11 +305,24 @@ void RetryRegression(const TaskbarPaths& paths) {
         AppearanceEvents(watch, 1250);
         Check(state.starts == 1 && state.resets == 1,
               "framework/access failure waits for explicit retry despite timer and shell events");
+        state.autoHide = false;
+        Check(Wait([&] { return state.autoHide.load(); }, 1700) && state.starts == 1,
+              "periodic independent hiding survives a blocked transparency core without retrying it");
         state.startError = Error::None;
         Check(runtime.Apply(on) && Wait([&] { return runtime.Snapshot().state.running; }),
               "explicit user retry can start after the environment is repaired");
         Check(state.starts == 2 && state.resets == 2 && runtime.Shutdown() && !state.autoHide,
               "explicit retry succeeds once and retains normal shutdown recovery");
+    }
+    {
+        Files files; Shared state; state.startError = Error::CoreRestartRequired;
+        TaskbarRuntime runtime(paths, {}, &files,
+            [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
+        Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }), "module reload requirement settles without retrying");
+        state.startError = Error::None; state.reloadReady = true;
+        Check(Wait([&] { return runtime.Snapshot().state.running; }, 1700) && state.starts == 2,
+              "verified Explorer replacement permits one retry without repeated user toggles");
+        Check(runtime.Shutdown(), "reloaded module retains normal restore behavior");
     }
     {
         Files files; Shared state; state.startError = Error::CoreAccessDenied;
@@ -331,6 +367,8 @@ Resources Sample() {
 struct FixtureWindow {
     UINT closeDelay = 1;
     bool closing = false;
+    std::filesystem::path statusFile;
+    unsigned proofTicks = 0;
 };
 LRESULT CALLBACK CoreFixtureWindow(HWND window, UINT message, WPARAM w, LPARAM l) {
     auto* fixture = reinterpret_cast<FixtureWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -344,11 +382,26 @@ LRESULT CALLBACK CoreFixtureWindow(HWND window, UINT message, WPARAM w, LPARAM l
     }
     if (message == WM_TIMER && w == 1) { DestroyWindow(window); return 0; }
     if (message == WM_TIMER && w == 2) { PostQuitMessage(9); return 0; }
+    if (message == WM_TIMER && w == 3 && fixture && !fixture->statusFile.empty()) {
+        DWORD explorer = 0; GetWindowThreadProcessId(FindWindowW(L"Shell_TrayWnd", nullptr), &explorer);
+        ++fixture->proofTicks;
+        const bool applied = fixture->proofTicks >= 4 && explorer;
+        const auto temporary = std::filesystem::path(fixture->statusFile.wstring() + L".tmp");
+        {
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            stream << nlohmann::json{{"schemaVersion", 1}, {"pid", GetCurrentProcessId()}, {"explorerPid", explorer},
+                {"serviceReady", true}, {"effectStatus", applied ? "applied" : "pending"}, {"stage", "synthetic-fixture"},
+                {"hresult", 0}, {"registeredTaskbars", 1}, {"backgrounds", 1}, {"appliedTaskbars", applied ? 1 : 0}}.dump();
+        }
+        MoveFileExW(temporary.c_str(), fixture->statusFile.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        return 0;
+    }
     if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
     return DefWindowProcW(window, message, w, l);
 }
-int RunCoreFixture(bool neverReady) {
+int RunCoreFixture(bool neverReady, std::filesystem::path statusFile = {}) {
     FixtureWindow fixture; fixture.closeDelay = 350;
+    fixture.statusFile = std::move(statusFile);
     WNDCLASSEXW type{}; type.cbSize = sizeof(type); type.hInstance = GetModuleHandleW(nullptr);
     type.lpfnWndProc = CoreFixtureWindow;
     type.lpszClassName = neverReady ? L"LumeNotReadyCoreFixture" : L"TrayWindow";
@@ -356,6 +409,7 @@ int RunCoreFixture(bool neverReady) {
     const auto window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, type.lpszClassName,
         L"Lume isolated lifecycle fixture", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, type.hInstance, &fixture);
     if (!window || !SetTimer(window, 2, 10000, nullptr)) return 3;
+    if (!fixture.statusFile.empty() && !SetTimer(window, 3, 200, nullptr)) return 4;
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) { TranslateMessage(&message); DispatchMessageW(&message); }
     if (IsWindow(window)) DestroyWindow(window);
@@ -375,6 +429,10 @@ bool ProcessLifecycleRegression() {
            "reported XAML access denial has a distinct error");
     expect(TaskbarCoreDialogError(L"Failed to initialize XAML Diagnostics.\n0X80070005: 拒绝访问。") == Error::CoreAccessDenied,
            "HRESULT classification does not depend on the Windows message language");
+    expect(TaskbarCoreDialogError(L"Lume Taskbar Core 已更新。请重启 Windows 以使用最新版本。") == Error::CoreRestartRequired,
+           "a loaded old module is distinct from an arbitrary process exit");
+    expect(TaskbarCoreDialogError(L"Failed to initialize XAML Diagnostics. 0x80070102: The wait operation timed out.") == Error::CoreAttachTimeout,
+           "upstream handshake timeout has its own diagnostic");
     for (const auto text : {L"Failed to initialize XAML Diagnostics. 0x800401E3", L"Other stage: 0x80070005",
                             L"Failed to initialize XAML Diagnostics. 0x800700050"})
         expect(TaskbarCoreDialogError(text) == Error::None, "other stages/codes retain their original retry behavior");
@@ -456,7 +514,63 @@ bool ProcessLifecycleRegression() {
     return passed;
 }
 }
+bool DiagnosticReportRegression() {
+    const auto root = std::filesystem::temp_directory_path() /
+        (L"lume-taskbar-effect-test-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    Check(std::filesystem::create_directory(root), "create isolated effect report directory");
+    const auto file = root / L"status.json";
+    nlohmann::json sample{{"schemaVersion", 1}, {"pid", 123}, {"explorerPid", 456},
+        {"effectStatus", "applied"}, {"taskbarType", "xaml"}, {"serviceReady", true}, {"stage", "background-verified"},
+        {"hresult", 0}, {"registeredTaskbars", 2}, {"backgrounds", 2}, {"appliedTaskbars", 2}};
+    const auto write = [&](const nlohmann::json& value) { std::ofstream out(file, std::ios::binary | std::ios::trunc); out << value.dump(); };
+    write(sample);
+    const auto confirmed = ReadTaskbarCoreDiagnostics(file, 123, 456);
+    Check(confirmed.valid && confirmed.serviceReady && confirmed.transparency.effectStatus == "applied" &&
+          confirmed.transparency.appliedTaskbars == 2 && confirmed.transparency.taskbarType == "xaml", "only matched, fully applied multi-monitor effect is confirmed");
+    Check(!ReadTaskbarCoreDiagnostics(file, 124, 456).valid && !ReadTaskbarCoreDiagnostics(file, 123, 457).valid,
+          "old core and restarted Explorer reports are rejected");
+    sample["appliedTaskbars"] = 1; write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).transparency.effectStatus != "applied",
+          "one applied monitor cannot confirm all monitors");
+    sample["registeredTaskbars"] = 0; sample["backgrounds"] = 0; sample["appliedTaskbars"] = 0; write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).transparency.effectStatus != "applied",
+          "an empty XAML mapping is never success");
+    sample["effectStatus"] = "failed"; sample["hresult"] = static_cast<std::int32_t>(0x80070005); write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreAccessDenied, "structured access-denied stage survives missing dialogs");
+    sample["hresult"] = static_cast<std::int32_t>(0x80070020); write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreRestartRequired, "DLL sharing violation requests one explicit reload");
+    sample["hresult"] = static_cast<std::int32_t>(0x80070102); write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreAttachTimeout, "structured wait timeout is recognized");
+    sample["effectStatus"] = "pending"; sample["hresult"] = 0; write(sample);
+    const auto handle = CreateFileW(file.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    Check(handle != INVALID_HANDLE_VALUE, "open own synthetic heartbeat for staleness test");
+    FILETIME stale{}; GetSystemTimeAsFileTime(&stale);
+    ULARGE_INTEGER time{}; time.LowPart = stale.dwLowDateTime; time.HighPart = stale.dwHighDateTime; time.QuadPart -= 100000000ULL;
+    stale = {time.LowPart, time.HighPart}; Check(SetFileTime(handle, nullptr, nullptr, &stale) != FALSE, "expire own heartbeat"); CloseHandle(handle);
+    Check(!ReadTaskbarCoreDiagnostics(file, 123, 456).valid, "stale success cannot outlive its status heartbeat");
+    { std::ofstream out(file, std::ios::binary | std::ios::trunc); out << "{partial"; }
+    Check(!ReadTaskbarCoreDiagnostics(file, 123, 456).valid, "partial report remains pending");
+    {
+        std::atomic_bool cancel{false};
+        TaskbarCoreTimings limits; limits.startTimeoutMs = 2000; limits.readySettleMs = 0;
+        limits.stopTimeoutMs = 1000; limits.waitSliceMs = 10;
+        TaskbarCoreProcess process(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+            launch.executable = FixtureExecutable(); launch.arguments = L"--taskbar-status-fixture";
+            launch.diagnosticsFile = file; return Error::None;
+        }, limits);
+        Check(process.Start() == Error::None && process.Ready(), "real subprocess status handshake confirms service readiness");
+        Check(process.Transparency().effectStatus != "inactive", "status channel is read instead of assuming effect from a tray window");
+        DWORD explorer = 0; GetWindowThreadProcessId(FindWindowW(L"Shell_TrayWnd", nullptr), &explorer);
+        if (explorer) Check(Wait([&] { return process.Transparency().effectStatus == "applied"; }, 1500), "real subprocess heartbeat updates synthetic effect evidence");
+        Check(process.Stop(false) == Error::None, "status fixture exits through normal owned shutdown");
+    }
+    Check(std::filesystem::equivalent(root.parent_path(), std::filesystem::temp_directory_path()), "effect test cleanup boundary");
+    std::filesystem::remove_all(root);
+    return true;
+}
 int main(int count, char** args) {
+    if (count == 4 && !std::strcmp(args[1], "--taskbar-status-fixture") && !std::strcmp(args[2], "--lume-status-file"))
+        return RunCoreFixture(false, std::filesystem::u8path(args[3]));
     if (count == 2 && !std::strcmp(args[1], "--taskbar-synthetic-exit")) { Sleep(900); return 0; }
     if (count == 2 && !std::strcmp(args[1], "--taskbar-kernel-fixture")) { Sleep(15000); return 0; }
     if (count == 3 && !std::strcmp(args[1], "--taskbar-atomic-owner-crash"))
@@ -470,6 +584,7 @@ int main(int count, char** args) {
         return RunCoreFixture(!std::strcmp(args[2], "never-ready"));
     Check(AtomicProcessRegression(), "atomic non-graphical subprocess regressions");
     Check(ProcessLifecycleRegression(), "real subprocess lifecycle regressions");
+    Check(DiagnosticReportRegression(), "structured effect report regressions");
     Files files; Shared shared; std::atomic_int notifications{0};
     TaskbarPaths paths{"taskbar.json", {}, {}};
     {

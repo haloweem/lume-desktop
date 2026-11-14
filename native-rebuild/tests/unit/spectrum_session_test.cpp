@@ -15,6 +15,7 @@ namespace {
 void Expect(bool ok,const char* message){if(!ok){std::cerr<<message<<'\n';std::exit(1);}}
 class Files:public lume::settings::IFileStore{
 public:
+    bool ReadBounded(const std::string& p,std::size_t limit,std::string& out)const override{Expect(limit==8192,"spectrum settings use pre-read size bound");auto i=values.find(p);if(i!=values.end()&&i->second.size()>limit)return false;return Read(p,out);}
     bool Read(const std::string& p,std::string& out)const override{auto i=values.find(p);if(i==values.end())return false;out=i->second;return true;}
     bool Exists(const std::string& p)const override{return values.count(p)!=0;}
     bool Write(const std::string& p,const std::string& text)override{if(fail)return false;values[p]=text;return true;}
@@ -108,6 +109,16 @@ int main(){
     std::vector<float> frame(spectrum::FrameSize);
     for(std::size_t i=0;i<frame.size();++i)frame[i]=.5f*std::sin(2*3.14159265f*1000.f*static_cast<float>(i)/48000.f);
     const auto bands=spectrum::Bands(spectrum::Magnitudes(frame),48000,64);
+    std::vector<float> reusable;spectrum::Magnitudes(frame,reusable);
+    const auto* outputBuffer=reusable.data();
+    Expect(reusable==spectrum::Magnitudes(frame),"FFT reusable output matches value API");
+    spectrum::Magnitudes({},reusable);
+    Expect(reusable.data()==outputBuffer&&reusable==std::vector<float>(spectrum::FrameSize/2,0.f),"short FFT frame clears all retained scratch and reuses output allocation");
+    for(auto rate:{44100u,48000u})for(auto count:{63u,64u,65u}){
+        const auto first=spectrum::Bands(spectrum::Magnitudes(frame),rate,count);
+        spectrum::Bands(std::vector<float>(32,0.f),22050,17);
+        Expect(first==spectrum::Bands(spectrum::Magnitudes(frame),rate,count),"band cache invalidates sample rate size and count without changing results");
+    }
     const auto loud=static_cast<std::size_t>(std::max_element(bands.begin(),bands.end())-bands.begin());
     const auto [lowBin,highBin]=spectrum::BandBins(loud,64,48000,spectrum::FrameSize/2);
     const auto sineBin=static_cast<std::size_t>(1000.f/(48000.f/spectrum::FrameSize)+.5f);

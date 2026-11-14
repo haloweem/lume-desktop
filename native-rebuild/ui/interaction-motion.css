@@ -1,0 +1,31 @@
+/* Shared motion vocabulary: moving selection, anchored popover, switch. */
+[data-lume-motion-group] { isolation: isolate; }
+[data-lume-motion-static] { position: relative; }
+[data-lume-motion-indicator] { position: absolute; left: 0; top: 0; z-index: 0; display: block; box-sizing: border-box; pointer-events: none; }
+[data-lume-motion-item] { position: relative; z-index: 1; }
+[data-lume-motion-group] [data-lume-motion-item] { transition: color 120ms ease-out,opacity 120ms ease-out; }
+[data-lume-motion-group] [data-lume-motion-selected] { background: transparent !important; box-shadow: none !important; }
+[data-lume-motion-group="underline"] [data-lume-motion-selected] { border-bottom-color: transparent !important; }
+[data-lume-motion-group] > .HomeModuleHighlight { visibility: hidden; transition: none !important; }
+[data-lume-motion-menu][hidden][data-lume-motion-closing] { display: var(--lume-menu-display,block) !important; pointer-events: none !important; }
+.setting-select-trigger svg,.wallpaper-select-trigger svg { transition: rotate 170ms cubic-bezier(.2,.8,.2,1); }
+.setting-select-trigger[aria-expanded="true"] svg,.wallpaper-select-trigger[aria-expanded="true"] svg { rotate: 180deg; }
+.setting-select-options button,.wallpaper-select-option,.lume-titlebar__account-command,
+.MusicVisualizerMenu button,.MusicBackgroundSourceMenu button,.MusicAudioQualityMenu button {
+  transition: background-color 110ms ease-out,color 110ms ease-out;
+}
+.switch { transition: background-color 180ms cubic-bezier(.2,.8,.2,1); }
+.switch span { transition: left 180ms cubic-bezier(.2,.8,.2,1); }
+.application-settings input[type="checkbox"] { transition: background-color 180ms cubic-bezier(.2,.8,.2,1); }
+.application-settings input[type="checkbox"]::after { transition: transform 180ms cubic-bezier(.2,.8,.2,1); }
+.island-compact-picker__chip { transition: border-color 160ms ease-out,box-shadow 160ms ease-out; }
+.MusicProviderTabs button { transition: border-color 160ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .switch,.switch span,.application-settings input[type="checkbox"],.application-settings input[type="checkbox"]::after,
+  .setting-select-trigger svg,.wallpaper-select-trigger svg,.setting-select-options button,.wallpaper-select-option,
+  .lume-titlebar__account-command,.MusicVisualizerMenu button,.MusicBackgroundSourceMenu button,.MusicAudioQualityMenu button {
+    transition: none !important;
+  }
+  [data-lume-motion-group] [data-lume-motion-item] { transition: none !important; }
+  .island-compact-picker__chip,.MusicProviderTabs button { transition: none !important; }
+}

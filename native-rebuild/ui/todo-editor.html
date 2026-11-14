@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Lume 待办</title>
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="todo-board.css" />
+  </head>
+  <body class="todo-editor-page">
+    <main class="todo-board todo-board--editor"><div class="tb-sheet tb-sheet--standalone" data-tb-sheet hidden></div></main>
+    <script type="module" src="todo-editor.js"></script>
+  </body>
+</html>

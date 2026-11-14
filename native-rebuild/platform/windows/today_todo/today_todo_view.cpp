@@ -6,10 +6,8 @@ void TodayTodoView::Update(todo::RepositorySnapshot snapshot,const todo::ILocalT
     const auto local=time.ToLocal(now);const auto date=local?local->date:calendar::Date{};
     if(date!=date_||snapshot.scope.accountKey!=Scope().accountKey||snapshot.scope.generation!=Scope().generation)scroll_=0;
     date_=date;
-    // Only project as far as the current local day, retaining calendar semantics.
-    auto end=local; if(end){end->hour=23;end->minute=59;end->second=59;end->millisecond=999;}
-    const auto until=end?time.FromLocal(*end):std::optional<todo::Millis>{};
-    todos_.Update(std::move(snapshot),&time,now,until.value_or(now));
+    todos_.Update(std::move(snapshot),&time);
+    if(local)todos_.PrepareDays({date_});
     rows_=local?todos_.ForDay(date_):std::vector<std::size_t>{};
     scroll_=std::clamp(scroll_,0.f,MaximumScroll());
 }

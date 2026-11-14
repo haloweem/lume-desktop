@@ -11,6 +11,8 @@
 #include "platform/windows/music_provider_http.h"
 #include "platform/windows/music_online_provider.h"
 #include "core/music/music_types.h"
+#include "core/music/music_online_lyrics.h"
+#include "platform/windows/music_providers/netease_playback.h"
 #include "platform/windows/music_audio_engine.h"
 #include <chrono>
 #include <thread>
@@ -24,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <functional>
+#include <future>
 #include <regex>
 #include <string>
 #include <vector>
@@ -135,10 +138,126 @@ void Note(const std::string& provider, const std::string& step, const Json& deta
     logFile << entry.dump(-1, ' ', false, Json::error_handler_t::replace) << '\n' << std::flush;
     std::cout << provider << " " << step << ": " << entry["result"].dump().substr(0, 300) << std::endl;
 }
+
+int NeteaseStartup(int argc, char** argv) {
+    if (argc != 5 && argc != 6) {
+        std::cerr << "usage: --netease-startup <accounts-root> <numeric-song-id> <quality> [--prepare]\n";
+        return 2;
+    }
+    const std::string id = argv[3], quality = argv[4];
+    if (id.empty() || id.size() > 20 || id.find_first_not_of("0123456789") != id.npos ||
+        !ValidAudioQuality(quality, "netease") || (argc == 6 && std::string(argv[5]) != "--prepare")) return 2;
+    Json credentials;
+    try { credentials = auth::LoadCredentials(std::filesystem::u8path(argv[2]), auth::Provider::Netease); }
+    catch (...) { std::cerr << "credential-storage-error\n"; return 1; }
+    const auto elapsed = [](auto start) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+    };
+    const auto reason = [](const std::exception& failure) -> std::string {
+        const std::string text = failure.what();
+        if (text.rfind("netease-code-", 0) == 0 && text.size() < 32) return text;
+        for (const auto* value : {"network", "service", "expired", "signed-out", "unavailable",
+                "unsupported", "invalid-response", "rate-limited", "cancelled", "preview-only", "entitlement"})
+            if (std::string_view(failure.what()) == value) return value;
+        return "failed";
+    };
+    const auth::Cancelled never = [] { return false; };
+    Json output{{"songId", id}, {"requestedQuality", quality},
+        {"credentialsPresent", credentials.is_object() && !credentials.empty()}};
+    // Same two independent production requests as playback. Do not use the
+    // verbose exchange above: no identities, bodies or media URLs are recorded.
+    auto lyrics = std::async(std::launch::async, [&] {
+        const auto start = std::chrono::steady_clock::now();
+        Json result;
+        try {
+            const auto raw = online::Execute(auth::Provider::Netease, "lyrics", {{"id", "netease:" + id}},
+                credentials, never);
+            const auto parsed = ParseOnlineLyrics("netease", raw, 0);
+            result = {{"lines", parsed.lines.size()}, {"error", parsed.error}};
+        } catch (const std::exception& failure) { result["error"] = reason(failure); }
+        result["elapsedMs"] = elapsed(start);
+        return result;
+    });
+    const auto start = std::chrono::steady_clock::now();
+    Json responseSummary;
+    const auth::Exchange resolveExchange = [&](const auth::HttpRequest& request, const auth::Cancelled& stop) {
+        auto response = auth::SendHttp(request, stop);
+        responseSummary["httpStatus"] = response.status;
+        auto body = Json::parse(response.body, nullptr, false);
+        if (request.url.find("/xeapi/") != std::string::npos) body = auth::DecodeNeteaseXeapiResponse(response.body);
+        if (body.is_object()) {
+            if (body.contains("code") && body["code"].is_number_integer()) responseSummary["code"] = body["code"];
+            if (body.contains("data") && body["data"].is_array() && !body["data"].empty()) {
+                const auto& song = body["data"][0];
+                for (const auto* key : {"id", "code", "br"})
+                    if (song.contains(key) && song[key].is_number_integer()) responseSummary[key] = song[key];
+                responseSummary["hasUrl"] = song.contains("url") && song["url"].is_string() && !song["url"].empty();
+                responseSummary["trial"] = song.contains("freeTrialInfo") && !song["freeTrialInfo"].is_null() &&
+                    song["freeTrialInfo"] != "null";
+            }
+        }
+        return response;
+    };
+    try {
+        const auto source = online::Execute(auth::Provider::Netease, "resolve",
+            {{"id", "netease:" + id}, {"quality", quality}}, credentials, never, resolveExchange);
+        output["resolve"] = {{"elapsedMs", elapsed(start)}, {"quality", source.value("quality", "")},
+            {"bitrate", source.value("bitrate", 0)}};
+        if (argc == 6) {
+            WindowsAudioEngine engine;
+            const auto load = std::chrono::steady_clock::now();
+            const bool loaded = engine.Load(source.at("url").get<std::string>());
+            output["load"] = {{"elapsedMs", elapsed(load)}, {"ok", loaded}};
+            if (loaded) {
+                engine.SetMuted(true);
+                const auto prepare = std::chrono::steady_clock::now();
+                const bool accepted = engine.Prepare(0, false);
+                while (accepted && !engine.Ready() && elapsed(prepare) < 10000)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                output["prepare"] = {{"elapsedMs", elapsed(prepare)}, {"ok", accepted && engine.Ready()}};
+            }
+            engine.Stop();
+        }
+    } catch (const std::exception& failure) {
+        output["resolve"] = {{"elapsedMs", elapsed(start)}, {"error", reason(failure)}};
+    }
+    output["providerResponse"] = std::move(responseSummary);
+    output["lyrics"] = lyrics.get();
+    std::cout << output.dump() << std::endl;
+    return 0;
+}
+
+int NeteaseSearch(int argc, char** argv) {
+    if (argc != 4) return 2;
+    try {
+        const auto credentials = auth::LoadCredentials(std::filesystem::u8path(argv[2]), auth::Provider::Netease);
+        const auto result = online::Execute(auth::Provider::Netease, "search",
+            {{"query", argv[3]}, {"limit", 5}}, credentials, {});
+        Json songs = Json::array();
+        for (const auto& track : result.at("tracks"))
+            songs.push_back({{"id", track.at("id")}, {"title", track.at("title")},
+                {"artist", track.value("artist", "")}, {"vipRequired", track.value("vipRequired", false)}});
+        std::cout << songs.dump() << '\n';
+        return 0;
+    } catch (...) { std::cerr << "search-failed\n"; return 1; }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
+    if (argc > 1 && std::string(argv[1]) == "--netease-startup") return NeteaseStartup(argc, argv);
+    if (argc > 1 && std::string(argv[1]) == "--netease-search") return NeteaseSearch(argc, argv);
+    if (argc == 2 && std::string(argv[1]) == "--xeapi-fixture") {
+        try {
+        const auto publicKey = auth::Unbase64("3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=");
+        const auto [ephemeral, shared] = auth::X25519(publicKey);
+        std::cout << Json{{"public", auth::Base64(ephemeral)}, {"shared", auth::Base64(shared)},
+            {"envelope", auth::NeteaseXeapiEnvelope({{"ids", "[42]"}, {"level", "standard"}, {"encodeType", "flac"}},
+                {{"publicKey", auth::Base64(publicKey)}, {"version", "fixture"}, {"sk", "fixture"}})}}.dump() << '\n';
+        return 0;
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc < 2) { std::cerr << "usage: lume-music-diag-probe <output.jsonl> [search query]\n"; return 2; }
     logFile.open(argv[1], std::ios::binary | std::ios::trunc);
     const std::string query = argc > 2 ? argv[2] : u8"周杰伦";

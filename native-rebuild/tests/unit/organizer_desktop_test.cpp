@@ -67,6 +67,10 @@ int main(){
         Check(Until([&]{return Role(session,organizer::DesktopRole::Applications)->items.size()==2&&Role(session,organizer::DesktopRole::Files)->items.size()==6;}),
             "actual user/public desktop roots classify apps folders documents images videos and shortcut targets");
         Check(Role(session,organizer::DesktopRole::Applications)->iconScale==70&&Role(session,organizer::DesktopRole::Files)->iconScale==70,"both tabs use default 70 percent icons");
+        for(unsigned i=0;i<300;++i)std::ofstream(user/(L"many-"+std::to_wstring(i)+L".txt"))<<"capacity fixture";
+        SHChangeNotify(SHCNE_UPDATEDIR,SHCNF_PATHW|SHCNF_FLUSH,user.c_str(),nullptr);
+        Check(Until([&]{return Role(session,organizer::DesktopRole::Files)->items.size()==306;}),
+            "actual desktop scan collects more than 120 and 256 entries without truncation");
         const auto groupedWindow=session.Handle();
         Tab(session,1);Check(organizer::ActiveTab(session.Snapshot(),"default")->id==filesId&&session.Handle()==groupedWindow&&!session.Handle(filesId),"click Files changes content inside the same window");
         Tab(session,0);Check(organizer::ActiveTab(session.Snapshot(),"default")->id=="default"&&session.Handle()==groupedWindow,"click Desktop restores applications without another window");
@@ -97,7 +101,7 @@ int main(){
     }
     {
         shell::OrganizerSession restored(GetModuleHandleW(nullptr),"organizer.json",{},[]{},&files,{},{},true,{user.wstring(),common.wstring()});
-        Check(restored.Restore()&&!restored.Running()&&restored.Snapshot().collections.size()==2&&Role(restored,organizer::DesktopRole::Files)->items.size()==6&&
+        Check(restored.Restore()&&!restored.Running()&&restored.Snapshot().collections.size()==2&&Role(restored,organizer::DesktopRole::Files)->items.size()==306&&
             organizer::Host(restored.Snapshot(),Role(restored,organizer::DesktopRole::Files)->id)->id=="default",
             "classified references and two grouped roles persist after restart");
         const auto* desktop=Role(restored,organizer::DesktopRole::Applications);

@@ -23,7 +23,7 @@
   height: 100%;
   overflow: hidden;
   color: #fff;
-  background: #09090b;
+  background: var(--lume-page-background, #121212);
   font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
   letter-spacing: 0;
   font-variant-numeric: normal;

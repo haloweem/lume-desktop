@@ -25,12 +25,13 @@ export function createMusicWallpaperGallery({document=globalThis.document,query,
   const window=document.defaultView;
   let dialog=null,opener=null,abort=null,epoch=0,disposed=false,items=[],total=0,selectedId='';
   let loading=false,pendingId='',error='',nextOffset=0;
+  const cards=new Map();
   const $=selector=>dialog?.querySelector(selector);
   function close() {
     if(!dialog)return;
     ++epoch;abort?.abort();abort=null;
     window.removeEventListener('keydown',key,true);
-    dialog.remove();dialog=null;items=[];pendingId='';loading=false;
+    dialog.remove();dialog=null;items=[];pendingId='';loading=false;cards.clear();
     if(opener?.isConnected)opener.focus({preventScroll:true});
     opener=null;onClose?.();
   }
@@ -53,8 +54,8 @@ export function createMusicWallpaperGallery({document=globalThis.document,query,
     $('[data-gallery-error]').hidden=!error;
     $('[data-gallery-error]').textContent=error;
     const content=$('[data-gallery-content]');
-    content.replaceChildren();
     if(!items.length) {
+      content.replaceChildren();cards.clear();
       const status=document.createElement('div');
       status.className='MusicWallpaperGalleryEmpty';
       status.setAttribute('role','status');
@@ -62,28 +63,49 @@ export function createMusicWallpaperGallery({document=globalThis.document,query,
       const label=document.createElement('p');label.textContent=loading?TEXT.loading:error?TEXT.loadError:TEXT.empty;
       status.append(label);content.append(status);
     } else {
-      const grid=document.createElement('div');grid.className='MusicWallpaperGalleryGrid';
+      let grid=content.querySelector('.MusicWallpaperGalleryGrid');
+      if(!grid){grid=document.createElement('div');grid.className='MusicWallpaperGalleryGrid';content.replaceChildren(grid);}
+      const retained=new Set();let cursor=grid.firstElementChild;
       for(const item of items) {
-        const button=document.createElement('button');
-        button.type='button';button.className='MusicWallpaperGalleryItem';
-        button.dataset.wallpaperId=item.id;button.disabled=loading || !!pendingId;
+        const key=JSON.stringify([item.name,item.type,item.thumbnailUrl]);
+        let entry=cards.get(item.id);
+        if(entry?.key!==key){
+          const button=document.createElement('button');
+          button.type='button';button.className='MusicWallpaperGalleryItem';
+          button.dataset.wallpaperId=item.id;
+          button.innerHTML=`<span class="MusicWallpaperGalleryPreview"><span class="MusicWallpaperGalleryFallback">${image}</span>
+            <span class="MusicWallpaperGalleryTag">${item.type==='video'?film:image}<span>${TEXT[item.type]}</span></span></span>
+            <span class="MusicWallpaperGalleryName"></span>`;
+          if(item.thumbnailUrl) {
+            const thumbnail=document.createElement('img');
+            thumbnail.src=item.thumbnailUrl;thumbnail.alt=item.name;thumbnail.loading='lazy';thumbnail.decoding='async';
+            thumbnail.addEventListener('error',()=>{thumbnail.hidden=true;},{once:true});
+            button.querySelector('.MusicWallpaperGalleryPreview').prepend(thumbnail);
+          }
+          const label=button.querySelector('.MusicWallpaperGalleryName');label.textContent=item.name;label.title=item.name;
+          button.addEventListener('click',()=>void choose(item.id));
+          entry={key,button};cards.set(item.id,entry);
+        }
+        const button=entry.button;
+        button.disabled=loading || !!pendingId;
         button.setAttribute('aria-label',TEXT.use+item.name);
         button.setAttribute('aria-pressed',String(selectedId===item.id));
-        button.innerHTML=`<span class="MusicWallpaperGalleryPreview"><span class="MusicWallpaperGalleryFallback">${image}</span>
-          <span class="MusicWallpaperGalleryTag">${item.type==='video'?film:image}<span>${TEXT[item.type]}</span></span>
-          ${selectedId===item.id?`<span class="MusicWallpaperGallerySelected">${check}</span>`:''}
-          ${pendingId===item.id?`<span class="MusicWallpaperGalleryPending" role="status" aria-label="${TEXT.applying}">${MUSIC_ICONS.loader}</span>`:''}</span>
-          <span class="MusicWallpaperGalleryName"></span>`;
-        if(item.thumbnailUrl) {
-          const thumbnail=document.createElement('img');
-          thumbnail.src=item.thumbnailUrl;thumbnail.alt=item.name;thumbnail.loading='lazy';thumbnail.decoding='async';
-          thumbnail.addEventListener('error',()=>{thumbnail.hidden=true;},{once:true});
-          button.querySelector('.MusicWallpaperGalleryPreview').prepend(thumbnail);
+        for(const [className,shown,html] of [
+          ['MusicWallpaperGallerySelected',selectedId===item.id,check],
+          ['MusicWallpaperGalleryPending',pendingId===item.id,MUSIC_ICONS.loader]]) {
+          const badge=button.querySelector(`.${className}`);
+          if(!shown)badge?.remove();
+          else if(!badge){
+            const node=document.createElement('span');node.className=className;node.innerHTML=html;
+            if(className==='MusicWallpaperGalleryPending'){node.setAttribute('role','status');node.setAttribute('aria-label',TEXT.applying);}
+            button.querySelector('.MusicWallpaperGalleryPreview').append(node);
+          }
         }
-        const label=button.querySelector('.MusicWallpaperGalleryName');label.textContent=item.name;label.title=item.name;
-        button.addEventListener('click',()=>void choose(item.id));grid.append(button);
+        if(button!==cursor)grid.insertBefore(button,cursor);
+        cursor=button.nextElementSibling;retained.add(button);
       }
-      content.append(grid);
+      for(const node of [...grid.children])if(!retained.has(node))node.remove();
+      for(const [id,entry] of cards)if(!retained.has(entry.button))cards.delete(id);
     }
     const more=$('[data-gallery-more]');
     more.hidden=nextOffset>=total;more.disabled=loading || !!pendingId;
@@ -106,7 +128,7 @@ export function createMusicWallpaperGallery({document=globalThis.document,query,
       if(!validMusicBackgroundCatalogMessage(result) || result.status!=='ready' ||
         result.items.length>Math.max(0,result.total-offset) ||
         !result.items.length && offset<result.total)throw Error('invalid');
-      if(append && result.items.some(item=>items.some(previous=>previous.id===item.id)))throw Error('invalid');
+      if(append){const ids=new Set(items.map(item=>item.id));if(result.items.some(item=>ids.has(item.id)))throw Error('invalid');}
       items=append?[...items,...result.items]:result.items;
       total=result.total;selectedId=result.selectedId;nextOffset=offset+result.items.length;
     } catch {

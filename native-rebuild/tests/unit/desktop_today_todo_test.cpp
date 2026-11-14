@@ -78,6 +78,9 @@ int main(){
           }
           opened=true;document.querySelector('[data-open="todayTodo"]').click();return;
         }
+        // The page opens on the shared to-do board; the material lives under Settings.
+        const settingsTab=document.querySelector('[data-settings-scope="todayTodo"] [data-tab="settings"][aria-selected="false"]');
+        if(settingsTab&&document.querySelector('[data-todo-board]')){settingsTab.click();return;}
         const select=document.querySelector('#todayTodo-material');
         if(!select||select.disabled||material||select.textContent.includes('液态玻璃'))return;
         material=true;select.click();

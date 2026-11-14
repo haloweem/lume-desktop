@@ -2,8 +2,11 @@
 #include "core/organizer/organizer_model.h"
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include "platform/windows/material/material_api.h"
+#include <cstdint>
 #include <optional>
 namespace lume::platform::windows {
+inline constexpr int OrganizerCollapsedWidth=260;
+inline constexpr int OrganizerCollapsedHeight=44;
 struct OrganizerMotionFrame;
 struct OrganizerHit {
     // Header: empty title-bar space (or a collapsed body) that only drags.
@@ -22,6 +25,7 @@ struct OrganizerViewState {
     std::vector<std::size_t> order;
     // 标签组：两个及以上标题时，标题栏改为可横向滚动的标签条。
     std::vector<std::wstring> tabs;
+    std::vector<organizer::Accent> tabAccents;
     std::size_t activeTab=0;
     std::optional<std::size_t> hoverTab,liftedTab,dropTab;
     // While a lifted tab is over its own strip: the slot (0..tabs) it would take.
@@ -37,13 +41,15 @@ struct OrganizerCell {
 struct OrganizerLayout {
     WidgetRect title,search,searchInput,searchClear,viewport;
     std::vector<OrganizerCell> cells;
-    // Expanded tab groups only; empty for a single collection.
+    // Tab groups in either mode; empty for a single collection.
     WidgetRect tabStrip,header;
     std::vector<WidgetRect> tabs;
     float maxScroll=0,maxTabScroll=0;
     bool collapsed=false;
 };
 float OrganizerTabWidth(const std::wstring&);
+// RGB marker color; None is 0 and adds no drawing to the original appearance.
+std::uint32_t OrganizerAccentColor(organizer::Accent);
 OrganizerLayout LayoutOrganizer(float width,float height,const organizer::Collection&,const OrganizerViewState& = {});
 std::vector<LumeMaterialPanel> OrganizerSearchPanels(const OrganizerLayout&,const OrganizerViewState&);
 using OrganizerImage=std::function<std::shared_ptr<const WidgetBitmap>(const organizer::Item&)>;

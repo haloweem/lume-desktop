@@ -156,6 +156,7 @@ Result Request(const char* path, Ordered data, bool weapi, Json& secrets,
     CheckCancelled(cancelled);
     if (response.status == 401 || response.status == 403) throw Failure{"expired"};
     if (response.status == 429) throw Failure{"rate-limited"};
+    if (response.status >= 500) throw Failure{"network"};
     if (response.status < 200 || response.status >= 300) throw Failure{"service"};
     if (response.body.empty() || response.body.size() > request.maxResponse) throw Failure{"invalid-response"};
     auto body = Json::parse(response.body, nullptr, false);
@@ -255,7 +256,7 @@ Json NeteaseCatalogRequest(const char* path, const Json& data, bool weapi, Json&
     try {
         return Request(path, Ordered(data), weapi, secrets, cancelled, exchange, kCatalogMaxResponse).body;
     } catch (const Failure& failure) {
-        throw std::runtime_error(failure.error == "network" ? std::string("service") : failure.error);
+        throw std::runtime_error(failure.error);
     }
 }
 

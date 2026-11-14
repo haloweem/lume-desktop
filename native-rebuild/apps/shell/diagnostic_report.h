@@ -9,14 +9,14 @@ namespace lume::shell {
 // A single zip the user can send when something goes wrong, so the problem
 // can be found from evidence instead of a description: system, GPU, display
 // and taskbar environment, Lume's process tree, every module's current state,
-// Lume's runtime log and crash dumps, Windows' own crash records for Lume
+// Lume's runtime log, bounded wallpaper resource history and crash dumps, Windows' own crash records for Lume
 // processes, and the user's preference files. Account data, music accounts,
 // weather location and anything credential-like are never included.
 struct DiagnosticReportInput {
     std::filesystem::path dataDirectory;  // Lume's Data folder.
     std::filesystem::path logDirectory;   // diag::Directory().
     std::filesystem::path installDirectory;
-    std::filesystem::path outputDirectory;  // Empty: the user's desktop.
+    std::filesystem::path outputDirectory;  // Empty: the user's desktop. Keeps at most 5 own reports / 160 MiB.
     std::string version;
     std::string note;           // What the user saw, optional.
     nlohmann::json modules = nlohmann::json::object();  // type -> state message.

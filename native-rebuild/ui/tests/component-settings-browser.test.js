@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {modules,widgets} from '../catalog.js';
 import {
   components,viewports,createBrowserHarness,createFixturePage,recordCase,
   checkSettingsPages,checkCardNotices,checkBrowserEnvironment,
 } from './component-settings-browser.mjs';
 
-test('真实 Edge：九组件五视口设置、卡片启停、提示时序与横向布局',{
+test('真实 Edge：可见组件五视口设置、卡片启停、提示时序与横向布局',{
   skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:240000,
 },async t=>{
   const harness=await createBrowserHarness();
@@ -14,7 +15,7 @@ test('真实 Edge：九组件五视口设置、卡片启停、提示时序与横
       await t.test(`${viewport.width}x${viewport.height}`,async suite=>{
         const fixture=await createFixturePage(harness,viewport);
         try {
-          for(const component of components) {
+          for(const component of components.filter(item=>[...modules,...widgets].some(entry=>entry.id===item.scope&&!entry.hidden))) {
             await suite.test(`${component.scope}：设置和详情无主开关、保留参数且无横向溢出`,()=>
               recordCase(fixture,`${component.scope}-settings`,()=>
                 checkSettingsPages(fixture,component)));

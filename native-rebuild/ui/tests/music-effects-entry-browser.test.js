@@ -288,13 +288,15 @@ test('production Edge music effects entry: pixels, ownership, controls and wallp
           await page.waitForFunction(() => harness.commands.includes('v1|ready'));
           await page.evaluate(async () => {
             const {initialMusicState} = await import('./music.js');
-            const {query, nav, lyrics, ...native} = initialMusicState();
+            const {query, nav, lyrics, score, ...native} = initialMusicState();
+            const {validHostMessage} = await import('./bridge.js');
             const track = {id: 'effects-entry', title: 'Effects entry', artist: 'Lume', album: 'Fixture',
               source: 'C:/fixture/effects-entry.wav', artwork: '', duration: 180};
             window.effectSnapshot = {...native, version: 1, type: 'music-state', session: 36, revision: 1,
               pageOpen: true, pageVisible: true, status: 'playing', playing: true, current: track, queue: [track],
               timeline: {position: 24, duration: 180},
               capabilities: {canToggle: true, canSeek: true, canPrevious: true, canNext: true}};
+            if (!validHostMessage(effectSnapshot)) throw new Error('Effects fixture must use the native music-state schema');
             window.effectLyrics = {version: 1, type: 'music-lyrics', session: 36, trackId: track.id,
               lines: [{startTime: 0, endTime: 180, fullText: 'Effects continuity', translation: '', words: []}]};
             harness.receive(effectSnapshot);

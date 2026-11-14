@@ -20,20 +20,27 @@ test('sample preview renders only on changes, serializes requests and releases o
   controller.dispose();assert.equal(commands.at(-1),'stop');assert.equal(timers.size,0);
   controller.update(true);assert.equal(timers.size,0);
 });
-test('desktop expansion and playback do not change the selected preview mode',()=>{
+test('desktop expansion does not change the selected style category or create a page preview mode',()=>{
   const state=initialState();
-  assert.equal(state.dynamicIslandPreviewMode,'compact');
+  assert.equal(state.islandStyleWidget,'clock');
+  assert.equal(state.dynamicIslandPreviewMode,undefined);
   const message={version:1,type:'dynamicIsland-state',...state.dynamicIsland,expanded:true,
     loadStatus:'loaded',result:'snapshot',error:'',saved:false};
-  assert.equal(reduce(state,{type:'host',message}).dynamicIslandPreviewMode,'compact');
+  assert.equal(reduce(state,{type:'host',message}).islandStyleWidget,'clock');
+  assert.equal(reduce(state,{type:'host',message}).dynamicIslandPreviewMode,undefined);
 });
-test('compact preview refreshes only while visible',()=>{
+test('compact preview captures once per visit without polling settled readings',()=>{
   const commands=[],timers=new Map();let serial=0;
   const controller=createIslandPreviewController({send:mode=>{commands.push(mode);return true;},getMode:()=> 'compact',
     onFrame:()=>{},setTimer:(fn,delay)=>{timers.set(++serial,{fn,delay});return serial;},clearTimer:id=>timers.delete(id)});
   controller.update(true);controller.receive({mode:'compact',readings:[],animating:false,error:''});
-  assert.equal([...timers.values()][0].delay,2000);
+  assert.equal(timers.size,0,'settled compact readings schedule no polling');
+  assert.deepEqual(commands,['compact']);
   controller.update(false);assert.equal(timers.size,0);assert.equal(commands.at(-1),'stop');
+  controller.update(true);assert.equal(commands.at(-1),'compact');
+  controller.receive({mode:'compact',readings:[{id:6,text:'50%',progress:.5,available:true}],animating:false,error:''});
+  assert.equal(timers.size,0,'reopening captures once and settles again');
+  controller.dispose();
 });
 test('preview follows native transition frames and stops as soon as the shape settles',()=>{
   const commands=[],timers=new Map();let id=0;

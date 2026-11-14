@@ -54,11 +54,13 @@ test('production entry runs all available stages under CSP without panel reloads
       await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
       await page.evaluate(async()=>{
         const {initialMusicState}=await import('./music.js');
-        const {query,nav,lyrics,...native}=initialMusicState();
+        const {query,nav,lyrics,score,...native}=initialMusicState();
+        const {validHostMessage}=await import('./bridge.js');
         const track={id:'fixture',title:'\u5c71\u95f4\u6765\u4fe1',artist:'Lume',album:'Reference',source:'C:/Music/fixture.mp3',artwork:'',duration:240};
         window.snapshot={...native,version:1,type:'music-state',session:9,revision:1,pageOpen:true,pageVisible:true,
           status:'paused',current:track,queue:[track],timeline:{position:25,duration:240},
           capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}};
+        if(!validHostMessage(snapshot))throw new Error('Entry fixture must use the native music-state schema');
         window.lyricsMessage={version:1,type:'music-lyrics',session:9,trackId:track.id,
           lines:Array.from({length:40},(_,i)=>({startTime:i*6,endTime:i*6+6,fullText:['\u98ce\u7a7f\u8fc7\u4e86\u5c71\u8c37','\u7a97\u5916\u4eae\u8d77\u5fae\u5149','A melody through the night'][i%3],translation:'',words:[]}))};
         harness.receive({version:1,type:'navigate',page:'music'});

@@ -3,8 +3,8 @@ import {settingsFrame,settingsSelect,syncSettingsSelect,syncSettingsControlBusy}
 import {t} from './localization.js';
 import {settingsRange,syncSettingsRange} from './settings-range.js';
 
-// Paused together with dock::SystemTrayAvailable; keep implementation for later development.
-const systemTrayAvailable=false;
+// The control center at the Dock's right end (protocol key "systemTray"), paired with dock::SystemTrayAvailable.
+const systemTrayAvailable=true;
 
 const materials=()=>[['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')],['none',t('无','None')]];
 export const dockIconScales=Array.from({length:71},(_,index)=>50+index);
@@ -23,14 +23,17 @@ const inRange=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 export function validDockState(message) {
   const keys=['version','type','enabled','running','material','reflection','systemTray','iconScale','position','bottomOffset','iconSpacing','pinned','added',
     'materialStatus','loadStatus','error','result','saved'];
-  const optional=['visibleItems','layersVisible','missingIcons','iconCachePaths','launchpadScale','launchpadIconScale'];
+  const optional=['showRunning','visibleItems','layersVisible','missingIcons','iconCachePaths','launchpadScale','launchpadIconScale','launchpadMaximized','launchpadRemoved'];
   return !!message&&typeof message==='object'&&!Array.isArray(message)&&
     keys.every(key=>Object.hasOwn(message,key))&&Object.keys(message).every(key=>keys.includes(key)||optional.includes(key))&&
     message.version===1&&message.type==='dock-state'&&
     ['enabled','running','saved','reflection','systemTray'].every(key=>typeof message[key]==='boolean')&&
+    (!Object.hasOwn(message,'showRunning')||typeof message.showRunning==='boolean')&&
     ['liquid-glass','frosted-glass','none'].includes(message.material)&&inRange(message.iconScale,50,120)&&
     (message.launchpadScale===undefined||inRange(message.launchpadScale,60,140))&&
     (message.launchpadIconScale===undefined||inRange(message.launchpadIconScale,50,120))&&
+    (message.launchpadMaximized===undefined||typeof message.launchpadMaximized==='boolean')&&
+    (message.launchpadRemoved===undefined||count(message.launchpadRemoved))&&
     inRange(message.position,0,100)&&inRange(message.bottomOffset,0,160)&&inRange(message.iconSpacing,4,24)&&
     count(message.pinned)&&count(message.added)&&
     (message.visibleItems===undefined||count(message.visibleItems)) &&
@@ -68,28 +71,36 @@ export function dockNotice(state,{previousStatus,hasInlineStatus=false}={}) {
   return null;
 }
 
-export function dockPage(state,tab='settings') {
+export function dockPage(state,tab='dock') {
+  if(!['dock','launchpad','control-center','settings','details'].includes(tab))tab='dock';
   const title=t('Dock栏美化','Dock');
   const description=t('启动台与常用应用','Launchpad and favourite apps');
   const disabled=busy(state),resetLabel=t('恢复默认','Restore defaults');
   const summary=t(`已固定 ${state.dock.pinned} 项，启动台已添加 ${state.dock.added} 项`,
     `${state.dock.pinned} pinned, ${state.dock.added} added to the launchpad`);
-  const body=tab==='settings'?
-    `<div class="setting-row"><label for="dock-material">${t('材质设置','Material')}</label>${settingsSelect('dock-material',t('材质设置','Material'),state.dock.material,materials(),disabled)}</div>`+
+  const body=tab==='dock'?
     `<div class="setting-row"><div><label>${t('图标大小','Icon size')}</label><p class="setting-help">${t('按 1% 微调 Dock 的整体大小','Adjust the Dock size in 1% steps')}</p></div>${rangeControl('dock-icon-scale',t('图标大小','Icon size'),state.dock.iconScale,50,120,'%',disabled)}</div>`+
     `<div class="setting-row"><div><label>${t('图标位置','Icon position')}</label><p class="setting-help">${t('调整 Dock 距屏幕底部的高度，每次 1 px','Raise the Dock from the bottom in 1 px steps')}</p></div>${rangeControl('dock-bottom-offset',t('距底部上移','Move up from the bottom'),state.dock.bottomOffset??0,0,160,' px',disabled)}</div>`+
-    `<div class="setting-row"><div><label>${t('图标间距','Icon spacing')}</label><p class="setting-help">${t('按 1 px 微调图标之间的距离','Adjust the gap in 1 px steps')}</p></div>${rangeControl('dock-icon-spacing',t('图标间距','Icon spacing'),state.dock.iconSpacing??10,4,24,' px',disabled)}</div>`+
+    `<div class="setting-row"><div><label>${t('图标间距','Icon spacing')}</label><p class="setting-help">${t('按 1 px 微调图标之间的距离','Adjust the gap in 1 px steps')}</p></div>${rangeControl('dock-icon-spacing',t('图标间距','Icon spacing'),state.dock.iconSpacing??10,4,24,' px',disabled)}</div>`:
+    tab==='settings'?
+    `<div class="setting-row"><label for="dock-material">${t('材质设置','Material')}</label>${settingsSelect('dock-material',t('材质设置','Material'),state.dock.material,materials(),disabled)}</div>`+
     `<div class="setting-row"><div><label>${t('图标倒影','Icon reflection')}</label><p class="setting-help">${t('在 Dock 图标下方显示镜面倒影','Show a mirrored reflection under the Dock icons')}</p></div>${toggle(state.dock.reflection,t('图标倒影','Icon reflection'),'dock-reflection',disabled)}</div>`+
-    (systemTrayAvailable?`<div class="setting-row"><div><label>${t('系统托盘','System tray')}</label><p class="setting-help">${t('在 Dock 右侧显示系统状态，点击打开 Windows 快捷设置','Show system status at the right of the Dock; click to open Windows quick settings')}</p></div>${toggle(state.dock.systemTray,t('系统托盘','System tray'),'dock-system-tray',disabled)}</div>`:'')+
+    `<div class="setting-row"><div><label>${t('运行区','Running apps')}</label><p class="setting-help">${t('在 Dock 中显示正在运行的应用','Show running apps in the Dock')}</p></div>${toggle(state.dock.showRunning??true,t('运行区','Running apps'),'dock-show-running',disabled)}</div>`+
+    `<div class="reset-row"><button type="button" class="reset" data-action="dock-reset" title="${h(resetLabel)}" ${disabled?'disabled':''}>${resetLabel}</button></div>`:
+    tab==='launchpad'?
     `<div class="setting-row">${rangeControl('dock-launchpad-scale',t('启动台大小','Launchpad size'),state.dock.launchpadScale??100,60,140,'%',disabled)}</div>`+
     `<div class="setting-row">${rangeControl('dock-launchpad-icon-scale',t('启动台图标大小','Launchpad icon size'),state.dock.launchpadIconScale??100,50,120,'%',disabled)}</div>`+
-    `<div class="setting-row"><label>${t('项目','Items')}</label><span class="dock-summary" data-dock-summary>${h(summary)}</span></div>`+
-    `<div class="reset-row"><button type="button" class="reset" data-action="dock-reset" title="${h(resetLabel)}" ${disabled?'disabled':''}>${resetLabel}</button></div>`:
+    `<div class="setting-row"><label>${t('项目','Items')}</label><span class="dock-summary" data-dock-summary>${h(summary)}</span></div>`:
+    tab==='control-center'?
+    (systemTrayAvailable?`<div class="setting-row"><div><label>${t('控制中心','Control center')}</label><p class="setting-help">${t('在 Dock 最右侧显示控制中心：Wi-Fi、蓝牙、热点、飞行模式、音量、亮度与托盘图标，隐藏任务栏时也能使用','Show a control center at the right end of the Dock: Wi-Fi, Bluetooth, hotspot, airplane mode, volume, brightness and notification icons, even with the taskbar hidden')}</p></div>${toggle(state.dock.systemTray,t('控制中心','Control center'),'dock-system-tray',disabled)}</div>`:''):
     `<div class="settings-details"><h3>${t('功能说明','About the Dock')}</h3>`+
     `<p>${t('Dock 显示在屏幕底部，第一个是启动台，第二个是 Lume，之后是固定的应用和正在运行的程序（下方圆点表示正在运行）。','The Dock sits at the bottom of the screen: the launchpad, Lume, then pinned apps and running programs (a dot marks running ones).')}</p>`+
     `<p>${t('启动台显示桌面上的图标（桌面本身不变），可以搜索，也可以用“添加”加入文件和文件夹。在启动台或 Dock 上右键可以固定或取消固定。','The launchpad shows your desktop icons (the desktop itself is unchanged); search them or use Add for files and folders. Right-click to pin or unpin.')}</p></div>`;
   return settingsFrame({title,description,tab,body,status:dockStatus(state),error:state.dockStatus==='error',
-    scope:'dock',backLabel:t('返回桌面美化','Back to desktop styles')});
+    scope:'dock',backLabel:t('返回桌面美化','Back to desktop styles'),
+    navigationPages:[['dock',t('Dock','Dock')],['launchpad',t('启动台','Launchpad')],
+      ['control-center',t('控制中心','Control center')],['settings',t('设置','Settings')],['details',t('详情','Details')]],
+    pageTitle:tab==='launchpad'?t('启动台','Launchpad'):tab==='control-center'?t('控制中心','Control center'):title});
 }
 
 export function syncDockControls(root,state) {
@@ -113,6 +124,11 @@ export function syncDockControls(root,state) {
   root.querySelectorAll('[data-action="dock-reflection"]').forEach(button=>{
     button.classList.toggle('checked',state.dock.reflection);
     button.setAttribute('aria-checked',String(state.dock.reflection));syncSettingsControlBusy(button,disabled);
+  });
+  root.querySelectorAll('[data-action="dock-show-running"]').forEach(button=>{
+    const shown=state.dock.showRunning??true;
+    button.classList.toggle('checked',shown);
+    button.setAttribute('aria-checked',String(shown));syncSettingsControlBusy(button,disabled);
   });
   root.querySelectorAll('[data-action="dock-system-tray"]').forEach(button=>{
     button.classList.toggle('checked',state.dock.systemTray);

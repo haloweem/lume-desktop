@@ -31,6 +31,11 @@ function homeHeroRecord(item, source, url, tone) {
   return { id: item.id, title: item.title || "", width: item.width || 0, height: item.height || 0,
     kind: item.kind || "video", source: source || "", url, toneA: tone.toneA, toneB: tone.toneB };
 }
+export function rememberedHomeSlide(state){
+  const id=readHomeHero()?.id;
+  const index=wallpaperHomeItems(state).findIndex(item=>item.id===id);
+  return index>=0?index:0;
+}
 export function toolbar(active, query = "", kind = "video") {
   const views = [
     "home",
@@ -68,12 +73,12 @@ export function home(state) {
     : wallpaperCardTones(p || {id:"official-wallpaper",title:"官方壁纸"}));
   if(online && image) writeHomeHero(homeHeroRecord(online, imageSource, image, tone));
   const title=p?.title || (loading ? t("正在读取官方壁纸…","Loading official wallpapers…") : t("暂无官方壁纸","No official wallpapers"));
-  const imageMarkup=image ? `<img class="preview-image" data-wallpaper-preview data-wallpaper-asset-source="${h(imageSource)}" src="${h(image)}"${fallback ? ` data-wallpaper-fallback-src="${h(fallback)}"` : ""} alt="" decoding="async" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2">` : "";
+  const imageMarkup=image ? `<img class="preview-image" data-wallpaper-preview data-wallpaper-asset-source="${h(imageSource)}" src="${h(image)}"${fallback ? ` data-wallpaper-fallback-src="${h(fallback)}"` : ""} alt="" decoding="async" fetchpriority="high" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2">` : "";
   const slides=items.map((_,i)=>`<button class="dot${i === index ? " active" : ""}" data-dot="${i}" aria-label="${t(`第 ${i + 1} 张壁纸`,`Wallpaper ${i + 1}`)}" aria-current="${i === index}"></button>`).join("");
   const arrows=items.length>1 ? [-1,1].map((delta) => `<button class="home-arrow ${delta < 0 ? "prev" : "next"}" data-slide="${delta}" aria-label="${delta < 0 ? t("上一张","Previous wallpaper") : t("下一张","Next wallpaper")}"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>`).join("") : "";
   const action=p && online ? `<button class="card-action" data-wallpaper-id="${h(p.id)}" data-wallpaper-source="official">${t("前往","Open")}</button>` : "";
   const metadata=p ? `${p.width}x${p.height} · ${p.kind==="video" ? t("动态壁纸","Dynamic wallpapers") : t("静态壁纸","Static wallpapers")}` : t("官方目录","Official library");
-  return `<div class="HomeRoot"><section class="HomeHero"><div class="preview current" style="--image:none;--tone-a:${h(tone.toneA)};--tone-b:${h(tone.toneB)}">${imageMarkup}</div>${arrows}<div class="HomeDots">${slides}</div><div class="HomeHoverOverlay"><div class="HoverBody"><div class="HoverTitle">${h(title)}</div><div class="CardActions">${action}</div></div><div class="HoverMetaRow">${metadata}</div></div></section>${toolbar("home")}</div>`;
+  return `<div class="HomeRoot"><section class="HomeHero"><div class="preview current" data-wallpaper-hero="${h(p?.id||'')}" data-wallpaper-hero-src="${h(image)}" style="--image:none;--tone-a:${h(tone.toneA)};--tone-b:${h(tone.toneB)}">${imageMarkup}</div>${arrows}<div class="HomeDots">${slides}</div><div class="HomeHoverOverlay"><div class="HoverBody"><div class="HoverTitle">${h(title)}</div><div class="CardActions">${action}</div></div><div class="HoverMetaRow">${metadata}</div></div></section>${toolbar("home")}</div>`;
 }
 export function card(item, state, isWidget = false) {
   const display=localizedItem(item);
@@ -237,8 +242,9 @@ export function library(state) {
 }
 export function search(state) {
   const local=state.wallpaper.library.map(item=>({...item,source:"local"}));
+  const localIds=new Set(state.wallpaper.library.map(item=>item.id));
   const official=state.wallpaper.catalog.filter(item=>!item.libraryId ||
-    !state.wallpaper.library.some(local=>local.id===item.libraryId)).map(item=>({...item,source:"official"}));
+    !localIds.has(item.libraryId)).map(item=>({...item,source:"official"}));
   const result=searchCatalog([...local,...official,...modules.filter(item=>!item.hidden),...widgets.filter(item=>!item.hidden)],state.query);
   const pages=Math.max(1,Math.ceil(result.length/wallpaperPageSize));
   const page=Math.min(state.wallpaperSearchPage,pages);
@@ -437,7 +443,7 @@ export function updateHomeCarousel(root, state) {
   const previous = hero.querySelector(".preview.current");
   // A state publish (download progress, widget refresh, resource sampling) must
   // not rebuild and re-decode the same hero: update only the surrounding chrome.
-  if (previous && previous.dataset.wallpaperHero === p.id && previous.dataset.wallpaperHeroSrc === image) {
+  if (previous?.dataset?.wallpaperHero === p.id && previous.dataset.wallpaperHeroSrc === image) {
     syncChrome();
     return;
   }

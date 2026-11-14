@@ -11,6 +11,10 @@ std::optional<TaskView> NextInstance(const TaskView &task, const Recurrence &rec
 // Later occurrences of an open repeating task that start no later than until.
 std::vector<TaskView> ProjectOccurrences(const TaskView &task, Millis until, std::size_t limit,
                                          const ILocalTimePort &port);
+// Materialize only the requested calendar days. Intermediate occurrences carry
+// schedule metadata only, so old series do not copy years of notes/subtasks.
+std::vector<TaskView> ProjectOccurrencesForDays(const TaskView &task, const std::vector<calendar::Date>& days,
+                                              const ILocalTimePort &port);
 // Projected occurrences whose reminder is due within the last day, plus the next upcoming one.
 void AppendReminderOccurrences(std::vector<TaskView> &tasks, Millis now, const ILocalTimePort &port);
 bool ValidUtf8Length(const std::string &text, std::size_t maximumUtf16Units) noexcept;

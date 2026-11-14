@@ -87,6 +87,16 @@ void CountBadge(WidgetCanvas& canvas,WidgetRect icon,std::size_t count,WidgetRec
     canvas.Text(text,badge,11,0xffffff,1,WidgetTextWeight::Semibold,WidgetTextAlign::Center);
 }
 }
+std::uint32_t OrganizerAccentColor(organizer::Accent accent){
+    switch(accent){
+        case organizer::Accent::Blue:return 0x79aef2;
+        case organizer::Accent::Green:return 0x7bc7a4;
+        case organizer::Accent::Amber:return 0xe6bc75;
+        case organizer::Accent::Rose:return 0xde93aa;
+        case organizer::Accent::Purple:return 0xb59be4;
+        default:return 0;
+    }
+}
 // Layout has no canvas; estimate the 13px tab label width by script so hit
 // rectangles stay stable. Drawing truncates with an ellipsis if it overflows.
 float OrganizerTabWidth(const std::wstring& name){
@@ -100,16 +110,27 @@ float OrganizerTabWidth(const std::wstring& name){
 OrganizerLayout LayoutOrganizer(float width,float height,const organizer::Collection& collection,const OrganizerViewState& view){
     OrganizerLayout result;
     result.collapsed=collection.mode==organizer::Mode::Collapsed&&!view.temporaryExpanded;
-    const auto indices=Visible(collection,view);
     if(result.collapsed){
-        result.title={std::max(0.f,(width-160)/2),height-33,std::min(160.f,width),30};
-        result.search={width-31,7,24,24};
-        result.viewport={24,24,width-48,height-84};
-        const float left=(width-116)/2,top=(height-36-116)/2;
-        for(std::size_t i=0;i<std::min<std::size_t>(4,indices.size());++i)
-            result.cells.push_back({indices[i],{left+static_cast<float>(i%2)*64,top+static_cast<float>(i/2)*64,52,52}});
+        const float top=std::max(0.f,(height-30)/2);
+        result.header={0,0,width,height};
+        result.title={40,top,std::max(0.f,width-84),30};
+        result.search={width-38,std::max(0.f,(height-28)/2),28,28};
+        if(view.tabs.size()>1){
+            result.tabStrip=result.title;
+            float x=0;
+            for(const auto& name:view.tabs){
+                const float w=std::min(OrganizerTabWidth(name),result.tabStrip.width);
+                result.tabs.push_back({result.tabStrip.x+x,top,w,30});x+=w+4;
+            }
+            result.maxTabScroll=std::max(0.f,x-4-result.tabStrip.width);
+            const float scroll=std::clamp(view.tabScroll,0.f,result.maxTabScroll);
+            for(auto& tab:result.tabs)tab.x-=scroll;
+            result.title={};
+            if(view.activeTab<result.tabs.size())result.title=result.tabs[view.activeTab];
+        }
         return result;
     }
+    const auto indices=Visible(collection,view);
     result.title={49,21,std::min(120.f,std::max(0.f,width-115)),30};
     result.search={width-49,22,28,28};
     if(width<200){result.title={12,21,std::max(0.f,width-64),30};result.search={width-38,22,26,28};}
@@ -167,10 +188,17 @@ std::vector<LumeMaterialPanel> OrganizerSearchPanels(const OrganizerLayout& layo
 void DrawOrganizer(WidgetCanvas& canvas,float width,float height,const organizer::Collection& collection,
     std::optional<std::size_t> hover,const OrganizerImage& image,const OrganizerViewState& view,const OrganizerMotionFrame* motion){
     const auto layout=LayoutOrganizer(width,height,collection,view);
-    if(view.mergeTarget){
+    const auto accent=OrganizerAccentColor(collection.accent);
+    if(accent){
+        const float inset=layout.collapsed?2.f:12.f,top=layout.collapsed?2.f:16.f;
+        canvas.Rounded({inset,top,std::max(0.f,width-2*inset),std::max(0.f,layout.header.height-top-2)},
+            layout.collapsed?8.f:10.f,accent,.07f);
+    }
+    if(view.mergeTarget||(layout.collapsed&&view.dropTarget)){
         // 另一个收纳拖到这里松手即合并为标签。
-        canvas.Rounded({8,8,width-16,height-16},18,0x8bc8ff,.10f);
-        Outline(canvas,{8.5f,8.5f,width-17,height-17},17.5f,.85f,1.6f);
+        const float inset=layout.collapsed?2.f:8.f,radius=layout.collapsed?8.f:18.f;
+        canvas.Rounded({inset,inset,width-2*inset,height-2*inset},radius,0x8bc8ff,.10f);
+        Outline(canvas,{inset+.5f,inset+.5f,width-2*inset-1,height-2*inset-1},radius-.5f,.85f,1.6f);
     }
     if(!layout.tabs.empty()){
         // Renaming covers the whole strip with a translucent editor.
@@ -184,7 +212,9 @@ void DrawOrganizer(WidgetCanvas& canvas,float width,float height,const organizer
                 if(lifted||(view.dropTab&&*view.dropTab==i))
                     Outline(canvas,{r.x+.5f,r.y+.5f,r.width-1,r.height-1},8.5f,lifted?.95f:.8f,lifted?1.6f:1.2f);
                 if(active&&view.titleEditing)continue;
-                Name(canvas,view.tabs[i],{r.x+10,r.y+6,r.width-20,18},13,WidgetTextAlign::Center);
+                const auto tabAccent=OrganizerAccentColor(i<view.tabAccents.size()?view.tabAccents[i]:organizer::Accent::None);
+                if(tabAccent)canvas.Rounded({r.x+8,r.y+12,6,6},3,tabAccent,.95f);
+                Name(canvas,view.tabs[i],{r.x+(tabAccent?20.f:10.f),r.y+6,r.width-(tabAccent?30.f:20.f),18},13,WidgetTextAlign::Center);
             }
             if(view.tabInsert){
                 // Insertion bar between tabs where the lifted tab will land.
@@ -198,17 +228,25 @@ void DrawOrganizer(WidgetCanvas& canvas,float width,float height,const organizer
     }else{
         auto title=layout.title;title.x+=4;title.y+=5;title.width-=8;title.height=20;
         if(!view.titleEditing){
-            if(width<200&&!layout.collapsed)Name(canvas,OrganizerWide(collection.title),title,14,WidgetTextAlign::Left);
-            else canvas.Text(OrganizerWide(collection.title),title,layout.collapsed?16.f:14.f,
-                0xffffff,1,WidgetTextWeight::Semibold,layout.collapsed?WidgetTextAlign::Center:WidgetTextAlign::Left);
+            if(layout.collapsed||width<200)Name(canvas,OrganizerWide(collection.title),title,14,WidgetTextAlign::Left);
+            else canvas.Text(OrganizerWide(collection.title),title,14.f,
+                0xffffff,1,WidgetTextWeight::Semibold,WidgetTextAlign::Left);
         }
     }
-    if(!layout.collapsed&&width>=200){
+    if(layout.collapsed||width>=200){
         constexpr float scale=16.f/24;
-        for(unsigned i=0;i<4;++i)Outline(canvas,{24+(3+static_cast<float>(i%2)*11)*scale,
-            28+(3+static_cast<float>(i/2)*11)*scale,7*scale,7*scale},2*scale,.8f,1.6f*scale);
+        const float x=layout.collapsed?12.f:24.f,y=layout.collapsed?(height-16)/2:28.f;
+        for(unsigned i=0;i<4;++i){
+            const WidgetRect cell{x+(3+static_cast<float>(i%2)*11)*scale,
+                y+(3+static_cast<float>(i/2)*11)*scale,7*scale,7*scale};
+            if(accent&&i==3)canvas.Rounded(cell,2*scale,accent,.95f);
+            else Outline(canvas,cell,2*scale,.8f,1.6f*scale);
+        }
     }
     SearchGlyph(canvas,layout.search);
+    // A folded organizer is only its title/tab bar. Ignore any motion frame
+    // retained from the expanded view and never ask for item icons here.
+    if(layout.collapsed)return;
     if(view.searchOpen&&!layout.collapsed){
         if(!view.searchEditing){
             if(view.query.empty())canvas.Text(L"搜索名称或关键词",layout.searchInput,12,0xffffff,.6f,false,WidgetTextAlign::Center);
@@ -314,6 +352,7 @@ OrganizerHit HitOrganizer(float width,float height,const organizer::Collection& 
             return {OrganizerHit::Kind::Title,0};
         }
     }else if(Contains(layout.title,x,y))return {OrganizerHit::Kind::Title,0};
+    if(layout.collapsed&&Contains(layout.header,x,y))return {OrganizerHit::Kind::Header,0};
     if(!Contains(layout.viewport,x,y))return {};
     for(const auto& cell:layout.cells){
         if(!Intersects(cell.bounds,layout.viewport))continue;

@@ -118,7 +118,8 @@ int main() {
 
     std::size_t activated = DockWindow::None, context = 99;
     std::tuple<std::size_t, std::size_t, std::size_t> moved{99, 99, 99};
-    DockWindow dock(GetModuleHandleW(nullptr), {{}, [&](std::size_t i) { activated = i; },
+    unsigned iconReads=0;
+    DockWindow dock(GetModuleHandleW(nullptr), {[&](const Item&)->std::shared_ptr<const WidgetBitmap>{++iconReads;return {};}, [&](std::size_t i) { activated = i; },
                                                 [&](std::size_t i, POINT) { context = i; },
                                                 [&](std::size_t index, std::size_t pinnedSlot, std::size_t lumePosition) {
                                                     moved = {index, pinnedSlot, lumePosition};
@@ -164,6 +165,13 @@ int main() {
           "hover magnifies the pointed icon most");
     Pump(400);
     Check(!dock.Animating(), "stationary hover stops repainting after magnification settles");
+    const auto beforeIconBatch=iconReads;
+    for(int i=0;i<128;++i)dock.RequestPaint();
+    Check(iconReads==beforeIconBatch,"icon completion redraws are deferred out of the notification handler");
+    Pump(0);
+    const auto batchReads=iconReads-beforeIconBatch;
+    const auto beforeSinglePaint=iconReads;dock.Paint();
+    Check(batchReads>0&&batchReads==iconReads-beforeSinglePaint,"128 icon completions paint one Dock frame");
     RECT grown{};
     GetWindowRect(dock.BarHandle(), &grown);
     Check(grown.right - grown.left > bounds.right - bounds.left, "the bar widens with magnified icons");
@@ -269,6 +277,9 @@ int main() {
     const auto aDuringLumeDrag = dock.IconBounds(1);
     Check(aDuringLumeDrag.left > aBeforeLumeDrag.left + 8,
           "Lume drag makes the neighboring icon yield space");
+    Pump(800);Check(!dock.Animating(),"stationary held drag stops its animation clock");
+    SendMessageW(dock.Handle(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(GET_X_LPARAM(lumeDragEnd)+1,GET_Y_LPARAM(lumeDragEnd)));
+    Check(dock.Animating(),"moving a held drag resumes frames");
     SendMessageW(dock.Handle(), WM_LBUTTONUP, 0, lumeDragEnd);
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);Pump(700);
     Check(moved == std::tuple<std::size_t, std::size_t, std::size_t>{2, DockWindow::None, 0},
@@ -304,21 +315,21 @@ int main() {
     {
         const std::vector<Item> trayItems{{Kind::Launchpad, {}, "Launchpad", false},
             {Kind::Lume, {}, "Lume", true, 0}, {Kind::Separator, {}, {}, false},
-            {Kind::SystemTray, {}, "System status", false}};
+            {Kind::SystemTray, {}, "控制中心", false}};
         std::size_t trayActivated = DockWindow::None;
         DockWindowPorts trayPorts;
         trayPorts.activate = [&](std::size_t index) { trayActivated = index; };
         DockWindow trayDock(GetModuleHandleW(nullptr), trayPorts);
-        Check(trayDock.Show(trayItems, false), "system status Dock shows");Pump(500);
+        Check(trayDock.Show(trayItems, false), "control center Dock shows");Pump(500);
         const RECT tray = trayDock.IconBounds(3);
         RECT layer{};GetWindowRect(trayDock.Handle(), &layer);
-        const LPARAM rightSide = MAKELPARAM(tray.right - layer.left - MulDiv(18, static_cast<int>(GetDpiForWindow(trayDock.Handle())), 96),
-            (tray.top + tray.bottom) / 2 - layer.top);
-        SendMessageW(trayDock.Handle(), WM_MOUSEMOVE, 0, rightSide);Pump(300);
-        Check(trayDock.ScaleOf(3) == 1.f, "system status capsule does not magnify like an app icon");
-        SendMessageW(trayDock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, rightSide);
-        SendMessageW(trayDock.Handle(), WM_LBUTTONUP, 0, rightSide);
-        Check(trayActivated == 3, "the far edge of the full-width system status capsule is clickable");
+        Check(tray.right - tray.left == tray.bottom - tray.top, "the control center is a square icon tile");
+        const LPARAM tile = MAKELPARAM((tray.left + tray.right) / 2 - layer.left, (tray.top + tray.bottom) / 2 - layer.top);
+        SendMessageW(trayDock.Handle(), WM_MOUSEMOVE, 0, tile);Pump(300);
+        Check(trayDock.ScaleOf(3) > 1.f, "the control center magnifies like an app icon");
+        SendMessageW(trayDock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, tile);
+        SendMessageW(trayDock.Handle(), WM_LBUTTONUP, 0, tile);
+        Check(trayActivated == 3, "clicking the control center tile activates it");
         trayDock.Stop();
     }
     {   // The Recycle Bin: files dropped on it go to dropOnto; a Dock icon dragged onto it is discarded.

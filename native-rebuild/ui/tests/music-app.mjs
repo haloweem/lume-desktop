@@ -29,8 +29,12 @@ const find = selector => {const element=document.querySelector(selector); assert
 const click = selector => find(selector).click();
 const fire = (element, type) => element.dispatchEvent(new window.Event(type, {bubbles:true,cancelable:true}));
 const musicCommands = action => commands.filter(command => command?.scope==='music' && command.action===action);
+const finishMusicMount = async () => {
+  await import('../music-entry.js');
+  for(let index=0;index<8;index++)await Promise.resolve();
+};
 const track = {id:'fixture-1', title:'First Light', artist:'M83', album:'Morning', artwork:'', duration:180, source:'C:/Music/one.mp3'};
-const {query, nav, lyrics, ...nativeState} = initialMusicState();
+const {query, nav, lyrics, score, ...nativeState} = initialMusicState();
 let snapshot = {...nativeState, version:1, type:'music-state', session:7, revision:1, status:'paused',
   current:track, queue:[track], pageOpen:true, pageVisible:true, timeline:{position:20,duration:180},
   capabilities:{canToggle:true,canNext:true,canPrevious:true,canSeek:true}};
@@ -38,6 +42,7 @@ try {
   await import('../app.js');
   await finishStartup(commands, true);
   click('[data-titlebar-music]');
+  await finishMusicMount();
   assert.ok(find('[data-music-root]'));
   assert.equal(find('[data-titlebar-music]').getAttribute('aria-label'), '壁纸');
   assert.equal(find('[data-titlebar-music] path').getAttribute('d'),
@@ -49,6 +54,7 @@ try {
   assert.equal(musicCommands('close').length, 1);
   commands.length=0;
   receive({version:1,type:'navigate',page:'music'});
+  await finishMusicMount();
   receive(snapshot);
   assert.equal(musicCommands('open').length,1);
   assert.equal(musicCommands('loadHome').length,1);
@@ -101,6 +107,7 @@ try {
   assert.equal(document.querySelector('[data-music-root]'),null);
   assert.equal(commands.length,count,'unmounted view cannot send commands');
   receive({version:1,type:'navigate',page:'music'});
+  await finishMusicMount();
   assert.equal(musicCommands('open').length,2);
   receive(snapshot);
   assert.equal(musicCommands('loadLyrics').length,2,'remount reloads lyrics released on close');
@@ -113,6 +120,7 @@ try {
     assert.equal(find('[data-titlebar-music]').getAttribute('aria-label'),'音乐');
     assert.equal(document.querySelector('[data-music-root]'),null);
     click('[data-titlebar-music]');
+    await finishMusicMount();
     assert.equal(find('[data-titlebar-music]').getAttribute('aria-label'),'壁纸');
     assert.equal(find('[data-music-root]').dataset.screen,'player');
     assert.equal(musicCommands('open').length,opens+1);

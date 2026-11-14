@@ -15,6 +15,8 @@ public:
     PerformanceMonitor(const PerformanceMonitor&) = delete;
     PerformanceMonitor& operator=(const PerformanceMonitor&) = delete;
     bool Start();
+    // Stops sampling while the owning surface has no visible consumer.
+    void SetActive(bool active);
     void Stop();
     bool Running() const;
     std::optional<performance::Snapshot> Latest() const;

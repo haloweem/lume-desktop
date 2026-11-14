@@ -1,19 +1,83 @@
 #include "apps/shell/dynamic_island_session.h"
+#include "platform/windows/dynamic_island/off_work_voice_captions.h"
+#include "apps/shell/island_notification_preferences.h"
 #include "core/widget/widget_preferences_store.h"
 #include "platform/windows/local_settings_file_store.h"
 #include "platform/windows/dynamic_island/island_window.h"
 #include "platform/windows/dynamic_island/island_preview.h"
+#include "platform/windows/dynamic_island/notification_receiver.h"
+#include "platform/windows/dynamic_island/notification_audio.h"
+#include "platform/windows/diagnostics/runtime_log.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "vendor/nlohmann/json.hpp"
 #include <utility>
 #include <algorithm>
+#include <chrono>
+#include <deque>
+#include <atomic>
+#include <shellapi.h>
 
 namespace lume::shell {
 using namespace platform::windows;
+namespace {
+struct ReminderVoice {
+    NotificationAudio audio;
+    std::function<void(bool)> playback;
+    std::function<float()> level;
+    std::function<std::optional<unsigned>()> position;
+    mutable unsigned lastPositionMs = 0;
+    unsigned viewers = 0;
+    bool played = false, playing = false;
+    void Present(bool visible) {
+        if (visible) {
+            if (viewers++ == 0 && !played) {
+                played = true;
+                if (playback) { playback(true); playing = true; }
+                else playing = audio.PlayOffWork();
+                diag::Log("island-notifications", playing ? "off-work-voice=start" : "off-work-voice=unavailable");
+            }
+        } else if (viewers && --viewers == 0) Stop();
+    }
+    void Stop() {
+        if (!playing) return;
+        playing = false;
+        if (playback) playback(false);
+        else audio.Stop();
+    }
+    float Level() const { return playing && viewers ? (level ? level() : audio.Level()) : 0.f; }
+    bool Playing() const { return playing && viewers && (playback || audio.Playing()); }
+    std::wstring Caption(bool english) const {
+        if (!played) return {}; // Folding can draw once before its playback lease starts.
+        if (played && (!playing || !viewers || (!playback && !audio.Playing())))
+            lastPositionMs = NotificationAudio::DurationMilliseconds;
+        else if (playing && viewers) {
+            const auto actual = position ? position() : (playback ? std::nullopt : audio.PositionMilliseconds());
+            if (actual) lastPositionMs = std::max(lastPositionMs, std::min(*actual, NotificationAudio::DurationMilliseconds));
+        }
+        return std::wstring(OffWorkVoiceCaption(lastPositionMs, english));
+    }
+    ~ReminderVoice() { Stop(); }
+};
+}
 struct DynamicIslandSession::Impl {
     DynamicIslandSessionOptions options;
+    MaterialSelectionHandler materialSelection;
     HINSTANCE instance;
     LocalSettingsFileStore local;
     settings::IFileStore& files;
+    IslandNotificationPreferences notificationPreferences;
+    IslandReminderScheduler reminderScheduler;
+    IslandNotificationReceiver notificationReceiver;
+    struct PendingNotification { IslandNotification notice; std::uint64_t expires=0; bool deferredLogged=false; };
+    std::deque<PendingNotification> pendingNotifications;
+    std::string lastNotificationRuntime;
+    NotificationReceiverState lastReceiverState;
+    bool notificationsEnabled=false;
+    static constexpr UINT NotificationWakeMessage=WM_APP+0x362;
+    static constexpr UINT_PTR OffWorkTimer=1;
+    HWND notificationWakeWindow=nullptr;
+    WPARAM notificationWakeCookie=0;
+    std::uint64_t offWorkTimerDue=0;
     widget::Limits limits{260,48,220,44,560,220};
     widget::PreferencesStore store;
     widget::Preferences prefs;
@@ -30,6 +94,12 @@ struct DynamicIslandSession::Impl {
     bool weatherRequested = false, previewActive = false;
     // True while the island shows another player's Windows media session.
     bool external = false;
+    std::atomic<bool> analysisVisible{false};
+    void RefreshAnalysisVisibility(){
+        bool visible=false;
+        EachWindow([&](auto& target){visible=visible||window_layer::ContentVisible(target.Handle());});
+        analysisVisible.store(visible,std::memory_order_relaxed);
+    }
     // Play/pause shows at once; players confirm a few hundred ms later. Until
     // a snapshot agrees (or 2.5 s pass) older snapshots do not flip it back.
     std::optional<bool> expectedPlaying;
@@ -40,8 +110,9 @@ struct DynamicIslandSession::Impl {
         media.playing = *expectedPlaying;
     }
     Impl(HINSTANCE module, DynamicIslandSessionOptions o, settings::IFileStore* f)
-        : options(std::move(o)), instance(module), files(f?*f:local), store(files,limits), prefs(widget::Defaults(limits)),
-          window(module,[this](dynamic_island::Action action){Action(action);}) {
+        : options(std::move(o)), instance(module), files(f?*f:local), notificationPreferences(files,options.preferencesPath),
+          store(files,limits), prefs(widget::Defaults(limits)),
+          window(module,[this](dynamic_island::Action action){Action(action);},options.notificationAllowed) {
         window.SetTodoSource(options.todos);
         const auto loaded=store.Load(options.preferencesPath);prefs=loaded.value;load=loaded.state;
         prefs.locked = true;
@@ -61,7 +132,26 @@ struct DynamicIslandSession::Impl {
     bool Expanded() const {
         return window.Expanded()||std::any_of(mirrors.begin(),mirrors.end(),[](const auto& mirror){return mirror->Expanded();});
     }
-    void StopWindows() {mirrors.clear();window.Stop();}
+    static IslandDisplay ReleasedDisplay(IslandDisplay value) {
+        // Retired compact selections may remain in existing preferences, but
+        // must not render, widen, receive clicks or request telemetry at runtime.
+        value.leftWidget=dynamic_island::CompactWidget::None;
+        value.rightWidget=dynamic_island::CompactWidget::None;
+        // The focus widget is being redesigned. Keep the saved layout untouched
+        // while the island and settings expose music, calendar, performance,
+        // to-dos and clock; a hidden-only layout falls back to music.
+        if(value.expandedWidgets.empty())return value;
+        std::vector<dynamic_island::ExpandedWidget> shown;
+        for(const auto item:value.expandedWidgets)if(Released(item))shown.push_back(item);
+        value.expandedWidgets=shown.empty()?std::vector{dynamic_island::ExpandedWidget::Music}:std::move(shown);
+        return value;
+    }
+    static bool Released(dynamic_island::ExpandedWidget value) {
+        return value==dynamic_island::ExpandedWidget::Music||value==dynamic_island::ExpandedWidget::CalendarWeather||
+            value==dynamic_island::ExpandedWidget::Todos||value==dynamic_island::ExpandedWidget::Clock||
+            value==dynamic_island::ExpandedWidget::System;
+    }
+    void StopWindows() {analysisVisible=false;mirrors.clear();window.Stop();}
     bool ProjectDisplay(const widget::Preferences& next,const IslandDisplay& value) {
         if(!next.enabled){StopWindows();return true;}
         if(screens.empty())return false;
@@ -71,18 +161,21 @@ struct DynamicIslandSession::Impl {
             targets={screens[static_cast<std::size_t>(selected-1)]};
         }
         while(mirrors.size()+1<targets.size()){
-            auto mirror=std::make_unique<IslandWindow>(instance,[this](dynamic_island::Action action){
+            const auto mirrorIndex=mirrors.size();
+            auto mirror=std::make_unique<IslandWindow>(instance,[this,mirrorIndex](dynamic_island::Action action){
                 // Only the first window polls media and the display inventory.
-                if(action!=dynamic_island::Action::Tick)Action(action);
-            });
+                if(action!=dynamic_island::Action::Tick)Action(action,mirrorIndex<mirrors.size()?mirrors[mirrorIndex]->Handle():nullptr);
+            },options.notificationAllowed);
             mirror->SetTodoSource(options.todos);mirrors.push_back(std::move(mirror));
         }
+        const auto released=ReleasedDisplay(value);
         for(std::size_t index=0;index<targets.size();++index){
             auto& target=index==0?window:*mirrors[index-1];
             target.SetMonitor(targets[index]);
-            if(!target.SetDisplay(value)||!target.Start(next,value))return false;
+            if(!target.SetDisplay(released)||!target.Start(next,released))return false;
         }
         mirrors.resize(targets.size()-1);
+        RefreshAnalysisVisibility();
         return true;
     }
     void RefreshScreens() {
@@ -106,6 +199,17 @@ struct DynamicIslandSession::Impl {
     static const char* MaterialName(IslandMaterial value){return value==IslandMaterial::Liquid?"liquid-glass":value==IslandMaterial::Frosted?"frosted-glass":"none";}
     static const char* SizeName(IslandSize size){return size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";}
     static const char* ShapeName(IslandShape shape){return shape==IslandShape::Standard?"standard":"capsule";}
+    static const char* CalendarStyleName(IslandCalendarStyle style){return style==IslandCalendarStyle::ChineseAlmanac?"chinese-almanac":"default";}
+    static const char* ClockStyleName(IslandClockStyle style){
+        switch(style){
+        case IslandClockStyle::Progress:return "progress";
+        case IslandClockStyle::Digital:return "digital";
+        case IslandClockStyle::Date:return "date";
+        case IslandClockStyle::Flip:return "flip";
+        case IslandClockStyle::Pixel:return "pixel";
+        default:return "simple";
+        }
+    }
     static const char* SpeedName(IslandAnimationSpeed speed){return speed==IslandAnimationSpeed::Slow?"slow":speed==IslandAnimationSpeed::Fast?"fast":"normal";}
     static const char* BounceName(IslandBounce bounce){return bounce==IslandBounce::Subtle?"subtle":bounce==IslandBounce::Bouncy?"bouncy":"normal";}
     void LoadDisplay() {
@@ -120,9 +224,12 @@ struct DynamicIslandSession::Impl {
         const auto flag=[&](const char* key,bool& out){const auto it=json.find(key);if(it!=json.end()&&it->is_boolean())out=it->get<bool>();};
         flag("hideFullscreen",display.hideFullscreen);
         flag("topmost",display.topmost);flag("hoverExpand",display.hoverExpand);flag("autoHide",display.autoHide);
-        flag("messages",display.messages);
+        // Legacy chat-message preferences are intentionally no longer consumed.
+        const auto layout=json.find("expandedLayout");
+        if(layout!=json.end()&&layout->is_number_integer()&&*layout>=0&&*layout<=dynamic_island::ExpandedLayoutMaximum)
+            dynamic_island::DecodeExpandedLayout(layout->get<unsigned>(),display.expandedWidgets);
         const auto delay=json.find("hoverDelayMs");
-        if(delay!=json.end()&&delay->is_number_integer()&&*delay>=100&&*delay<=1000)display.hoverDelayMs=delay->get<unsigned>();
+        if(delay!=json.end()&&delay->is_number_integer()&&*delay>=100&&*delay<=1000)display.hoverDelayMs=SnapIslandHoverDelay(delay->get<unsigned>());
         const auto speed=json.find("animationSpeed");
         if(speed!=json.end()&&speed->is_string()){
             if(*speed=="slow")display.animationSpeed=IslandAnimationSpeed::Slow;
@@ -135,8 +242,9 @@ struct DynamicIslandSession::Impl {
         }
         for(const auto* key:{"leftWidget","rightWidget"}){
             const auto field=json.find(key);if(field==json.end()||!field->is_string())continue;
-            const auto value=dynamic_island::ParseCompactWidget(field->get<std::string>());
+            auto value=dynamic_island::ParseCompactWidget(field->get<std::string>());
             if(value==dynamic_island::CompactWidget::Count)continue;
+            if(value==dynamic_island::CompactWidget::Files)value=dynamic_island::CompactWidget::None;
             (std::string_view(key)=="leftWidget"?display.leftWidget:display.rightWidget)=value;
         }
         const auto size=json.value("size",std::string{});
@@ -151,12 +259,25 @@ struct DynamicIslandSession::Impl {
             if(*shape=="standard")display.shape=IslandShape::Standard;
             else if(*shape=="capsule")display.shape=IslandShape::Capsule;
         }
+        const auto clockStyle=json.find("clockStyle");
+        if(clockStyle!=json.end()&&clockStyle->is_string()){
+            if(*clockStyle=="progress")display.clockStyle=IslandClockStyle::Progress;
+            else if(*clockStyle=="digital")display.clockStyle=IslandClockStyle::Digital;
+            else if(*clockStyle=="date")display.clockStyle=IslandClockStyle::Date;
+            else if(*clockStyle=="flip")display.clockStyle=IslandClockStyle::Flip;
+            else if(*clockStyle=="pixel")display.clockStyle=IslandClockStyle::Pixel;
+        }
+        const auto calendarStyle=json.find("calendarStyle");
+        if(calendarStyle!=json.end()&&calendarStyle->is_string()&&*calendarStyle=="chinese-almanac")
+            display.calendarStyle=IslandCalendarStyle::ChineseAlmanac;
     }
     bool SaveDisplay(const IslandDisplay& next) {
         const auto path=DisplayPath();if(path.empty())return true;
         const auto text=nlohmann::json{{"version",1},{"screen",next.screen},{"hideFullscreen",next.hideFullscreen},
-            {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"messages",next.messages},{"size",SizeName(next.size)},
-            {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},
+            {"topmost",next.topmost},{"hoverExpand",next.hoverExpand},{"autoHide",next.autoHide},{"size",SizeName(next.size)},
+            {"expandedLayout",dynamic_island::EncodeExpandedLayout(next.expandedWidgets)},
+            {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},{"clockStyle",ClockStyleName(next.clockStyle)},
+            {"calendarStyle",CalendarStyleName(next.calendarStyle)},
             {"hoverDelayMs",next.hoverDelayMs},{"animationSpeed",SpeedName(next.animationSpeed)},{"bounce",BounceName(next.bounce)},
             {"leftWidget",dynamic_island::CompactWidgetId(next.leftWidget)},
             {"rightWidget",dynamic_island::CompactWidgetId(next.rightWidget)}}.dump();
@@ -173,13 +294,213 @@ struct DynamicIslandSession::Impl {
         display=next;SyncWeatherConsumer(prefs.enabled);RefreshWeather();error.clear();return true;
     }
     void SyncWeatherConsumer(bool enabled) {
-        using W=dynamic_island::CompactWidget;
-        const bool wanted=previewActive||(enabled&&(display.leftWidget>=W::Weather||display.rightWidget>=W::Weather));
+        const auto& notifications=notificationPreferences.Snapshot();
+        const bool wanted=enabled&&(
+            dynamic_island::HasExpandedWidget(ReleasedDisplay(display).expandedWidgets,dynamic_island::ExpandedWidget::CalendarWeather)||
+            notifications.weatherSevere||notifications.weatherRain||notifications.weatherTemperatureDrop);
         if(wanted==weatherRequested)return;
         weatherRequested=wanted;
         if(options.weatherActive)options.weatherActive(wanted);
     }
     std::uint64_t Now()const {return options.monotonicMillis?options.monotonicMillis():GetTickCount64();}
+    IslandReminderTick NotificationContext() const {
+        if(options.notificationContext)return options.notificationContext();
+        IslandReminderTick tick;tick.nowMs=Now();tick.english=english;
+        SYSTEMTIME localTime{};GetLocalTime(&localTime);
+        tick.minuteOfDay=localTime.wHour*60+localTime.wMinute;
+        tick.secondOfMinute=localTime.wSecond;
+        localTime.wHour=localTime.wMinute=localTime.wSecond=localTime.wMilliseconds=0;
+        FILETIME day{};
+        if(SystemTimeToFileTime(&localTime,&day)){
+            ULARGE_INTEGER value{};value.LowPart=day.dwLowDateTime;value.HighPart=day.dwHighDateTime;
+            tick.localDay=static_cast<std::int64_t>(value.QuadPart/864000000000ULL);
+        }
+        LASTINPUTINFO input{sizeof(input)};
+        if(GetLastInputInfo(&input))tick.idleMs=static_cast<DWORD>(GetTickCount()-input.dwTime);
+        else tick.locked=true;
+        const auto desktop=OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+        wchar_t name[80]{};DWORD bytes=0;
+        if(!desktop)tick.locked=true;
+        else {tick.locked=tick.locked||!GetUserObjectInformationW(desktop,UOI_NAME,name,sizeof(name),&bytes)||_wcsicmp(name,L"Default")!=0;CloseDesktop(desktop);}
+        tick.weather=options.weather?options.weather():dynamic_island::Weather{};
+        tick.weatherRevision=options.weatherUpdatedAt?options.weatherUpdatedAt():0;
+        const auto utc=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if(tick.weatherRevision&&utc>=0&&tick.weatherRevision<=static_cast<std::uint64_t>(utc))tick.weatherAgeMs=static_cast<std::uint64_t>(utc)-tick.weatherRevision;
+        return tick;
+    }
+    nlohmann::json NotificationRuntime() const {
+        const auto& p=notificationPreferences.Snapshot();const auto context=NotificationContext();const auto receiver=notificationReceiver.Snapshot();
+        const bool care=p.waterEnabled||p.standEnabled||p.sleepEnabled||p.offWorkEnabled;
+        const bool weather=p.weatherSevere||p.weatherRain||p.weatherTemperatureDrop;
+        return {{"islandEnabled",notificationsEnabled},{"care",!care?"off":notificationsEnabled?"active":"island-off"},
+            {"weather",!weather?"off":!notificationsEnabled?"island-off":context.weather.available&&!context.weather.failed&&context.weatherAgeMs<=IslandReminderScheduler::MaxWeatherAgeMillis?"active":"waiting"},
+            {"qq",receiver.qq},{"wechat",receiver.wechat},{"qqRealtime",notificationsEnabled&&receiver.qqRealtime}};
+    }
+    std::wstring NotificationsState(std::wstring_view base={}) const {
+        const auto text=base.empty()?notificationPreferences.State():std::wstring(base);
+        auto state=nlohmann::json::parse(text);const auto runtime=NotificationRuntime();
+        const auto& p=notificationPreferences.Snapshot();
+        const bool receiving=notificationsEnabled&&((p.messagesQQ&&(runtime["qq"]=="connected"||runtime["qq"]=="attention"))||(p.messagesWeChat&&runtime["wechat"]=="listening"));
+        state["runtime"]=runtime;state["receiving"]=receiving;state["availability"]=receiving?"ready":"not-connected";
+        const auto encoded=state.dump(-1,' ',true);return {encoded.begin(),encoded.end()};
+    }
+    void NotifyNotificationRuntime(){
+        const auto runtime=NotificationRuntime();const auto encoded=runtime.dump();
+        if(encoded==lastNotificationRuntime)return;
+        lastNotificationRuntime=encoded;
+        diag::Log("island-notifications","runtime enabled="+std::string(notificationsEnabled?"true":"false")+
+            " qq="+runtime["qq"].get<std::string>()+" wechat="+runtime["wechat"].get<std::string>()+
+            " qqMode="+(runtime["qqRealtime"].get<bool>()?std::string("events"):std::string("polling")));
+        if(options.notify)options.notify(NotificationsState());
+    }
+    void ClearNotifications(){pendingNotifications.clear();EachWindow([](auto& target){target.ClearNotifications();});}
+    static LRESULT CALLBACK NotificationWakeProcedure(HWND hwnd,UINT message,WPARAM wparam,LPARAM lparam){
+        if(message==WM_NCCREATE){
+            const auto create=reinterpret_cast<CREATESTRUCTW*>(lparam);
+            SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        }
+        const auto self=reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+        if(message==NotificationWakeMessage){
+            if(self&&wparam==self->notificationWakeCookie)self->PollNotifications();
+            return 0;
+        }
+        if(message==WM_TIMER&&wparam==OffWorkTimer){
+            if(self){KillTimer(hwnd,OffWorkTimer);self->offWorkTimerDue=0;self->PollNotifications();}
+            return 0;
+        }
+        if(message==WM_NCDESTROY)SetWindowLongPtrW(hwnd,GWLP_USERDATA,0);
+        return DefWindowProcW(hwnd,message,wparam,lparam);
+    }
+    void SyncNotificationWake(bool enabled){
+        if(!enabled){
+            notificationReceiver.SetWakeTarget(nullptr,0,0);
+            if(notificationWakeWindow)DestroyWindow(notificationWakeWindow);
+            notificationWakeWindow=nullptr;notificationWakeCookie=0;
+            offWorkTimerDue=0;
+            return;
+        }
+        if(notificationWakeWindow)return;
+        WNDCLASSW type{};type.hInstance=instance;type.lpfnWndProc=NotificationWakeProcedure;
+        type.lpszClassName=L"LumeIslandNotificationDispatch";
+        if(!RegisterClassW(&type)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return;
+        static std::atomic<WPARAM> nextCookie{1};
+        notificationWakeCookie=nextCookie.fetch_add(1,std::memory_order_relaxed);
+        notificationWakeWindow=CreateWindowExW(0,type.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,instance,this);
+        if(notificationWakeWindow)notificationReceiver.SetWakeTarget(notificationWakeWindow,NotificationWakeMessage,notificationWakeCookie);
+        // The regular island tick remains a fallback if the dispatcher cannot
+        // be created. The receiver never invokes session code on its worker.
+    }
+    void ScheduleOffWorkTimer(){
+        if(!notificationWakeWindow)return;
+        const auto& p=notificationPreferences.Snapshot();
+        if(!notificationsEnabled||!p.offWorkEnabled||p.offWorkStyle!="squidward"||options.notificationContext){
+            KillTimer(notificationWakeWindow,OffWorkTimer);offWorkTimerDue=0;return;
+        }
+        SYSTEMTIME clockTime{};GetLocalTime(&clockTime);
+        constexpr unsigned dayMs=86400000;
+        const unsigned target=((static_cast<unsigned>(p.offWorkTime[0]-'0')*10+static_cast<unsigned>(p.offWorkTime[1]-'0'))*3600+
+            (static_cast<unsigned>(p.offWorkTime[3]-'0')*10+static_cast<unsigned>(p.offWorkTime[4]-'0'))*60+86400-5)%86400*1000;
+        const unsigned current=((clockTime.wHour*60u+clockTime.wMinute)*60u+clockTime.wSecond)*1000u+clockTime.wMilliseconds;
+        unsigned delay=(target+dayMs-current)%dayMs;if(!delay)delay=dayMs;
+        const auto due=Now()+delay;
+        if(offWorkTimerDue&&(due>offWorkTimerDue?due-offWorkTimerDue:offWorkTimerDue-due)<=25)return;
+        if(SetTimer(notificationWakeWindow,OffWorkTimer,delay,nullptr))offWorkTimerDue=due;
+        else offWorkTimerDue=0;
+    }
+    void SyncNotifications(bool enabled,bool clear=false){
+        notificationsEnabled=enabled;
+        const auto& p=notificationPreferences.Snapshot();
+        SyncNotificationWake(enabled&&(p.messagesQQ||p.messagesWeChat||(p.offWorkEnabled&&p.offWorkStyle=="squidward")));
+        notificationReceiver.Configure({enabled,p.messagesQQ,p.messagesWeChat,p.messagePreview});
+        if(clear||!enabled)ClearNotifications();
+        if(!enabled){auto configured=p;configured.waterEnabled=configured.standEnabled=configured.sleepEnabled=configured.offWorkEnabled=false;
+            configured.weatherSevere=configured.weatherRain=configured.weatherTemperatureDrop=false;reminderScheduler.Tick(configured,NotificationContext());}
+        else PollNotifications();
+        NotifyNotificationRuntime();
+    }
+    void QueueNotification(IslandNotification notice){
+        pendingNotifications.erase(std::remove_if(pendingNotifications.begin(),pendingNotifications.end(),[&](const auto& entry){
+            return entry.notice.id==notice.id||(!notice.coalesceKey.empty()&&entry.notice.coalesceKey==notice.coalesceKey);
+        }),pendingNotifications.end());
+        if(pendingNotifications.size()>=10){
+            const auto oldest=std::find_if(pendingNotifications.begin(),pendingNotifications.end(),[](const auto& entry){return !entry.notice.immediate;});
+            if(oldest!=pendingNotifications.end())pendingNotifications.erase(oldest);
+            else if(!notice.immediate)return;
+            else pendingNotifications.pop_back();
+        }
+        if(notice.immediate)pendingNotifications.push_front({std::move(notice),Now()+1000});
+        else pendingNotifications.push_back({std::move(notice),Now()+120000});
+    }
+    void PollNotifications(){
+        if(stopped)return;
+        const auto& p=notificationPreferences.Snapshot();
+        if(!notificationsEnabled)return;
+        ScheduleOffWorkTimer();
+        auto tick=NotificationContext();
+        const auto receiverState=notificationReceiver.Snapshot();
+        if(((lastReceiverState.qq=="connected"||lastReceiverState.qq=="attention")&&receiverState.qq!="connected"&&receiverState.qq!="attention")||
+            (lastReceiverState.wechat=="listening"&&receiverState.wechat!="listening"))ClearNotifications();
+        lastReceiverState=receiverState;
+        for(auto& reminder:reminderScheduler.Tick(p,tick)){
+            constexpr const char* reminderIcons[]={"water","stand","sleep","severe","rain","temperature","off-work"};
+            IslandNotification notice{std::move(reminder.id),std::move(reminder.title),std::move(reminder.body),{},reminderIcons[static_cast<std::size_t>(reminder.kind)]};
+            if(reminder.kind==IslandReminderKind::OffWork&&reminder.style=="squidward"){
+                auto voice=std::make_shared<ReminderVoice>();voice->playback=options.reminderVoice;voice->level=options.reminderVoiceLevel;
+                voice->position=options.reminderVoicePosition;
+                notice.icon="off-work-squidward";notice.immediate=true;notice.durationMs=18000;
+                notice.presented=[voice](bool visible){voice->Present(visible);};
+                notice.audioLevel=[voice]{return voice->Level();};
+                notice.audioPlaying=[voice]{return voice->Playing();};
+                notice.voiceCaption=[voice,language=english]{return voice->Caption(language);};
+            }
+            QueueNotification(std::move(notice));
+        }
+        for(auto& message:notificationReceiver.Drain()){
+            if(message.source=="qq"?!p.messagesQQ:!p.messagesWeChat)continue;
+            const auto source=message.source;
+            diag::Log("island-notifications","received source="+source);
+            if(message.title.empty())message.title=source=="qq"?(english?L"QQ notification":L"QQ 通知"):(english?L"WeChat alert":L"微信提醒");
+            if(message.body.empty())message.body=source=="qq"?(receiverState.qq=="attention"?(english?L"QQ needs your attention. Click to open.":L"QQ 请求你的注意，轻点打开应用"):(english?L"New notification. Click to open QQ.":L"有新通知，轻点打开 QQ")):(english?L"WeChat needs your attention. Click to open.":L"微信请求你的注意，轻点打开应用");
+            QueueNotification({std::move(message.id),std::move(message.title),std::move(message.body),[this,source]{notificationReceiver.OpenApp(source);},source,source});
+        }
+        const auto now=Now();
+        while(!pendingNotifications.empty()&&pendingNotifications.front().expires<=now){
+            diag::Log("island-notifications","expired type="+pendingNotifications.front().notice.icon);
+            pendingNotifications.pop_front();
+        }
+        if(tick.locked)ClearNotifications();
+        else if(!pendingNotifications.empty()){
+            bool shown=false;EachWindow([&](auto& target){shown=target.ShowNotification(pendingNotifications.front().notice)||shown;});
+            if(shown){diag::Log("island-notifications","accepted type="+pendingNotifications.front().notice.icon);pendingNotifications.pop_front();}
+            else if(pendingNotifications.front().notice.immediate){
+                diag::Log("island-notifications","timed-voice-skipped type="+pendingNotifications.front().notice.icon);
+                pendingNotifications.pop_front();
+            }
+            else if(!pendingNotifications.front().deferredLogged){
+                pendingNotifications.front().deferredLogged=true;
+                diag::Log("island-notifications","deferred type="+pendingNotifications.front().notice.icon);
+            }
+        }
+        NotifyNotificationRuntime();
+    }
+    std::optional<std::wstring> HandleNotifications(std::wstring_view raw){
+        if(stopped||raw.size()>1024||raw.find(L"island-notifications")==std::wstring_view::npos)return {};
+        const auto command=nlohmann::json::parse(raw,nullptr,false);
+        if(command.is_object()&&command.size()==3&&command.value("version",nlohmann::json{})==1&&
+            command.value("scope",nlohmann::json{})=="island-notifications"&&command.contains("action")&&command["action"].is_string()){
+            const auto action=command["action"].get<std::string>();
+            if(action=="authorize"||action=="open-system-settings"){
+                // Older pages may still send these commands. Acknowledge them
+                // without opening consent or Settings UI.
+                auto reply=nlohmann::json::parse(NotificationsState());reply["result"]="applied";reply["saved"]=false;
+                const auto encoded=reply.dump(-1,' ',true);return std::wstring(encoded.begin(),encoded.end());
+            }
+        }
+        auto reply=notificationPreferences.Handle(raw);if(!reply)return {};
+        const auto result=nlohmann::json::parse(*reply);
+        if(result.value("saved",false)){SyncNotifications(prefs.enabled,true);SyncWeatherConsumer(prefs.enabled);}
+        return NotificationsState(*reply);
+    }
     const char* LoadStatus()const {
         switch(load) {
         case widget::LoadState::Loaded:return "loaded";
@@ -198,9 +519,11 @@ struct DynamicIslandSession::Impl {
             {"screen",display.screen<0?PrimaryScreen():display.screen},{"screens",std::move(ids)},
             {"remaining",model.RemainingSeconds()},{"hideFullscreen",display.hideFullscreen},
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
-            {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},
+            {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},{"clockStyle",ClockStyleName(display.clockStyle)},
+            {"calendarStyle",CalendarStyleName(display.calendarStyle)},
             {"hoverDelayMs",display.hoverDelayMs},{"animationSpeed",SpeedName(display.animationSpeed)},{"bounce",BounceName(display.bounce)},
             {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
+            {"expandedLayout",dynamic_island::EncodeExpandedLayout(ReleasedDisplay(display).expandedWidgets)},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
         return std::wstring(json.begin(),json.end());
@@ -234,17 +557,23 @@ struct DynamicIslandSession::Impl {
             error=Runtime(previous)?"save":"rollback";return false;
         }
         prefs=next;load=widget::LoadState::Loaded;error.clear();
+        SyncNotifications(prefs.enabled,true);
         if(!prefs.enabled)model.CancelFocus();
         return true;
     }
-    bool Restore() {return !stopped&&Runtime(prefs);}
-    void Action(dynamic_island::Action action) {
+    bool Restore() {const bool restored=!stopped&&Runtime(prefs);if(restored)SyncNotifications(prefs.enabled);return restored;}
+    void Action(dynamic_island::Action action,HWND source=nullptr) {
         if(stopped)return;
         using dynamic_island::Action;
         switch(action) {
         case Action::ExpansionChanged:RefreshWeather();Notify();return;
         case Action::Tick:{
+            RefreshAnalysisVisibility();
+            PollNotifications();
             RefreshScreens();
+            const bool focusChanged=model.Tick(Now());
+            if(focusChanged)Paint();
+            if(!analysisVisible.load(std::memory_order_relaxed))return;
             // Lume Music has priority; otherwise follow the current Windows media
             // session every second so position, track and state stay current.
             if((model.Playback().available&&!external)||!options.externalMedia)return;
@@ -257,15 +586,19 @@ struct DynamicIslandSession::Impl {
         case Action::PerformanceSettings:if(options.openPerformanceSettings)options.openPerformanceSettings();return;
         case Action::Close:{auto next=prefs;next.enabled=false;Commit(next);Notify();return;}
         case Action::MaterialNone:case Action::MaterialLiquid:case Action::MaterialFrosted:{
+            const auto request=materialSelection;
+            if(request){request(action==Action::MaterialLiquid?ui::PageCommand::IslandMaterialLiquid:
+                action==Action::MaterialFrosted?ui::PageCommand::IslandMaterialFrosted:ui::PageCommand::IslandMaterialNone,source?source:window.Handle());return;}
             auto value=display;
             value.material=action==Action::MaterialLiquid?IslandMaterial::Liquid:
                 action==Action::MaterialFrosted?IslandMaterial::Frosted:IslandMaterial::None;
             if(CommitDisplay(value))Paint();
             Notify();return;
         }
-        case Action::ToggleMessages:{auto value=display;value.messages=!value.messages;if(CommitDisplay(value))Paint();Notify();return;}
         case Action::Reset:{if(const auto reply=HandlePage(ui::PageCommand::IslandReset);reply&&options.notify)options.notify(*reply);return;}
-        case Action::Focus:case Action::CancelFocus:return;
+        case Action::Focus:case Action::CancelFocus:
+            if(!prefs.enabled||!dynamic_island::HasExpandedWidget(ReleasedDisplay(display).expandedWidgets,dynamic_island::ExpandedWidget::Focus))return;
+            if(action==Action::Focus)model.StartFocus(Now());else model.CancelFocus();Paint();Notify();return;
         default:{
             if(!prefs.enabled)return;
             const bool toggle=action==Action::Toggle&&model.Playback().available;
@@ -286,8 +619,18 @@ struct DynamicIslandSession::Impl {
         using ui::PageCommand;
         auto next=prefs;
         const int number=static_cast<int>(command);
+        if(number>=static_cast<int>(PageCommand::IslandExpandedLayoutFirst)&&number<=static_cast<int>(PageCommand::IslandExpandedLayoutLast)){
+            auto value=display;
+            if(!dynamic_island::DecodeExpandedLayout(static_cast<unsigned>(number-static_cast<int>(PageCommand::IslandExpandedLayoutFirst)),value.expandedWidgets))return {};
+            if(!std::all_of(value.expandedWidgets.begin(),value.expandedWidgets.end(),Released))return State(true,false);
+            const bool saved=CommitDisplay(value);
+            if(saved){load=widget::LoadState::Loaded;
+                if(!dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::Focus))model.CancelFocus();
+                Paint();}
+            return State(true,saved);
+        }
         if(number>=static_cast<int>(PageCommand::IslandHoverDelayFirst)&&number<=static_cast<int>(PageCommand::IslandHoverDelayLast)){
-            auto value=display;value.hoverDelayMs=100+number-static_cast<int>(PageCommand::IslandHoverDelayFirst);
+            auto value=display;value.hoverDelayMs=SnapIslandHoverDelay(100+number-static_cast<int>(PageCommand::IslandHoverDelayFirst));
             const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
             return State(true,saved);
         }
@@ -302,10 +645,13 @@ struct DynamicIslandSession::Impl {
         const bool left=number>=static_cast<int>(PageCommand::IslandLeftWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandLeftWidgetLast);
         const bool right=number>=static_cast<int>(PageCommand::IslandRightWidgetFirst)&&number<=static_cast<int>(PageCommand::IslandRightWidgetLast);
         if(left||right){
-            auto value=display;const auto selected=static_cast<dynamic_island::CompactWidget>(number-
-                static_cast<int>(left?PageCommand::IslandLeftWidgetFirst:PageCommand::IslandRightWidgetFirst));
-            (left?value.leftWidget:value.rightWidget)=selected;
-            const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
+            auto value=display;
+            const int first=static_cast<int>(left?PageCommand::IslandLeftWidgetFirst:PageCommand::IslandRightWidgetFirst);
+            auto widget=static_cast<dynamic_island::CompactWidget>(number-first);
+            if(widget==dynamic_island::CompactWidget::Files)widget=dynamic_island::CompactWidget::None;
+            if(left)value.leftWidget=widget;else value.rightWidget=widget;
+            const bool saved=CommitDisplay(value);
+            if(saved){load=widget::LoadState::Loaded;Paint();}
             return State(true,saved);
         }
         switch(command) {
@@ -317,18 +663,20 @@ struct DynamicIslandSession::Impl {
             previewActive=true;SyncWeatherConsumer(prefs.enabled);
             RefreshWeather();
             if(!previewRenderer)previewRenderer=std::make_unique<IslandPreviewRenderer>();
-            const auto foreground=window.Preview(display,expanded,1.f/30);
-            const auto frame=previewRenderer->Render(foreground,display,options.previewWallpaper?options.previewWallpaper():std::wstring{});
+            const auto foreground=window.Preview(ReleasedDisplay(display),expanded,1.f/30);
+            const auto frame=previewRenderer->Render(foreground,ReleasedDisplay(display),options.previewWallpaper?options.previewWallpaper():std::wstring{});
             const auto image=IslandPreviewRenderer::JpegDataUrl(frame);
-            auto readings=nlohmann::json::parse(window.CompactReadings(),nullptr,false);
-            if(!readings.is_array())readings=nlohmann::json::array();
+            const auto readings=nlohmann::json::parse(window.CompactReadings());
             const auto value=nlohmann::json{{"version",1},{"type","dynamicIsland-preview"},{"mode",expanded?"expanded":"compact"},
                 {"shape",ShapeName(display.shape)},{"material",MaterialName(display.material)},{"size",SizeName(display.size)},
+                {"clockStyle",ClockStyleName(display.clockStyle)},
+                {"calendarStyle",CalendarStyleName(display.calendarStyle)},
                 {"animationSpeed",SpeedName(display.animationSpeed)},{"bounce",BounceName(display.bounce)},
                 {"width",image.empty()?0u:frame.width},{"height",image.empty()?0u:frame.height},{"image",image},
                 {"animating",foreground.animating&&!image.empty()},
                 {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
-                {"readings",std::move(readings)},{"error",image.empty()?"render":""}}.dump(-1,' ',true);
+                {"expandedLayout",dynamic_island::EncodeExpandedLayout(ReleasedDisplay(display).expandedWidgets)},
+                {"readings",readings},{"error",image.empty()?"render":""}}.dump(-1,' ',true);
             return std::wstring(value.begin(),value.end());
         }
         case PageCommand::IslandEnable:next.enabled=true;break;
@@ -336,7 +684,8 @@ struct DynamicIslandSession::Impl {
         case PageCommand::IslandLock:case PageCommand::IslandUnlock:next.locked=true;break;
         case PageCommand::IslandReset:{
             next=widget::Defaults(limits);next.enabled=prefs.enabled;
-            const bool shown=CommitDisplay(IslandDisplay{});const bool saved=Commit(next)&&shown;return State(true,saved);
+            const bool shown=CommitDisplay(IslandDisplay{});const bool saved=Commit(next)&&shown;
+            if(saved){model.CancelFocus();Paint();}return State(true,saved);
         }
         case PageCommand::IslandHideFullscreenOn:case PageCommand::IslandHideFullscreenOff:
         case PageCommand::IslandTopmostOn:case PageCommand::IslandTopmostOff:
@@ -346,6 +695,10 @@ struct DynamicIslandSession::Impl {
         case PageCommand::IslandBounceSubtle:case PageCommand::IslandBounceNormal:case PageCommand::IslandBounceBouncy:
         case PageCommand::IslandSizeSmall:case PageCommand::IslandSizeStandard:case PageCommand::IslandSizeLarge:
         case PageCommand::IslandMaterialNone:case PageCommand::IslandMaterialLiquid:case PageCommand::IslandMaterialFrosted:
+        case PageCommand::IslandClockSimple:case PageCommand::IslandClockProgress:
+        case PageCommand::IslandClockDigital:case PageCommand::IslandClockDate:
+        case PageCommand::IslandClockFlip:case PageCommand::IslandClockPixel:
+        case PageCommand::IslandCalendarDefault:case PageCommand::IslandCalendarChineseAlmanac:
         case PageCommand::IslandShapeStandard:case PageCommand::IslandShapeCapsule:case PageCommand::IslandResetAppearance:{
             auto value=display;
             switch(command) {
@@ -371,6 +724,14 @@ struct DynamicIslandSession::Impl {
             case PageCommand::IslandMaterialFrosted:value.material=IslandMaterial::Frosted;break;
             case PageCommand::IslandShapeStandard:value.shape=IslandShape::Standard;break;
             case PageCommand::IslandShapeCapsule:value.shape=IslandShape::Capsule;break;
+            case PageCommand::IslandClockSimple:value.clockStyle=IslandClockStyle::Simple;break;
+            case PageCommand::IslandClockProgress:value.clockStyle=IslandClockStyle::Progress;break;
+            case PageCommand::IslandClockDigital:value.clockStyle=IslandClockStyle::Digital;break;
+            case PageCommand::IslandClockDate:value.clockStyle=IslandClockStyle::Date;break;
+            case PageCommand::IslandClockFlip:value.clockStyle=IslandClockStyle::Flip;break;
+            case PageCommand::IslandClockPixel:value.clockStyle=IslandClockStyle::Pixel;break;
+            case PageCommand::IslandCalendarDefault:value.calendarStyle=IslandCalendarStyle::Default;break;
+            case PageCommand::IslandCalendarChineseAlmanac:value.calendarStyle=IslandCalendarStyle::ChineseAlmanac;break;
             case PageCommand::IslandResetAppearance:value.shape=IslandShape::Capsule;value.size=IslandSize::Standard;value.material=IslandMaterial::None;break;
             default:break;
             }
@@ -380,22 +741,30 @@ struct DynamicIslandSession::Impl {
         }
         case PageCommand::IslandExpand:case PageCommand::IslandCollapse:
             EachWindow([&](auto& target){target.Expand(command==PageCommand::IslandExpand);});return State(true);
-        case PageCommand::IslandFocus:case PageCommand::IslandStopFocus:return {};
+        case PageCommand::IslandFocus:case PageCommand::IslandStopFocus:
+            if(!prefs.enabled||!dynamic_island::HasExpandedWidget(ReleasedDisplay(display).expandedWidgets,dynamic_island::ExpandedWidget::Focus))return {};
+            Action(command==PageCommand::IslandFocus?dynamic_island::Action::Focus:dynamic_island::Action::CancelFocus);return State(true);
         default:return {};
         }
         const bool saved=Commit(next);return State(true,saved);
     }
     void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))EachWindow([](auto& target){target.Expand(true);});Notify();}
     void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();previewActive=false;SyncWeatherConsumer(prefs.enabled);}
-    void Shutdown() {if(stopped)return;ReleasePreview();EachWindow([](auto& target){target.SetTodoSource({});});StopWindows();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
+    void Shutdown() {if(stopped)return;ClearNotifications();notificationReceiver.SetWakeTarget(nullptr,0,0);notificationReceiver.Shutdown();SyncNotificationWake(false);notificationsEnabled=false;ReleasePreview();EachWindow([](auto& target){target.SetTodoSource({});});StopWindows();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
     ~Impl(){Shutdown();}
 };
 DynamicIslandSession::DynamicIslandSession(HINSTANCE instance,DynamicIslandSessionOptions options,settings::IFileStore* files)
     : impl_(std::make_unique<Impl>(instance,std::move(options),files)) {}
 DynamicIslandSession::~DynamicIslandSession()=default;
 bool DynamicIslandSession::Restore(){const bool ok=impl_->Restore();if(!ok&&!impl_->stopped)impl_->error="runtime";return ok;}
+void DynamicIslandSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 void DynamicIslandSession::Open(){impl_->Open();}
 std::optional<std::wstring> DynamicIslandSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
+std::optional<std::wstring> DynamicIslandSession::HandleNotifications(std::wstring_view message){
+    return impl_->HandleNotifications(message);
+}
+std::wstring DynamicIslandSession::NotificationsState()const{return impl_->NotificationsState();}
+void DynamicIslandSession::PollNotifications(){impl_->PollNotifications();}
 std::wstring DynamicIslandSession::State()const{return impl_->State();}
 void DynamicIslandSession::Update(dynamic_island::Media media){
     if(impl_->stopped)return;
@@ -420,6 +789,7 @@ void DynamicIslandSession::RefreshTodos(){if(!impl_->stopped)impl_->EachWindow([
 void DynamicIslandSession::RefreshWeather(){impl_->RefreshWeather();}
 void DynamicIslandSession::ReleasePreview(){impl_->ReleasePreview();}
 bool DynamicIslandSession::Running()const{return impl_->window.Handle()!=nullptr;}
+bool DynamicIslandSession::AnalysisActive()const{return impl_->analysisVisible.load(std::memory_order_relaxed);}
 HWND DynamicIslandSession::Handle()const{return impl_->window.Handle();}
 const widget::Preferences& DynamicIslandSession::Snapshot()const{return impl_->prefs;}
 }

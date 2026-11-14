@@ -50,7 +50,7 @@ function eventDetails(message) {
     "error", "catalogError", "loadStatus", "catalogStatus", "status", "result",
     "materialStatus", "mode", "page", "section", "scope", "operationId",
     "module", "kind", "action", "stage", "expected", "actual", "confidence",
-    "reason", "state",
+    "reason", "state", "effectStatus", "taskbarType",
   ]) {
     if (typeof message[key] === "string" && message[key]) details[key] = text(message[key], MAX_TEXT);
   }
@@ -62,7 +62,8 @@ function eventDetails(message) {
 
 const healthFields = {
   "dock-state": ["enabled", "running", "pinned", "added", "visibleItems", "layersVisible", "materialStatus", "loadStatus", "error"],
-  "taskbar-state": ["enabled", "running", "transparentTaskbar", "autoHideTaskbar", "applying", "pendingRecovery", "taskbars", "mode", "error", "loadStatus"],
+  "taskbar-state": ["enabled", "running", "transparentTaskbar", "autoHideTaskbar", "applying", "pendingRecovery", "taskbars", "mode", "error", "loadStatus",
+    "effectStatus", "taskbarType", "stage", "hresult", "registeredTaskbars", "backgrounds", "appliedTaskbars", "hideApplied", "effectiveAutoHide", "fullyHidden", "autoHideDemand"],
   "wallpaper-state": ["status", "loadStatus", "catalogStatus", "catalogError", "playerAvailable", "pauseFullscreen"],
   "icons-state": ["enabled", "running", "desktops", "autoHidden", "pendingRestores", "loadStatus", "error"],
   "organizer-state": ["enabled", "running", "count", "mode", "layout", "loadStatus", "error"],
@@ -80,7 +81,8 @@ function healthSnapshot(message) {
   for (const key of fields) {
     const item = message[key];
     if (typeof item === "string") value[key] = text(item, MAX_TEXT);
-    else if (typeof item === "boolean" || nonNegativeInteger(item)) value[key] = item;
+    else if (typeof item === "boolean" || nonNegativeInteger(item) ||
+      (key === 'hresult' && Number.isInteger(item) && item >= -2147483648 && item <= 2147483647)) value[key] = item;
   }
   return value;
 }
@@ -131,23 +133,26 @@ function validNativeHealth(value) {
     "enabled", "running", "visible", "loaded", "layersVisible", "transparentTaskbar", "autoHideTaskbar",
     "applying", "pendingRecovery", "playerAvailable", "pauseFullscreen", "loading", "hasWeather",
     "visibleItems", "pinned", "added", "taskbars", "desktops", "autoHidden", "pendingRestores",
-    "count", "hosts", "hooks", "pendingCleanup"];
+    "count", "hosts", "hooks", "pendingCleanup", "effectStatus", "taskbarType", "stage", "hresult", "registeredTaskbars", "backgrounds", "appliedTaskbars",
+    "hideApplied", "effectiveAutoHide", "fullyHidden", "autoHideDemand"];
   if (Object.keys(value).some(key => !allowed.includes(key))) return false;
   if (value.at !== undefined && !nonNegativeInteger(value.at)) return false;
   for (const key of ["status", "result", "error", "action", "mode", "layout", "loadStatus",
-    "catalogStatus", "catalogError", "weatherError", "materialStatus"]) {
+    "catalogStatus", "catalogError", "weatherError", "materialStatus", "effectStatus", "taskbarType", "stage"]) {
     if (value[key] !== undefined && typeof value[key] !== "string") return false;
     if (typeof value[key] === "string" && value[key].length > MAX_TEXT) return false;
   }
   if (["status", "result", "error", "action", "mode", "layout", "loadStatus",
-    "catalogStatus", "catalogError", "weatherError", "materialStatus"].some(key =>
+    "catalogStatus", "catalogError", "weatherError", "materialStatus", "effectStatus", "taskbarType", "stage"].some(key =>
       value[key] !== undefined && !/^[A-Za-z0-9_.:-]{0,96}$/.test(value[key]))) return false;
   for (const key of ["enabled", "running", "visible", "loaded", "layersVisible", "transparentTaskbar",
-      "autoHideTaskbar", "applying", "pendingRecovery", "playerAvailable", "pauseFullscreen", "loading", "hasWeather"])
+      "autoHideTaskbar", "applying", "pendingRecovery", "playerAvailable", "pauseFullscreen", "loading", "hasWeather",
+      "hideApplied", "effectiveAutoHide", "fullyHidden", "autoHideDemand"])
     if (value[key] !== undefined && typeof value[key] !== "boolean") return false;
   for (const key of ["visibleItems", "pinned", "added", "taskbars", "desktops", "autoHidden", "pendingRestores",
-      "count", "hosts", "hooks", "pendingCleanup"])
+      "count", "hosts", "hooks", "pendingCleanup", "registeredTaskbars", "backgrounds", "appliedTaskbars"])
     if (value[key] !== undefined && !nonNegativeInteger(value[key])) return false;
+  if (value.hresult !== undefined && (!Number.isInteger(value.hresult) || value.hresult < -2147483648 || value.hresult > 2147483647)) return false;
   return true;
 }
 
@@ -156,16 +161,18 @@ function sanitizeNativeHealth(value) {
   const result = {};
   if (nonNegativeInteger(value.at)) result.at = value.at;
   for (const key of ["status", "result", "error", "action", "mode", "layout", "loadStatus",
-    "catalogStatus", "catalogError", "weatherError", "materialStatus"]) {
+    "catalogStatus", "catalogError", "weatherError", "materialStatus", "effectStatus", "taskbarType", "stage"]) {
     if (typeof value[key] === "string" && value[key])
       result[key] = key === "error" ? sanitizeCode(value[key]) || text(value[key], MAX_TEXT) : text(value[key], MAX_TEXT);
   }
   for (const key of ["enabled", "running", "visible", "loaded", "layersVisible", "transparentTaskbar",
-      "autoHideTaskbar", "applying", "pendingRecovery", "playerAvailable", "pauseFullscreen", "loading", "hasWeather"])
+      "autoHideTaskbar", "applying", "pendingRecovery", "playerAvailable", "pauseFullscreen", "loading", "hasWeather",
+      "hideApplied", "effectiveAutoHide", "fullyHidden", "autoHideDemand"])
     if (typeof value[key] === "boolean") result[key] = value[key];
   for (const key of ["visibleItems", "pinned", "added", "taskbars", "desktops", "autoHidden", "pendingRestores",
-      "count", "hosts", "hooks", "pendingCleanup"])
+      "count", "hosts", "hooks", "pendingCleanup", "registeredTaskbars", "backgrounds", "appliedTaskbars"])
     if (nonNegativeInteger(value[key])) result[key] = value[key];
+  if (value.hresult !== undefined) result.hresult = value.hresult;
   return result;
 }
 
@@ -240,9 +247,13 @@ function localMismatches(type, snapshot) {
   if (type === "dock-state" && snapshot.running === true && snapshot.layersVisible === false) {
     result.push({component: "dock", expected: "layers-visible", actual: "hidden", confidence: "confirmed"});
   }
-  if (type === "taskbar-state" && snapshot.enabled === true && snapshot.transparentTaskbar === true &&
-      snapshot.taskbars > 0 && snapshot.applying !== true && snapshot.pendingRecovery !== true && snapshot.running === false) {
-    result.push({component: "taskbar", expected: "transparent-taskbar-active", actual: "not-running", confidence: "confirmed"});
+  if (type === "taskbar-state" && snapshot.transparentTaskbar === true && snapshot.applying !== true) {
+    if (snapshot.effectStatus === 'failed')
+      result.push({component: "taskbar", expected: "transparent-background-applied", actual: "background-apply-failed", confidence: "confirmed"});
+    else if (snapshot.running === false)
+      result.push({component: "taskbar", expected: "transparent-taskbar-active", actual: "not-running", confidence: "confirmed"});
+    else if (snapshot.effectStatus !== 'applied')
+      result.push({component: "taskbar", expected: "transparent-background-applied", actual: "effect-unconfirmed", confidence: "suspected"});
   }
   return result;
 }
@@ -277,7 +288,8 @@ function sanitizeHealthMap(value) {
     for (const [key, item] of Object.entries(snapshot).slice(0, 32)) {
       if (!allowed.has(key)) continue;
       if (typeof item === "string") clean[key] = text(item, MAX_TEXT);
-      else if (typeof item === "boolean" || nonNegativeInteger(item)) clean[key] = item;
+      else if (typeof item === "boolean" || nonNegativeInteger(item) ||
+        (key === 'hresult' && Number.isInteger(item) && item >= -2147483648 && item <= 2147483647)) clean[key] = item;
     }
     result[type] = clean;
   }
@@ -448,7 +460,7 @@ export function createDiagnosticsRecorder({
 }
 
 export function buildDiagnosticReport({
-  version = "1.0.9",
+  version = "1.1.3",
   language = "zh-CN",
   view = "",
   events = [],

@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace lume::application_settings {
-inline constexpr char CurrentVersion[] = "1.0.9";
+inline constexpr char CurrentVersion[] = "1.1.3";
 inline constexpr char NativeRuntime[] = "native-win32";
 inline constexpr char NativeChannel[] = "native-verification";
 inline constexpr char ManifestUrl[] = "https://lumedesktop.com/updates.json";

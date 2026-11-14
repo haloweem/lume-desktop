@@ -30,7 +30,7 @@ test('island bridge rejects malformed commands and snapshots',()=>{
     assert.ok(bridge.send('dynamicIsland',...command));
   for(const command of [['enabled','true'],['focus',true],['locked',1],['material','glass'],['path','C:/anything'],['size','huge'],['hover','yes'],['hideIdle',false]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
-  for(const command of [['customIcons',true],['overview',true],['leftWidget',-1],['rightWidget',31],['leftWidget','4'],
+  for(const command of [['customIcons',true],['overview',true],['leftWidget',-1],['rightWidget',31],['leftWidget','4'],['leftWidget',18],['rightWidget',18],
     ['leftStyle','circle'],['rightStyle','capsule'],['card',0],['cardMove',0]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
   assert.equal(bridge.send('dynamicIsland','shape','circle'),false);
@@ -47,7 +47,7 @@ test('native acknowledgement settles requests while preserving confirmed prefere
   assert.equal(state.dynamicIslandStatus,'error');assert.equal(state.dynamicIsland.enabled,true);
   assert.equal(reduce(state,{type:'unavailable',scope:'all'}).dynamicIslandStatus,'unavailable');
 });
-test('island settings show only display preferences and accurate details in both languages',()=>{
+test('island shows expanded widgets and style choices without a live or compact preview',()=>{
   const state={...initialState(),dynamicIslandStatus:'idle'};
   for(const language of ['zh-CN','en']){
     setLanguage(language);
@@ -55,13 +55,17 @@ test('island settings show only display preferences and accurate details in both
     assert.match(home,/settings--island/);
     assert.match(home,/data-tab="home"/);
     assert.match(home,/data-tab="settings"/);
-    for(const key of ['music','todo','quick-launch','clock','notifications'])assert.match(home,new RegExp(`data-tab="${key}"`));
+    assert.match(islandPage(state,'todo'),/data-todo-board/,'the to-do tab hosts the shared board');
+    assert.match(home,/data-tab="notifications"/,'notifications have a real settings page');
+    for(const key of ['music','quick-launch','clock']){
+      assert.doesNotMatch(home,new RegExp(`data-tab="${key}"`),'unfinished module tabs stay out of navigation');
+      assert.match(islandPage(state,key),/island-editor__empty/,'a direct route keeps its pending state');
+    }
     assert.match(home,/assets\/icons\/lume-rounded-v1\/home-selected-24.png/);
     assert.match(home,/data-island-home/);
     assert.match(home,/data-island-shape="standard"/);
     assert.match(home,/data-island-shape="capsule"/);
     const settings=islandPage(state);
-    assert.doesNotMatch(settings,/dynamicIsland-lock/);
     assert.doesNotMatch(settings,/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview|正在播放|Now playing/);
     assert.doesNotMatch(settings,/dynamicIsland-focus|25-minute|专注/);
     assert.doesNotMatch(settings,/dynamicIsland-(?:customIcons|overview|leftStyle|rightStyle|card)|data-island-card|多组件工作台/);
@@ -83,19 +87,43 @@ test('island settings show only display preferences and accurate details in both
   assert.doesNotMatch(islandPage(active),/id="dynamicIsland-(?:size|material)"|data-island-preference/);
   const home=islandPage(active,'home');
   assert.equal(compactWidgets.length,31);
-  assert.equal((home.match(/data-island-compact-widget="\d+"/g)||[]).length,31);
-  assert.match(home,/data-island-compact-side="left"/);
-  assert.match(home,/data-island-compact-side="right"/);
-  for(const id of [17,18,20,25])assert.match(home,new RegExp(`data-island-compact-widget="${id}"`));
-  const before=compactWidgetPicker({...state,dynamicIslandPreview:{readings:[{id:14,text:'3%',available:true}]}});
-  const after=compactWidgetPicker({...state,dynamicIslandPreview:{readings:[{id:14,text:'99%',available:true}]}});
-  assert.equal(before,after,'chooser samples do not use live native readings');
-  assert.match(before,/data-island-compact-widget="14"[\s\S]*?48%/);
-  assert.doesNotMatch(before,/data-compact-reading|99%/);
-  assert.doesNotMatch(home,/data-island-layout|data-island-membership|data-island-components-title|点击标签加入|Click a tag to add/);
+  assert.equal(compactWidgets[18],null,'retired wire ID stays reserved');
+  assert.doesNotMatch(home,/data-island-compact|data-island-preview|data-island-native-preview/);
+  assert.doesNotMatch(home,/data-island-compact-widget="18"|文件暂存|File tray/);
+  const legacy=compactWidgetPicker({...state,dynamicIsland:{...state.dynamicIsland,leftWidget:18}});
+  assert.match(legacy,/data-island-selection-sample data-widget="0"/,'legacy removed selection displays None');
+  const captured={...state,islandCompactCapturedAt:new Date(2026,10,5,12).getTime()};
+  const before=compactWidgetPicker({...captured,islandCompactReadings:[{id:14,text:'3%',progress:.03,available:true}]});
+  const after=compactWidgetPicker({...captured,islandCompactReadings:[{id:14,text:'99%',progress:.99,available:true}]});
+  assert.equal(before,after,'system chooser icons are independent of the captured readings');
+  assert.match(before,/data-island-compact-sample="14"><svg[^]*?<rect/);
+  assert.doesNotMatch(before,/48%|99%/);
+  const missing=compactWidgetPicker(captured);
+  assert.equal(missing,before,'system choices remain visible without sampler readings');
+  assert.match(home,/data-island-expanded-panel>/);
+  assert.match(home,/data-island-expanded-picker/);
+  // The five released widgets share the picker; focus remains hidden.
+  assert.equal((home.match(/data-island-expanded-toggle="\d+"/g)||[]).length,5);
+  assert.match(home,/data-island-expanded-toggle="0"/);
+  assert.match(home,/data-island-expanded-toggle="1"/);
+  assert.match(home,/data-island-expanded-toggle="4"/);
+  assert.match(home,/data-island-expanded-toggle="5"/);
+  assert.match(home,/data-island-expanded-toggle="3"/);
+  assert.match(home,/最多同时启用 5 个组件，横向排列/);
+  assert.doesNotMatch(home,/最多同时启用 4 个组件|data-island-expanded-toggle="2"/);
+  assert.doesNotMatch(home,/data-island-layout|data-island-membership|data-island-components-title/);
   for(const [key,values] of [['material',['none','liquid-glass','frosted-glass']],['size',['small','standard','large']]])
     for(const value of values)assert.match(home,new RegExp(`data-island-preference="${key}" data-value="${value}"`));
   assert.match(home,/data-action="dynamicIsland-resetAppearance"/);
+  assert.match(home,/data-island-style-widget="clock"/);
+  assert.match(home,/data-island-clock-style="simple"/);
+  assert.match(home,/data-island-clock-style="progress"/);
+  assert.match(home,/data-island-clock-style="digital"/);
+  assert.match(home,/data-island-clock-style="date"/);
+  assert.match(home,/data-island-clock-style="flip"/);
+  assert.match(home,/data-island-clock-style="pixel"/);
+  assert.equal((home.match(/data-island-clock-style=/g)||[]).length,6);
+  assert.equal((home.match(/data-island-style-widget=/g)||[]).length,5);
   const updated=reduce(state,{type:'host',message:snapshot({hover:true,size:'small',topmost:false})});
   assert.equal(updated.dynamicIsland.size,'small');assert.equal(updated.dynamicIsland.material,'none');assert.equal(updated.dynamicIsland.hover,true);assert.equal(updated.dynamicIsland.topmost,false);
 });
@@ -108,6 +136,49 @@ test('shape waits for native confirmation, survives rollback and accepts older s
   state=reduce(state,{type:'host',message:snapshot({shape:'standard',error:'save',result:'applied'})});
   assert.equal(state.dynamicIsland.shape,'standard');assert.equal(state.dynamicIslandStatus,'error');
   assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.shape,'capsule');
+});
+
+test('clock styles validate, wait for native acknowledgement and preserve confirmed style on failure',()=>{
+  const sent=[],bridge=createBridge({postMessage:message=>sent.push(message)});
+  for(const style of ['simple','progress','digital','date','flip','pixel']){
+    assert.ok(bridge.send('dynamicIsland','clockStyle',style));
+    assert.ok(validHostMessage(snapshot({clockStyle:style})));
+  }
+  for(const style of ['analog','',null,1,true]){
+    assert.equal(bridge.send('dynamicIsland','clockStyle',style),false);
+    assert.equal(validHostMessage(snapshot({clockStyle:style})),false);
+  }
+  assert.deepEqual(sent,['simple','progress','digital','date','flip','pixel'].map(style=>`v1|dynamicIsland|clockStyle|${style}`));
+  let state=reduce(initialState(),{type:'host',message:snapshot()});
+  assert.equal(state.dynamicIsland.clockStyle,'simple','older hosts retain the original style');
+  state=reduce(state,{type:'request',scope:'dynamicIsland',key:'clockStyle',value:'progress'});
+  assert.equal(state.dynamicIsland.clockStyle,'simple');
+  assert.equal(state.dynamicIslandStatus,'saving');
+  state=reduce(state,{type:'host',message:snapshot({clockStyle:'simple',error:'save',result:'applied'})});
+  assert.equal(state.dynamicIsland.clockStyle,'simple');
+  state=reduce(state,{type:'host',message:snapshot({clockStyle:'progress',saved:true,result:'applied',loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.clockStyle,'progress');
+  assert.equal(state.dynamicIsland.expandedLayout,1,'style selection does not enable or reorder components');
+  for(const style of ['digital','date','flip','pixel','simple','progress']){
+    const previous=state.dynamicIsland.clockStyle;
+    state=reduce(state,{type:'request',scope:'dynamicIsland',key:'clockStyle',value:style});
+    assert.equal(state.dynamicIsland.clockStyle,previous);
+    state=reduce(state,{type:'host',message:snapshot({clockStyle:previous,error:'save',result:'applied'})});
+    assert.equal(state.dynamicIsland.clockStyle,previous,'each style keeps the last saved choice after failure');
+    state=reduce(state,{type:'host',message:snapshot({clockStyle:style,saved:true,result:'applied',loadStatus:'loaded'})});
+    assert.equal(state.dynamicIsland.clockStyle,style);
+  }
+  for(const language of ['zh-CN','en']){
+    setLanguage(language);const home=islandPage(state,'home');
+    assert.match(home,/data-island-clock-style="simple" aria-pressed="false"/);
+    assert.match(home,/data-island-clock-style="progress" aria-pressed="true"/);
+    assert.ok(home.includes(`assets/island-styles/clock-progress${language==='en'?'-en':''}.png`));
+    for(const style of ['digital','date','flip','pixel'])assert.ok(home.includes(`assets/island-styles/clock-${style}${language==='en'?'-en':''}.png`));
+    const music=islandPage({...state,islandStyleWidget:'music'},'home');
+    assert.doesNotMatch(music,/data-island-clock-style=/);
+    assert.equal((music.match(/data-island-style-card=/g)||[]).length,1);
+  }
+  setLanguage('zh-CN');
 });
 
 test('expansion mode defaults to click and follows confirmed hover preferences in both languages',()=>{
@@ -188,7 +259,7 @@ test('animation commands and snapshots validate their bounds and preserve older 
     const partial={...animation};delete partial[field];assert.equal(validHostMessage(snapshot(partial)),false);
   }
   const older=reduce(initialState(),{type:'host',message:snapshot()}).dynamicIsland;
-  assert.equal(older.hoverDelayMs,320);assert.equal(older.animationSpeed,'normal');assert.equal(older.bounce,'normal');
+  assert.equal(older.hoverDelayMs,300);assert.equal(older.animationSpeed,'normal');assert.equal(older.bounce,'normal');
 });
 
 test('animation settings follow confirmed saves, retain preferences on failure and render in both languages',()=>{
@@ -205,7 +276,7 @@ test('animation settings follow confirmed saves, retain preferences on failure a
   for(const language of ['zh-CN','en']){
     setLanguage(language);const html=islandPage(state,'home');
     assert.ok(html.indexOf('class="island-animation"')>html.indexOf('class="island-expansion"'));
-    assert.match(html,/data-island-hover-delay type="range" min="100" max="1000" step="10" value="1000"/);
+    assert.match(html,/data-island-hover-delay type="range" min="100" max="1000" step="50" value="1000"/);
     assert.match(html,/output for="island-hover-delay">1s/);
     assert.match(html,/data-island-preference="animationSpeed" data-value="slow" aria-pressed="true"/);
     assert.match(html,/data-island-preference="bounce" data-value="bouncy" aria-pressed="true"/);

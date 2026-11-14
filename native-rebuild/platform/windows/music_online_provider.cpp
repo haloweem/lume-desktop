@@ -2,6 +2,7 @@
 // Historical Folia provider protocol port. See music_providers/ONLINE_PROVENANCE.md.
 #include "platform/windows/music_online_provider.h"
 #include "platform/windows/music_providers/catalog_requests.h"
+#include "platform/windows/music_providers/netease_playback.h"
 #include "core/music/music_online_lyrics.h"
 #include "core/music/music_types.h"
 
@@ -70,6 +71,22 @@ std::int64_t Number(const Json& j, std::initializer_list<const char*> keys, std:
     const auto n = std::stoll(value);
     if (n > 9007199254740991LL) Fail();
     return n;
+}
+int NeteaseCode(const Json& value, int fallback = 200) {
+    if (value.is_null()) return fallback;
+    const auto text = value.is_number_integer() ? value.dump() : value.is_string() ? value.get<std::string>() : "";
+    const auto digits = std::string_view(text).substr(!text.empty() && text.front() == '-' ? 1 : 0);
+    if (digits.empty() || digits.size() > 9 || digits.find_first_not_of("0123456789") != digits.npos) Fail();
+    return std::stoi(text);
+}
+void NeteaseStatus(const Json& body) {
+    const auto code = NeteaseCode(At(body, "/code"), 0);
+    if (code == 301 || code == 302 || code == 401 || code == 403) Fail("expired");
+    if (code == 429) Fail("rate-limited");
+    if (code != 200) {
+        if (code == 0) Fail();
+        throw std::runtime_error("netease-code-" + std::to_string(code));
+    }
 }
 bool Flag(const Json& j, const char* path) {
     const auto& v = At(j, path);
@@ -300,6 +317,73 @@ Json RecallMetadata(const std::string& key) {
     const auto it = metadata.find(key);
     return it == metadata.end() ? Json::object() : it->second;
 }
+// Device refreshes belong to this account fingerprint, not to the short-lived
+// catalog Context. Keep only device fields in a small native-only cache: never
+// tokens, cookies, profile data or resolved audio URLs. Applying a delta avoids
+// a concurrent lyric request overwriting a newer playback session.
+struct DeviceState { Json fields; std::chrono::steady_clock::time_point used; };
+std::mutex deviceMutex;
+std::map<std::string, DeviceState> deviceStates;
+Json DeviceFields(Provider provider,const Json& secrets) {
+    Json result=Json::object();
+    if(provider==Provider::QQ) {
+        if(secrets.contains("device")&&secrets["device"].is_object())result["device"]=secrets["device"];
+    } else if(provider==Provider::Kugou) {
+        for(const auto* key:{"KUGOU_API_GUID","KUGOU_API_MID","KUGOU_API_DEV","KUGOU_API_MAC",
+            "KUGOU_API_WEBGL","KUGOU_API_PLATFORM","dfid","dfidTriedAt"})
+            if(secrets.contains(key))result[key]=secrets[key];
+    }
+    return result;
+}
+Json DeviceChanges(const Json& before,const Json& after) {
+    Json patch=Json::object();
+    for(auto it=before.begin();it!=before.end();++it)if(!after.contains(it.key()))patch[it.key()]=nullptr;
+    for(auto it=after.begin();it!=after.end();++it) {
+        if(!before.contains(it.key())||before[it.key()]!=it.value())
+            patch[it.key()]=before.contains(it.key())&&before[it.key()].is_object()&&it.value().is_object()
+                ? DeviceChanges(before[it.key()],it.value()) : it.value();
+    }
+    return patch;
+}
+class DeviceLease {
+public:
+    DeviceLease(Provider provider,Json& secrets,const std::string& scope,const auth::Cancelled& cancelled)
+        :provider_(provider),secrets_(secrets),scope_(scope),cancelled_(cancelled) {
+        if(provider==Provider::Netease)return;
+        const auto now=std::chrono::steady_clock::now();
+        std::lock_guard lock(deviceMutex);
+        for(auto it=deviceStates.begin();it!=deviceStates.end();) {
+            if(now-it->second.used>std::chrono::hours(26))it=deviceStates.erase(it);else ++it;
+        }
+        if(const auto it=deviceStates.find(scope);it!=deviceStates.end()) {
+            const auto original=DeviceFields(provider,secrets);
+            for(auto field=original.begin();field!=original.end();++field)secrets.erase(field.key());
+            secrets.merge_patch(it->second.fields);it->second.used=now;
+        }
+        before_=DeviceFields(provider,secrets);
+    }
+    ~DeviceLease() {
+        try {
+            if(provider_==Provider::Netease||(cancelled_&&cancelled_()))return;
+            const auto fields=DeviceFields(provider_,secrets_);
+            if(fields.dump().size()>16*1024)return;
+            const auto delta=DeviceChanges(before_,fields);
+            if(delta.empty())return;
+            std::lock_guard lock(deviceMutex);
+            if(!deviceStates.count(scope_)&&deviceStates.size()>=16) {
+                const auto oldest=std::min_element(deviceStates.begin(),deviceStates.end(),
+                    [](const auto& a,const auto& b){return a.second.used<b.second.used;});
+                deviceStates.erase(oldest);
+            }
+            auto it=deviceStates.try_emplace(scope_,DeviceState{before_,{}}).first;
+            auto merged=it->second.fields;merged.merge_patch(delta);
+            if(merged.dump().size()>16*1024){deviceStates.erase(it);return;}
+            it->second.fields=std::move(merged);it->second.used=std::chrono::steady_clock::now();
+        } catch(...) { /* A disposable device cache must never replace a provider result. */ }
+    }
+private:
+    Provider provider_;Json& secrets_;const std::string& scope_;const auth::Cancelled& cancelled_;Json before_;
+};
 std::string Artists(const Json& j, std::initializer_list<const char*> paths) {
     for (const auto* path : paths) {
         const auto& values = At(j, path);
@@ -373,9 +457,9 @@ struct Context {
     }
     Json N(const char* path, Json data, bool weapi = true) {
         const auto value = auth::NeteaseCatalogRequest(path, data, weapi, secrets, cancelled, Exchange());
-        const auto code = Number(value, {"/code"}, -1);
+        const auto code = NeteaseCode(At(value, "/code"), 0);
         if (code == 301 || code == 302 || code == 401 || code == 403) Fail("expired");
-        if (code != 200) Fail(code == -1 ? "invalid-response" : "service");
+        if (code != 200) Fail(code == 0 ? "invalid-response" : "service");
         return value;
     }
     void Auth() const {
@@ -777,16 +861,19 @@ struct Context {
         } else if (action == "resolve") {
             const auto id = Id(args, "/id", provider);
             const auto quality = args.value("quality", std::string("standard"));
-            const auto body = N("/api/song/enhance/player/url/v1",
-                {{"ids", Json::array({id}).dump()}, {"level", quality == "high" ? "exhigh" : quality},
-                 {"encodeType", "flac"}}, false);
+            Json data{{"ids", "[" + id + "]"}, {"level", quality == "high" ? "exhigh" : quality}, {"encodeType", "flac"}};
+            if (quality == "sky") data["immerseType"] = "c51";
+            const auto body = auth::NeteasePlaybackRequest(
+                data, secrets, cancelled, Exchange());
+            NeteaseStatus(body);
             const auto& values = List(body, {"/data"});
             if (values.empty()) Fail("unavailable");
             const auto& song = values[0];
             if (Text(song, {"/id"}) != id) Fail();
-            if (Number(song, {"/code"}, 200) != 200 ||
-                (!At(song, "/freeTrialInfo").is_null() && At(song, "/freeTrialInfo") != "null"))
-                Fail("unavailable");
+            const auto code = NeteaseCode(At(song, "/code"));
+            if (code == -110) Fail("entitlement");
+            if (code != 200) Fail("unavailable");
+            if (At(song, "/freeTrialInfo").is_object()) Fail("preview-only");
             auto url = Https(Text(song, {"/url"}, 8192), provider, true);
             if (url.empty()) Fail("unavailable");
             return AudioSource(url, ReportedQuality(song), Number(song, {"/br"}));
@@ -1620,6 +1707,7 @@ Json Execute(Provider provider, std::string_view action, const Json& arguments,
             userId,
             PageNumber(arguments, "/offset", 0, 100000, false),
             PageNumber(arguments, "/limit", 50, 100, true), {}, nullptr};
+        DeviceLease device(provider,context.secrets,context.scope,cancelled);
         Json result;
         if (action == "likes") {
             const auto ids = context.LikedSnapshot(true);
@@ -1650,7 +1738,13 @@ Json Execute(Provider provider, std::string_view action, const Json& arguments,
         auth::CheckCancelled(cancelled);
         const std::string_view code(error.what());
         if (code == "service" || code == "expired" || code == "unsupported" || code == "unavailable" ||
-            code == "invalid-response" || code == "cancelled") throw;
+            code == "invalid-response" || code == "cancelled" || code == "network" || code == "timeout" ||
+            code == "rate-limited" || code == "preview-only" || code == "entitlement") throw;
+        if (code.rfind("netease-code-", 0) == 0) {
+            auto digits = code.substr(13);
+            if (!digits.empty() && digits.front() == '-') digits.remove_prefix(1);
+            if (!digits.empty() && digits.size() <= 9 && digits.find_first_not_of("0123456789") == digits.npos) throw;
+        }
         Fail();
     } catch (...) {
         auth::CheckCancelled(cancelled);

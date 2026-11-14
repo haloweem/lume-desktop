@@ -1,6 +1,7 @@
 #include "apps/shell/diagnostic_report.h"
 #include "apps/shell/resource_snapshot.h"
 #include "apps/shell/self_check.h"
+#include "apps/shell/wallpaper_resource_history.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/text_util.h"
 
@@ -33,6 +34,10 @@ using Microsoft::WRL::ComPtr;
 // The whole report stays small enough to send in a chat app and is built in
 // memory once: a hard total, filled in order of usefulness.
 constexpr std::uintmax_t MaxReportBytes = 32ull << 20;
+constexpr std::uintmax_t ReportMetadataReserve = 256ull << 10;
+constexpr std::size_t MaxReportEntries = 256;  // Includes README.
+constexpr std::size_t MaxSkippedEntries = 64;
+constexpr std::size_t MaxReadmeBytes = 64ull << 10;
 constexpr std::uintmax_t MaxLogBytes = 4ull << 20;       // Newest part of each log.
 constexpr std::uintmax_t MaxSettingBytes = 512ull << 10; // One preference file.
 constexpr std::uintmax_t MaxWerBytes = 64ull << 10;      // One Report.wer.
@@ -40,6 +45,106 @@ constexpr std::uintmax_t MaxDumpBytes = 16ull << 20;     // One crash dump.
 constexpr std::size_t MaxDumps = 2;
 constexpr std::size_t MaxWerReports = 10;
 constexpr std::size_t MaxEventRecords = 60;
+constexpr std::size_t MaxSavedReports = 5;
+constexpr std::uintmax_t MaxSavedReportBytes = 160ull << 20;
+constexpr wchar_t ReportPrefix[] = L"Lume诊断报告-";
+constexpr wchar_t PartialName[] = L"Lume诊断报告-export.partial";
+
+class ExportLock {
+public:
+    ExportLock() {
+        mutex_ = CreateMutexW(nullptr, FALSE, L"Global\\Lume.DiagnosticReport.Export.v1");
+        if (mutex_) { const auto wait = WaitForSingleObject(mutex_, 0); held_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED; }
+    }
+    ~ExportLock() { if (held_) ReleaseMutex(mutex_); if (mutex_) CloseHandle(mutex_); }
+    bool Held() const { return held_; }
+private:
+    HANDLE mutex_ = nullptr;
+    bool held_ = false;
+};
+
+bool SafeOutputDirectory(const fs::path& folder) {
+    const auto absolute = fs::absolute(folder).lexically_normal();
+    auto current = absolute.root_path();
+    for (const auto& component : absolute.relative_path()) {
+        current /= component;
+        const auto attributes = GetFileAttributesW(current.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+    }
+    return !current.empty();
+}
+bool SafeRegularOrMissing(const fs::path& file) {
+    const auto attributes = GetFileAttributesW(file.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    return !(attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+}
+bool OwnReportName(std::wstring_view name, bool partial = false) {
+    const std::wstring_view prefix = ReportPrefix;
+    const std::wstring_view suffix = partial ? L".zip.partial" : L".zip";
+    if (name.size() != prefix.size() + 15 + suffix.size() || name.substr(0, prefix.size()) != prefix ||
+        name.substr(name.size() - suffix.size()) != suffix) return false;
+    const auto stamp = name.substr(prefix.size(), 15);
+    for (std::size_t i = 0; i < stamp.size(); ++i)
+        if (i == 8 ? stamp[i] != L'-' : stamp[i] < L'0' || stamp[i] > L'9') return false;
+    const auto number = [&](std::size_t at, std::size_t count) {
+        WORD value = 0;
+        for (std::size_t i = 0; i < count; ++i) value = static_cast<WORD>(value * 10 + stamp[at + i] - L'0');
+        return value;
+    };
+    SYSTEMTIME time{};time.wYear = number(0, 4);time.wMonth = number(4, 2);time.wDay = number(6, 2);
+    time.wHour = number(9, 2);time.wMinute = number(11, 2);time.wSecond = number(13, 2);
+    FILETIME checked{};return SystemTimeToFileTime(&time, &checked) != FALSE;
+}
+// Open the directory entry itself, then verify the handle before deleting it.
+// A renamed symlink/reparse point is never followed or deleted by retention.
+bool DeleteOwnFile(const fs::path& file, bool exclusive = false) {
+    const auto handle = CreateFileW(file.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        exclusive ? 0 : FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool regular = GetFileInformationByHandle(handle, &info) &&
+        !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    const bool removed = regular && SetFileInformationByHandle(handle, FileDispositionInfo, &disposition, sizeof(disposition));
+    CloseHandle(handle);return removed;
+}
+struct SavedReport { fs::path path;std::uintmax_t bytes;FILETIME written; };
+std::vector<SavedReport> SavedReports(const fs::path& folder, bool partial = false) {
+    std::vector<SavedReport> reports;
+    WIN32_FIND_DATAW item{};
+    const auto find = FindFirstFileW((folder / L"Lume诊断报告-*").c_str(), &item);
+    if (find == INVALID_HANDLE_VALUE) return reports;
+    do {
+        if (!(item.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+            OwnReportName(item.cFileName, partial))
+            reports.push_back({folder / item.cFileName,
+                (static_cast<std::uintmax_t>(item.nFileSizeHigh) << 32) | item.nFileSizeLow, item.ftLastWriteTime});
+    } while (FindNextFileW(find, &item));
+    FindClose(find);return reports;
+}
+void CleanOldPartials(const fs::path& folder) {
+    FILETIME now{};GetSystemTimeAsFileTime(&now);
+    const auto ticks = [](FILETIME value) { return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
+    constexpr std::uint64_t DayTicks = 24ull * 60 * 60 * 10000000;
+    for (const auto& file : SavedReports(folder, true))
+        if (ticks(now) > ticks(file.written) && ticks(now) - ticks(file.written) >= DayTicks)
+            DeleteOwnFile(file.path, true);  // Sharing violations preserve any active writer.
+}
+bool RetainReports(const fs::path& folder, const fs::path& newest) {
+    auto reports = SavedReports(folder);
+    std::uintmax_t bytes = 0;for (const auto& report : reports) bytes += report.bytes;
+    auto count = reports.size();
+    std::sort(reports.begin(), reports.end(), [](const SavedReport& a, const SavedReport& b) {
+        return a.path.filename().native() < b.path.filename().native();
+    });
+    for (const auto& report : reports) {
+        if (count <= MaxSavedReports && bytes <= MaxSavedReportBytes) break;
+        if (report.path != newest && DeleteOwnFile(report.path)) { --count;bytes -= report.bytes; }
+    }
+    return count <= MaxSavedReports && bytes <= MaxSavedReportBytes;
+}
 
 std::wstring Lower(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
@@ -336,6 +441,7 @@ Json Installation(const fs::path& install) {
 struct CrashRecords {
     std::string text;
     std::vector<std::string> rows;  // Newest first, one readable line each.
+    bool truncated=false;
 };
 std::string XmlField(const std::string& xml, const std::string& name) {
     const auto key = "<Data Name='" + name + "'>";
@@ -385,10 +491,19 @@ CrashRecords CrashEvents() {
     }
     std::array<EVT_HANDLE, 32> events{};
     DWORD returned = 0;
-    while (records.rows.size() < MaxEventRecords && EvtNext(results, static_cast<DWORD>(events.size()), events.data(), 2000, 0, &returned)) {
+    const auto started=GetTickCount64();
+    std::size_t scanned=0;
+    constexpr std::size_t MaxScanned=2048,MaxEventBytes=256u<<10,MaxEventText=2u<<20;
+    while (records.rows.size() < MaxEventRecords && scanned<MaxScanned && GetTickCount64()-started<3000 &&
+           EvtNext(results, static_cast<DWORD>(events.size()), events.data(), 100, 0, &returned)) {
         for (DWORD i = 0; i < returned; ++i) {
+            if(scanned>=MaxScanned||GetTickCount64()-started>=3000||raw.size()>=MaxEventText){
+                records.truncated=true;EvtClose(events[i]);continue;
+            }
+            ++scanned;
             DWORD used = 0, properties = 0;
             EvtRender(nullptr, events[i], EvtRenderEventXml, 0, nullptr, &used, &properties);
+            if(used>MaxEventBytes){records.truncated=true;EvtClose(events[i]);continue;}
             std::wstring xml(used / sizeof(wchar_t) + 1, L'\0');
             if (EvtRender(nullptr, events[i], EvtRenderEventXml, static_cast<DWORD>(xml.size() * sizeof(wchar_t)), xml.data(), &used, &properties)) {
                 xml.resize(wcslen(xml.c_str()));
@@ -404,12 +519,14 @@ CrashRecords CrashEvents() {
         }
     }
     EvtClose(results);
+    records.truncated=records.truncated||scanned>=MaxScanned||GetTickCount64()-started>=3000;
+    const std::string truncated=records.truncated?"Event scan stopped at its time, record or byte budget; absence of a match does not rule out older errors.\r\n":"";
     if (records.rows.empty()) {
-        records.text = "No Lume, mpv or WebView2 crash or hang records in the last 30 days.\r\n";
+        records.text = records.truncated?truncated:"No Lume, mpv or WebView2 crash or hang records in the last 30 days.\r\n";
         return records;
     }
     for (const auto& row : records.rows) records.text += row + "\r\n";
-    records.text += "\r\n---- raw event records ----\r\n\r\n" + raw;
+    records.text += truncated+"\r\n---- raw event records ----\r\n\r\n" + raw;
     return records;
 }
 
@@ -475,6 +592,14 @@ std::pair<std::uint16_t, std::uint16_t> DosTime(const FILETIME& value) {
             static_cast<std::uint16_t>(((t.wYear - 1980) << 9) | (t.wMonth << 5) | t.wDay)};
 }
 bool WriteZip(const fs::path& path, const std::vector<Entry>& entries) {
+    if (entries.size() > MaxReportEntries) return false;
+    std::uintmax_t exactBytes = 22;  // End of central directory.
+    for (const auto& entry : entries) {
+        if (entry.name.size() > 0xFFFFu) return false;
+        const auto bytes = 30ull + 46ull + 2ull * entry.name.size() + entry.bytes.size();
+        if (bytes > MaxReportBytes - exactBytes) return false;
+        exactBytes += bytes;
+    }
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file) return false;
     std::string central;
@@ -514,9 +639,14 @@ FILETIME WriteTime(const fs::path& file) {
 }
 
 struct Budget {
-    std::uintmax_t remaining = MaxReportBytes;
+    std::uintmax_t remaining = MaxReportBytes - ReportMetadataReserve;
     std::vector<std::string> skipped;  // Left out for size, named in README.
+    std::size_t skippedOmitted = 0;
     void Charge(std::uintmax_t bytes) { remaining = bytes >= remaining ? 0 : remaining - bytes; }
+    void Skip(std::string name) {
+        if (skipped.size() < MaxSkippedEntries) skipped.push_back(std::move(name));
+        else ++skippedOmitted;
+    }
 };
 // newestPart: a log keeps its newest `limit` bytes; anything else is whole or
 // left out (a cut dump or settings file is useless).
@@ -525,9 +655,10 @@ void AddFile(std::vector<Entry>& entries, Budget& budget, const fs::path& file, 
     std::error_code error;
     const auto size = fs::file_size(file, error);
     if (error) return;
-    if (!newestPart && size > limit) { budget.skipped.push_back(name + " (" + std::to_string(size >> 10) + " KB)"); return; }
+    if (entries.size() >= MaxReportEntries - 1) { budget.Skip(name + " (条目数量上限)"); return; }
+    if (!newestPart && size > limit) { budget.Skip(name + " (" + std::to_string(size >> 10) + " KB)"); return; }
     const auto take = (std::min)(size, limit);
-    if (take > budget.remaining) { budget.skipped.push_back(name + " (" + std::to_string(take >> 10) + " KB)"); return; }
+    if (take > budget.remaining) { budget.Skip(name + " (" + std::to_string(take >> 10) + " KB)"); return; }
     if (auto data = ReadShared(file, take)) {
         budget.Charge(data->size());
         entries.push_back({name, std::move(*data), WriteTime(file)});
@@ -540,14 +671,16 @@ std::vector<std::string> Problems(const Json& modules) {
     for (auto item = modules.begin(); item != modules.end(); ++item) {
         if (!item.value().is_object()) continue;
         std::string line;
-        for (const auto* field : {"error", "catalogError", "weatherError", "materialStatus", "loadStatus", "status"}) {
+        for (const auto* field : {"error", "catalogError", "weatherError", "materialStatus", "loadStatus", "status", "effectStatus"}) {
             const auto value = item.value().find(field);
             if (value == item.value().end() || !value->is_string()) continue;
             const auto text = value->get<std::string>();
             if(std::string_view(field)=="catalogError"&&text=="WALLPAPER_CATALOG_CACHED")continue;
             const bool bad = (std::string(field).find("rror") != std::string::npos && !text.empty()) ||
                 text == "failed" || text == "unavailable" || text == "degraded" || text == "error" ||
-                (std::string_view(field)=="materialStatus"&&text=="transparent-fallback");
+                (std::string_view(field)=="materialStatus"&&text=="transparent-fallback") ||
+                (item.key()=="taskbar-state" && std::string_view(field)=="effectStatus" && text=="pending" &&
+                 item.value().value("enabled",false) && item.value().value("transparentTaskbar",false));
             if (bad) line += std::string(" ") + field + "=" + text;
         }
         if (!line.empty()) problems.push_back(item.key() + ":" + line);
@@ -557,7 +690,7 @@ std::vector<std::string> Problems(const Json& modules) {
 
 std::string Summary(const DiagnosticReportInput& input, const Json& system, const Json& problems, std::size_t dumps,
                     const std::vector<std::string>& crashes, const std::vector<std::string>& skipped,
-                    const std::vector<SelfCheck>& checks, bool report) {
+                    const std::vector<SelfCheck>& checks, bool report, std::size_t skippedOmitted = 0) {
     std::string text;
     text += std::string(report ? "Lume 诊断报告" : "Lume 诊断信息") + "\r\n生成时间: " + Now() + "\r\nLume 版本: " + input.version + "\r\n";
     const auto& os = system["windows"];
@@ -601,8 +734,11 @@ std::string Summary(const DiagnosticReportInput& input, const Json& system, cons
         return text;
     }
     if (!skipped.empty()) {
-        text += "\r\n因报告大小上限（" + std::to_string(MaxReportBytes >> 20) + " MB）未包含:\r\n";
+        text += "\r\n因报告大小或条目数量上限（" + std::to_string(MaxReportBytes >> 20) + " MiB / " +
+                std::to_string(MaxReportEntries) + " 项）未包含:\r\n";
         for (const auto& name : skipped) text += "  " + name + "\r\n";
+        if (skippedOmitted) text += "  另有 " + std::to_string(skippedOmitted) + " 项未展开（跳过名单最多列出 " +
+                                   std::to_string(MaxSkippedEntries) + " 项）。\r\n";
     }
     text += "\r\n用户描述:\r\n" + (input.note.empty() ? std::string("（未填写）") : input.note) + "\r\n";
     text += "\r\n启动台图标拖动卡顿的采集方法:\r\n"
@@ -614,16 +750,34 @@ std::string Summary(const DiagnosticReportInput& input, const Json& system, cons
             "  slow_frame_gaps 是超过 1.6 个刷新周期的 UI 帧消息间隔次数，不是 GPU 实际丢帧数；耗时分项有嵌套，不能直接相加。\r\n"
             "  每手势仅写一条汇总，无图标路径、名称或原始坐标；日志约 1 MiB 轮转，保留当前与上一份。\r\n"
             "  processes.json 是导出时单点快照；显存 coverage=unavailable 表示未采集到，不代表占用为零。\r\n";
+    text += "\r\n动态壁纸长时间占用的采集方法:\r\n"
+            "  本版本运行时每分钟记录一次 Lume 拥有的壁纸进程 CPU、内存、显存及播放状态，无需额外开启采集。\r\n"
+            "  持续记录最近 72 小时，轮转文件总量上限 8 MiB；数据多时实际保留时段可能更短。\r\n"
+            "  出现整夜占用升高、游戏退出或息屏恢复后停住时，请在问题反馈中生成报告，并注明异常的大致时间。\r\n"
+            "  wallpaper-resource-summary.txt / .json 汇总记录时段、异常时间、峰值与变化、进程更换和播放器重建线索；CSV 可按时间核对。\r\n"
+            "  显存计数仅作辅助分析，缺测不是零；占用升高或一次计数不能单独判定泄漏。\r\n"
+            "  历史用于归因 Lume 壁纸进程占用，不能单独证明动态壁纸导致全机异常。旧版本未记录的时段不会凭空补出历史。\r\n"
+            "  诊断 ZIP 自动保留最多 5 份、总量不超过 160 MiB，成功生成新包后清理最旧的自有报告；解压目录和其他文件不会清理。\r\n";
     text += "\r\n文件说明:\r\n"
             "  system.json      系统、显卡、显示器、外观与任务栏环境\r\n"
             "  processes.json   Lume 进程树（内存、显存、命令行）\r\n"
             "  modules.json     各组件当前状态\r\n"
+            "  wallpaper-resources.jsonl / .csv  脱敏的壁纸资源历史与表格\r\n"
+            "  wallpaper-resource-summary.txt / .json  壁纸资源历史摘要与采集覆盖情况\r\n"
             "  logs/            Lume 运行日志（错误时间线、退出码、内存心跳）\r\n"
             "  logs/launchpad-frames*.log  启动台打开与图标拖动汇总（新版才有拖动数据）\r\n"
             "  crashes/         Lume 崩溃转储\r\n"
             "  windows-events.txt / wer/  Windows 记录的崩溃与无响应\r\n"
             "  settings/        组件偏好设置（不含账号与位置）\r\n";
     return text;
+}
+
+std::string BoundReadme(std::string text) {
+    if (text.size() <= MaxReadmeBytes) return text;
+    const std::string tail = "\r\n（说明已按 64 KiB 上限截断；请查看报告内的证据文件。）\r\n";
+    auto cut = MaxReadmeBytes - tail.size();
+    while (cut && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+    text.resize(cut);text += tail;return text;
 }
 
 fs::path Desktop() {
@@ -667,6 +821,13 @@ Json DescribeSystem() {
 DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input) {
     DiagnosticReportResult result;
     try {
+        ExportLock exportLock;
+        if (!exportLock.Held()) { result.error = "DIAGNOSTIC_REPORT_BUSY"; return result; }
+        const auto requestedFolder = input.outputDirectory.empty() ? Desktop() : input.outputDirectory;
+        if (requestedFolder.empty()) { result.error = "DIAGNOSTIC_REPORT_NO_DESKTOP"; return result; }
+        const auto folder = fs::absolute(requestedFolder).lexically_normal();
+        if (!SafeOutputDirectory(folder)) { result.error = "DIAGNOSTIC_REPORT_UNSAFE_OUTPUT_DIRECTORY"; return result; }
+        CleanOldPartials(folder);
         std::vector<Entry> entries;
         const auto now = NowFileTime();
         auto system = DescribeSystem();
@@ -677,6 +838,10 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
 
         Budget budget;
         const auto add = [&](std::string name, std::string bytes) {
+            if (entries.size() >= MaxReportEntries - 1) { budget.Skip(name + " (条目数量上限)");return; }
+            if (bytes.size() > budget.remaining) {
+                budget.Skip(name + " (" + std::to_string(bytes.size() >> 10) + " KB)");return;
+            }
             budget.Charge(bytes.size());
             entries.push_back({std::move(name), std::move(bytes), now});
         };
@@ -687,6 +852,13 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
         add("windows-events.txt", crashes.text);
         const auto checks = RunSelfChecks(input.installDirectory, input.modules);
         add("self-check.json", dump(SelfChecksJson(checks)));
+        // Read once so all four exports describe the same bounded, redacted
+        // history. Preserve them ahead of the larger logs and crash dumps.
+        auto wallpaperHistory = ReadWallpaperResourceHistory(input.logDirectory);
+        add("wallpaper-resource-summary.json", dump(wallpaperHistory.summaryState));
+        add("wallpaper-resource-summary.txt", "\xEF\xBB\xBF" + wallpaperHistory.summary);
+        add("wallpaper-resources.jsonl", std::move(wallpaperHistory.records));
+        add("wallpaper-resources.csv", std::move(wallpaperHistory.csv));
 
         std::error_code error;
         const auto newest = [](std::vector<fs::directory_entry>& list) {
@@ -720,8 +892,8 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
         wchar_t local[MAX_PATH]{};
         if (GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH)) {
             std::vector<fs::directory_entry> reports;
-            for (const auto* folder : {L"Microsoft\\Windows\\WER\\ReportArchive", L"Microsoft\\Windows\\WER\\ReportQueue"})
-                for (const auto& entry : fs::directory_iterator(fs::path(local) / folder, error)) {
+            for (const auto* werFolder : {L"Microsoft\\Windows\\WER\\ReportArchive", L"Microsoft\\Windows\\WER\\ReportQueue"})
+                for (const auto& entry : fs::directory_iterator(fs::path(local) / werFolder, error)) {
                     const auto name = Lower(entry.path().filename().wstring());
                     if (Contains(name, L"lume") || Contains(name, L"mpv.exe") || Contains(name, L"msedgewebview2")) reports.push_back(entry);
                 }
@@ -743,21 +915,27 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
                 if (entries.size() > before) ++dumpCount;
             }
         }
-        entries.insert(entries.begin(), Entry{"README.txt", "\xEF\xBB\xBF" + Summary(input, system, problems, dumpCount, crashes.rows, budget.skipped, checks, true), now});
+        entries.insert(entries.begin(), Entry{"README.txt", BoundReadme("\xEF\xBB\xBF" +
+            Summary(input, system, problems, dumpCount, crashes.rows, budget.skipped, checks, true, budget.skippedOmitted)), now});
 
-        auto folder = input.outputDirectory.empty() ? Desktop() : input.outputDirectory;
-        if (folder.empty()) { result.error = "DIAGNOSTIC_REPORT_NO_DESKTOP"; return result; }
         SYSTEMTIME time{};
         GetLocalTime(&time);
         wchar_t name[96]{};
         swprintf_s(name, L"Lume诊断报告-%04u%02u%02u-%02u%02u%02u.zip", time.wYear, time.wMonth, time.wDay, time.wHour,
                    time.wMinute, time.wSecond);
         const auto target = folder / name;
-        auto partial = target;
-        partial += L".partial";
+        const auto partial = folder / PartialName;
+        if (!SafeRegularOrMissing(target) || !SafeRegularOrMissing(partial) || !DeleteOwnFile(partial, true)) {
+            result.error = "DIAGNOSTIC_REPORT_UNSAFE_OUTPUT_FILE"; return result;
+        }
         if (!WriteZip(partial, entries) || !MoveFileExW(partial.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-            fs::remove(partial, error);
+            DeleteOwnFile(partial, true);
             result.error = "DIAGNOSTIC_REPORT_WRITE_FAILED";
+            return result;
+        }
+        if (!RetainReports(folder, target)) {
+            DeleteOwnFile(target);
+            result.error = "DIAGNOSTIC_REPORT_RETENTION_FAILED";
             return result;
         }
         result.ok = true;

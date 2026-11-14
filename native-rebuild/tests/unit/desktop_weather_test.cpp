@@ -37,7 +37,7 @@ struct Probe {
             ++ready;Check(sawState,"ready publishes weather state");
             if(ready==1){
                 widget=WeatherWindow();
-                Check(widget!=nullptr,"real page toggle, material and city configure native weather window");
+                Check(widget!=nullptr,"real page toggle and material retain the saved weather city");
                 if(!widget){app->Exit();stage=3;return;}
             }else Check(WeatherWindow()==widget,"reopened page retains same weather session");
             Check(!app->ClockRunning()&&!app->CalendarRunning(),"weather does not start other widgets");
@@ -67,23 +67,17 @@ int main(){
     const auto weatherPath=options.weatherPreferencesPath;
     // Fix city before enabling so this UI regression never requests IP geolocation.
     platform::windows::LocalSettingsFileStore files;weather::PreferencesStore store(files);
-    weather::Preferences initial;initial.city="beijing";
+    weather::Preferences initial;initial.city="shanghai";
     Check(store.Save(weatherPath,initial),"isolated weather settings");
     Probe state;options.verification=true;options.onMessage=[&](const auto& message){state.Message(message);};
     options.readyScript=LR"JS((()=>{
-      let enabling=false,material=false,cityRequested=false,cityReady=false,opened=false;
+      let enabling=false,material=false,settingsReady=false,opened=false;
       const act=()=>{
-        if(!cityReady){
-          const city=document.querySelector('#weather-city');
-          if(!city||city.disabled)return;
-          if(!city.textContent.includes('上海')){
-            if(!cityRequested){
-              cityRequested=true;city.click();
-              document.querySelector('[data-select-owner="weather-city"][data-select-value="shanghai"]').click();
-            }
-            return;
-          }
-          cityReady=true;document.querySelector('[data-action="back"]').click();return;
+        if(!settingsReady){
+          const material=document.querySelector('#weather-material');
+          if(!material||material.disabled)return;
+          if(document.querySelector('#weather-city'))throw new Error('City selector must remain hidden');
+          settingsReady=true;document.querySelector('[data-action="back"]').click();return;
         }
         if(!opened){
           const toggle=document.querySelector('.Card [data-action="weather-toggle"]');

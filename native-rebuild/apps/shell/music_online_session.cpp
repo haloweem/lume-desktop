@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <set>
@@ -42,7 +44,7 @@ std::optional<Provider> ParseProvider(std::string_view name) {
     return {};
 }
 std::string Error(std::string_view value) {
-    for (const auto* allowed : {"network", "service", "expired", "unsupported", "unavailable",
+    for (const auto* allowed : {"network", "timeout", "rate-limited", "service", "expired", "unsupported", "unavailable",
             "invalid-response", "storage", "signed-out", "busy", "not-found"})
         if (value == allowed) return allowed;
     return "service";
@@ -216,6 +218,88 @@ struct MusicOnlineSession::Impl {
         if (options.verification) throw std::runtime_error("service");
         return music::online::Execute(lease.provider, action, args, lease.credentials, cancelled);
     }
+    Json PlaybackRead(const MusicProviderCredentialLease& lease, std::string_view action,
+                      const Json& args, const Cancelled& cancelled) {
+        // Folia retries reachability failures only. Keep one total budget and
+        // cancellation through both the request and backoff, including lyrics.
+        using namespace std::chrono;
+        const auto deadline = steady_clock::now() + seconds(20);
+        for (int attempt = 0;; ++attempt) {
+            CheckCancelled(cancelled);
+            const auto attemptEnd = std::min(deadline, steady_clock::now() + seconds(8));
+            const auto stop = [&] { return cancelled() || steady_clock::now() >= attemptEnd; };
+            std::string failure;
+            try {
+                auto result = Execute(lease, action, args, stop);
+                CheckCancelled(cancelled);
+                if (steady_clock::now() < attemptEnd) return result;
+                failure = "timeout";
+            } catch (const std::exception& error) {
+                CheckCancelled(cancelled);
+                failure = steady_clock::now() >= attemptEnd ? "timeout" : error.what();
+            }
+            const bool timedOut = failure == "timeout";
+            const int limit = timedOut || action == "lyrics" ? 1 : 2;
+            if ((failure != "network" && !timedOut) || attempt >= limit || steady_clock::now() >= deadline)
+                throw std::runtime_error(failure);
+            const auto resume = std::min(deadline, steady_clock::now() + milliseconds(timedOut ? 2000 : attempt == 0 ? 1000 : 3000));
+            while (steady_clock::now() < resume) {
+                CheckCancelled(cancelled);
+                std::this_thread::sleep_for(milliseconds(20));
+            }
+        }
+    }
+    struct LyricsEntry {
+        bool loading = false, complete = false;
+        music::LocalLyricsResult result;
+        std::chrono::steady_clock::time_point at;
+        std::condition_variable ready;
+    };
+    music::LocalLyricsResult Lyrics(const MusicProviderCredentialLease& lease, const music::Track& track,
+                                   const std::string& id, const Cancelled& cancelled) {
+        const auto key = track.id + ':' + std::to_string(lease.generation) + ':' + lease.userId + ':' + std::to_string(track.duration);
+        std::shared_ptr<LyricsEntry> entry;
+        {
+            std::unique_lock lock(lyricsMutex);
+            auto found = lyricsCache.find(key);
+            if (found == lyricsCache.end()) {
+                if (lyricsCache.size() >= 16) {
+                    const auto oldest = std::min_element(lyricsCache.begin(), lyricsCache.end(),
+                        [](const auto& a, const auto& b) { return a.second->at < b.second->at; });
+                    lyricsCache.erase(oldest);
+                }
+                found = lyricsCache.emplace(key, std::make_shared<LyricsEntry>()).first;
+            }
+            entry = found->second;
+            while (entry->loading) {
+                CheckCancelled(cancelled);
+                entry->ready.wait_for(lock, std::chrono::milliseconds(20));
+            }
+            CheckCancelled(cancelled);
+            const auto now = std::chrono::steady_clock::now();
+            if (entry->complete && now - entry->at < std::chrono::hours(24)) return entry->result;
+            entry->loading = true;
+            entry->complete = false;
+            entry->result = {};
+            entry->at = now;
+        }
+        try {
+            const auto raw = PlaybackRead(lease, "lyrics", {{"id", id}}, cancelled);
+            CheckCancelled(cancelled);
+            auto result = music::ParseOnlineLyrics(Name(lease.provider), raw, track.duration);
+            {
+                std::lock_guard lock(lyricsMutex);
+                entry->loading = false;
+                if (result.error.empty()) { entry->result = result; entry->complete = true; }
+            }
+            entry->ready.notify_all();
+            return result;
+        } catch (...) {
+            { std::lock_guard lock(lyricsMutex); entry->loading = false; }
+            entry->ready.notify_all();
+            throw;
+        }
+    }
     static std::wstring State(const MusicOnlineCommand& command, std::string_view status,
                               std::string_view error, const Json& data) {
         return Wide(Json{{"version", 1}, {"type", "music-online-state"}, {"request", command.request},
@@ -367,6 +451,7 @@ struct MusicOnlineSession::Impl {
     }
     void AccountsChanged() {
         std::lock_guard lock(mutex);
+        { std::lock_guard cacheLock(lyricsMutex); lyricsCache.clear(); }
         for (auto it = registered.begin(); it != registered.end();)
             if (!Current(it->second.identity)) it = registered.erase(it); else ++it;
         if (displayedIdentity && !Current(*displayedIdentity)) {
@@ -391,6 +476,7 @@ struct MusicOnlineSession::Impl {
         std::unique_lock lock(mutex);
         if (closed) return;
         closed = true; ++generation; job.reset(); registered.clear(); displayed.clear();
+        { std::lock_guard cacheLock(lyricsMutex); lyricsCache.clear(); }
         activeIdentity.reset(); publishedIdentity.reset(); data = EmptyData();
         status = "idle"; error.clear(); pending = false;
         auto retiring = std::move(worker);
@@ -399,6 +485,8 @@ struct MusicOnlineSession::Impl {
     }
     MusicOnlineOptions options;
     mutable std::mutex mutex;
+    std::mutex lyricsMutex;
+    std::map<std::string, std::shared_ptr<LyricsEntry>> lyricsCache;
     std::atomic<std::uint64_t> generation{0};
     std::optional<std::pair<MusicOnlineCommand, std::uint64_t>> job;
     std::map<std::string, Registered> registered;
@@ -434,7 +522,7 @@ music::ResolvedAudioSource MusicOnlineSession::ResolveAudioSource(const music::T
     auto [lease, id] = impl_->TrackLease(track);
     if (!music::ValidAudioQuality(quality, Name(lease.provider))) throw std::runtime_error("unsupported");
     const auto cancelled = [&] { return (stop && stop()) || !impl_->Current(lease); };
-    auto result = impl_->Execute(lease, "resolve", {{"id", id}, {"quality", quality}}, cancelled);
+    auto result = impl_->PlaybackRead(lease, "resolve", {{"id", id}, {"quality", quality}}, cancelled);
     CheckCancelled(cancelled);
     const auto url = result.at("url").get<std::string>();
     if (url.size() > 8192 || (url.compare(0, 8, "https://") != 0 &&
@@ -457,9 +545,9 @@ music::LocalLyricsResult MusicOnlineSession::LoadLyrics(const music::Track& trac
     try {
         auto [lease, id] = impl_->TrackLease(track);
         const auto cancelled = [&] { return (stop && stop()) || !impl_->Current(lease); };
-        const auto raw = impl_->Execute(lease, "lyrics", {{"id", id}}, cancelled);
+        auto result = impl_->Lyrics(lease, track, id, cancelled);
         CheckCancelled(cancelled);
-        return music::ParseOnlineLyrics(Name(lease.provider), raw, track.duration);
+        return result;
     } catch (const std::exception& exception) { return {{}, Error(exception.what())}; }
 }
 void MusicOnlineSession::AccountsChanged() { impl_->AccountsChanged(); }

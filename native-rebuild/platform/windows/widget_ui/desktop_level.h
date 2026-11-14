@@ -142,13 +142,20 @@ inline HWND ManagerCeiling() {
 // Every normal application is a ceiling, including one Explorer temporarily
 // moved below the desktop host. Never exempt an entire process: manager windows
 // in this process must still cover its desktop widgets.
+inline bool NotificationSink(HWND window) {
+    // Explorer creates this nonvisual control-message sink during folder
+    // navigation. It can briefly report visible, nonempty top-level bounds.
+    // It must never become an anchor for moving visible desktop content.
+    wchar_t name[32]{};
+    return GetClassNameW(window,name,32) && wcscmp(name,L"CtrlNotifySink")==0;
+}
 inline HWND ApplicationCeiling(HWND host) {
     struct Scan { HWND host, last; bool desktop; } scan{host, nullptr, DesktopForeground(host)};
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
         auto& s = *reinterpret_cast<Scan*>(data);
         if (s.desktop && window == s.host) return FALSE;
         if (window == s.host || !IsWindowVisible(window) || IsIconic(window) || InDesktopLayer(window) ||
-            window_layer::DesktopFamily(window) || window_layer::ShellDesktop(window) ||
+            window_layer::DesktopFamily(window) || window_layer::ShellDesktop(window) || NotificationSink(window) ||
             (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST)) return TRUE;
         DWORD cloak = 0; RECT bounds{};
         if (!GetWindowRect(window, &bounds) || IsRectEmpty(&bounds) ||
@@ -173,8 +180,25 @@ inline void KeepOwnedGlassBelow(HWND owner) {
     HWND above = owner;
     for (const HWND surface : {search.display, search.glass}) {
         if (!surface || !IsWindowVisible(surface)) continue;
-        if (GetWindow(above, GW_HWNDNEXT) != surface)
-            SetWindowPos(surface, above, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        if (GetWindow(above, GW_HWNDNEXT) != surface) {
+            const bool otherThread = GetWindowThreadProcessId(surface, nullptr) != GetCurrentThreadId();
+            if (surface == search.glass && otherThread) {
+                // WGC can block this worker in a compositor RPC. Waiting for
+                // its window procedure here freezes every desktop component.
+                // The worker resolves its current family order when it resumes;
+                // repeated Explorer events leave at most one request queued.
+                if (!GetPropW(surface, lume::window_ids::GlassRestackPendingProp)) {
+                    const bool marked = SetPropW(surface, lume::window_ids::GlassRestackPendingProp,
+                        reinterpret_cast<HANDLE>(1)) != FALSE;
+                    if (!PostMessageW(surface, lume::window_ids::GlassRestackMessage, 0, 0) && marked)
+                        RemovePropW(surface, lume::window_ids::GlassRestackPendingProp);
+                }
+            } else {
+                SetWindowPos(surface, above, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                    (otherThread ? SWP_ASYNCWINDOWPOS : 0));
+            }
+        }
         above = surface;
     }
 }
@@ -182,7 +206,7 @@ inline void KeepOwnedGlassBelow(HWND owner) {
 inline thread_local HWND placingWindow = nullptr;
 // Retained for existing callers; selection never grants cross-application order.
 inline thread_local HWND selectedWidget = nullptr;
-inline void RequestAll();
+inline void RequestAll(bool immediate = false);
 // Ignore implicit activation/owned-popup reorders. Place() and a direct
 // Select() authorize only their own HWND, including during nested messages.
 inline void Changing(LPARAM l) {
@@ -225,6 +249,54 @@ inline void ManagerSelected() {
 inline void Forget(HWND window) {
     if (selectedWidget == window) selectedWidget = nullptr;
 }
+// A hidden, unowned normal window gives desktop restorations a concrete
+// insert-after sibling even when Explorer is the highest non-topmost window.
+// Creation places a top-level window at the top of its normal band without
+// showing or activating it. Keep it until Explorer moves above it; recreating
+// it after every placement would feed the Dock's create/destroy event hooks.
+class DesktopPlacementAnchor {
+public:
+    ~DesktopPlacementAnchor() { Reset(); }
+    HWND Get() const { return window_; }
+    void Reset() {
+        const HWND old = window_; window_ = nullptr;
+        if (old && IsWindow(old) && GetWindowThreadProcessId(old, nullptr) == GetCurrentThreadId())
+            DestroyWindow(old);
+    }
+    HWND AboveHost(HWND host) {
+        if (!host || !IsWindow(host)) return nullptr;
+        if (Valid(host)) return window_;
+        if (!Owned()) {
+            Reset();
+            window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC",
+                L"Lume desktop placement anchor", WS_POPUP | WS_DISABLED,
+                0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        }
+        // Show Desktop (Win+D) raises Explorer to the top of the normal band,
+        // and a window this background process creates or raises with
+        // HWND_TOP stays below it. Leaving the topmost band is always honoured
+        // and lands at the top of the normal band: above the raised desktop.
+        if (Owned() && !Valid(host)) {
+            constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, flags);
+            SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+        }
+        if (!Valid(host)) Reset();
+        return window_;
+    }
+private:
+    bool Owned() const {
+        return window_ && IsWindow(window_) && GetWindowThreadProcessId(window_, nullptr) == GetCurrentThreadId();
+    }
+    bool Valid(HWND host) const {
+        return window_ && IsWindow(window_) &&
+            GetWindowThreadProcessId(window_, nullptr) == GetCurrentThreadId() &&
+            !IsWindowVisible(window_) && !GetWindow(window_, GW_OWNER) &&
+            !(GetWindowLongPtrW(window_, GWL_EXSTYLE) & WS_EX_TOPMOST) && Above(window_, host);
+    }
+    HWND window_ = nullptr;
+};
+inline thread_local DesktopPlacementAnchor desktopPlacementAnchor;
 // Placement is a z-order request. Windows refuses it when the insert-after
 // window belongs to a higher-integrity or protected process (a system overlay
 // sitting right above the desktop), and the refusal covers the whole call --
@@ -232,7 +304,19 @@ inline void Forget(HWND window) {
 // host only. If that also fails, hide instead of trying higher applications.
 inline bool RequestPlacement(HWND window, HWND anchor, UINT flags, HWND host) {
     if(anchor&&anchor!=HWND_BOTTOM&&anchor!=HWND_TOPMOST&&anchor!=HWND_NOTOPMOST&&
-       (GetWindowLongPtrW(anchor,GWL_EXSTYLE)&WS_EX_TOPMOST))anchor=HWND_TOP;
+       (GetWindowLongPtrW(anchor,GWL_EXSTYLE)&WS_EX_TOPMOST)) {
+        const HWND ceiling=ApplicationCeiling(host);
+        anchor=ceiling?ceiling:HWND_TOP;
+    }
+    if (!(flags & SWP_NOZORDER) && anchor == HWND_TOP && host && DesktopForeground(host)) {
+        if (const HWND ceiling = ApplicationCeiling(host)) anchor = ceiling;
+        else if (const HWND sibling = desktopPlacementAnchor.AboveHost(host)) {
+            // Creating the sibling can dispatch messages. A newly raised app
+            // remains the upper boundary even if desktop state changed meanwhile.
+            const HWND currentCeiling = ApplicationCeiling(host);
+            anchor = currentCeiling ? currentCeiling : sibling;
+        }
+    }
     if (SetWindowPos(window, anchor, 0, 0, 0, 0, flags)) return true;
     // The desktop host keeps the window in its own layer (below applications),
     // so it is the correct fallback; walking up would insert the widget under
@@ -336,15 +420,33 @@ inline void Place(HWND window, bool show, bool raise) {
     RequestPlacement(window, band ? HWND_TOP : after, flags, host);
     KeepOwnedGlassBelow(window);
 }
-inline void RequestAll() {
-    EnumWindows([](HWND window, LPARAM) -> BOOL {
+inline thread_local bool restackingDesktop = false;
+namespace detail {
+inline void RequestAllImpl(bool immediate, HWND (WINAPI* foreground)()) {
+    // Explorer may raise the desktop during Win+D before queued widget
+    // messages or the fallback timer run. Our own UI-thread windows can
+    // repair their order now; never wait on another window/render thread.
+    const bool direct = immediate && !restackingDesktop;
+    struct Scope {
+        bool previous;
+        explicit Scope(bool value) : previous(restackingDesktop) { if (value) restackingDesktop = true; }
+        ~Scope() { restackingDesktop = previous; }
+    } scope(direct);
+    struct Request { bool direct; HWND (WINAPI* foreground)(); } request{direct, foreground};
+    EnumWindows([](HWND window, LPARAM data) -> BOOL {
+        const auto& request = *reinterpret_cast<Request*>(data);
         DWORD pid = 0;
-        GetWindowThreadProcessId(window, &pid);
-        if (pid == GetCurrentProcessId() && IsWindowVisible(window) && IsDesktopWidget(window))
-            PostMessageW(window, Message(), 0, 0);
+        const DWORD thread = GetWindowThreadProcessId(window, &pid);
+        if (pid != GetCurrentProcessId() || (!IsWindowVisible(window) && !window_layer::WantsDesktop(window)) ||
+            !IsDesktopWidget(window)) return TRUE;
+        if (request.direct && thread == GetCurrentThreadId() && IsDesktopForegroundWindow(request.foreground(), Host()))
+            SendMessageW(window, Message(), 0, 0);
+        else PostMessageW(window, Message(), 0, 0);
         return TRUE;
-    }, 0);
+    }, reinterpret_cast<LPARAM>(&request));
 }
+} // namespace detail
+inline void RequestAll(bool immediate) { detail::RequestAllImpl(immediate, &GetForegroundWindow); }
 
 // Watches Explorer for desktop host changes and asks widgets to restack.
 // Owned by the UI thread; it relies on that thread's message loop.
@@ -367,6 +469,7 @@ public:
         if (!window_) return false;
         current_ = this;
         window_layer::applicationCeiling=[] { return ApplicationCeiling(Host()); };
+        window_layer::desktopForeground=[] { return DesktopForeground(Host()); };
         window_layer::Start();
         SetTimer(window_, PolicyTimer, 250, nullptr);
         Hook();
@@ -381,7 +484,10 @@ public:
         return true;
     }
     void Stop() {
-        if (current_ == this) window_layer::Stop();
+        if (current_ == this) {
+            window_layer::Stop();
+            desktopPlacementAnchor.Reset();
+        }
         foregroundDesktop = nullptr;
         if (hook_) { UnhookWinEvent(hook_); hook_ = nullptr; }
         if (foregroundHook_) { UnhookWinEvent(foregroundHook_); foregroundHook_ = nullptr; }
@@ -391,9 +497,10 @@ public:
     }
 private:
     static constexpr UINT_PTR SweepTimer = 1, SettleTimer = 2, DesktopTimer = 3, PolicyTimer = 4;
+    static constexpr UINT PolicyMessage = WM_APP + 0x7d1;
     static void CALLBACK Location(HWINEVENTHOOK, DWORD, HWND window, LONG object, LONG, DWORD, DWORD) {
         if (current_ && !current_->policyPending_ && object == OBJID_WINDOW && window == GetForegroundWindow())
-            current_->policyPending_=PostMessageW(current_->window_, WM_APP + 1, 0, 0)!=FALSE;
+            current_->policyPending_=PostMessageW(current_->window_, PolicyMessage, 0, 0)!=FALSE;
     }
     // While the desktop is in front, Explorer raises it again without a new
     // foreground change: after Win+D's animation and on every click on the
@@ -423,6 +530,10 @@ private:
         if (GetAncestor(window, GA_PARENT) != GetDesktopWindow()) return;
         wchar_t name[16]{};
         if (!GetClassNameW(window, name, 16) || (wcscmp(name, L"WorkerW") && wcscmp(name, L"Progman"))) return;
+        if (IsDesktopForegroundWindow(GetForegroundWindow(), Host())) {
+            window_layer::Refresh();
+            RequestAll(true);
+        }
         SetTimer(current_->window_, SettleTimer, SettleMs, nullptr);
     }
     static void CALLBACK Foreground(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD) {
@@ -437,7 +548,7 @@ public:
         foregroundDesktop = IsDesktopForegroundWindow(window, host) ? host : nullptr;
         if (foregroundDesktop) {
             selectedWidget = nullptr;
-            RequestAll();
+            RequestAll(true);
             if (current_) {
                 SetTimer(current_->window_, SettleTimer, SettleMs, nullptr);
                 SetTimer(current_->window_, DesktopTimer, DesktopMs, nullptr);
@@ -464,7 +575,7 @@ private:
             SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         }
         if (!self) return DefWindowProcW(window, message, w, l);
-        if (message == WM_APP + 1 || (message == WM_TIMER && w == PolicyTimer)) {
+        if (message == PolicyMessage || (message == WM_TIMER && w == PolicyTimer)) {
             self->policyPending_=false;
             window_layer::Refresh(); return 0;
         }

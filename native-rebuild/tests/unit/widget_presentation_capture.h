@@ -2,6 +2,7 @@
 // Opt-in screen evidence for the production NativeWidgetWindow and LumeGlass.
 // Only our isolated background rectangle is captured; no user state is loaded.
 #include "vendor/nlohmann/json.hpp"
+#include "material_release_wait.h"
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -176,7 +177,8 @@ inline int Run(const char* directory){
             window.Stop();const auto closedAt=GetTickCount64()-recorder.started;
             recorder.phase=4;Pump(250);recorder.Finish();
             Require(recorder.error.empty(),recorder.error.c_str());
-            LumeMaterialStatisticsData closed{};closed.size=sizeof(closed);Require(statistics(&closed)!=0,"closed statistics failed");
+            LumeMaterialStatisticsData closed{};closed.size=sizeof(closed);
+            Require(material_test::Released(statistics,closed,Pump),"closed statistics report actual resource release");
             double maximumBlack=0,maximumReadyChange=0,finalChange=1;
             unsigned baselineFrames=0,startingFrames=0,readyFrames=0,closedFrames=0;
             for(const auto& frame:recorder.frames){

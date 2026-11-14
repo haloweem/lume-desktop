@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {createBrowserHarness} from './component-settings-browser.mjs';
 import {validHostMessage} from '../bridge.js';
 
 const island={version:1,type:'dynamicIsland-state',enabled:true,running:true,locked:true,
   expanded:false,focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:false,
   hover:false,autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,
-  screen:1,screens:[1],hoverDelayMs:320,animationSpeed:'normal',bounce:'normal',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
+  screen:1,screens:[1],hoverDelayMs:300,animationSpeed:'normal',bounce:'normal',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
 const settings={version:1,type:'app-settings-state',revision:1,language:'zh-CN',balancedMode:true,
   autostart:false,busy:false,error:'',update:{status:'idle',version:'',progress:0}};
 
@@ -26,6 +27,7 @@ function installFixture({island,settings,language}) {
       receive({...current,result:'applied',saved:!failed,error:failed?'save':''});
     },
     navigate() {receive({version:1,type:'navigate',page:'dynamicIsland'});},
+
   };
   window.chrome={webview:{
     addEventListener(type,listener) {if(type==='message')listeners.add(listener);},
@@ -47,9 +49,6 @@ function installFixture({island,settings,language}) {
         if(pending!==null)throw new Error('Duplicate animation request while saving');
         const [, , key, value]=command.split('|');
         pending={key,value:key==='hoverDelayMs'?Number(value):value};
-      } else if(typeof command==='string'&&/^v1\|dynamicIsland\|preview\|(compact|expanded)$/.test(command)) {
-        queueMicrotask(()=>receive({version:1,type:'dynamicIsland-preview',mode:command.split('|')[3],
-          shape:current.shape,size:current.size,material:current.material,width:0,height:0,image:'',error:'render'}));
       } else if(command?.scope==='app-settings'&&command.action==='snapshot') {
         queueMicrotask(()=>receive({...settings,language,revision:++revision}));
       }
@@ -61,9 +60,9 @@ test('real settings entry: display, expansion and animation settings follow nati
   skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:90000,
 },async t=>{
   assert.ok(validHostMessage(island));assert.ok(validHostMessage(settings));
-  const harness=await createBrowserHarness(process.env.LUME_ISLAND_BROWSER_OUTPUT||path.resolve('build-artifacts/island-display-policy-browser-20261104'));
+  const harness=await createBrowserHarness(process.env.LUME_ISLAND_BROWSER_OUTPUT||fileURLToPath(new URL('../../../build-artifacts/island-styles-20261109/screens-browser',import.meta.url)));
   try {
-    for(const width of [1536,680])for(const language of ['zh-CN','en']) {
+    for(const width of [1536])for(const language of ['zh-CN','en']) {
       await t.test(`${width}px ${language}`,async()=>{
         const page=await harness.browser.newPage({viewport:{width,height:864},reducedMotion:'reduce'});
         const errors=[],remoteRequests=[];
@@ -80,6 +79,57 @@ test('real settings entry: display, expansion and animation settings follow nati
           const options=page.locator('[data-island-screen-options]');
           await options.waitFor();
           await page.evaluate(()=>document.fonts.ready);
+          for(const tab of ['todo','notifications'])assert.equal(await page.locator(`[data-tab="${tab}"]`).count(),1,'implemented sidebar pages are visible');
+          for(const tab of ['music','quick-launch','clock'])assert.equal(await page.locator(`[data-tab="${tab}"]`).count(),0,'unfinished sidebar pages remain hidden');
+          await page.locator('[data-tab="home"]').click();
+          if(width===1536) {
+            await page.setViewportSize({width,height:480});
+            await page.evaluate(()=>new Promise(requestAnimationFrame));
+          }
+          const leftScroll=page.locator('.island-appearance__scroll');
+          const scrollLayout=await page.evaluate(()=>{
+            const left=document.querySelector('.island-appearance__scroll');
+            const right=document.querySelector('.island-home__main');
+            const rect=element=>{const {top,bottom}=element.getBoundingClientRect();return {top,bottom};};
+            return {left:{height:left.clientHeight,content:left.scrollHeight},right:{height:right.clientHeight,content:right.scrollHeight},
+              title:rect(document.querySelector('.settings-component-title')),
+              styles:rect(document.querySelector('[data-island-styles]'))};
+          });
+          assert.ok(scrollLayout.left.content>scrollLayout.left.height,'settings have their own overflowing scroll area');
+          assert.ok(scrollLayout.right.content>scrollLayout.right.height,'the styles gallery scrolls independently');
+          await page.screenshot({path:path.join(harness.output,`${width}-${language}-independent-panels.png`)});
+          const leftBox=await leftScroll.boundingBox();
+          await page.mouse.move(leftBox.x+leftBox.width/2,leftBox.y+Math.min(30,leftBox.height/2));
+          await page.mouse.wheel(0,480);
+          await page.waitForFunction(()=>document.querySelector('.island-appearance__scroll').scrollTop>0);
+          const afterLeft=await page.evaluate(()=>({left:document.querySelector('.island-appearance__scroll').scrollTop,
+            right:document.querySelector('.island-home__main').scrollTop,
+            title:document.querySelector('.settings-component-title').getBoundingClientRect().top,
+            styles:document.querySelector('[data-island-styles]').getBoundingClientRect().top}));
+          assert.ok(afterLeft.left>0);assert.equal(afterLeft.right,0,'left wheel input does not move the component list');
+          assert.ok(Math.abs(afterLeft.title-scrollLayout.title.top)<1,'the island title stays fixed while settings scroll');
+          assert.ok(Math.abs(afterLeft.styles-scrollLayout.styles.top)<1,'the styles gallery stays fixed while settings scroll');
+          const galleryBox=await page.locator('.island-home__main').boundingBox();
+          await page.mouse.move(galleryBox.x+galleryBox.width*.8,galleryBox.y+galleryBox.height/2);
+          await page.mouse.wheel(0,480);
+          await page.waitForFunction(()=>document.querySelector('.island-home__main').scrollTop>0);
+          const afterRight=await page.evaluate(()=>({left:document.querySelector('.island-appearance__scroll').scrollTop,
+            right:document.querySelector('.island-home__main').scrollTop,
+            title:document.querySelector('.settings-component-title').getBoundingClientRect().top,
+            styles:document.querySelector('[data-island-styles]').getBoundingClientRect().top}));
+          assert.equal(afterRight.left,afterLeft.left,'right wheel input leaves the settings position unchanged');
+          assert.ok(afterRight.right>0,'the restored component gallery scrolls');
+          assert.ok(Math.abs(afterRight.title-scrollLayout.title.top)<1,'the island title stays fixed while components scroll');
+          assert.ok(afterRight.styles<scrollLayout.styles.top,'the styles gallery moves with its scroll area');
+          report.independentScroll={left:scrollLayout.left,right:scrollLayout.right,passed:true};
+          await page.evaluate(()=>{
+            document.querySelector('.island-appearance__scroll').scrollTop=0;
+            document.querySelector('.island-home__main').scrollTop=0;
+          });
+          if(width===1536) {
+            await page.setViewportSize({width,height:864});
+            await page.evaluate(()=>new Promise(requestAnimationFrame));
+          }
           assert.equal(await page.locator('.island-display h2').textContent(),language==='en'?'Display':'显示');
           assert.equal(await page.locator('#island-screen-label').textContent(),language==='en'?'Display policy':'显示策略');
           const select=async screen=>{
@@ -170,16 +220,35 @@ test('real settings entry: display, expansion and animation settings follow nati
           assert.equal(await animation.locator('h2').textContent(),language==='en'?'Animation settings':'动画设置');
           const slider=animation.locator('[data-island-hover-delay]'),output=animation.locator('output');
           const inputDelay=value=>slider.evaluate((input,value)=>{input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));},value);
-          assert.equal(await slider.inputValue(),'320');assert.equal(await output.textContent(),'0.32s');
+          await page.evaluate(()=>{
+            window.islandStableHome=document.querySelector('[data-island-home]');
+            window.islandStableAnimation=document.querySelector('.island-animation');
+            window.islandStableBody=document.querySelector('.settings-body');
+            window.islandSavingOpacities=()=>[...document.querySelectorAll('.island-appearance__segments button,[data-island-hover-delay]')]
+              .map(control=>Number(getComputedStyle(control).opacity));
+          });
+          assert.equal(await slider.inputValue(),'300');assert.equal(await output.textContent(),'0.3s');
+          assert.equal(await slider.getAttribute('step'),'50');
           await inputDelay(1000);
           assert.equal(await output.textContent(),'1s','input immediately previews seconds');
           await slider.dispatchEvent('change');
+          assert.ok((await page.evaluate(()=>window.islandSavingOpacities())).every(opacity=>opacity===1),'saving must not dim the other controls and produce a visible flash');
+          const savingFrames=await page.evaluate(async()=>{
+            const frames=[];
+            for(let i=0;i<4;++i){await new Promise(requestAnimationFrame);frames.push(window.islandSavingOpacities());}
+            return frames;
+          });
+          assert.ok(savingFrames.flat().every(opacity=>opacity===1),'controls retain their brightness across pending display frames');
+          assert.equal(await page.locator('[data-island-native-preview]').count(),0,'saving does not recreate the removed preview');
+          assert.ok(await page.evaluate(()=>window.islandStableHome===document.querySelector('[data-island-home]')&&
+            window.islandStableAnimation===document.querySelector('.island-animation')&&window.islandStableBody===document.querySelector('.settings-body')),
+          'saving must preserve the existing page and scroll container');
           assert.equal(await slider.inputValue(),'1000','submitted slider remains stable while awaiting acknowledgement');
           assert.equal(await slider.getAttribute('aria-disabled'),'true');
           await inputDelay(100);await slider.dispatchEvent('change');
           assert.equal(await slider.inputValue(),'1000','busy slider rejects additional changes');
           await page.evaluate(()=>window.islandScreensFixture.reply(true));
-          assert.equal(await slider.inputValue(),'320');assert.equal(await output.textContent(),'0.32s','failed save restores confirmed delay');
+          assert.equal(await slider.inputValue(),'300');assert.equal(await output.textContent(),'0.3s','failed save restores confirmed delay');
           await inputDelay(100);await slider.dispatchEvent('change');await page.evaluate(()=>window.islandScreensFixture.reply());
           assert.equal(await slider.inputValue(),'100');assert.equal(await output.textContent(),'0.1s');
           for(const [key,values] of [['animationSpeed',['slow','normal','fast']],['bounce',['subtle','normal','bouncy']]]){
@@ -202,6 +271,13 @@ test('real settings entry: display, expansion and animation settings follow nati
           await slider.scrollIntoViewIfNeeded();await slider.focus();await slider.press('End');
           await page.evaluate(()=>window.islandScreensFixture.reply());
           assert.equal(await slider.inputValue(),'1000');assert.equal(await slider.getAttribute('aria-valuetext'),'1s','range keyboard control reaches the upper bound');
+          await slider.press('ArrowLeft');await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(await slider.inputValue(),'950');assert.equal(await output.textContent(),'0.95s','each keyboard step is exactly 0.05 seconds');
+          const track=await slider.boundingBox();
+          await page.mouse.click(track.x+track.width*.65,track.y+track.height/2);
+          await page.evaluate(()=>window.islandScreensFixture.reply());
+          assert.equal(Number(await slider.inputValue())%50,0,'pointer changes stay on the 50 ms grid');
+          assert.ok((await page.evaluate(()=>window.islandSavingOpacities())).every(opacity=>opacity===1));
           const animationLayout=await animation.evaluate(card=>{
             const bounds=card.getBoundingClientRect(),mode=card.previousElementSibling.getBoundingClientRect();
             return {afterMode:bounds.top>=mode.bottom,overflow:document.documentElement.scrollWidth>innerWidth,

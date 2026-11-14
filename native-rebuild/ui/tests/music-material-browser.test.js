@@ -79,6 +79,32 @@ async function setup(page,base){
   await page.waitForFunction(()=>material.snapshot().state==='active');
 }
 const settle=page=>page.evaluate(async()=>{for(let i=0;i<5;i++)await new Promise(requestAnimationFrame);});
+test('static lyric text stops glass frames and invalidates on edits and CSS motion',
+  {skip:!enabled,timeout:60000},()=>harness(async({browser,base})=>{
+    const page=await browser.newPage({viewport:{width:1100,height:760}});
+    await setup(page,base);
+    await page.evaluate(()=>{
+      const style=document.createElement('style');style.textContent='@keyframes glassTextMove {to {transform:translateX(32px)}}';document.head.append(style);
+      const words=document.createElement('div');words.id='static-words';words.dataset.lumenicLiquidGlassScene='';
+      words.style.cssText='position:absolute;left:150px;bottom:60px;color:white;font:30px Arial';words.textContent='静态歌词';
+      document.getElementById('stage').append(words);
+    });
+    await page.waitForFunction(()=>material.snapshot().scene.text>0);
+    await settle(page);
+    const before=await page.evaluate(()=>material.snapshot());
+    assert.equal(before.pendingFrame,false,'static text does not poll every frame');
+    await page.waitForTimeout(120);
+    assert.equal(await page.evaluate(()=>material.snapshot().frames),before.frames);
+    await page.evaluate(()=>document.getElementById('static-words').textContent='更新的歌词');
+    await page.waitForFunction(count=>material.snapshot().frames>count,before.frames);
+    const changed=await page.evaluate(()=>material.snapshot().frames);
+    await page.evaluate(()=>document.getElementById('static-words').style.animation='glassTextMove .25s linear forwards');
+    await page.waitForTimeout(120);
+    assert.ok(await page.evaluate(()=>material.snapshot().frames)>changed+1,'moving text still updates between style changes');
+    await page.waitForTimeout(250);await settle(page);
+    assert.equal(await page.evaluate(()=>material.snapshot().pendingFrame),false,'the frame loop settles after motion');
+    await page.evaluate(()=>material.dispose());await page.close();
+  }));
 test('Lumiere original runtime draws lyrics, seeks, hides, resumes and releases',
   {skip:!enabled,timeout:120000},()=>harness(async({browser,base})=>{
     const page=await browser.newPage({viewport:{width:1280,height:800},deviceScaleFactor:1.5}),errors=[];

@@ -97,6 +97,72 @@
         328,
         355
       ]
+    },
+    {
+      "id": "launchpad",
+      "label": "启动台",
+      "master": "launchpad-default-256.png",
+      "selected": "launchpad-selected-256.png",
+      "sourceBoard": [
+        0,
+        0,
+        2048,
+        1024
+      ],
+      "sourceCell": [
+        0,
+        0,
+        1024,
+        1024
+      ],
+      "sourceBox": [
+        222,
+        196,
+        871,
+        833
+      ]
+    },
+    {
+      "id": "control-center",
+      "label": "控制中心",
+      "master": "control-center-default-256.png",
+      "selected": "control-center-selected-256.png",
+      "sourceBoard": [
+        0,
+        0,
+        2048,
+        1024
+      ],
+      "sourceCell": [
+        1024,
+        0,
+        2048,
+        1024
+      ],
+      "sourceBox": [
+        158,
+        248,
+        855,
+        772
+      ]
+    },
+    {
+      "id": "dock",
+      "label": "Dock",
+      "master": "dock-default-256.png",
+      "selected": "dock-selected-256.png",
+      "sourceBoard": [
+        0,
+        0,
+        1024,
+        1024
+      ],
+      "sourceBox": [
+        103,
+        377,
+        922,
+        654
+      ]
     }
   ]
 }

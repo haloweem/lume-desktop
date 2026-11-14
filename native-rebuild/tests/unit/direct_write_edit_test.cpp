@@ -94,6 +94,10 @@ int main(){
         SendMessageW(edit,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);Paint(edit,width,height);CheckSelectionAndClip(edit,width,height);
         CheckVerticalCenter(edit,width,height);
 #ifndef DIRECT_WRITE_EDIT_BASELINE
+        ValidateRect(edit,nullptr);
+        for(int i=0;i<100;++i)SendMessageW(edit,WM_MOUSEMOVE,0,MAKELPARAM(i%width,height/2));
+        SendMessageW(edit,WM_MOUSELEAVE,0,0);
+        Check(!GetUpdateRect(edit,nullptr,FALSE),"stationary edit hover does not invalidate its text layout");
         if(dpi==96){
             CheckMenu(edit);CheckMenu(edit,MenuAction::Deactivate);CheckMenu(edit,MenuAction::ReleaseCapture);
             const auto temporary=CreateWindowExW(0,L"EDIT",L"临时输入框",WS_CHILD|WS_VISIBLE,0,0,width,height,owner,nullptr,wc.hInstance,nullptr);

@@ -16,7 +16,7 @@ export const viewports=[
 export const components=[
   {scope:'clock',controls:['clock-style']},
   {scope:'calendar',controls:['calendar-theme','calendar-material','calendar-textColor','calendar-highlightColor']},
-  {scope:'weather',controls:['weather-material','weather-city']},
+  {scope:'weather',controls:['weather-material']},
   {scope:'almanac',controls:['almanac-material']},
   {scope:'performance',controls:['performance-material']},
   {scope:'organizer',controls:['organizer-material']},
@@ -25,7 +25,7 @@ export const components=[
   {scope:'minimize',controls:['minimize-durationMs','minimize-restore','minimize-launch',
     'minimize-multiMonitor','minimize-unhideTaskbar','minimize-unhideDurationMs','minimize-engine']},
 ];
-const stylesheets=['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css','lume-icons.css','application-settings.css','music.css'];
+const stylesheets=['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css','island-notifications.css','todo-board.css','lume-icons.css','application-settings.css','music.css','interaction-motion.css'];
 const ui=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
 const action=scope=>scope==='clock'?'toggle':`${scope}-toggle`;
 const reset=scope=>scope==='clock'?'reset':`${scope}-reset`;
@@ -38,7 +38,10 @@ function componentMessage(scope,enabled,{error='',applied=false}={}) {
   const common={version:1,error,loadStatus:'loaded',result:applied?'applied':'snapshot',saved:applied&&!error};
   if(scope==='clock')return {version:1,type:'settings',clock:preferences,error,saved:!error};
   if(scope==='calendar')return {...common,type:'calendar-settings',calendar:preferences,materialStatus:'inactive'};
-  if(scope==='taskbar')return {version:1,type:'taskbar-state',...preferences,error,loadStatus:'loaded',revision:0};
+  if(scope==='taskbar')return {version:1,type:'taskbar-state',...preferences,error,loadStatus:'loaded',revision:0,
+    effectStatus:enabled?(error?'failed':'applied'):'inactive',
+    registeredTaskbars:enabled?1:0,backgrounds:enabled?1:0,appliedTaskbars:enabled&&!error?1:0,
+    hideApplied:false,effectiveAutoHide:false,fullyHidden:false};
   if(scope==='icons')return {...common,type:'icons-state',...preferences,desktops:preferences.running?1:0};
   if(scope==='minimize')return {...common,type:'minimize-state',...preferences,
     x64:preferences.running,x86:false,hosts:preferences.running?1:0,hooks:preferences.running?2:0,
@@ -355,6 +358,7 @@ async function clickAndReply(fixture,scope,enabled,fail=false) {
   const value=await readNotice(fixture,scope,fail?'failed-reply':'success-reply');
   assertVisible(value);
   if(fail)assert.match(value.text,/失败/,'失败不能误显示成功');
+  else if(scope==='organizer'&&!enabled)assert.equal(value.text,'图标收纳已关闭','成功关闭显示当前真实状态');
   else assert.match(value.text,/已.*(?:应用|保存|恢复)/,'成功回执显示应用或保存结果');
   return value;
 }

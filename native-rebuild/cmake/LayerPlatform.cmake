@@ -42,13 +42,13 @@ lume_enable_native_warnings(lume-desktop-icons-windows)
 add_library(lume-music-host-audio STATIC platform/windows/music_audio_engine.cpp platform/windows/music_http_stream.cpp platform/windows/music_http_flac_decoder.cpp)
 target_include_directories(lume-music-host-audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-music-host-audio PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(lume-music-host-audio PUBLIC lume-music-host-runtime PRIVATE winmm mfplat mfreadwrite mfuuid ole32 winhttp)
+target_link_libraries(lume-music-host-audio PUBLIC lume-core PRIVATE winmm mfplat mfreadwrite mfuuid ole32 winhttp)
 lume_enable_native_warnings(lume-music-host-audio)
 
 add_library(lume-music-host-client STATIC platform/windows/music_host_client.cpp)
 target_include_directories(lume-music-host-client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-music-host-client PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(lume-music-host-client PUBLIC lume-music-host-runtime PRIVATE advapi32)
+target_link_libraries(lume-music-host-client PUBLIC lume-core PRIVATE advapi32)
 lume_enable_native_warnings(lume-music-host-client)
 
 add_library(lume-music-local STATIC platform/windows/music_local_files.cpp platform/windows/music_local_lyrics.cpp)
@@ -72,7 +72,7 @@ add_library(lume-weather-runtime STATIC
 )
 target_include_directories(lume-weather-runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-weather-runtime PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-weather-runtime PUBLIC lume-core PRIVATE winhttp)
+target_link_libraries(lume-weather-runtime PUBLIC lume-core PRIVATE winhttp runtimeobject)
 lume_enable_native_warnings(lume-weather-runtime)
 
 add_library(lume-performance-runtime STATIC
@@ -194,11 +194,13 @@ add_library(lume-native-calendar STATIC
   platform/windows/calendar/calendar_renderer.cpp
   platform/windows/calendar/calendar_month_picker.cpp
   platform/windows/calendar/native_calendar_window.cpp
+  platform/windows/calendar/todo_sheet_window.cpp
   platform/windows/calendar_runtime.cpp
 )
 target_include_directories(lume-native-calendar PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(lume-native-calendar SYSTEM PRIVATE "${LUME_WEBVIEW2_PACKAGE}/build/native/include")
 target_compile_definitions(lume-native-calendar PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-native-calendar PUBLIC lume-core PRIVATE lume-widget-ui lume-widget-material d2d1 dwrite windowscodecs ole32 gdiplus user32 gdi32 uuid comctl32 imm32 shcore)
+target_link_libraries(lume-native-calendar PUBLIC lume-core PRIVATE lume-widget-ui lume-widget-material lume-window-surface d2d1 dwrite windowscodecs ole32 gdiplus user32 gdi32 uuid comctl32 imm32 shcore dwmapi shell32)
 lume_enable_native_warnings(lume-native-calendar)
 
 add_library(lume-ui-integrity STATIC platform/windows/ui_integrity.cpp)

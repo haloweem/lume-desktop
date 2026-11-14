@@ -19,17 +19,18 @@ test('a widget the desktop layer refused reports its own error',()=>{
 });
 test('todayTodo bridge accepts only complete defined commands and states',()=>{
   const sent=[];const bridge=createBridge({postMessage:v=>sent.push(v)});
-  const commands=[['enabled',true],['enabled',false],['material','liquid-glass'],['material','frosted-glass'],['reset']];
+  const commands=[['enabled',true],['enabled',false],['material','solid'],['material','liquid-glass'],['material','frosted-glass'],['reset']];
   for(const c of commands)assert.equal(bridge.send('todayTodo',...c),true);
   assert.deepEqual(sent,commands.map(c=>['v1','todayTodo',...c].join('|')));
-  for(const c of [['enabled',1],['enabled','true'],['reset',true],['material','solid'],['reset\0']])
+  for(const c of [['enabled',1],['enabled','true'],['reset',true],['material','glass'],['reset\0']])
     assert.equal(bridge.send('todayTodo',...c),false);
   assert.equal(validHostMessage(message()),true);
   assert.equal(validHostMessage({version:1,type:'navigate',page:'todayTodo'}),true);
-  for(const fields of [{width:319},{height:151},{width:721},{height:721},{enabled:1},{extra:true},{saved:true},
-    {result:'other'},{error:'arbitrary'},{materialStatus:'glass'},{material:'solid'},{loadStatus:'backup'}])
+  for(const fields of [{width:219},{height:151},{width:721},{height:721},{enabled:1},{extra:true},{saved:true},
+    {result:'other'},{error:'arbitrary'},{materialStatus:'glass'},{material:'glass'},{loadStatus:'backup'}])
     assert.equal(validHostMessage(message(fields)),false,JSON.stringify(fields));
   assert.equal(validHostMessage(message({result:'applied',saved:true,loadStatus:'loaded'})),true);
+  assert.equal(validHostMessage(message({material:'solid'})),true);
   assert.equal(validHostMessage(message({result:'applied',saved:true,error:'save'})),false);
 });
 test('asynchronous material snapshots cannot complete a pending todayTodo save',()=>{

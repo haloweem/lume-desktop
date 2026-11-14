@@ -44,7 +44,8 @@ HWND ApplicationCeiling(HWND host) {
         if (result.desktop && window == result.host) return FALSE;
         if (!IsWindowVisible(window) || IsIconic(window) ||
             (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) ||
-            OwnOverlay(window) || ShellDesktop(window, result.host, result.shellPid)) return TRUE;
+            OwnOverlay(window) || ShellDesktop(window, result.host, result.shellPid) ||
+            desktop_level::NotificationSink(window)) return TRUE;
         RECT bounds{};
         if (!GetWindowRect(window, &bounds) || IsRectEmpty(&bounds)) return TRUE;
         DWORD cloaked = 0;
@@ -63,6 +64,16 @@ bool FullscreenProtected(HWND bar) {
     return window_layer::enabled && window_layer::Protected(area,window_layer::ReadContext());
 }
 constexpr UINT Flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+HWND NextVisible(HWND window) {
+    for (window=GetWindow(window,GW_HWNDNEXT);window&&!IsWindowVisible(window);window=GetWindow(window,GW_HWNDNEXT)) {}
+    return window;
+}
+bool OverlayAbove(HWND icons) {
+    for (HWND window=GetWindow(icons,GW_HWNDPREV);window;window=GetWindow(window,GW_HWNDPREV))
+        if (IsWindowVisible(window) && !(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST) &&
+            OwnOverlay(window)) return true;
+    return false;
+}
 void Demote(HWND window) {
     if (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) {
         desktop_level::PlacementScope placement(window);
@@ -95,7 +106,7 @@ void DockDesktopLayer::Stop() {
     pending_ = covered_ = fallback_ = false;
 }
 void DockDesktopLayer::Request() {
-    if (!pending_ && icons_ && (covered_ || IsWindowVisible(icons_) || IsWindowVisible(bar_)))
+    if (!pending_ && icons_ && (covered_ || IsWindowVisible(icons_) || IsWindowVisible(bar_) || window_layer::WantsDesktop(icons_)))
         pending_ = PostMessageW(icons_, Message, 0, 0) != FALSE;
 }
 void CALLBACK DockDesktopLayer::Event(HWINEVENTHOOK hook, DWORD event, HWND window, LONG object,
@@ -116,6 +127,11 @@ void CALLBACK DockDesktopLayer::Event(HWINEVENTHOOK hook, DWORD event, HWND wind
 }
 void DockDesktopLayer::Place() {
     if (!icons_ || !bar_) return;
+    window_layer::RestoreDesktop(icons_);
+    // The bar follows the icon root, including its minimized state. Its
+    // application ceiling and visibility are restored as the same pair below.
+    if (desktop_level::DesktopForeground() && !window_layer::Suppressed(icons_) && IsIconic(bar_))
+        ShowWindow(bar_, SW_SHOWNOACTIVATE);
     if (const bool covered = FullscreenProtected(bar_); covered != covered_) {
         covered_ = covered;
         // Recheck while protected so a missed foreground event cannot leave it hidden.
@@ -123,16 +139,33 @@ void DockDesktopLayer::Place() {
         else if (fallback_) SetTimer(icons_, FallbackTimer, 1500, nullptr);
         else KillTimer(icons_, FallbackTimer);
     }
-    // Show or hide without moving first: the ordering below compares visible windows.
+    const HWND host = desktop_level::Host();
+    const HWND ceiling = covered_ ? nullptr : ApplicationCeiling(host);
+    // Explorer destroys many child/IME HWNDs while navigating. A queued
+    // destroy event no longer tells us whether its HWND was a top-level app.
+    // Reconcile real changes, but never move an already-correct Dock pair:
+    // moving its UI-owned bar makes the worker-owned glass follow later.
+    if (!covered_ && host && IsWindowVisible(icons_) && IsWindowVisible(bar_) &&
+        !IsIconic(icons_) && !IsIconic(bar_) &&
+        !(GetWindowLongPtrW(icons_,GWL_EXSTYLE)&WS_EX_TOPMOST) &&
+        !(GetWindowLongPtrW(bar_,GWL_EXSTYLE)&WS_EX_TOPMOST) &&
+        NextVisible(icons_)==bar_ && desktop_level::Above(bar_,host) &&
+        (!ceiling || desktop_level::Above(ceiling,icons_)) && !OverlayAbove(icons_)) {
+        const HWND below=NextVisible(bar_);
+        if (!below || desktop_level::SurfaceOwner(below)!=bar_)
+            desktop_level::KeepOwnedGlassBelow(bar_);
+        return;
+    }
+    // Show or hide only when visibility changes; even an unchanged show can
+    // cause Windows to reorder owned input-method windows.
     for (const HWND window : {icons_, bar_}) {
+        if ((IsWindowVisible(window)!=FALSE)==!covered_) continue;
         desktop_level::PlacementScope placement(window);
         SetWindowPos(window, nullptr, 0, 0, 0, 0, Flags | SWP_NOZORDER | (covered_ ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
     }
     if (covered_) return;
     Demote(icons_);
     Demote(bar_);
-    const HWND host = desktop_level::Host();
-    const HWND ceiling = ApplicationCeiling(host);
     // A raised/rebuilding Explorer host may be above applications. In that
     // inconsistent state prefer being covered by the desktop over covering an
     // application. Missing hosts likewise fall back to the bottom, never TOP.
@@ -149,6 +182,10 @@ void DockDesktopLayer::Place() {
         // icons and bar separately, briefly leaving the glass above icons,
         // before promoting them again. Stay in the normal band instead.
         if (above && !(GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST)) anchor = above;
+        // Only topmost windows (the island, the taskbar) above the raised
+        // desktop: HWND_TOP would be ignored and the Dock would stay under it.
+        // Join the shared placement anchor at the top of the normal band.
+        else if (const HWND sibling = desktop_level::desktopPlacementAnchor.AboveHost(host)) anchor = sibling;
     }
     // When lowering the group below an application, move the background and
     // its worker-owned glass first. Lowering icons first exposes the glass

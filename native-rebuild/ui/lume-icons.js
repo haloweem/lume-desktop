@@ -1,6 +1,6 @@
 import {escapeHTML as h} from './dom.js';
 
-const names=new Set(['home','music','todo','quick-launch','clock','notifications','settings']);
+const names=new Set(['home','music','todo','quick-launch','clock','notifications','settings','dock','launchpad','control-center']);
 export function lumeIcon(name,{selected=false}={}) {
   if(name==='back'||name==='details')return `<img class="lume-ui-icon" src="assets/icons/lume-rounded-v1/${name}.svg" width="24" height="24" alt="" aria-hidden="true" draggable="false">`;
   if(!names.has(name))throw new RangeError(`Unknown Lume icon: ${name}`);

@@ -1,6 +1,7 @@
 #include "core/organizer/organizer_interaction.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <initializer_list>
 #include <iostream>
 #include <optional>
@@ -312,6 +313,18 @@ void StringViewsAreCopiedAndComparedByLength() {
           "drag retains a snapshot rather than references to caller storage");
 }
 
+void LargeSelectionKeepsOrder(){
+    std::vector<std::string> order;for(int i=0;i<10000;++i)order.push_back("item-"+std::to_string(i));
+    Interaction interaction;interaction.SelectAll(order);
+    Check(interaction.Selected()==order,"large select-all preserves visible order");
+    std::reverse(order.begin(),order.end());interaction.Reconcile(order);
+    Check(interaction.Selected()==order&&interaction.BeginDrag(order,order.front())&&interaction.Dragged()==order,"large reconcile and ordered selection retain deterministic order");
+    interaction.EndDrag();
+    interaction.Select(order,order[5000],false,false);interaction.Select(order,order[9999],false,true);
+    Check(interaction.Selected().size()==5000&&interaction.BeginDrag(order,order[5000]),"large shift selection starts drag");
+    interaction.MoveBefore(order.front());
+    Check(interaction.Preview().size()==10000&&interaction.Preview().front()==order[5000]&&interaction.Preview()[5000]==order.front(),"large drag moves the group with stable item order");
+}
 }  // namespace
 
 int main() {
@@ -327,6 +340,7 @@ int main() {
         {"empty and whole-group drag", EmptyAndWholeGroupDragAreStable},
         {"stale drag reconciliation", ReconcileCancelsStaleDragSnapshots},
         {"owned stable IDs", StringViewsAreCopiedAndComparedByLength},
+        {"large selection and drag", LargeSelectionKeepsOrder},
     };
     unsigned failures = 0;
     for (const auto& test : tests) {

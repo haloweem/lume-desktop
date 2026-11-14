@@ -385,7 +385,9 @@ export function mountMusicProviderAccountView(root, controller, {encode=encodeQr
     if (!latest.modal || !visible || document.hidden) {removeDialog();return;}
     showDialog();
     const account = latest.accounts.find(value=>value.provider === latest.modal);
-    $('#music-provider-title').textContent = `${labels[account.provider]}\u626b\u7801\u767b\u5f55`;
+    // The QQ provider uses Tencent's QQ Connect/ptlogin QR flow. Its music
+    // account remains QQ Music, while the scanning application is mobile QQ.
+    $('#music-provider-title').textContent = `${account.provider==='qq'?'QQ ':labels[account.provider]}\u626b\u7801\u767b\u5f55`;
     for (const button of dialog.querySelectorAll('[data-provider-select]'))
       button.setAttribute('aria-pressed',String(button.dataset.providerSelect === account.provider));
     $('[data-provider-name]').textContent = account.status === 'signed-in' ? account.displayName : '';
@@ -399,7 +401,7 @@ export function mountMusicProviderAccountView(root, controller, {encode=encodeQr
     }
     $('[data-provider-note]').textContent = modalSignedIn
       ? ''
-      : `\u8bf7\u4f7f\u7528${labels[account.provider]} App \u626b\u7801\u786e\u8ba4`;
+      : account.provider==='qq'?'请使用手机 QQ 扫码确认':`\u8bf7\u4f7f\u7528${labels[account.provider]} App \u626b\u7801\u786e\u8ba4`;
     const qr = account.status === 'authorizing' ? account.qrImage || account.qrText : '';
     const key = `${account.provider}:${account.request}:${qr}`;
     if (qrKey === key) {

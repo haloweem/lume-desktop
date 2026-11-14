@@ -121,6 +121,7 @@ bool Run(const fs::path& root) {
     bool complete = false, passed = false;
     int snapshots = 0, linkSteps = 0;
     std::string phase = "startup";
+    std::string exceptionName, exceptionMessage;
     window.ConfigureApplicationCommands([&](std::wstring_view message) {
         const auto json = Json::parse(message.begin(), message.end(), nullptr, false);
         if (!json.is_object()) return;
@@ -150,6 +151,8 @@ bool Run(const fs::path& root) {
         }
         complete = true;
         phase = json.value("phase", "");
+        exceptionName = json.value("exceptionName", "").substr(0, 256);
+        exceptionMessage = json.value("exceptionMessage", "").substr(0, 256);
         passed = json.value("metadata", false) && json.value("image", false) &&
             json.value("font", false) && json.value("iframe", false) &&
             json.value("guard", false) && json.value("hardlink", false) && json.value("lumiere", false);
@@ -193,10 +196,13 @@ bool Run(const fs::path& root) {
           result.phase='image';
           const image=new Image();image.crossOrigin='anonymous';
           image.src=imageUrl;
+          result.phase='image-decode';
           await image.decode();
           const canvas=document.createElement('canvas');canvas.width=canvas.height=8;
           const context=canvas.getContext('2d');
+          result.phase='image-draw';
           context.drawImage(image,0,0,8,8);
+          result.phase='image-read-pixels';
           const pixels=context.getImageData(0,0,8,8).data;
           result.image=pixels.every((value,index)=>value===(index%4===0||index%4===3?255:0));
           const url='https://lume-fonts.local/'+asset.id+'.'+asset.extension;
@@ -262,7 +268,14 @@ bool Run(const fs::path& root) {
             }
           }
           result.phase='complete';
-        } catch {} finally {
+        } catch(error) {
+          // Diagnostics only: retain the original request and assertions. Do
+          // not put the per-run image capability URL or other URLs in logs.
+          const safe=value=>String(value??'').split(imageUrl).join('[loopback-image]')
+            .replace(/https?:\/\/[^\s"'<>]+/gi,'[url]').slice(0,256);
+          result.exceptionName=safe(error?.name);
+          result.exceptionMessage=safe(error?.message??error);
+        } finally {
           lumiere?.dispose();stage?.remove();
           if(childFace)frame?.contentDocument?.fonts.delete(childFace);
           frame?.remove();if(face)document.fonts.delete(face);
@@ -281,6 +294,10 @@ bool Run(const fs::path& root) {
         "WebView decoding does not modify source, persisted metadata or font bytes");
     passed = passed && complete && !timedOut && !result && snapshots >= 1 && fontLookups >= 3 &&
         linkSteps == 2 && !fs::exists(extraLink);
+    if (!exceptionName.empty() || !exceptionMessage.empty()) {
+        std::cout << "resource-fixture exception=" << Json{{"name", exceptionName}, {"message", exceptionMessage}}
+            .dump(-1, ' ', false, Json::error_handler_t::replace) << '\n';
+    }
     std::cout << (passed ? "PASS" : "FAIL")
         << ": native real font import/persistence/restore, WebView mapping, parent/iframe decode"
         << ", guarded routes/hardlink read and origin-clean loopback image (phase=" << phase << ")\n";

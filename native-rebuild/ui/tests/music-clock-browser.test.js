@@ -167,13 +167,15 @@ test('production Edge music clock retains display-only anchors and accepts nativ
         await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
         await page.evaluate(async()=>{
           const {initialMusicState}=await import('./music.js');
-          const {query,nav,lyrics,...native}=initialMusicState();
+          const {query,nav,lyrics,score,...native}=initialMusicState();
+          const {validHostMessage}=await import('./bridge.js');
           const track={id:'clock-fixture',title:'Clock regression',artist:'Lume',album:'Test',
             source:'C:/fixture/music-clock.wav',artwork:'',duration:60};
           window.clockSnapshot={...native,version:1,type:'music-state',session:27,revision:1,
             pageOpen:true,pageVisible:true,status:'paused',playing:false,current:track,queue:[track],
             timeline:{position:4.8,duration:60},
             capabilities:{canToggle:true,canPrevious:true,canNext:true,canSeek:true}};
+          if(!validHostMessage(clockSnapshot))throw new Error('Clock fixture must use the native music-state schema');
           harness.receive(clockSnapshot);
           harness.receive({version:1,type:'navigate',page:'music'});
           window.clockLyrics={version:1,type:'music-lyrics',session:27,trackId:track.id,

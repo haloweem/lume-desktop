@@ -1,10 +1,18 @@
 #pragma once
+#include "apps/shell/material_selection_request.h"
 #include "core/organizer/organizer_store.h"
 #include "core/organizer/desktop_organization.h"
 #include "core/ui/page_bridge.h"
 #include <windows.h>
 #include <memory>
+namespace lume::platform::windows { struct OrganizerLayout; }
 namespace lume::shell {
+namespace detail {
+// Internal resource planning: visible icons first, nearby prefetch within the
+// existing cache budget. Collection capacity is independent of this window.
+std::vector<std::wstring> OrganizerIconPathsForViewport(const organizer::Collection&,
+    const platform::windows::OrganizerLayout&);
+}
 class OrganizerSession final {
 public:
     using Notify=std::function<void(const std::wstring&,bool)>;
@@ -17,6 +25,7 @@ public:
         std::vector<std::wstring> desktopRoots={});
     ~OrganizerSession();
     bool Restore();
+    void SetMaterialSelectionHandler(MaterialSelectionHandler);
     std::optional<std::wstring> HandlePage(ui::PageCommand);
     std::wstring State()const;
     void Shutdown();
@@ -33,6 +42,8 @@ public:
     bool MergeAtCursorForTest(std::string_view collectionId);
     // Verification: decides whether a screen point counts as the Windows desktop.
     void SetDesktopProbeForTest(std::function<bool(POINT)>);
+    // Verification: feed the same client-pixel hover event as the OLE adapter.
+    void DropHoverForTest(std::string_view collectionId,POINT client,bool active);
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };

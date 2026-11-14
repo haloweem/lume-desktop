@@ -142,10 +142,17 @@ export function musicCommand(action, fields = {}, state = initialMusicState()) {
 // original generic status.
 export function musicPlaybackError(error) {
   if (!error) return '';
+  const refused = /^music-source-netease-code-(-?\d{1,9})$/.exec(error);
+  if (refused) return `网易云拒绝了本次播放请求（${refused[1]}），请稍后重试`;
   return {
     'music-source-expired':'音乐平台登录已过期，请重新扫码登录',
     'music-source-network':'网络连接失败，请检查网络后重试',
-    'music-source-unavailable':'这首歌暂时无法播放，可能需要会员或已下架',
+    'music-source-unavailable':'音乐平台暂未提供可播放音源，请稍后重试',
+    'music-source-timeout':'获取音源超时，请检查网络后重试',
+    'music-source-service':'音乐平台响应异常，请稍后重试',
+    'music-source-rate-limited':'音乐平台请求过于频繁，请稍后重试',
+    'music-source-preview-only':'音乐平台仅提供试听片段，当前账号无法播放完整版',
+    'music-source-entitlement':'当前音乐平台账号没有这首歌的播放权限',
     'music-quality-buffering-timeout':'新音质缓冲较慢，已保留原音质播放，请稍后重试',
     'load-failed':'这首歌的音频格式无法播放',
   }[error] || '音乐操作未成功';
@@ -249,9 +256,11 @@ function recommendations(items, library) {
 function trackTable(state, tracks, query='', {queue=false,rail=false,library={}}={}) {
   const term = query.trim().toLocaleLowerCase();
   const visible = tracks.filter(track => !term || [track.title,track.artist,track.album].some(value=>text(value).toLocaleLowerCase().includes(term)));
+  const queueIndices=new Map();
+  state.queue.forEach((track,index)=>{if(!queueIndices.has(track.id))queueIndices.set(track.id,index);});
   return `<div class="MusicTrackList" data-music-home-track-list role="table" aria-label="歌曲列表">
     <div class="MusicTableHead" role="row"><span role="columnheader">歌名/歌手</span><span role="columnheader" aria-label="歌曲操作"></span><span role="columnheader">专辑</span><span role="columnheader">时长</span></div>
-    ${visible.length ? visible.map((track,i) => {const index=state.queue.findIndex(item=>item.id===track.id); const online=onlineTrack(track);
+    ${visible.length ? visible.map((track,i) => {const index=queueIndices.get(track.id)??-1; const online=onlineTrack(track);
       const local=!queue&&localTrack(track);
       const liked=musicTrackLiked(library,track.id);
       const locked=online?musicMembershipBlocked(library,track.membershipBadge):'';
@@ -360,6 +369,7 @@ export function musicPage(input = initialMusicState(), options = {}) {
   const state = normalizeMusicState(input);
   const view = {nav:'recommendations',screen:'home',panel:'',query:'',...options.view};
   const library = options.library || {};
+  if(options.fragment==='home-content')return homeContent(state,view,library);
   if(view.screen==='desktop')return musicDesktopPage(options.desktopControls,view.desktopTab);
   const player = view.screen === 'player';
   return `<div class="MusicRoot" data-music-root data-music-home-content data-screen="${player ? 'player' : 'home'}" data-music-session="${state.session}">
@@ -375,10 +385,12 @@ export function updateMusicPlayback(root, state, {seeking=false} = {}) {
   const volume=root.querySelector('[data-music-volume]');
   if(volume&&root.ownerDocument.activeElement!==volume)volume.value=String(state.muted?0:state.volume??1);
   const volumeValue=root.querySelector('[data-music-volume-value]');
-  if(volumeValue)volumeValue.textContent=`${Math.round(Number(volume?.value??state.volume??1)*100)}%`;
+  const volumeLabel=`${Math.round(Number(volume?.value??state.volume??1)*100)}%`;
+  if(volumeValue&&volumeValue.textContent!==volumeLabel)volumeValue.textContent=volumeLabel;
   const mute=root.querySelector('[data-music-volume-trigger]');
   if(mute) {
-    mute.innerHTML=icon(state.muted||state.volume===0?'muted':'volume');
+    const glyph=state.muted||state.volume===0?'muted':'volume';
+    if(mute.dataset.volumeGlyph!==glyph){mute.innerHTML=icon(glyph);mute.dataset.volumeGlyph=glyph;}
   }
   const progress = root.querySelector('[data-music-progress]');
   if (progress && !seeking) {
@@ -390,9 +402,9 @@ export function updateMusicPlayback(root, state, {seeking=false} = {}) {
   const position = seeking && progress ? number(progress.value) : state.timeline.position;
   if(progress) progress.style.setProperty('--progress', `${state.timeline.duration ? position/state.timeline.duration*100 : 0}%`);
   const elapsed = root.querySelector('[data-music-elapsed]');
-  if (elapsed) elapsed.textContent = musicFormatTime(position);
+  if (elapsed && elapsed.textContent!==musicFormatTime(position)) elapsed.textContent = musicFormatTime(position);
   const duration = root.querySelector('[data-music-duration]');
-  if (duration) duration.textContent = musicFormatTime(state.timeline.duration);
+  if (duration && duration.textContent!==musicFormatTime(state.timeline.duration)) duration.textContent = musicFormatTime(state.timeline.duration);
   const toggle = root.querySelector('[data-music-action="toggle"]');
   if (toggle) {
     const label = state.playing ? '暂停' : '播放';

@@ -8,12 +8,23 @@ const flushMicrotasks = async () => {
 // completion explicitly controlled so a failed or skipped startup cannot be
 // mistaken for a passing interaction test.
 export function installStartupBrowserApis(view) {
+  if (typeof view.matchMedia !== "function") view.matchMedia = query => {
+    const result = new view.EventTarget();
+    result.media = String(query);
+    result.matches = Boolean(globalThis.matchMedia?.(query)?.matches);
+    result.onchange = null;
+    result.addListener = listener => result.addEventListener("change", listener);
+    result.removeListener = listener => result.removeEventListener("change", listener);
+    return result;
+  };
   const frames = [], decoded = [];
   let resolveFonts;
   const fontsReady = new Promise(resolve => { resolveFonts = resolve; });
+  const fonts = new view.EventTarget();
+  fonts.ready = fontsReady;
   Object.defineProperty(view.document, "fonts", {
     configurable: true,
-    value: { ready: fontsReady },
+    value: fonts,
   });
   view.HTMLImageElement.prototype.decode = function () {
     decoded.push(this.src);

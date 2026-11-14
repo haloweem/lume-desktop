@@ -48,7 +48,8 @@ test('taskbar state validates the asynchronous schema without saved/result field
   assert.equal(validHostMessage({version:1,type:'navigate',page:'taskbar'}),true);
   for(const error of ['load','save','busy','unsupported','missing-payload','payload-integrity','conflict',
     'discover','read-appearance','apply-appearance','read-auto-hide','apply-auto-hide','core-start',
-    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install','core-access-denied'])
+    'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install','core-access-denied',
+    'core-restart-required','core-attach-timeout','core-effect-unconfirmed'])
     assert.equal(validHostMessage(taskbarMessage({error})),true,error);
   for(const fields of [{enabled:1},{applying:'false'},{pendingRecovery:null},{taskbars:-1},{taskbars:1.5},{taskbars:33},
     {revision:-1},{revision:Number.MAX_SAFE_INTEGER+1},{mode:'unknown'},{loadStatus:'recovered'},
@@ -69,6 +70,47 @@ test('taskbar access failure reaches the page with the precise error and no succ
   assert.match(taskbarStatus(state),/已停止自动重试/);
   assert.doesNotMatch(taskbarStatus(state),/已应用|已恢复|保存成功/);
   assert.equal(taskbarNotice(state,{hasInlineStatus:true}),null);
+});
+
+test('taskbar effect evidence crosses the bridge without treating core liveness as transparency',()=>{
+  const evidence={effectStatus:'applied',taskbarType:'xaml',stage:'background-applied',hresult:0,registeredTaskbars:2,backgrounds:2,appliedTaskbars:2,
+    hideApplied:true,effectiveAutoHide:true,fullyHidden:false,autoHideDemand:true};
+  assert.equal(validHostMessage(taskbarMessage(evidence)),true);
+  for(const fields of [{effectStatus:'running'},{effectStatus:true},{taskbarType:'future'},{taskbarType:1},{stage:7},{stage:'x'.repeat(97)},
+    {hresult:2147483648},{hresult:'0x80070005'},{backgrounds:-1},{appliedTaskbars:1.5},{registeredTaskbars:33},
+    {hideApplied:'true'},{effectiveAutoHide:0},{fullyHidden:null},{autoHideDemand:1}])
+    assert.equal(validHostMessage(taskbarMessage(fields)),false,JSON.stringify(fields));
+  let state=reduce(initialState(),{type:'request',scope:'taskbar',key:'enabled',value:true});
+  state=reduce(state,{type:'host',message:taskbarMessage({revision:1,loadStatus:'loaded',enabled:true,running:true})});
+  assert.notEqual(state.taskbarStatus,'applied','the older live-only message cannot confirm a visible effect');
+  assert.match(taskbarStatus(state),/等待背景透明效果确认/);
+  assert.doesNotMatch(taskbarStatus(state),/设置已应用/);
+  state=reduce(state,{type:'request',scope:'taskbar',key:'transparent',value:true});
+  state=reduce(state,{type:'host',message:taskbarMessage({revision:2,loadStatus:'loaded',enabled:true,running:true,...evidence})});
+  assert.equal(state.taskbarStatus,'applied');
+  assert.equal(state.taskbar.appliedTaskbars,2);
+  assert.equal(state.taskbar.effectStatus,'applied');
+  assert.equal(state.taskbar.taskbarType,'xaml');
+});
+
+test('taskbar reload, timeout and hiding have independent truthful notices',()=>{
+  for(const [error,detail] of [['core-restart-required',/重启 Windows/],['core-attach-timeout',/0x80070102/]]) {
+    const state=reduce(initialState(),{type:'host',message:taskbarMessage({revision:1,enabled:true,running:false,
+      loadStatus:'loaded',error,autoHideTaskbar:true,hideApplied:true,effectiveAutoHide:true})});
+    assert.equal(state.taskbarStatus,'error');
+    assert.match(taskbarStatus(state),detail);
+    assert.match(taskbarStatus(state),/隐藏已应用/);
+    assert.doesNotMatch(taskbarStatus(state),/任务栏设置已应用/);
+  }
+  const demand=reduce(initialState(),{type:'host',message:taskbarMessage({revision:1,running:true,
+    autoHideDemand:true,hideApplied:true,effectiveAutoHide:true})});
+  assert.equal(demand.taskbarStatus,'idle','Dock demand does not look like a service refusing to stop');
+  assert.match(taskbarStatus(demand),/Dock 请求的任务栏自动隐藏已应用/);
+  let state=reduce(initialState(),{type:'request',scope:'taskbar'});
+  state=reduce(state,{type:'host',message:taskbarMessage({revision:1,loadStatus:'loaded',enabled:true,running:true,
+    transparentTaskbar:false,autoHideTaskbar:true,hideApplied:false})});
+  assert.notEqual(state.taskbarStatus,'applied');
+  assert.match(taskbarStatus(state),/等待任务栏隐藏效果确认/);
 });
 
 test('animation state validates runtime evidence and keeps legitimate failure snapshots',()=>{
@@ -157,7 +199,7 @@ test('taskbar waits for a newer settled revision and holds confirmed preferences
   state=reduce(state,{type:'host',message:taskbarMessage({revision:3,applying:true,enabled:true})});
   assert.equal(state.taskbarStatus,'saving');
   assert.equal(state.taskbar.enabled,false,'requested preferences are not evidence of application');
-  state=reduce(state,{type:'host',message:taskbarMessage({revision:4,enabled:true,running:true,loadStatus:'loaded'})});
+  state=reduce(state,{type:'host',message:taskbarMessage({revision:4,enabled:true,running:true,effectStatus:'applied',loadStatus:'loaded'})});
   assert.equal(state.taskbarStatus,'applied');
   assert.equal(state.taskbar.enabled,true);
   assert.equal(state.minimizeStatus,'loading');

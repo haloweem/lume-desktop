@@ -69,7 +69,7 @@ try {
         await root.waitFor({state:'visible'});
         assert.equal(await root.count(),1,`${scope}: real route uses the shared frame`);
         let originalControls;
-        for(const tab of ['settings','details','settings']) {
+        for(const tab of (scope==='dock'?['dock','details','dock']:['settings','details','settings'])) {
           await root.locator(`[data-tab="${tab}"]`).click();
           const geometry=await root.evaluate((element,tab)=>{
             const body=element.querySelector('.settings-body'),nav=element.querySelector('.settings-side-nav');
@@ -91,7 +91,9 @@ try {
               detailsOffset:details?details.getBoundingClientRect().left-b.left-parseFloat(getComputedStyle(body).paddingLeft):null,
               horizontalOverflow:body.scrollWidth>body.clientWidth+1||document.documentElement.scrollWidth>innerWidth+1};
           },tab);
-          assert.deepEqual(geometry.tabs,['settings','details'],`${scope}: no island-only placeholder tabs`);
+          assert.deepEqual(geometry.tabs,scope==='dock'?['dock','launchpad','control-center','settings','details']:
+            scope==='todayTodo'?['todo','settings','details']:['settings','details'],
+            `${scope}: only the component's supported tabs are present`);
           assert.deepEqual(geometry.selected,[tab],`${scope}: actual app tab state follows sidebar click`);
           assert.equal(geometry.legacyTabs,0,`${scope}: old top tabs/header removed`);
           assert.equal(geometry.title,geometry.expectedTitle,`${scope}: settings and details visibly identify their component`);
@@ -102,7 +104,7 @@ try {
           if(scope==='weather'&&tab==='details')assert.doesNotMatch(geometry.text,/数据来源与许可|CC BY 4.0/);
           assert.equal(geometry.navWidth,viewport.width<=480?60:viewport.width<=760?64:72);
           assert.equal(geometry.navRight,geometry.bodyLeft);
-          assert.equal(geometry.background,'rgb(16, 17, 20)');
+          assert.equal(geometry.background,'rgb(18, 18, 18)');
           assert.equal(geometry.horizontalOverflow,false,`${scope}: narrow viewport has no horizontal overflow`);
           assert.ok(geometry.text,`${scope}: settings/details content remains`);
           if(tab==='details')assert.ok(Math.abs(geometry.detailsOffset)<1,`${scope}: details align at body inset`);
@@ -121,14 +123,15 @@ try {
       await island.locator('[data-tab="home"]').click();
       assert.equal(await island.locator('[data-island-membership],[data-island-layout],.island-home__components-heading').count(),0,
         'empty membership area is removed from the real home page');
-      assert.equal(await island.locator('[data-island-native-preview]').count(),1,'native preview stays');
+      assert.equal(await island.locator('[data-island-native-preview]').count(),0,'overall preview is removed');
+      assert.equal(await island.locator('[data-island-styles]').count(),1,'component styles stay on the home page');
       assert.equal(await island.locator('[data-island-preference="material"]').count(),3,'appearance material controls stay');
       await page.screenshot({path:path.join(output,`${viewport.width}-island-home.png`)});
       for(const tab of ['settings','details']){
         await island.locator(`[data-tab="${tab}"]`).click();
         assert.equal(await island.locator('.settings-component-title').textContent(),'灵动岛');
       }
-      for(const tab of ['home','music','todo','quick-launch','clock','notifications','settings','details']) {
+      for(const tab of ['home','todo','settings','details']) {
         await island.locator(`[data-tab="${tab}"]`).click();
         const selected=island.locator(`[data-tab="${tab}"][aria-selected="true"]`);
         await selected.locator('img').evaluate(image=>image.decode());

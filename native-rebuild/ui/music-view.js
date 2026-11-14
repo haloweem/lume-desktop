@@ -13,7 +13,7 @@ import {openMusicPlaylistSelection} from './music-playlist-selection.js';
 import {musicTrackLiked,canLikeMusicTrack} from './music-online.js';
 
 const NAVS = ["recommendations", "albums", "favorites", "recent", "local", "playlists"];
-const SCROLLERS = "[data-music-home-content], [data-music-home-sidebar], [data-music-scroll], .MusicContent, .MusicMain, .MusicPanelBody, .MusicPlayerPanel";
+const SCROLLERS = "[data-music-home-content], [data-music-home-sidebar], [data-music-scroll], .MusicContent, .MusicMain, .MusicPanelBody, .MusicPlayerPanel, .MusicPlaylistItems, .MusicSettingsBody, [data-music-font-list]";
 const FOCUS_KEYS = ["id", "data-music-search", "data-music-list-search", "data-music-progress", "data-music-rail-search", "data-music-rail-tab", "data-music-rail-playlist",
   "data-music-action", "data-music-quality-trigger", "data-music-quality-option", "data-music-nav", "data-music-playlist", "data-music-playlist-group", "data-music-online-provider", "data-music-provider-open", "data-music-file-input", "data-music-panel-tab", "data-music-preference", "data-music-setting", "data-music-color-reset", "data-music-sonnet-color", "data-music-sonnet-reset", "data-music-background-action", "data-music-cover-copy", "data-music-font-search", "data-music-font-family", "data-music-font-trigger"];
 const UNAVAILABLE = "\u97f3\u4e50\u64cd\u4f5c\u6682\u4e0d\u53ef\u7528";
@@ -233,10 +233,11 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
 
   function saveScroll() {
     if (!surface) return;
-    for (const element of [surface, ...surface.querySelectorAll("*")]) {
-      if (element.matches(SCROLLERS) || element.scrollTop || element.scrollLeft) {
-        scrollPositions.set(scrollKey(element), [element.scrollTop, element.scrollLeft]);
-      }
+    for (const element of [surface, ...surface.querySelectorAll(SCROLLERS)]) {
+      const key=scrollKey(element);
+      scrollPositions.delete(key);
+      scrollPositions.set(key, [element.scrollTop, element.scrollLeft]);
+      if(scrollPositions.size>120)scrollPositions.delete(scrollPositions.keys().next().value);
     }
   }
 
@@ -446,7 +447,7 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
         effects=createEffects(effectHost,{onError:()=>notice('音乐特效暂不可用')});
       }
     }
-    for (const element of [surface, ...surface.querySelectorAll("*")]) {
+    for (const element of [surface, ...surface.querySelectorAll(SCROLLERS)]) {
       const position = scrollPositions.get(scrollKey(element));
       if (position) [element.scrollTop, element.scrollLeft] = position;
     }
@@ -486,12 +487,34 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
     for(const selector of ['.MusicSidebar','.MusicContent','[data-music-open-player]','.MusicPlayerStatus']) {
       const current=surface.querySelector(selector),replacement=nextRoot.querySelector(selector);
       // Account/QR notifications must retain unchanged dialog opener nodes.
-      if(current && replacement){if(!current.isEqualNode(replacement))current.replaceWith(replacement);}
+      if(current && replacement){
+        if(selector==='.MusicContent')syncListContent(current,replacement);
+        else if(!current.isEqualNode(replacement))current.replaceWith(replacement);
+      }
       else if(current)current.remove();
       else if(replacement)surface.append(replacement);
     }
     surface.dataset.musicSession=String(state.session);
     return true;
+  }
+
+  // Keep unchanged rows (and their decoded artwork) when paging or changing a
+  // single song. The content shell and its scroll container also stay mounted.
+  function syncListContent(current,next) {
+    const old=new Map([...current.children].map(node=>[
+      node.dataset.musicTrackId?`track:${node.dataset.musicTrackId}`:node.className,node]));
+    const kept=new Set();let cursor=current.firstElementChild;
+    for(const replacement of [...next.children]) {
+      const key=replacement.dataset.musicTrackId?`track:${replacement.dataset.musicTrackId}`:replacement.className;
+      const previous=old.get(key);old.delete(key);
+      let chosen=replacement;
+      if(previous?.matches('.MusicTrackList')&&replacement.matches('.MusicTrackList')) {
+        syncListContent(previous,replacement);chosen=previous;
+      } else if(previous?.isEqualNode(replacement))chosen=previous;
+      if(chosen!==cursor)current.insertBefore(chosen,cursor);
+      kept.add(chosen);cursor=chosen.nextElementSibling;
+    }
+    for(const node of [...current.children])if(!kept.has(node))node.remove();
   }
 
   function focusAction(action) {
@@ -591,11 +614,13 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
     view={...view,listQuery:target.value.slice(0,512)};
     // Keep the active native editor (including selection and IME) in place.
     const next=document.createElement('div');
-    next.innerHTML=musicPage(state,pageOptions());
-    for(const selector of ['.MusicContent .MusicTrackList','.MusicContent .MusicSongTab',
-      '.MusicContent .MusicToolbar .MusicPrimaryButton']) {
-      const current=surface.querySelector(selector),replacement=next.querySelector(selector);
-      if(current && replacement)current.replaceWith(replacement);
+    next.innerHTML=musicPage(state,{...pageOptions(),fragment:'home-content'});
+    for(const selector of ['.MusicTrackList','.MusicSongTab','.MusicToolbar .MusicPrimaryButton']) {
+      const current=surface.querySelector(`.MusicContent ${selector}`),replacement=next.querySelector(selector);
+      if(current && replacement) {
+        if(selector==='.MusicTrackList')syncListContent(current,replacement);
+        else if(!current.isEqualNode(replacement))current.replaceWith(replacement);
+      }
     }
   }
 

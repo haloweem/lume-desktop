@@ -7,6 +7,8 @@ namespace {
 void Expect(bool value,const char* why){if(!value){std::cerr<<why<<'\n';std::exit(1);}}
 struct Files:settings::IFileStore {
     std::map<std::string,std::string> data;bool fail=false;
+    mutable int boundedReads=0;
+    bool ReadBounded(const std::string& p,std::size_t limit,std::string& out)const override{++boundedReads;Expect(limit==8192,"weather settings use pre-read size bound");const auto it=data.find(p);if(it!=data.end()&&it->second.size()>limit)return false;return Read(p,out);}
     bool Read(const std::string& p,std::string& out)const override{auto it=data.find(p);if(it==data.end())return false;out=it->second;return true;}
     bool Exists(const std::string& p)const override{return data.count(p)!=0;}
     bool Write(const std::string& p,const std::string& v)override{if(fail)return false;data[p]=v;return true;}
@@ -37,5 +39,7 @@ int main(){
     Expect(store.Save("weather",p)&&files.data["weather.corrupt"]=="broken","corrupt data isolated");
     const auto saved=files.data["weather"];files.fail=true;p.city="auto";
     Expect(!store.Save("weather",p)&&files.data["weather"]==saved,"save failure preserves existing settings");
+    files.fail=false;files.data["weather"]=std::string(100000,'x');
+    Expect(store.Load("weather").state==widget::LoadState::Recovered&&!store.Save("weather",p)&&files.boundedReads>0,"oversized weather main uses bounded backup and is preserved on write");
     std::cout<<"weather preferences passed\n";
 }

@@ -195,7 +195,7 @@ bool OwnCore(const PROCESSENTRY32W& entry, HANDLE process) {
         GetProcessTimes(process, &childCreated, &exited, &kernel, &user) &&
         CompareFileTime(&childCreated, &ownerCreated) >= 0;
 }
-SelfCheck Taskbar(const fs::path& install) {
+SelfCheck Taskbar(const fs::path& install, bool transparency = true) {
     SelfCheck check{"taskbar", CheckStatus::Ok, "透明任务栏", "运行环境检查通过，尚未验证透明效果", {}};
     const auto core = install / L"taskbar-runtime" / fs::u8path(Arch()) / L"LumeTaskbarCore.exe";
     std::error_code error;
@@ -203,9 +203,9 @@ SelfCheck Taskbar(const fs::path& install) {
     std::string unknownFramework;
     bool missingFramework = false;
     const bool windows11 = Build() >= 22000;
-    const bool missingCore = windows11 && !fs::is_regular_file(core, error);
+    const bool missingCore = transparency && windows11 && !fs::is_regular_file(core, error);
     if (missingCore) problems.push_back("缺少 LumeTaskbarCore.exe");
-    if (windows11) {
+    if (transparency && windows11) {
         using namespace platform::windows;
         const auto frameworks = QueryTaskbarFrameworks(std::string(Arch()) == "arm64");
         if (frameworks.hresult < 0) {
@@ -215,7 +215,7 @@ SelfCheck Taskbar(const fs::path& install) {
             if (frameworks.vclibsVersion < TaskbarVCLibsMinimum)
                 problems.push_back("缺少可用的 Microsoft.VCLibs.140.00（14.0.33519.0 或更高版本，" + std::string(Arch()) + "）");
             if (frameworks.winuiVersion < TaskbarWinUIMinimum)
-                problems.push_back("缺少可用的 Microsoft.UI.Xaml.2.8（8.2310.30001.0 或更高版本，" + std::string(Arch()) + "）");
+                problems.push_back("缺少满足当前版本要求的 Microsoft.UI.Xaml.2.8（" + std::string(Arch()) + "）");
             missingFramework = !frameworks.Ready();
         }
     }
@@ -231,8 +231,8 @@ SelfCheck Taskbar(const fs::path& install) {
         for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
             listed = true;
             const auto name = Lower(entry.szExeFile);
-            for (const auto rival : rivals) if (name.find(rival) != std::wstring::npos) found.insert(Utf8(entry.szExeFile));
-            if (name == L"lumetaskbarcore.exe") {
+            for (const auto rival : rivals) if (transparency && name.find(rival) != std::wstring::npos) found.insert(Utf8(entry.szExeFile));
+            if (transparency && name == L"lumetaskbarcore.exe") {
                 // Another instance can use exactly the same cache or install
                 // path. Only a verified child of this process is ours.
                 wchar_t path[32768]{};
@@ -267,10 +267,17 @@ SelfCheck Taskbar(const fs::path& install) {
     }
     return check;
 }
-void ApplyTaskbarState(SelfCheck& check, const nlohmann::json& modules) {
-    if (!modules.is_object()) return;
+}  // namespace
+void ApplyTaskbarRuntimeState(SelfCheck& check, const nlohmann::json& modules) {
+    const auto unknown = [&] {
+        if (check.status == CheckStatus::Ok) {
+            check.status = CheckStatus::Unknown;
+            check.detail = "运行环境检查通过，尚未收到任务栏效果确认";
+        }
+    };
+    if (!modules.is_object()) { unknown(); return; }
     const auto found = modules.find("taskbar-state");
-    if (found == modules.end() || !found->is_object()) return;
+    if (found == modules.end() || !found->is_object()) { unknown(); return; }
     const auto& state = *found;
     const auto flag = [&](const char* name) {
         const auto item = state.find(name);
@@ -279,22 +286,59 @@ void ApplyTaskbarState(SelfCheck& check, const nlohmann::json& modules) {
     const auto errorValue = state.find("error");
     const auto error = errorValue != state.end() && errorValue->is_string()
         ? errorValue->get<std::string>() : std::string{};
+    const auto effectValue = state.find("effectStatus");
+    const auto effect = effectValue != state.end() && effectValue->is_string()
+        ? effectValue->get<std::string>() : std::string{};
+    const auto stageValue = state.find("stage");
+    const auto stage = stageValue != state.end() && stageValue->is_string()
+        ? stageValue->get<std::string>().substr(0, 96) : std::string{};
+    const auto hrValue = state.find("hresult");
+    const auto hr = hrValue != state.end() && hrValue->is_number_integer()
+        ? hrValue->get<std::int64_t>() : 0;
+    std::string evidence;
+    if (!stage.empty()) evidence += "阶段=" + stage;
+    if (hr != 0) {
+        std::ostringstream code;
+        code << "0x" << std::hex << static_cast<std::uint32_t>(hr);
+        evidence += (evidence.empty() ? "" : "，") + code.str();
+    }
+    const bool hiding = (flag("enabled") && flag("autoHideTaskbar")) || flag("autoHideDemand");
+    const bool hideApplied = hiding && flag("hideApplied") && flag("effectiveAutoHide");
+    const auto hideDetail = flag("fullyHidden") ? "任务栏完全隐藏已应用" :
+        flag("autoHideDemand") && !flag("autoHideTaskbar") ? "Dock 请求的任务栏自动隐藏已应用" : "任务栏自动隐藏已应用";
     if (!error.empty() || (flag("pendingRecovery") && !flag("applying"))) {
         const auto detail = error == "core-access-denied"
             ? "任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试"
+            : error == "core-restart-required" ? "任务栏接入模块仍被 Explorer 占用或版本不一致，需要重新加载，已停止自动重试"
+            : error == "core-attach-timeout" ? "任务栏接入系统 XAML 超时（0x80070102），尚未确认透明效果"
+            : error == "core-effect-unconfirmed" ? "任务栏服务正在运行，但尚未确认背景透明效果"
             : error.empty() ? std::string("原任务栏设置仍待恢复") : "任务栏运行失败（" + error + "）";
         check.detail = check.status == CheckStatus::Ok ? detail : check.detail + "；" + detail;
+        if (hideApplied) check.detail += std::string("；") + hideDetail;
         check.status = CheckStatus::Problem;
-        check.fix += "请导出问题反馈报告，以核对任务栏运行错误和权限信息。";
+        check.fix += error == "core-restart-required"
+            ? "请保存工作后重启 Windows，再启动当前安装的 Lume；不需要反复切换透明开关。"
+            : "请导出问题反馈报告，以核对任务栏背景、运行错误和权限信息。";
     } else if (check.status == CheckStatus::Ok) {
         if (flag("applying") || (flag("enabled") && !flag("running"))) {
             check.status = CheckStatus::Unknown;
             check.detail = "任务栏服务尚未完成初始化，尚未确认效果";
-        } else if (flag("running")) check.detail = "任务栏服务正在运行";
-        else check.detail = "任务栏功能已关闭，运行环境检查通过";
+        } else if (flag("enabled") && flag("transparentTaskbar") && effect != "applied") {
+            check.status = effect == "failed" ? CheckStatus::Problem : CheckStatus::Unknown;
+            check.detail = effect == "failed" ? "任务栏背景透明效果应用失败" : "任务栏服务正在运行，但尚未确认背景透明效果";
+            if (hideApplied) check.detail += std::string("；") + hideDetail;
+            check.fix = "请导出问题反馈报告，以核对实际背景匹配和画刷应用状态。";
+        } else if (hiding && !hideApplied) {
+            check.status = CheckStatus::Unknown;
+            check.detail = "尚未确认任务栏隐藏效果";
+        } else if (flag("enabled") && flag("transparentTaskbar")) {
+            check.detail = "任务栏背景透明效果已确认";
+            if (hideApplied) check.detail += std::string("；") + hideDetail;
+        } else if (hideApplied) check.detail = hideDetail;
+        else check.detail = "任务栏效果已关闭，运行环境检查通过";
     }
+    if (!evidence.empty() && (check.status != CheckStatus::Ok || hr != 0)) check.detail += "（" + evidence + "）";
 }
-}  // namespace
 
 std::vector<SelfCheck> RunSelfChecks(const fs::path& installDirectory, const nlohmann::json& modules) {
     std::vector<SelfCheck> checks;
@@ -306,8 +350,17 @@ std::vector<SelfCheck> RunSelfChecks(const fs::path& installDirectory, const nlo
     guard(Wallpaper, "wallpaper", "动态壁纸播放器");
     guard(Helpers, "helpers", "辅助程序");
     try { checks.push_back(GpuDecode()); } catch (...) { checks.push_back({"gpu-decode", CheckStatus::Unknown, "壁纸显卡解码", "检查时出错", {}}); }
-    guard(Taskbar, "taskbar", "透明任务栏");
-    ApplyTaskbarState(checks.back(), modules);
+    bool transparency = true;
+    if (modules.is_object()) {
+        const auto state = modules.find("taskbar-state");
+        if (state != modules.end() && state->is_object()) {
+            const auto enabled = state->find("transparentTaskbar");
+            if (enabled != state->end() && enabled->is_boolean()) transparency = enabled->get<bool>();
+        }
+    }
+    try { checks.push_back(Taskbar(installDirectory, transparency)); }
+    catch (...) { checks.push_back({"taskbar", CheckStatus::Unknown, "任务栏美化", "检查时出错", {}}); }
+    ApplyTaskbarRuntimeState(checks.back(), modules);
     return checks;
 }
 

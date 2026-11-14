@@ -21,7 +21,7 @@ void Pump(DWORD duration){
         MsgWaitForMultipleObjects(0,nullptr,FALSE,static_cast<DWORD>(end-now),QS_ALLINPUT);
     }
 }
-HWND Field(HWND parent,int id){struct Search{int id;HWND found=nullptr;}s{id};EnumChildWindows(parent,[](HWND h,LPARAM p)->BOOL{auto& s=*reinterpret_cast<Search*>(p);if(GetDlgCtrlID(h)==s.id){s.found=h;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&s));return s.found;}
+[[maybe_unused]] HWND Field(HWND parent,int id){struct Search{int id;HWND found=nullptr;}s{id};EnumChildWindows(parent,[](HWND h,LPARAM p)->BOOL{auto& s=*reinterpret_cast<Search*>(p);if(GetDlgCtrlID(h)==s.id){s.found=h;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&s));return s.found;}
 void Click(NativeCalendarWindow& w,CalendarRect r){const auto dpi=GetDpiForWindow(w.Handle());SendMessageW(w.Handle(),WM_LBUTTONDOWN,0,MAKELPARAM(static_cast<int>((r.x+r.width/2)*dpi/96),static_cast<int>((r.y+r.height/2)*dpi/96)));Pump(30);}
 void Sample(std::ofstream& f,const char* phase,int round){
     PROCESS_MEMORY_COUNTERS_EX m{};m.cb=sizeof(m);Check(GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&m),sizeof(m))!=FALSE,"memory counters");
@@ -45,8 +45,8 @@ int main(){try{
     NativeCalendarWindow window(GetModuleHandleW(nullptr),[](calendar::Action){},[]{});window.BindTodos(session.Port());calendar::Preferences prefs;prefs.enabled=true;prefs.Active()->hasPosition=true;prefs.Active()->x=100;prefs.Active()->y=60;
     for(int round=1;round<=12;++round){prefs.theme=round%2?calendar::Theme::Spacious:calendar::Theme::Split;Check(window.Configure(prefs)&&window.Start(),"open calendar");Pump(80);Click(window,window.Layout().list);Sample(samples,"agenda",round);
         Check(!window.AgendaLayout().rows.empty(),"agenda rows");Click(window,window.AgendaLayout().rows[0].edit);auto editor=window.TodoEditor().Handle();Check(editor!=nullptr,"open editor");Sample(samples,"editor",round);
-        SendMessageW(Field(editor,102),BM_CLICK,0,0);Pump(50);Sample(samples,"picker",round);window.CancelTodoEditor();
-        Click(window,window.AgendaLayout().rows[0].edit);editor=window.TodoEditor().Handle();SetWindowTextW(Field(editor,101),(L"已编辑日程 "+std::to_wstring(round)).c_str());SendMessageW(Field(editor,106),BM_CLICK,0,0);Pump(40);Check(!window.TodoEditor().IsOpen(),"commit closes editor");
+        Pump(400);Sample(samples,"sheet",round);window.CancelTodoEditor();
+        Click(window,window.AgendaLayout().rows[0].edit);window.TodoEditor().Receive(R"({"version":1,"scope":"todo-editor","action":"save","commands":[{"action":"update","fields":{"id":")"+session.Read().tasks[0].id+R"(","title":"已编辑日程 )"+std::to_string(round)+R"("}}]})");Pump(40);Check(!window.TodoEditor().IsOpen(),"commit closes editor");
         Click(window,window.AgendaLayout().rows[0].check);SendMessageW(window.Handle(),WM_MOUSEWHEEL,MAKEWPARAM(0,-WHEEL_DELTA),0);Pump(30);
         window.Stop();Pump(100);Sample(samples,"closed",round);Check(WriteProcessMemorySnapshot(root/"diagnostics.jsonl","closed",round),"resource diagnostics");
     }

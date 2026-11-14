@@ -24,7 +24,9 @@ const change=(selector,value)=>{
 try {
   controller.show();
   assert.deepEqual([...host.querySelectorAll('button[data-settings-section] svg')].map(e=>e.dataset.icon),
-    ['sliders','user-gear','rocket','circle-info'],'本版设置导航隐藏诊断与维护');
+    ['sliders','user-gear','rocket','message-exclamation','circle-info'],'设置保留问题反馈入口并隐藏诊断与维护');
+  assert.deepEqual([...host.querySelectorAll('button[data-settings-section]')].map(e=>e.dataset.settingsSection),
+    ['general','user','autostart','support','about'],'设置导航只包含正式开放的五个页面');
   assert.equal(host.firstElementChild.dataset.settingsSection,'general');
   assert.equal(find('[data-setting="balancedMode"]').checked,true);
   assert.equal(find('[data-setting="balancedMode"]').disabled,true,'初次确认前不允许保存');
@@ -108,6 +110,9 @@ try {
   assert.equal(find('[data-settings-panel="diagnostics"]').hidden,true,'深链接不会打开已禁用诊断页');
   controller.handleMessage(snapshot(15,{language:'en'}));
   assert.match(find('[data-settings-heading]').textContent,/通用/);
+  controller.show('support');
+  assert.equal(find('[data-settings-heading]').textContent,'问题反馈');
+  assert.equal(find('[data-settings-panel="support"]').hidden,false,'正式反馈页面允许通过导航打开');
   controller.show('general');
   sent=false;
   change('[data-setting="balancedMode"]',false);
@@ -146,7 +151,7 @@ try {
   assert.equal(find('[data-setting="autostart"]').checked,true,'其他目录旧版命令仍在自启时不能假关闭');
   assert.match(find('[data-settings-message]').textContent,/启动项.*未.*更改|未.*更改.*启动项/);
   recovered.dispose();
-  console.log('设置 DOM：四栏、默认值、pending/错误回退、双向语言、独立账号草稿、返回/滚动、兼容更新状态、断桥/dispose 通过。');
+  console.log('设置 DOM：五栏、默认值、pending/错误回退、双向语言、独立账号草稿、返回/滚动、兼容更新状态、反馈入口、断桥/dispose 通过。');
 } finally {
   controller.dispose();titlebar.dispose();dom.window.close();
 }

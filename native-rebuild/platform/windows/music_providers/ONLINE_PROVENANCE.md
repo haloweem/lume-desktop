@@ -1,5 +1,11 @@
 # 在线音乐协议来源
 
+2026-11-14 更新：网易云音源请求已移植 Folia `77d52a3` 使用的
+`@neteasecloudmusicapienhanced/api` 4.41.1 `song_url_v1` xeapi 链路，
+包括公钥注册/签名校验、Windows CNG 加密和有界 gzip 解包。
+播放有限重试、错误分类及歌词缓存见 [本次来源与边界](FOLIA-PLAYBACK-SOURCES.md)。
+下方“仅标准音质、不实现 song_url_v1/xeapi”的段落为早期移植记录，已被本次实现取代。
+
 本目录的在线目录适配器以历史项目已经存在的请求路径和字段为基础。
 QQ 公开逐行歌词另外参考下述有固定版本的成熟开源实现：
 

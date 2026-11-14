@@ -17,7 +17,8 @@ std::optional<std::string> DiagnosticModule(ui::PageCommand command) {
     if(value>=static_cast<int>(ui::PageCommand::TaskbarEnable)&&value<=static_cast<int>(ui::PageCommand::TaskbarReset))return "taskbar";
     if(value>=static_cast<int>(ui::PageCommand::MinimizeEnable)&&value<=static_cast<int>(ui::PageCommand::MinimizeUnhideDurationLast))return "minimize";
     if(value>=static_cast<int>(ui::PageCommand::RadialEnable)&&value<=static_cast<int>(ui::PageCommand::RadialShortcutLast))return "radial";
-    if(value>=static_cast<int>(ui::PageCommand::DockEnable)&&value<=static_cast<int>(ui::PageCommand::DockLaunchpadIconScaleLast))return "dock";
+    if((value>=static_cast<int>(ui::PageCommand::DockEnable)&&value<=static_cast<int>(ui::PageCommand::DockLaunchpadIconScaleLast))||
+       command==ui::PageCommand::DockShowRunningOn||command==ui::PageCommand::DockShowRunningOff)return "dock";
     return {};
 }
 std::string DiagnosticModuleForMessage(const nlohmann::json& message) {

@@ -173,6 +173,12 @@ export function wallpaperPreloadTargets(state) {
   }
   return targets;
 }
+export function wallpaperHomePreloadTargets(state){
+  const items=wallpaperHomeItems(state),index=items.length?((state.slide%items.length)+items.length)%items.length:0;
+  return items.map((_,offset)=>items[(index+offset)%items.length]).map(item=>{
+    const source=wallpaperHeroImageUrl(item);return {kind:'hero',source,url:wallpaperAssetPreferredUrl(source)};
+  }).filter(target=>target.url);
+}
 
 export function wallpaperCollection(state) {
   const source=state.view === "wallpaperOfficial" ? "official" : "local";
@@ -382,6 +388,7 @@ export function createWallpaperPreviewController({getVideo,getImage=()=>null,onC
       element.src=item.url;
       if (kind==="video") {
         element.muted=true;
+        element.loop=true;
       }
       let timer;
       try {

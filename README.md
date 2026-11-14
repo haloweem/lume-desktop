@@ -1,8 +1,8 @@
 # Lume 桌面客户端源码
 
-这是 Lume Windows 桌面客户端（壁纸、桌面组件、任务栏、Dock、灵动岛、音乐等）的完整源码，
-对应同版本号的官方安装包 `LumeSetup-<版本>.exe`。本次导出对应的版本和源码提交写在
-[`SOURCE-REVISION.txt`](SOURCE-REVISION.txt)。
+这是 Lume Windows 桌面客户端（壁纸、桌面组件、任务栏、Dock、灵动岛、音乐等）的源码。
+本次导出的版本和源码提交写在 [`SOURCE-REVISION.txt`](SOURCE-REVISION.txt)。
+源码同步与官网安装包发布分别进行；同版本号也可能包含后续修复，请用源码提交号区分快照。
 
 ## 许可
 

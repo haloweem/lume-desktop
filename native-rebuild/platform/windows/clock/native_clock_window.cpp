@@ -105,6 +105,7 @@ void NativeClockWindow::Suspend() {
     ClearSnapGuides();widget_snap::SetEdges(window_,0);
     suspended_=true;
     KillTimer(window_,kMinuteTimer);
+    window_layer::WantHidden(window_);
     ShowWindow(window_,SW_HIDE);
     renderer_.reset();
 }

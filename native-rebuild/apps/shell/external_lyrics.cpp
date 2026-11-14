@@ -41,15 +41,13 @@ namespace {
 using music::auth::Json;
 using music::auth::Provider;
 
-// Titles and artists compared without case, spaces, punctuation and bracketed
-// remarks ("晴天 (Live)", "稻香（伴奏）" -> the song itself).
+// Ignore typography, but keep version remarks: live, accompaniment and studio
+// recordings have different timing even when the song and singer are the same.
 std::wstring Normal(std::wstring_view value) {
     std::wstring result;
-    int depth = 0;
     for (const wchar_t c : value) {
-        if (c == L'(' || c == L'（' || c == L'[' || c == L'【' || c == L'<' || c == L'《') { ++depth; continue; }
-        if (c == L')' || c == L'）' || c == L']' || c == L'】' || c == L'>' || c == L'》') { if (depth) --depth; continue; }
-        if (depth || std::iswspace(c) || std::iswpunct(c) || c == L'·' || c == L'・' || c == L'、') continue;
+        if (std::iswspace(c) || std::iswpunct(c) || c == L'·' || c == L'・' || c == L'、' ||
+            c == L'（' || c == L'）' || c == L'【' || c == L'】' || c == L'《' || c == L'》') continue;
         result.push_back(static_cast<wchar_t>(std::towlower(c)));
     }
     return result;
@@ -70,11 +68,8 @@ std::vector<std::wstring> Artists(std::wstring_view value) {
 
 struct Request { std::string key; std::wstring title, artist; double duration = 0; std::uint64_t generation = 0; };
 
-// Best catalogue match: the same title is required. Then, in order: an
-// artist the player names (catalogues spell some differently, 周杰伦 is
-// "Jay" on NetEase, so a different artist only costs), the plain title
-// without a remark such as "(深情版)", and a close length. Lengths further
-// apart than 8 s are another recording whose timing would not fit.
+// Require the recording's title and a named artist. Do not fall back to a
+// different singer when the requested recording is absent from a catalogue.
 struct Candidate { Provider provider = Provider::Netease; std::string id; double length = 0, score = 0; };
 std::optional<Candidate> Match(const Json& page, const Request& request) {
     if (!page.is_object() || !page.contains("tracks") || !page["tracks"].is_array()) return {};
@@ -91,8 +86,8 @@ std::optional<Candidate> Match(const Json& page, const Request& request) {
             const auto candidate = Artists(text::Wide(item.value("artist", std::string{})));
             bool shared = false;
             for (const auto& x : artists) for (const auto& y : candidate)
-                if (x == y || (x.size() > 1 && y.find(x) != y.npos) || (y.size() > 1 && x.find(y) != x.npos)) shared = true;
-            if (!shared) score += 100;
+                if (x == y || (x == L"jay" && y == L"周杰伦") || (y == L"jay" && x == L"周杰伦")) shared = true;
+            if (!shared) continue;
         }
         if (raw.find_first_of(L"(（[【") != raw.npos && request.title.find_first_of(L"(（[【") == std::wstring::npos) score += 20;
         const double length = item.value("duration", 0.0);
@@ -110,7 +105,8 @@ std::optional<Candidate> Match(const Json& page, const Request& request) {
 struct ExternalLyrics::Impl {
     std::mutex mutex;
     std::condition_variable wake;
-    bool stop = false, done = false;
+    std::atomic<bool> stop{false};
+    bool done = false;
     std::optional<Request> pending;
     std::atomic<std::uint64_t> generation{0};
     // Results by track, oldest first out. A network failure retries after a minute.
@@ -118,21 +114,16 @@ struct ExternalLyrics::Impl {
     std::map<std::string, Entry> cache;
     std::deque<std::string> order;
 
-    // UI-thread state: the current track and its clock.
+    // UI-thread state: the current track. Position always belongs to the player.
     std::string key;
     bool requested = false;
-    bool timed = false;  // the clock started with the track
-    double clock = 0;
-    ULONGLONG clockAt = 0;
-    bool playing = false;
 
     std::vector<music::LyricLine> Find(const Request& request) {
         const auto cancelled = [this, g = request.generation] { return stop || generation.load() != g; };
         const auto query = text::Utf8(request.artist.empty() ? request.title : request.title + L" " + request.artist);
         if (query.empty()) return {};
-        // NetEase lacks some catalogues (it lists covers for Jay Chou), KuGou
-        // has them: a match with the named artist is taken at once, otherwise
-        // every catalogue is asked and the best tried first.
+        // Another catalogue may have the exact recording when the first one
+        // only lists covers. Never use a cover as an approximate lyric match.
         std::vector<Candidate> found;
         for (const auto provider : {Provider::Netease, Provider::Kugou, Provider::QQ}) {
             try {
@@ -208,28 +199,23 @@ ExternalLyrics::~ExternalLyrics() {
 
 void ExternalLyrics::Clear() {
     auto& s = *impl_;
+    if (!s.key.empty()) ++s.generation;
     s.key.clear();
-    s.timed = false;
+    s.requested = false;
+    std::lock_guard lock(s.mutex);
+    s.pending.reset();
 }
 
 void ExternalLyrics::Apply(dynamic_island::Media& media) {
     auto& s = *impl_;
     const auto now = GetTickCount64();
-    if (!media.available || media.title.empty()) { Clear(); return; }
+    media.lyrics.reset();
+    if (!media.available || media.title.empty() || !media.positionKnown) { Clear(); return; }
     const auto key = media.app + "\n" + text::Utf8(media.title) + "\n" + text::Utf8(media.artist);
     if (key != s.key) {
-        // A track that changed while Lume watched starts at zero; one already
-        // playing at startup has an unknown position.
-        s.timed = !s.key.empty();
         s.key = key;
         s.requested = false;
-        s.clock = 0;
-        s.clockAt = now;
-        s.playing = media.playing;
     }
-    if (s.playing) s.clock += static_cast<double>(now - s.clockAt) / 1000;
-    s.clockAt = now;
-    s.playing = media.playing;
 
     dynamic_island::LyricCues cues;
     {
@@ -245,11 +231,6 @@ void ExternalLyrics::Apply(dynamic_island::Media& media) {
         }
     }
     if (!cues) return;
-    // A timeline from the player wins; otherwise the clock, if it started with the track.
-    if (media.duration <= 0) {
-        if (!s.timed) return;
-        media.position = s.clock;
-    }
     media.lyrics = std::move(cues);
 }
 

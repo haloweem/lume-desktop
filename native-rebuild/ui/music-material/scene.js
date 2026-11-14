@@ -50,6 +50,10 @@ export function createMusicMaterialScene(document) {
       const realm=doc.defaultView;
       if(!realm||depth>8){issue('frame-depth');return false;}
       visited.add(doc);
+      // Text changes are observed by the owner. CSS/WAAPI motion still needs
+      // frames between mutations so moving lyrics keep their original optics.
+      if(realmRoot.getAnimations?.({subtree:true}).some(animation=>
+        animation.playState==='running'&&!surface.contains(animation.effect?.target)))stats.needsPolling=true;
       const leaves=[];
       const excluded=element=>surface.contains(element)||!!element.closest(EXCLUDED);
       for(const source of within(realmRoot,CANVASES)){
@@ -84,7 +88,6 @@ export function createMusicMaterialScene(document) {
           if(!intersects(r,clip))continue;
           textElements.add(element);
           leaves.push({element,paint:ctx=>{
-            stats.needsPolling=true;
             if(drawText(ctx,element,r)){stats.text++;return true;}
             return false;
           }});

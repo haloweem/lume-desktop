@@ -4,6 +4,7 @@
 #include "platform/windows/calendar_runtime.h"
 #include "platform/windows/local_settings_file_store.h"
 #include "apps/shell/todo_session.h"
+#include "apps/shell/material_selection_request.h"
 #include <functional>
 #include <optional>
 
@@ -19,6 +20,7 @@ public:
     CalendarSession(const CalendarSession&) = delete;
     CalendarSession& operator=(const CalendarSession&) = delete;
     bool Restore();
+    void SetMaterialSelectionHandler(MaterialSelectionHandler);
     std::optional<std::wstring> HandlePage(ui::PageCommand command,HWND owner);
     void HandleNative(calendar::Action action);
     std::wstring State(ui::CalendarPageResult result=ui::CalendarPageResult::Snapshot) const;
@@ -36,6 +38,7 @@ private:
     std::string path_;
     Notify notify_;
     std::function<void()> openSettings_;
+    MaterialSelectionHandler materialSelection_;
     platform::windows::LocalSettingsFileStore files_;
     calendar::CalendarPreferencesStore store_{files_};
     calendar::PreferencesLoadResult loaded_;

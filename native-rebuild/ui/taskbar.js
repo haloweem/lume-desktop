@@ -22,6 +22,9 @@ const errors=()=>({
   'framework-install':t('任务栏所需的 Windows 框架安装失败，请重新启用功能；若仍失败，请导出问题反馈报告','Could not install the Windows frameworks required by the taskbar. Enable the feature again; if it still fails, export a diagnostic report.'),
   'core-exited':t('任务栏透明服务意外退出，效果尚未恢复','The taskbar transparency service exited unexpectedly. Appearance has not been restored.'),
   'core-access-denied':t('任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试，请导出问题反馈报告','The taskbar transparency service was denied access to the Windows taskbar (0x80070005). Automatic retries have stopped. Export a diagnostic report.'),
+  'core-restart-required':t('任务栏接入模块需要重新加载，已停止自动重试。请保存工作后重启 Windows，再启动当前版本的 Lume','The taskbar integration module must be reloaded. Automatic retries have stopped. Save your work and restart Windows, then start the current Lume version.'),
+  'core-attach-timeout':t('任务栏接入系统 XAML 超时（0x80070102），尚未确认透明效果，请导出问题反馈报告','Connecting to the Windows taskbar XAML timed out (0x80070102). Transparency is not confirmed. Export a diagnostic report.'),
+  'core-effect-unconfirmed':t('任务栏服务正在运行，但尚未确认背景透明效果，请导出问题反馈报告','The taskbar service is running, but background transparency is not confirmed. Export a diagnostic report.'),
   'core-stop':t('任务栏透明服务尚未停止，请再次关闭功能重试','The taskbar transparency service has not stopped. Try disabling it again.'),
   cancelled:t('任务栏操作已取消，尚未确认应用结果','Taskbar operation cancelled. Application is not confirmed.'),
   recovery:t('原任务栏设置尚未完全恢复，请再次关闭功能重试','Original taskbar settings are not fully restored. Try disabling the feature again.'),
@@ -35,6 +38,11 @@ export function taskbarStatus(state) {
   if(state.taskbarStatus==='saving')return '';
   const messages=errors();
   let message=messages[state.taskbarError] || '';
+  const hiding=(state.taskbar.enabled && state.taskbar.autoHideTaskbar) || state.taskbar.autoHideDemand;
+  const hideApplied=hiding && state.taskbar.hideApplied && state.taskbar.effectiveAutoHide;
+  const hideMessage=state.taskbar.fullyHidden?t('任务栏完全隐藏已应用','Complete taskbar hiding is applied'):
+    state.taskbar.autoHideDemand && !state.taskbar.autoHideTaskbar?t('Dock 请求的任务栏自动隐藏已应用','Taskbar auto-hide requested by Dock is applied'):
+      t('任务栏自动隐藏已应用','Taskbar auto-hide is applied');
   if(!message && state.taskbarLoadStatus==='failed')message=messages.load;
   // "Not fully restored" only applies when the feature is off. While it is on,
   // show the actual apply failure, including failures awaiting explicit retry.
@@ -42,9 +50,16 @@ export function taskbarStatus(state) {
     const recovery=messages.recovery;
     return message && message!==recovery ? `${message}${t('；','; ')}${recovery}` : recovery;
   }
-  if(message)return message;
+  if(message)return hideApplied?`${message}${t('；','; ')}${hideMessage}`:message;
   if(state.taskbar.enabled && !state.taskbar.running)return t('任务栏服务未运行，尚未应用设置，请重新启用','The taskbar service is not running. Settings have not been applied. Enable it again.');
-  if(!state.taskbar.enabled && state.taskbar.running)return t('任务栏服务尚未停止，请再次关闭功能重试','The taskbar service has not stopped. Try disabling it again.');
+  if(!state.taskbar.enabled && state.taskbar.running && !state.taskbar.autoHideDemand)return t('任务栏服务尚未停止，请再次关闭功能重试','The taskbar service has not stopped. Try disabling it again.');
+  if(state.taskbar.enabled && state.taskbar.transparentTaskbar && state.taskbar.effectStatus!=='applied') {
+    const transparent=state.taskbar.effectStatus==='failed'?t('任务栏背景透明效果应用失败，请导出问题反馈报告','Taskbar background transparency failed. Export a diagnostic report.'):
+      t('任务栏服务正在运行，正在等待背景透明效果确认','The taskbar service is running. Waiting for background transparency confirmation.');
+    return hideApplied?`${transparent}${t('；','; ')}${hideMessage}`:transparent;
+  }
+  if(hiding && !hideApplied)return t('正在等待任务栏隐藏效果确认','Waiting for taskbar hiding confirmation.');
+  if(hideApplied && !state.taskbar.enabled)return hideMessage;
   if(state.taskbarStatus==='applied')return state.taskbar.enabled?t('任务栏设置已应用','Taskbar settings applied'):t('已关闭功能，原任务栏设置已恢复','Feature disabled. Original taskbar settings restored.');
   return '';
 }

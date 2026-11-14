@@ -13,9 +13,9 @@ public:
 		int scalePercent, bool locked, int timeStyle = 0);
     // Radial popup has no draggable position; command 13 opens shortcut settings.
 	static UINT ShowRadial(HWND owner, POINT position, bool frosted);
-    // Organizer: icon size 150..220 => 50..120%, list/icons 6/7; no compact mode.
+    // Organizer: checked collapse toggle (4 on, 5 off), list/icons 6/7, colors 230..235.
     // item: opened on an icon, so the menu starts with 删除图标 (13).
-    static UINT ShowOrganizer(HWND, POINT, bool list, bool frosted, bool locked, int iconScale, bool item = false);
+    static UINT ShowOrganizer(HWND, POINT, bool collapsed, bool list, bool frosted, bool locked, bool item = false, int accent = 0);
     // 50 edit, 51 delete, 52 new task, 53 new checklist; other widget commands unchanged.
     static UINT ShowTodayTodo(HWND, POINT, bool item, bool writable, bool canCreate, bool frosted, bool locked, bool solid = false);
     static UINT ShowNotes(HWND owner, POINT position, bool frosted, bool locked);
@@ -23,7 +23,7 @@ public:
     // Material submenu adds "无" (command 7) for a Dock without glass.
     static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false, bool systemTray = false);
     // Dynamic island: 8/9 material, 7 none, 2 expand/collapse, 11 settings, 10 reset, 1 close.
-    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool messages = true,
+    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded,
                            bool canExpand = true);
     // Dock or launchpad item: 20 pin, 21 unpin, 22 open location, 23 remove from launchpad.
     // `canReveal` is false for virtual entries such as the Lume manager item.

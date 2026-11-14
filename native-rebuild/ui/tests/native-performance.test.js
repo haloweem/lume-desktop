@@ -86,7 +86,7 @@ test('性能设置保留材质和错误恢复，主开关仅在卡片显示确�
   assert.equal(performanceNotice(state,{hasInlineStatus:true}),null);
   assert.doesNotMatch(performancePage(state,'details'),/data-action="performance-toggle"/);
 });
-test('resource snapshots are accepted and rendered as one grouped overview',()=>{
+test('legacy resource snapshots do not restore the removed settings overview',()=>{
   const snapshot=resourceMessage({
     processes:[
       {pid:10,parentPid:1,name:'LumeShell.exe',role:'Shell',workingSetBytes:1024,privateBytes:512,
@@ -99,21 +99,21 @@ test('resource snapshots are accepted and rendered as one grouped overview',()=>
   const state=reduce(initialState(),{type:'host',message:snapshot});
   assert.equal(state.resourceSnapshot.nonWallpaper.workingSetBytes,128*1024*1024);
   const html=performancePage(state);
-  for(const text of ['Lume','Lume 组件','Lume 主程序','音乐','GPU','壁纸']) assert.match(html,new RegExp(text));
+  assert.match(html,/data-select="performance-material"/);
   assert.doesNotMatch(html,/webview2/i);
-  assert.match(html,/resource-lume-group/);
-  assert.match(html,/resource-lume-summary/);
+  assert.doesNotMatch(html,/resource-overview/);
+  assert.doesNotMatch(html,/resource-lume-group|resource-lume-summary/);
   assert.doesNotMatch(html,/<details class="resource-lume-group"[^>]*open/);
-  assert.match(html,/resource-processes/);
+  assert.doesNotMatch(html,/resource-processes/);
+  assert.doesNotMatch(performancePage(state,'details'),/resource-overview/);
 });
-test('unavailable resource counters render as dashes instead of zero',()=>{
+test('unavailable legacy resource counters stay out of the settings page',()=>{
   const snapshot=resourceMessage({
     nonWallpaper:resourceGroup({workingSetBytes:null,privateBytes:null,coverage:'unavailable',processCount:0}),
     wallpaper:resourceGroup({workingSetBytes:null,coverage:'unavailable',processCount:0}),
   });
   const state=reduce(initialState(),{type:'host',message:snapshot});
   const html=performancePage(state);
-  assert.match(html,/data-resource-value="nonWallpaper-workingSet">--/);
-  assert.match(html,/data-resource-value="wallpaper-workingSet">--/);
-  assert.match(html,/不可用|Unavailable/);
+  assert.equal(state.resourceSnapshot.nonWallpaper.workingSetBytes,null);
+  assert.doesNotMatch(html,/data-resource-value|resource-overview/);
 });

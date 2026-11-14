@@ -1,5 +1,6 @@
 #include "platform/windows/music_online_provider.h"
 #include "core/music/music_online_lyrics.h"
+#include "netease_xeapi_fixture.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -63,6 +64,7 @@ std::map<std::string, std::string> Query(const std::string& url) {
     return result;
 }
 Json Eapi(const HttpRequest& request) {
+    if (request.url.find("/xeapi/") != request.url.npos) return xeapi_fixture::Payload(request);
     auto hex = request.body.substr(7);
     std::string bytes;
     for (std::size_t i = 0; i < hex.size(); i += 2)
@@ -162,6 +164,7 @@ struct Fixture {
         auto result = Execute(provider, action, args, credentials, [&] { return cancel; },
             [&](const HttpRequest& r, const Cancelled&) {
                 Expect(ValidHttpRequest(r), "request passes real fixed route policy");
+                if (r.url.find("/api/bsr/sk/get") != r.url.npos) return xeapi_fixture::KeyResponse(r);
                 requests.push_back(r);
                 if (rawAnswer) return rawAnswer(r);
                 return Response(answer(r));
@@ -388,10 +391,10 @@ void Netease() {
             return Json{{"code", 200}, {"ids", Json::array({41, 42, 43})}};
         if (r.url.find("/weapi/play-record/song/list") != r.url.npos)
             return Json{{"code", 200}, {"data", {{"list", Json::array({{{"data", TrackN()}}})}}}};
-        if (r.url.find("/eapi/song/enhance/player/url") != r.url.npos) {
+        if (r.url.find("/xeapi/song/enhance/player/url") != r.url.npos) {
             const auto p = Eapi(r);
             Expect(r.url.find("/url/v1") != r.url.npos && p["level"] == "standard" &&
-                p["encodeType"] == "flac" && p["ids"] == "[\"42\"]", "authorized level-based song-url");
+                p["encodeType"] == "flac" && p["ids"] == "[42]", "authorized level-based song-url");
             return Json{{"code", 200}, {"data", Json::array({{{"id", 42}, {"url", "http://m7.music.126.net/authorized.mp3"},
                 {"freeTrialInfo", nullptr}, {"code", 200}}})}};
         }
@@ -440,6 +443,48 @@ void Netease() {
     Expect(f.Run("resolve", {{"id", "42"}})["url"] == "https://m7.music.126.net/authorized.mp3", "Netease HTTPS upgrade");
     Expect(f.Run("lyrics", {{"id", "42"}}).contains("yrc"), "Netease raw lyrics");
     Error([&] { f.Run("recent", {{"offset", 100}}); }, "unsupported");
+}
+void DeviceSessionCache() {
+    Fixture f(Provider::QQ);
+    f.credentials["credential"]["musicKey"]="synthetic-device-cache-qq";
+    f.credentials["device"]["sessionUpdatedAt"]=0;
+    int sessions=0;bool failCatalog=false;
+    f.answer=[&](const HttpRequest& request)->Json {
+        const auto body=Json::parse(request.body);
+        const auto method=body["req_0"]["method"].get<std::string>();
+        Json data;
+        if(method=="GetSession") {
+            ++sessions;data={{"session",{{"uid","updateduid"},{"sid","updatedsid"}}}};
+        } else if(method=="get_song_detail_yqq")data={{"track_info",TrackQ()}};
+        else {
+            Expect(method=="CgiGetVkey","device fixture only resolves authorized playback");
+            Expect(body["comm"]["uid"]=="updateduid"&&body["comm"]["sid"]=="updatedsid",
+                "refreshed device session is used by playback");
+            if(failCatalog)return Json{{"code",500}};
+            data={{"retcode",0},{"sip",Json::array({"https://isure.stream.qqmusic.qq.com/"})},
+                {"midurlinfo",Json::array({{{"result",0},{"purl","cached.m4a?vkey=fixture"}}})}};
+        }
+        return {{"code",0},{"req_0",{{"code",0},{"data",data}}}};
+    };
+    f.Run("resolve",{{"id","songMID"}});f.Run("resolve",{{"id","songMID"}});
+    Expect(sessions==1,"catalog Contexts reuse an already refreshed native device session");
+    Expect(f.credentials["device"]["sessionUpdatedAt"]==0,"device cache does not mutate borrowed credentials");
+    f.credentials["credential"]["musicKey"]="synthetic-device-cache-other";
+    failCatalog=true;
+    try{f.Run("resolve",{{"id","songMID"}});}catch(const std::runtime_error&){}
+    failCatalog=false;f.Run("resolve",{{"id","songMID"}});
+    Expect(sessions==2,"a new credential scope refreshes once and retains its device after a catalog failure");
+    Fixture k(Provider::Kugou);
+    k.credentials["token"]="synthetic-device-cache-kugou";k.credentials.erase("dfid");
+    int registrations=0;
+    k.rawAnswer=[&](const HttpRequest& request)->HttpResponse {
+        if(request.url.find("/risk/v2/r_register_dev")!=request.url.npos) {
+            ++registrations;return {200,"invalid-ciphertext","application/octet-stream",{}, {}};
+        }
+        return Response({{"status",1},{"data",{{"total",0},{"info",Json::array()}}}});
+    };
+    k.Run("search",{{"query","first"}});k.Run("search",{{"query","second"}});
+    Expect(registrations==2,"failed device registration keeps its bounded retry cooldown across catalog calls");
 }
 void QQ() {
     Fixture f(Provider::QQ);
@@ -1105,7 +1150,8 @@ void LikedSnapshots() {
             if (f.IsWrite(r)) throw std::runtime_error("synthetic-write-failure");
             return answer(r);
         };
-        Error([&] { f.Run("like", {{"id", LikedId(provider, 4)}, {"value", true}}); }, "service");
+        Error([&] { f.Run("like", {{"id", LikedId(provider, 4)}, {"value", true}}); },
+            provider == Provider::Netease ? "network" : "service");
         Expect(f.Run("search", {{"query", "test"}})["likedIds"] == expected,
             "failed like cannot change the complete snapshot");
         f.answer = [&](const HttpRequest& r) {
@@ -1313,7 +1359,7 @@ void Boundaries() {
     for (unsigned status : {301U, 401U, 500U})
         Error([&] { Execute(Provider::Netease, "explore", Json::object(), n, {},
             [&](const HttpRequest&, const Cancelled&) { return HttpResponse{status, "{}", "", {}, {}}; }); },
-            status == 401 ? "expired" : "service");
+            status == 401 ? "expired" : status >= 500 ? "network" : "service");
     bool cancel = false;
     Error([&] { Execute(Provider::Netease, "explore", Json::object(), n, [&] { return cancel; },
         [&](const HttpRequest&, const Cancelled&) { cancel = true; return Response({{"code", 200}, {"playlists", Json::array()}}); }); },
@@ -1332,7 +1378,7 @@ void Boundaries() {
     Error([&] { Execute(Provider::Netease, "resolve", {{"id", "42"}}, n, {},
         [&](const HttpRequest&, const Cancelled&) { return Response({{"code", 200},
             {"data", Json::array({{{"id", 42}, {"url", "https://m7.music.126.net/preview.mp3"},
-                {"freeTrialInfo", {{"start", 0}, {"end", 30}}}}})}}); }); }, "unavailable");
+                {"freeTrialInfo", {{"start", 0}, {"end", 30}}}}})}}); }); }, "preview-only");
     auto credentials = Credentials(Provider::QQ);
     Error([&] { Execute(Provider::QQ, "home", {{"_userId", "78"}}, credentials, {}, noNetwork); }, "expired");
     Error([&] { Execute(Provider::QQ, "addToPlaylist", {{"id", "900"}, {"trackId", "qq:songMID"}},
@@ -1553,6 +1599,37 @@ void QualityAndLikedSnapshots() {
         home["recommendations"].size() == 1,
         "liked refresh failure preserves the last complete snapshot");
 }
+void NeteasePlaybackFailures() {
+    Fixture n(Provider::Netease);
+    for (const int code : {-460, -462, 500}) {
+        n.answer = [code](const HttpRequest&) { return Json{{"code", code}}; };
+        Error([&] { n.Run("resolve", {{"id", "42"}}); }, "netease-code-" + std::to_string(code));
+    }
+    n.answer = [](const HttpRequest&) { return Json{{"code", 200}, {"data", Json::array({
+        {{"id", 42}, {"code", -110}, {"url", nullptr}, {"fee", 1}}})}}; };
+    Error([&] { n.Run("resolve", {{"id", "42"}}); }, "entitlement");
+    n.rawAnswer = [](const HttpRequest&) { return HttpResponse{429, "{}", "application/json", {}, {}}; };
+    Error([&] { n.Run("resolve", {{"id", "42"}}); }, "rate-limited");
+    n.rawAnswer = [](const HttpRequest&) -> HttpResponse { throw std::runtime_error("dropped connection"); };
+    Error([&] { n.Run("resolve", {{"id", "42"}}); }, "network");
+    const auto compressed = xeapi_fixture::Hex("1f8b080000000000000aab564ace4f4955b2323230a80500540396ea0c000000");
+    Expect(lume::music::auth::DecodeNeteaseXeapiResponse(Aes(compressed, "e82ckenh8dichen8", ""))["code"] == 200,
+        "bounded gzip payload decrypts");
+    auto corrupt = compressed; corrupt[corrupt.size() - 8] ^= 1;
+    Error([&] { lume::music::auth::DecodeNeteaseXeapiResponse(Aes(corrupt, "e82ckenh8dichen8", "")); }, "invalid-response");
+    corrupt = compressed; corrupt[corrupt.size() - 1] = 1;
+    Error([&] { lume::music::auth::DecodeNeteaseXeapiResponse(Aes(corrupt, "e82ckenh8dichen8", "")); }, "invalid-response");
+    bool collision = false;
+    for (int i = 0; i < 4096 && !collision; ++i) {
+        const Json value{{"a", i}, {"code", 200}};
+        const auto encrypted = Aes(value.dump(), "e82ckenh8dichen8", "");
+        if (encrypted.front() == '{') {
+            Expect(lume::music::auth::DecodeNeteaseXeapiResponse(encrypted) == value, "ciphertext prefix cannot impersonate plaintext");
+            collision = true;
+        }
+    }
+    Expect(collision, "ciphertext-prefix fixture exists");
+}
 void KugouPlayback() {
     Fixture f(Provider::Kugou);
     const std::string url = "http://fs.youthandroid2.kugou.com/song.mp3?key=fixture";
@@ -1700,8 +1777,10 @@ int main(int argc, char** argv) {
         }
         return failed ? 1 : 0;
     }
+    try {
     QQLegacyCharset();
     Netease();
+    DeviceSessionCache();
     QQ();
     Kugou();
     KugouPlayback();
@@ -1716,9 +1795,11 @@ int main(int argc, char** argv) {
     QQPartialLibraryKeepsCollectedLists();
     KugouShortPagesContinue();
     QualityAndLikedSnapshots();
+    NeteasePlaybackFailures();
     LikedSnapshots();
     LikedSnapshotFailures();
     LikesAction();
     Routes();
+    } catch (const std::exception& error) { std::cerr << "Fixture exception: " << error.what() << '\n'; return 1; }
     std::cout << "online provider protocol, schema, mutation, isolation and security tests passed (fake transport)\n";
 }

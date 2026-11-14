@@ -48,13 +48,14 @@ test('weather keeps pending saves through background updates and uses confirmed 
   assert.equal(state.weather.city,'shanghai');
   assert.equal(reduce(initialState(),{type:'unavailable',scope:'all'}).weatherStatus,'unavailable');
 });
-test('weather settings preserve original controls and concise feature details',()=>{
+test('weather settings hide city selection and retain material and saved city',()=>{
   const state=reduce(initialState(),{type:'host',message:message({enabled:true,city:'shanghai'})});
   const html=weatherPage(state);
   assert.match(html,/data-settings-scope="weather"/);
   assert.doesNotMatch(html,/data-action="weather-toggle"/);
   assert.match(card({id:'weather',title:'天气'},state,true),/aria-checked="true"[^>]*data-action="weather-toggle"/);
-  for(const [city] of weatherCities)assert.ok(html.includes(`data-select-value="${city}"`));
+  assert.doesNotMatch(html,/weather-city|选择城市|Select a city/);
+  assert.equal(state.weather.city,'shanghai');
   assert.match(html,/data-action="weather-reset"/);
   assert.doesNotMatch(weatherPage(state,'details'),/数据来源与许可|Data sources and licenses|CC BY 4.0/);
   assert.doesNotMatch(weatherPage(state,'details'),/右上角刷新|刷新按钮的提示|top-right button|refresh button tooltip/);
@@ -62,16 +63,16 @@ test('weather settings preserve original controls and concise feature details',(
   assert.doesNotMatch(html,/未接入/);
   const pending=reduce(state,{type:'request',scope:'weather'});
   assert.match(card({id:'weather',title:'天气'},pending,true),/data-action="weather-toggle" disabled/);
-  for(const control of ['weather-material','weather-city'])
+  for(const control of ['weather-material'])
     assert.match(weatherPage(pending),new RegExp(`data-select="${control}" disabled`));
   assert.match(weatherPage(pending),/data-action="weather-reset" disabled/);
 });
-test('automatic location with Windows location off offers to open location settings',async()=>{
+test('automatic location does not show a system permission prompt or settings nudge',async()=>{
   const {weatherPage}=await import('../weather.js');
   const base=reduce(initialState(),{type:'host',message:message({enabled:true,running:true})});
   const off=reduce(initialState(),{type:'host',message:message({enabled:true,running:true,systemLocation:'off'})});
   assert.equal(off.weatherData.systemLocation,'off');
-  assert.match(weatherPage(off),/data-action="weather-location-settings"/);
+  assert.doesNotMatch(weatherPage(off),/weather-location-settings|系统定位未开启|打开定位设置/);
   assert.doesNotMatch(weatherPage(base),/weather-location-settings/);
   const fixed=reduce(initialState(),{type:'host',message:message({enabled:true,running:true,systemLocation:'off',city:'beijing'})});
   assert.doesNotMatch(weatherPage(fixed),/weather-location-settings/);

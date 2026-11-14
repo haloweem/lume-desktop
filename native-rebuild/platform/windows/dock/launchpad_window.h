@@ -35,6 +35,8 @@ struct LaunchpadPorts {
     std::function<bool(const dock::Entry&, POINT screen)> dropOutside;
     std::function<void()> leaveOutside;
     std::function<void(POINT screen)> backgroundContext;
+    // The maximize button toggled the full work-area launchpad (persist it).
+    std::function<void(bool maximized)> maximized;
 };
 // A paged glass grid above the Dock with a native search box. It springs open
 // from the Dock and fades out on close. Items can be dragged to rearrange,
@@ -46,9 +48,9 @@ public:
     struct Layout {
         float width = 0, height = 0;
         int columns = 7, rows = 3;
-        WidgetRect panel, search, add, grid, previous, next, page, back;
+        WidgetRect panel, search, add, grid, previous, next, page, back, maximize;
     };
-    enum class HitKind { None, Item, Add, Previous, Next, Back };
+    enum class HitKind { None, Item, Add, Previous, Next, Back, Maximize };
     struct HitResult {
         HitKind kind = HitKind::None;
         int index = -1;
@@ -67,6 +69,10 @@ public:
     void Refresh();
     void SetFrosted(bool);
     bool SetAppearance(int panelScale,int iconScale);
+    // Maximized, the launchpad fills the monitor's work area above the Dock
+    // with square corners; otherwise it is the centred panel.
+    bool SetMaximized(bool);
+    bool Maximized() const;
     bool Paint();
     // Re-renders now, or once the open/close animation settles.
     void Invalidate();
@@ -74,8 +80,8 @@ public:
     HWND Handle() const;
     HWND SearchHandle() const;
     WidgetMaterialState MaterialState() const;
-    // Empty id returns to the flat grid. The title is drawn in place of the
-    // search field while the collection is open.
+    // Empty id returns to the flat grid. An expanded launchpad collection has
+    // its own search query at the top and its title at the bottom.
     void SetCollection(std::string id, std::string title);
     // Rename a collection tile in the flat grid, or the open collection. The
     // native edit is positioned over the tile label for a flat entry.
@@ -90,9 +96,16 @@ public:
     float Presence() const;
     float CollectionPresence() const;
     WidgetRect CollectionBounds() const;
+    // Testing: retained foreground pixels, without capturing the user's desktop
+    // or claiming that the separate glass surface is part of the snapshot.
+    WidgetBitmap ContentSnapshot() const;
     // Testing: skip to the end of running animations.
     void Settle();
-    static Layout LayoutFor(float width, float height, bool collection = false,int iconScale = 100);
+    static constexpr int MaximizedRows = 5;
+    // The maximize button is hidden for now (2026-11-06): no button, and a
+    // saved maximized preference is ignored. Flip to true to bring it back.
+    static constexpr bool MaximizeAvailable = false;
+    static Layout LayoutFor(float width, float height, bool collection = false,int iconScale = 100, bool maximized = false);
     static Layout PopupLayoutFor(float width, float height);
     static WidgetRect Cell(const Layout&, int index);
     static HitResult Hit(const Layout&, std::size_t itemsOnPage, int page, int pages, float x, float y,

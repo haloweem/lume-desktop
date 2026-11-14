@@ -2,6 +2,7 @@
 #include <array>
 #include <string_view>
 namespace lume::dynamic_island {
+// Files keeps its historical wire ID; the session treats that retired choice as None.
 enum class CompactWidget { None,Lunar,Calendar,Date,Weekday,Clock,DayProgress,WeekProgress,MonthProgress,
     QuarterProgress,YearProgress,Network,Power,Battery,Cpu,Memory,Disk,CpuMemory,Files,
     Weather,TemperatureRange,Humidity,WindSpeed,WindDirection,Uv,SunriseSunset,Pressure,

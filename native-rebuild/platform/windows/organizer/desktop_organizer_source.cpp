@@ -42,6 +42,7 @@ bool ShortcutApplication(const std::filesystem::path& path){
 }
 organizer::DesktopSnapshot ReadDesktop(const std::atomic_bool& stop,const std::vector<std::wstring>& roots){
     organizer::DesktopSnapshot result;result.complete=true;std::set<std::string> paths;
+    std::size_t sourceBytes=0;
     const auto initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     std::vector<std::wstring> directories=roots;
     if(directories.empty())for(const auto* folderId:{&FOLDERID_Desktop,&FOLDERID_PublicDesktop}){
@@ -63,13 +64,18 @@ organizer::DesktopSnapshot ReadDesktop(const std::atomic_bool& stop,const std::v
             if(attributes&(FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_SYSTEM))continue;
             const auto normalized=organizer::NormalizeLocalPath(OrganizerUtf8(path.wstring()));
             if(!normalized||!paths.insert(OrganizerPathKey(*normalized)).second)continue;
-            if(result.entries.size()>=organizer::MaxItems*organizer::MaxCollections){result.complete=false;break;}
             const auto extension=OrganizerPathKey(path.extension().u8string());
             const bool directoryEntry=(attributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
             const auto kind=directoryEntry?organizer::ItemKind::Folder:
                 extension==".lnk"?organizer::ItemKind::Shortcut:organizer::ItemKind::File;
+            const auto name=organizer::DisplayName(*normalized,kind);
+            const auto bytes=normalized->size()+name.size()+sizeof(organizer::DesktopEntry)+36;
+            // A failed/incomplete scan never replaces saved references. This
+            // is a memory budget, independent of per-tab item counts.
+            if(bytes>organizer::MaxStateBytes-sourceBytes){result.complete=false;break;}
+            sourceBytes+=bytes;
             const auto id=Id();if(id.empty()){result.complete=false;break;}
-            result.entries.push_back({{id,*normalized,organizer::DisplayName(*normalized,kind),kind,true},
+            result.entries.push_back({{id,*normalized,name,kind,true},
                 !directoryEntry&&(extension==".lnk"?ShortcutApplication(path):Application(path))});
         }
         if(error)result.complete=false;

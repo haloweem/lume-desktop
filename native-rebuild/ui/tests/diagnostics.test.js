@@ -49,6 +49,22 @@ test("诊断报告包含环境、问题描述和运行事件但不带敏感字�
   assert.doesNotMatch(diagnosticReportText(report),/secret|access_token|session_cookie/i);
 });
 
+test("任务栏诊断保留实际效果与独立隐藏证据，不把待确认写成已失败", () => {
+  const recorder=createDiagnosticsRecorder({storage:storage(),now:()=>1700000000000});
+  recorder.record({type:'taskbar-state',enabled:true,running:true,transparentTaskbar:true,
+    effectStatus:'pending',taskbarType:'xaml',stage:'background-discovery',hresult:-2147024891,
+    registeredTaskbars:1,backgrounds:0,appliedTaskbars:0,autoHideTaskbar:true,
+    hideApplied:true,effectiveAutoHide:true,fullyHidden:false,autoHideDemand:false,error:''});
+  const health=recorder.health()['taskbar-state'];
+  assert.equal(health.effectStatus,'pending');assert.equal(health.taskbarType,'xaml');
+  assert.equal(health.hresult,-2147024891);assert.equal(health.backgrounds,0);
+  assert.equal(health.hideApplied,true);
+  const report=buildDiagnosticReport({health:recorder.health(),events:recorder.list(),mismatches:recorder.mismatches()});
+  assert.equal(report.health['taskbar-state'].stage,'background-discovery');
+  assert.equal(report.health['taskbar-state'].hresult,-2147024891);
+  assert.ok(report.mismatches.some(item=>item.actual==='effect-unconfirmed'&&item.confidence==='suspected'));
+});
+
 test("原生诊断快照保留效果不一致证据并对重复事件去重", () => {
   let tick = 1700000000000;
   const recorder = createDiagnosticsRecorder({

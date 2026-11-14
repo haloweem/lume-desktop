@@ -13,12 +13,16 @@ void Require(bool ok) { if (!ok) throw std::runtime_error("music crypto error");
 PUCHAR Bytes(std::string_view text) { return reinterpret_cast<PUCHAR>(const_cast<char*>(text.data())); }
 struct Algorithm {
     BCRYPT_ALG_HANDLE value = nullptr;
-    explicit Algorithm(LPCWSTR name) { Require(BCryptOpenAlgorithmProvider(&value, name, nullptr, 0) >= 0); }
+    explicit Algorithm(LPCWSTR name, ULONG flags = 0) { Require(BCryptOpenAlgorithmProvider(&value, name, nullptr, flags) >= 0); }
     ~Algorithm() { if (value) BCryptCloseAlgorithmProvider(value, 0); }
 };
 struct Key {
     BCRYPT_KEY_HANDLE value = nullptr;
     ~Key() { if (value) BCryptDestroyKey(value); }
+};
+struct Agreement {
+    BCRYPT_SECRET_HANDLE value = nullptr;
+    ~Agreement() { if (value) BCryptDestroySecret(value); }
 };
 struct Local {
     void* value = nullptr;
@@ -62,6 +66,71 @@ std::string RandomHex(std::size_t bytes) {
     auto hex = Hex(output);
     SecureZeroMemory(output.data(), output.size());
     return hex;
+}
+std::string Unbase64(std::string_view input) {
+    Require(!input.empty() && input.size() <= MaxInput && input.size() % 4 == 0 &&
+        input.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=") == input.npos);
+    DWORD size = 0;
+    Require(CryptStringToBinaryA(input.data(), static_cast<DWORD>(input.size()), CRYPT_STRING_BASE64,
+        nullptr, &size, nullptr, nullptr));
+    std::string output(size, '\0');
+    Require(CryptStringToBinaryA(input.data(), static_cast<DWORD>(input.size()), CRYPT_STRING_BASE64,
+        Bytes(output), &size, nullptr, nullptr));
+    output.resize(size);
+    Require(Base64(output) == input);
+    return output;
+}
+std::string HmacSha256(std::string_view key, std::string_view input) {
+    Require(key.size() <= MaxInput && input.size() <= MaxInput);
+    Algorithm hash(BCRYPT_SHA256_ALGORITHM, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    std::string output(32, '\0');
+    Require(BCryptHash(hash.value, Bytes(key), static_cast<ULONG>(key.size()), Bytes(input),
+        static_cast<ULONG>(input.size()), Bytes(output), 32) >= 0);
+    return output;
+}
+std::pair<std::string, std::string> X25519(std::string_view peerPublicKey) {
+    Require(peerPublicKey.size() == 32);
+    Algorithm algorithm(BCRYPT_ECDH_ALGORITHM);
+    constexpr wchar_t curve[] = L"curve25519";
+    Require(BCryptSetProperty(algorithm.value, BCRYPT_ECC_CURVE_NAME,
+        reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(curve)), sizeof(curve), 0) >= 0);
+    Key local, peer;
+    Require(BCryptGenerateKeyPair(algorithm.value, &local.value, 0, 0) >= 0 &&
+        BCryptFinalizeKeyPair(local.value, 0) >= 0);
+    BCRYPT_ECCKEY_BLOB header{BCRYPT_ECDH_PUBLIC_GENERIC_MAGIC, 32};
+    std::string blob(sizeof(header) + 64, '\0');
+    std::memcpy(blob.data(), &header, sizeof(header));
+    // CNG's curve25519 coordinate bytes match RFC 7748; RAW_SECRET is reversed.
+    std::copy(peerPublicKey.begin(), peerPublicKey.end(), blob.begin() + sizeof(header));
+    Require(BCryptImportKeyPair(algorithm.value, nullptr, BCRYPT_ECCPUBLIC_BLOB, &peer.value,
+        Bytes(blob), static_cast<ULONG>(blob.size()), 0) >= 0);
+    ULONG size = 0;
+    Require(BCryptExportKey(local.value, nullptr, BCRYPT_ECCPUBLIC_BLOB, Bytes(blob),
+        static_cast<ULONG>(blob.size()), &size, 0) >= 0 && size == blob.size());
+    std::string publicKey(blob.data() + sizeof(header), 32), secret(32, '\0');
+    Agreement agreement;
+    Require(BCryptSecretAgreement(local.value, peer.value, &agreement.value, 0) >= 0 &&
+        BCryptDeriveKey(agreement.value, BCRYPT_KDF_RAW_SECRET, nullptr, Bytes(secret), 32, &size, 0) >= 0 && size == 32);
+    Require(secret.find_first_not_of('\0') != secret.npos);
+    std::reverse(secret.begin(), secret.end());
+    return {std::move(publicKey), std::move(secret)};
+}
+std::string AesGcm(std::string_view input, std::string_view key, std::string_view iv) {
+    Require(input.size() <= MaxInput && key.size() == 16 && iv.size() == 12);
+    Algorithm algorithm(BCRYPT_AES_ALGORITHM);
+    Require(BCryptSetProperty(algorithm.value, BCRYPT_CHAINING_MODE,
+        reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_GCM)), sizeof(BCRYPT_CHAIN_MODE_GCM), 0) >= 0);
+    Key handle;
+    Require(BCryptGenerateSymmetricKey(algorithm.value, &handle.value, nullptr, 0, Bytes(key), 16, 0) >= 0);
+    std::string output(input.size() + 16, '\0');
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+    BCRYPT_INIT_AUTH_MODE_INFO(info);
+    info.pbNonce = Bytes(iv); info.cbNonce = 12;
+    info.pbTag = Bytes(output) + input.size(); info.cbTag = 16;
+    ULONG written = 0;
+    Require(BCryptEncrypt(handle.value, Bytes(input), static_cast<ULONG>(input.size()), &info, nullptr, 0,
+        Bytes(output), static_cast<ULONG>(input.size()), &written, 0) >= 0 && written == input.size());
+    return output;
 }
 std::string HashHex(std::string_view input, std::string_view algorithm) {
     Require(input.size() <= MaxInput);

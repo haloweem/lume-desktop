@@ -20,6 +20,8 @@ struct FakeControls {
     lume::widget::Preferences prefs;
     lume::platform::windows::MusicDesktopControls::CommandHandler command;
     lume::platform::windows::MusicDesktopControls::WidgetHandler widget;
+    lume::platform::windows::MusicDesktopControls::MaterialHandler material;
+    HWND window = nullptr;
     bool visible = false, registered = false, failMedia = false;
     int shows = 0, enables = 0, updates = 0, shutdowns = 0;
     int failShow = 0, failConfigure = 0;
@@ -34,21 +36,24 @@ MusicDesktopControls::MusicDesktopControls(HINSTANCE, CommandHandler command, Wi
     fake.command = std::move(command);
     fake.widget = std::move(widget);
 }
-MusicDesktopControls::~MusicDesktopControls() = default;
+MusicDesktopControls::~MusicDesktopControls() { if (fake.window) DestroyWindow(fake.window); }
 void MusicDesktopControls::Update(const music::MusicSnapshot&) { ++fake.updates; }
 bool MusicDesktopControls::Configure(const widget::Preferences& prefs) {
     if (fake.failConfigure > 0) { --fake.failConfigure; return false; }
     fake.prefs = prefs;
     return true;
 }
+void MusicDesktopControls::SetMaterialSelectionHandler(MaterialHandler handler) { fake.material = std::move(handler); }
 bool MusicDesktopControls::Show() {
     ++fake.shows;
     if (fake.failShow > 0) { --fake.failShow; return false; }
+    if (!fake.window) fake.window = CreateWindowExW(0,L"STATIC",L"music-session-fixture",0,0,0,0,0,HWND_MESSAGE,nullptr,GetModuleHandleW(nullptr),nullptr);
     fake.visible = fake.prefs.enabled = true;
     return true;
 }
-void MusicDesktopControls::Hide() { fake.visible = fake.prefs.enabled = false; }
+void MusicDesktopControls::Hide() { if (fake.window) DestroyWindow(fake.window); fake.window = nullptr; fake.visible = fake.prefs.enabled = false; }
 bool MusicDesktopControls::Visible() const { return fake.visible; }
+HWND MusicDesktopControls::Handle() const { return fake.window; }
 widget::Preferences MusicDesktopControls::Bounds() const { return fake.prefs; }
 HRESULT MusicDesktopControls::EnableSystemMediaControls() {
     ++fake.enables;
@@ -60,6 +65,8 @@ HRESULT MusicDesktopControls::SystemMediaResult() const { return fake.result; }
 void MusicDesktopControls::Shutdown() {
     ++fake.shutdowns;
     fake.visible = fake.registered = false;
+    if (fake.window) DestroyWindow(fake.window);
+    fake.window = nullptr;
 }
 } // namespace lume::platform::windows
 #endif
@@ -402,6 +409,48 @@ void NativeLifecycle() {
     }
     Expect(notifications.size() == count, "destructor does not call parent observer");
 }
+void MaterialSelection() {
+    Files files;
+    MusicDesktopSession session(GetModuleHandleW(nullptr), {Path,false,&files}, {}, {});
+    Expect(session.Restore(), "material fixture restore");
+    session.HandleMessage(Enable);
+    Expect(session.Running() && IsWindow(fake.window), "material fixture has a live source");
+    unsigned requests = 0;
+    lume::shell::NativeMaterialRequest selected;
+    session.SetMaterialSelectionHandler([&](auto request) { ++requests; selected = std::move(request); });
+    const auto before = files.values.at(Path);
+    const bool previousMaterial = files.Saved().frosted;
+    fake.material(!previousMaterial, fake.window);
+    Expect(requests == 1 && selected.target == lume::shell::NativeMaterialTarget::MusicDesktop &&
+        selected.source == fake.window && selected.id.empty() && files.values.at(Path) == before &&
+        fake.prefs.frosted == previousMaterial, "native material intent does not apply or persist before host replay");
+    auto moved = fake.prefs;
+    moved.x = -520; moved.y = 75; moved.width = 410; moved.height = 200; moved.placed = true; moved.locked = true;
+    Emit(WidgetAction::Bounds, moved);
+    auto result = session.HandleMaterialSelection(selected);
+    Expect(result.has_value() && Json::parse(*result)["saved"] == true &&
+        files.Saved().frosted == !previousMaterial && files.Saved().x == -520 &&
+        files.Saved().width == 410 && files.Saved().locked && requests == 1,
+        "replay changes material on latest geometry/lock without recursive request");
+    const auto saved = files.values.at(Path);
+    selected.frosted = previousMaterial;
+    files.failWrite = true;
+    result = session.HandleMaterialSelection(selected);
+    Expect(result && Json::parse(*result)["error"] == "save" && files.values.at(Path) == saved &&
+        fake.prefs.frosted == !previousMaterial && fake.prefs.x == -520,
+        "failed material persistence rolls back only the uncommitted appearance");
+    files.failWrite = false;
+    auto wrong = selected; wrong.target = lume::shell::NativeMaterialTarget::Note;
+    Expect(!session.HandleMaterialSelection(wrong), "other typed target rejected");
+    wrong = selected; wrong.id = "n-other";
+    Expect(!session.HandleMaterialSelection(wrong), "singleton rejects foreign note identity");
+    session.HandleMessage(Disable);
+    Expect(!session.HandleMaterialSelection(selected), "hidden or closed source cannot receive delayed replay");
+    session.SetMaterialSelectionHandler({});
+    Expect(!fake.material, "clearing host intent port restores standalone controls behavior");
+    session.Shutdown();
+    Expect(!session.HandleMaterialSelection(selected), "stopped session rejects delayed replay");
+}
 #else
 BOOL CALLBACK NoNativeWindow(HWND window, LPARAM count) {
     wchar_t name[128]{};
@@ -418,6 +467,7 @@ int main() {
     Protocol();
 #ifndef LUME_MUSIC_DESKTOP_SESSION_REAL_CONTROLS
     NativeLifecycle();
+    MaterialSelection();
     std::cout << "music desktop session: protocol, persistence, native lifecycle double passed\n";
 #else
     int windows = 0;

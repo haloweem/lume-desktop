@@ -3,6 +3,7 @@
 #include "core/settings/settings_store.h"
 #include "core/settings/json_settings_codec.h"
 #include "platform/windows/local_settings_file_store.h"
+#include "platform/windows/lume_window_ids.h"
 #include "platform/windows/widget_ui/resource.h"
 #include <tlhelp32.h>
 #include <psapi.h>
@@ -59,21 +60,30 @@ std::vector<HWND> NativeMenus(HWND owner){
     NativeMenuSearch search{owner,{}};
     EnumWindows([](HWND window,LPARAM value)->BOOL{auto& s=*reinterpret_cast<NativeMenuSearch*>(value);DWORD process=0;
         if(GetWindowThreadProcessId(window,&process)!=GetCurrentThreadId()||process!=GetCurrentProcessId())return TRUE;
-        wchar_t name[32]{};GetClassNameW(window,name,32);if(std::wcscmp(name,L"#32768")||!IsWindowVisible(window))return TRUE;
+        wchar_t name[32]{};GetClassNameW(window,name,32);
+        if(std::wcscmp(name,window_ids::WidgetMenuClass)||!IsWindowVisible(window))return TRUE;
+        auto owner=GetWindow(window,GW_OWNER);
+        while(owner&&owner!=s.owner)owner=GetWindow(owner,GW_OWNER);
+        if(owner!=s.owner)return TRUE;
         s.windows.push_back(window);
         return TRUE;},reinterpret_cast<LPARAM>(&search));
     return search.windows;
 }
 void PostMenuKey(HWND owner,UINT key){const LPARAM scan=static_cast<LPARAM>(MapVirtualKeyW(key,MAPVK_VK_TO_VSC))<<16;PostMessageW(owner,WM_KEYDOWN,key,scan|1);PostMessageW(owner,WM_KEYUP,key,scan|0xc0000001u);}
-struct MenuDriver{HWND owner=nullptr;UINT command=0;unsigned rootDown=0,rootMovesRemaining=0;bool clicked=false,timedOut=false;unsigned stage=0;UINT_PTR timer=0;ULONGLONG deadline=0;};
+void CloseMenus(HWND owner){for(const auto window:NativeMenus(owner))PostMessageW(window,WM_CLOSE,0,0);}
+struct MenuDriver{HWND owner=nullptr,root=nullptr;UINT command=0;unsigned rootDown=0,rootMovesRemaining=0;bool clicked=false,timedOut=false;unsigned stage=0;UINT_PTR timer=0;ULONGLONG deadline=0;};
 MenuDriver* menuDriver=nullptr;
 void CALLBACK MenuTimer(HWND,UINT,UINT_PTR id,DWORD){
     if(!menuDriver)return;
     auto& driver=*menuDriver;
-    if(GetTickCount64()>driver.deadline){driver.timedOut=true;KillTimer(nullptr,id);EndMenu();return;}
+    if(GetTickCount64()>driver.deadline){driver.timedOut=true;KillTimer(nullptr,id);CloseMenus(driver.owner);return;}
     const auto menus=NativeMenus(driver.owner);
-    if(driver.stage==0){if(menus.empty())return;driver.rootMovesRemaining=driver.rootDown;PostMenuKey(driver.owner,VK_HOME);driver.stage=1;}
-    else if(driver.stage==1){if(driver.rootMovesRemaining){PostMenuKey(driver.owner,VK_DOWN);--driver.rootMovesRemaining;return;}PostMenuKey(driver.owner,VK_RETURN);driver.stage=2;}
+    if(driver.stage==0){
+        driver.root=OwnWindow(window_ids::WidgetMenuClass,driver.owner);
+        if(!driver.root||!IsWindowVisible(driver.root))return;
+        driver.rootMovesRemaining=driver.rootDown;PostMenuKey(driver.root,VK_HOME);driver.stage=1;
+    }
+    else if(driver.stage==1){if(driver.rootMovesRemaining){PostMenuKey(driver.root,VK_DOWN);--driver.rootMovesRemaining;return;}PostMenuKey(driver.root,VK_RETURN);driver.stage=2;}
     else if(menus.empty()){driver.clicked=true;KillTimer(nullptr,id);}
 }
 void BeginMenuDriver(MenuDriver& driver,HWND owner,UINT command,bool postContext,unsigned rootDown){
@@ -81,9 +91,9 @@ void BeginMenuDriver(MenuDriver& driver,HWND owner,UINT command,bool postContext
     if(postContext)Check(PostMessageW(owner,WM_CONTEXTMENU,0,MAKELPARAM(80,80))!=FALSE,"queue native context menu");
 }
 void SettingsMenu(HWND owner,bool calendar){
-    MenuDriver driver;BeginMenuDriver(driver,owner,11,true,calendar?3u:5u);const auto deadline=GetTickCount64()+5500;
+    MenuDriver driver;BeginMenuDriver(driver,owner,11,true,calendar?5u:4u);const auto deadline=GetTickCount64()+5500;
     while(!driver.clicked&&!driver.timedOut&&GetTickCount64()<deadline){MSG message{};if(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){if(message.message==WM_QUIT){PostQuitMessage(static_cast<int>(message.wParam));break;}TranslateMessage(&message);DispatchMessageW(&message);}else Sleep(1);}
-    if(!driver.clicked&&!driver.timedOut){driver.timedOut=true;EndMenu();}if(driver.timer)KillTimer(nullptr,driver.timer);menuDriver=nullptr;Check(driver.clicked&&!driver.timedOut,"native settings menu command completed");
+    if(!driver.clicked&&!driver.timedOut){driver.timedOut=true;CloseMenus(owner);}if(driver.timer)KillTimer(nullptr,driver.timer);menuDriver=nullptr;Check(driver.clicked&&!driver.timedOut,"native settings menu command completed");
 }
 struct Probe {
     DesktopApplication* app=nullptr;
@@ -152,7 +162,7 @@ struct Probe {
             }else if(stage==1){
                 const auto picker=OwnWindow(L"LumeWidgetColorPickerWindow",owner);
                 if(picker){stage=3;Record("clock-native-editor");app->OnTray(platform::windows::TrayAction::Exit);}
-                else if(!menuDriver)BeginMenuDriver(menuAction,owner,IDM_LUME_WIDGET_COLOR,false,4);
+                else if(!menuDriver)BeginMenuDriver(menuAction,owner,IDM_LUME_WIDGET_COLOR,false,3);
             }
             return;
         }

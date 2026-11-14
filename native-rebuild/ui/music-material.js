@@ -124,6 +124,9 @@ export function mountMusicMaterial(surface,{getScene=()=>null,root,visible=true,
   win.addEventListener('resize',schedule);
   // Capture scroll in any stage ancestor, including clipped lyric rails.
   document.addEventListener('scroll',schedule,true);
+  const motionEvents=['animationstart','animationend','transitionrun','transitionend'];
+  for(const name of motionEvents)document.addEventListener(name,schedule,true);
+  document.fonts?.addEventListener('loadingdone',schedule);
   motion.addEventListener('change',schedule);
   canvas.addEventListener('webglcontextlost',contextLost);
   canvas.addEventListener('webglcontextrestored',contextRestored);
@@ -150,6 +153,8 @@ export function mountMusicMaterial(surface,{getScene=()=>null,root,visible=true,
       document.removeEventListener('load',sceneLoaded,true);
       document.removeEventListener('visibilitychange',schedule);
       document.removeEventListener('scroll',schedule,true);
+      for(const name of motionEvents)document.removeEventListener(name,schedule,true);
+      document.fonts?.removeEventListener('loadingdone',schedule);
       win.removeEventListener('resize',schedule);
       motion.removeEventListener('change',schedule);
       canvas.removeEventListener('webglcontextlost',contextLost);

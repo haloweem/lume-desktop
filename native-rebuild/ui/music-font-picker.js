@@ -25,6 +25,7 @@ export function musicFontFamilies(fonts) {
 export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}) {
   const document=root.ownerDocument;
   let dialog=null,opener=null,requestController=null,families=[];
+  let index=[],rows=[],offsets=[0],rowNodes=new Map(),lastQuery=null,scrollFrame=null,listResize=null;
   const labelFor=family=>{
     const label=getFontLabel?.(family);
     return validMusicFontLabel(label)?label:family;
@@ -34,6 +35,9 @@ export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}
     if(!dialog)return;
     const previous=dialog,trigger=opener;
     dialog=null;opener=null;
+    if(scrollFrame!==null)document.defaultView.cancelAnimationFrame(scrollFrame);
+    listResize?.disconnect();listResize=null;
+    scrollFrame=null;rows=[];offsets=[0];rowNodes.clear();lastQuery=null;
     requestController?.abort();requestController=null;
     if(previous.open && typeof previous.close==='function')previous.close();
     previous.remove();
@@ -41,35 +45,75 @@ export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}
     if(restoreFocus && trigger?.isConnected)trigger.focus({preventScroll:true});
   }
 
+  function positionRows(){
+    offsets=[0];for(const row of rows)offsets.push(offsets.at(-1)+row.height);
+  }
+  function renderRows(){
+    if(scrollFrame!==null)document.defaultView.cancelAnimationFrame(scrollFrame);
+    scrollFrame=null;
+    const list=dialog?.querySelector('[data-music-font-list]'),window=list?.firstElementChild;
+    if(!window)return;
+    const top=list.scrollTop,bottom=top+(list.clientHeight||160);
+    let start=0;while(start<rows.length&&offsets[start+1]<top-160)start++;
+    let end=start;while(end<rows.length&&offsets[end]<bottom+160)end++;
+    const focused=document.activeElement;
+    for(const [i,node] of rowNodes)if((i<start||i>=end)&&!node.contains(focused)){node.remove();rowNodes.delete(i);}
+    let measured=false;
+    for(let i=start;i<end;i++){
+      const row=rows[i];let node=rowNodes.get(i);
+      if(!node){
+        node=document.createElement('div');node.dataset.fontRow=String(i);
+        Object.assign(node.style,{position:'absolute',display:'flow-root',left:'0',right:'0'});
+        const item=document.createElement(row.heading?'h3':'button');
+        item.textContent=row.label;
+        if(!row.heading){
+          item.type='button';item.dataset.musicFontFamily=row.family;
+          item.style.fontFamily=JSON.stringify(row.family);
+          item.setAttribute('aria-pressed',String(row.family===dialog.dataset.currentFont));
+        }
+        node.append(item);rowNodes.set(i,node);
+      }
+      // Keep DOM order aligned with visual order for keyboard and accessibility.
+      const after=[...window.children].find(child=>Number(child.dataset.fontRow)>i);
+      if(node.parentElement!==window)window.insertBefore(node,after||null);
+      node.style.top=`${offsets[i]}px`;
+      const height=node.getBoundingClientRect().height;
+      if(height>0&&Math.abs(row.height-height)>.25){row.height=height;measured=true;}
+    }
+    if(measured)positionRows();
+    window.style.height=`${offsets.at(-1)}px`;
+    for(const [i,node] of rowNodes)node.style.top=`${offsets[i]}px`;
+  }
+  function scheduleRows(){if(scrollFrame===null)scrollFrame=document.defaultView.requestAnimationFrame(renderRows);}
+  function focusRow(i){
+    const list=dialog.querySelector('[data-music-font-list]');
+    if(offsets[i]<list.scrollTop)list.scrollTop=offsets[i];
+    else if(offsets[i+1]>list.scrollTop+list.clientHeight)list.scrollTop=offsets[i+1]-list.clientHeight;
+    renderRows();rowNodes.get(i)?.querySelector('button')?.focus({preventScroll:true});
+  }
   function search(query='') {
     if(!dialog || dialog.getAttribute('aria-busy')==='true')return;
-    const list=dialog.querySelector('[data-music-font-list]');
-    list.replaceChildren();
+    const list=dialog.querySelector('[data-music-font-list]');if(!list)return;
     const needle=query.trim().toLocaleLowerCase();
-    const matches=families.map(family=>({family,label:labelFor(family),imported:isMusicImportedFontFamily(family)}))
-      .filter(({family,label})=>label.toLocaleLowerCase().includes(needle)||family.toLocaleLowerCase().includes(needle))
-      .sort((a,b)=>Number(b.imported)-Number(a.imported)||a.label.localeCompare(b.label));
+    if(lastQuery===needle)return;lastQuery=needle;
+    const matches=index.filter(font=>font.search.includes(needle));
     const hasImports=matches.some(font=>font.imported);
-    let group;
-    for(const {family,label,imported} of matches) {
+    rows=[];rowNodes.clear();let group;
+    for(const font of matches) {
+      const {imported}=font;
       if(hasImports && group!==imported) {
-        const heading=document.createElement('h3');
-        heading.textContent=imported?'已导入字体':'系统字体';
-        list.append(heading);group=imported;
+        rows.push({heading:true,label:imported?'已导入字体':'系统字体',height:25.5});group=imported;
       }
-      const button=document.createElement('button');
-      button.type='button';
-      button.dataset.musicFontFamily=family;
-      button.textContent=label;
-      button.style.fontFamily=JSON.stringify(family);
-      button.setAttribute('aria-pressed',String(family===dialog.dataset.currentFont));
-      list.append(button);
+      rows.push({...font,height:31});
     }
+    positionRows();
+    const window=document.createElement('div');window.style.position='relative';window.style.height=`${offsets.at(-1)}px`;
+    list.replaceChildren(window);list.scrollTop=0;renderRows();
     const current=dialog.dataset.currentFont;
     dialog.querySelector('[data-music-font-current]').textContent=`当前：${current?labelFor(current):'默认字体'}`;
     const status=dialog.querySelector('[data-music-font-status]');
     if(status.getAttribute('role')!=='alert')
-      status.textContent=list.childElementCount?'':families.length?'没有找到匹配字体。':'没有读取到可用字体。';
+      status.textContent=matches.length?'':families.length?'没有找到匹配字体。':'没有读取到可用字体。';
   }
 
   async function open(trigger,currentFamily='') {
@@ -157,6 +201,18 @@ export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}
     opened.querySelector('[data-music-font-current]').textContent=`当前：${currentFamily?labelFor(currentFamily):'默认字体'}`;
     (trigger.closest('.MusicFontRow')||trigger).after(opened);
     trigger.setAttribute('aria-expanded','true');
+    opened.querySelector('[data-music-font-list]').addEventListener('scroll',scheduleRows,{signal,passive:true});
+    if(document.defaultView.ResizeObserver){listResize=new document.defaultView.ResizeObserver(scheduleRows);listResize.observe(opened.querySelector('[data-music-font-list]'));}
+    document.fonts?.addEventListener('loadingdone',scheduleRows,{signal});
+    opened.querySelector('[data-music-font-list]').addEventListener('keydown',event=>{
+      const row=event.target.closest('[data-font-row]');if(!row)return;
+      const i=Number(row.dataset.fontRow),direction=event.key==='ArrowUp'||event.key==='Tab'&&event.shiftKey?-1:1;
+      if(!['ArrowDown','ArrowUp','Home','End','Tab'].includes(event.key))return;
+      let next=event.key==='Home'?0:event.key==='End'?rows.length-1:i+direction;
+      const step=event.key==='Home'?1:event.key==='End'?-1:direction;
+      while(rows[next]?.heading)next+=step;
+      if(next>=0&&next<rows.length){event.preventDefault();event.stopPropagation();focusRow(next);}
+    },{signal});
     opened.addEventListener('cancel',event=>{event.preventDefault();close();});
     opened.addEventListener('click',async event=>{
       const button=event.target.closest?.('[data-music-font-upload]');
@@ -184,7 +240,7 @@ export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}
     opened.querySelector('input').focus({preventScroll:true});
     try {
       if(!families.length || getFontLabel) {
-        families=[];
+        families=[];index=[];
         const window=document.defaultView;
         if(!queryFonts && typeof window.queryLocalFonts!=='function') {
           opened.querySelector('[data-music-font-status]').setAttribute('role','alert');
@@ -195,7 +251,10 @@ export function createMusicFontPicker(root,{queryFonts,onUpload,getFontLabel}={}
         if(dialog!==opened || !opened.isConnected)return;
         families=musicFontFamilies(fonts);
       }
-      opened.setAttribute('aria-busy','false');
+      index=families.map(family=>({family,label:labelFor(family),imported:isMusicImportedFontFamily(family)}))
+        .map(font=>({...font,search:`${font.label}\n${font.family}`.toLocaleLowerCase()}))
+        .sort((a,b)=>Number(b.imported)-Number(a.imported)||a.label.localeCompare(b.label));
+      lastQuery=null;opened.setAttribute('aria-busy','false');
       search(opened.querySelector('input').value);
     } catch {
       if(dialog!==opened || !opened.isConnected)return;

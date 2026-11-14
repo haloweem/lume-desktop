@@ -1,6 +1,6 @@
 #pragma once
 
-#include "apps/music-host/music_host_runtime.h"
+#include "core/music/audio_engine.h"
 
 #include <string>
 #include <memory>

@@ -53,11 +53,13 @@ test('production music background confirms native selection, retains failed medi
       await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
       await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
       await page.evaluate(async()=>{
-        const {initialMusicState}=await import('./music.js'),{query,nav,lyrics,...native}=initialMusicState();
+        const {initialMusicState}=await import('./music.js'),{query,nav,lyrics,score,...native}=initialMusicState();
+        const {validHostMessage}=await import('./bridge.js');
         const track={id:'bg-fixture',title:'Background fixture',artist:'Lume',album:'',artwork:'',source:'C:/fixture.wav',duration:60};
         window.musicSnapshot={...native,version:1,type:'music-state',session:1,revision:1,pageOpen:true,pageVisible:true,
           status:'paused',current:track,queue:[track],timeline:{position:3,duration:60},
           capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}};
+        if(!validHostMessage(musicSnapshot))throw new Error('Background fixture must use the native music-state schema');
         harness.receive(musicSnapshot);harness.receive({version:1,type:'navigate',page:'music'});
       });
       await page.waitForFunction(()=>document.querySelector('.MusicBackground')?.dataset.musicBackgroundState==='ready');

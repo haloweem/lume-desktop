@@ -1,4 +1,5 @@
 #pragma once
+#include "apps/shell/material_selection_request.h"
 #include "core/radial/radial_menu.h"
 #include "core/ui/page_bridge.h"
 #include "core/settings/file_store.h"
@@ -21,6 +22,7 @@ public:
                   settings::IFileStore* files=nullptr);
     ~RadialSession();
     bool Restore();
+    void SetMaterialSelectionHandler(MaterialSelectionHandler);
     std::optional<std::wstring> HandlePage(ui::PageCommand);
     std::wstring State()const;
     bool Running()const;

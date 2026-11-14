@@ -1,9 +1,16 @@
 #include "platform/windows/dynamic_island/island_window.h"
 #include "platform/windows/dynamic_island/compact_widgets.h"
+#include "platform/windows/dynamic_island/island_performance_card.h"
+#include "platform/windows/dynamic_island/island_clock_card.h"
+#include "platform/windows/dynamic_island/island_almanac_card.h"
+#include "platform/windows/dynamic_island/notification_icon.h"
+#include "platform/windows/dynamic_island/notification_display_policy.h"
 #include "vendor/nlohmann/json.hpp"
 #include <shellapi.h>
 #include <shlobj.h>
 #include "core/dynamic_island/island_shape.h"
+#include "platform/windows/dynamic_island/island_shape_mask.h"
+#include "core/calendar/lunar_calendar.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/text_util.h"
 #include "platform/windows/performance/performance_monitor.h"
@@ -37,7 +44,8 @@
 namespace lume::platform::windows {
 namespace {
 constexpr wchar_t ClassName[] = L"LumeWindowsDynamicIsland";
-constexpr UINT_PTR TickTimer = 1, AnimationTimer = 2, HoverTimer = 3, CollapseTimer = 4, BarsTimer = 5, IdleTimer = 6, NoticeTimer = 7;
+constexpr UINT_PTR TickTimer = 1, AnimationTimer = 2, HoverTimer = 3, CollapseTimer = 4, BarsTimer = 5, IdleTimer = 6, NoticeTimer = 7,
+    CalendarTimer = 8, ClockFlipTimer = 9;
 constexpr UINT ForegroundMessage = WM_APP + 0x6e2, OutsideMessage = WM_APP + 0x6e3, FrameMessage = WM_APP + 0x6e4,
                PerformanceMessage = WM_APP + 0x6e5;
 // Base sizes in DIP before the size option scales them.
@@ -48,11 +56,12 @@ constexpr float ExpandedWidth = 372, ExpandedHeight = 156;
 constexpr float PageWidth = 404, PageHeight = 208;  // Reminder page.
 constexpr float NoticeWidth = 340, NoticeHeight = 62;
 constexpr UINT NoticeMilliseconds = 9000;
+constexpr UINT NotificationMilliseconds = 10000;
 constexpr int MaxReminders = 10;
 // The canvas keeps this fixed size during animations, so no bitmap or render
 // target is reallocated per frame; each frame presents only the live area.
 // Leave room for the strongest bounce on the 404 x 208 reminder panel.
-constexpr float CanvasWidth = 480, CanvasHeight = 260;
+constexpr float CanvasWidth = 1536, CanvasHeight = 440;
 constexpr std::uint32_t Green = 0x30d158;
 constexpr float TopMargin = 8;
 // Auto-hide: how long without activity before tucking, and what stays visible.
@@ -61,7 +70,7 @@ constexpr float TuckedSliver = 6;
 constexpr std::size_t MaxArtworkBytes = 2 * 1024 * 1024;
 using Microsoft::WRL::ComPtr;
 
-float Scale(IslandSize size) { return size == IslandSize::Small ? .86f : size == IslandSize::Large ? 1.16f : 1.f; }
+float Scale(IslandSize size) { return size == IslandSize::Small ? .86f : size == IslandSize::Large ? 1.4f : 1.2f; }
 
 calendar::Date Today() {
     SYSTEMTIME now{};
@@ -77,6 +86,34 @@ double Seconds() {
 std::wstring Duration(unsigned seconds) {
     const auto s = seconds % 60;
     return std::to_wstring(seconds / 60) + L":" + (s < 10 ? L"0" : L"") + std::to_wstring(s);
+}
+// Days since 1970-01-01 for a proleptic Gregorian date.
+long long CivilDays(calendar::Date d) {
+    const int y = d.year - (d.month <= 2 ? 1 : 0);
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = y - era * 400;
+    const int doy = (153 * (d.month + (d.month > 2 ? -3 : 9)) + 2) / 5 + d.day - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return static_cast<long long>(era) * 146097 + doe - 719468;
+}
+int IsoWeek(calendar::Date d) {
+    const int weekday = calendar::Weekday(d), iso = weekday == 0 ? 7 : weekday;
+    const auto thursday = calendar::AddDays(d, 4 - iso).value_or(d);
+    return (calendar::DayOfYear(thursday) - 1) / 7 + 1;
+}
+// A light spring settle (about 6% overshoot) for positions, and an ease-out
+// cubic for opacity; both reach exactly 1 at the end of the transition.
+float SpringSettle(float t) {
+    if (t >= 1) return 1;
+    return 1 - std::exp(-6 * t) * std::cos(7 * t);
+}
+float EaseOut(float t) { t = std::clamp(t, 0.f, 1.f); return 1 - (1 - t) * (1 - t) * (1 - t); }
+// The day's first festival, else its solar term; the flag marks a festival.
+std::pair<std::wstring, bool> CalendarMark(calendar::Date d) {
+    const auto lunar = calendar::LookupLunar(d);
+    if (!lunar.festivals.empty()) return {text::Wide(lunar.festivals.front()), true};
+    if (!lunar.solarTerm.empty()) return {text::Wide(lunar.solarTerm), false};
+    return {};
 }
 // A solid triangle pointing left or right, its corners slightly rounded (the
 // outline adds 1 DIP all round, so the outline is inset by that much).
@@ -211,6 +248,7 @@ struct IslandWindow::Impl {
     std::unique_ptr<WidgetCanvas> canvas;
     LayeredSurface surface;
     WidgetBitmap bitmap;
+    IslandShapeMask shapeMask;
     std::unique_ptr<Impl> preview;
     std::shared_ptr<const WidgetBitmap> cover;
     std::string coverKey;
@@ -219,13 +257,23 @@ struct IslandWindow::Impl {
     int pressed = -1, hoverHit = -1;
     Spring width, height, presence, tuck, shape; // shape: 0 capsule, 1 attached.
     Spring pageFade;  // 0 right after a page change, 1 settled.
+    float workspaceReveal=0; // Content opacity must not reverse with the shell's bounce.
     Spring previewScale;
     bool sampleRendering=false;
     IslandPage page = IslandPage::Music;
     calendar::Date today = Today();
     IslandTodoSource todos;
+    struct CalendarInfo {
+        std::wstring lunarDate, mark;
+        bool festival = false;
+    };
+    std::map<int, CalendarInfo> calendarInfo;
+    std::vector<IslandTodo> todoRows;
+    bool todoCacheValid = false;
+    bool todoWritable = true;
     dynamic_island::Weather weather;  // Projection of the weather component.
     CompactData compactData;
+    IslandClockFlipState clockFlip;
     std::vector<std::wstring> heldFiles;
     // Keep samples warm for the window's lifetime: the worker posts
     // here, and the UI thread reads the latest snapshot.
@@ -234,17 +282,56 @@ struct IslandWindow::Impl {
         if (const HWND target = performanceTarget.load()) PostMessageW(target, PerformanceMessage, 0, 0);
     }};
     std::optional<performance::Snapshot> performanceSample;
-    // id "msg:<exe>" marks a chat message: app names the program, target is
-    // its window (activated on click). Chat messages never join reminders.
-    struct Notice { std::string id; std::wstring title, time, app; HWND target = nullptr; std::uint32_t color = 0xff9f0a; };
+    struct Notice {
+        std::string id;
+        std::wstring title, time;
+        bool transient = false;
+        std::function<void()> activate;
+        ULONGLONG expiresAt = 0;
+        std::shared_ptr<const WidgetBitmap> icon{};
+        std::string coalesceKey{};
+        unsigned durationMs = NotificationMilliseconds;
+        std::function<void(bool)> presented{};
+        bool presentationActive = false;
+        std::function<float()> audioLevel{};
+        std::function<bool()> audioPlaying{};
+        std::function<std::wstring()> voiceCaption{};
+    };
     std::optional<Notice> notice;
+    bool notificationDetail = false;
+    float notificationScroll = 0, notificationContentHeight = 0;
     std::vector<Notice> reminders;  // Newest first, at most MaxReminders.
     std::deque<Notice> queued;      // Notices waiting for the current one to finish.
+    NotificationIconCache notificationIcons;
+    mutable std::string notificationDisplayStatus;
+    std::function<bool()> notificationAllowed;
+    bool transientLayer = false;
     int pageDirection = 1;          // +1 slides in from the right, -1 from the left.
     std::vector<WidgetRect> reminderRows;
+    struct WorkspaceHit { WidgetRect rect; int action; std::optional<IslandTodo> todo; };
+    std::vector<WorkspaceHit> workspaceHits;
+    // Calendar module: the shown month and selected day reset to today on
+    // every expansion. Transitions are short time-based curves repainted by
+    // CalendarTimer only while they run.
+    static constexpr int CalendarDayHit=900,CalendarPrevHit=940,CalendarNextHit=941,CalendarTodayHit=942,CalendarAreaHit=950;
+    struct CalendarMotion { double start=-1; int direction=1; calendar::Date from{}; };
+    calendar::Date calendarSelected{};
+    std::optional<IslandAlmanacReading> almanacReading;
+    int calendarYear=0,calendarMonth=0;
+    CalendarMotion monthMotion,dayMotion;
+    int calendarHover=-1,calendarHoverBefore=-1;
+    double calendarHoverAt=-1,calendarPillAt=-1,calendarWheelAt=-1;
+    bool calendarPill=false;
+    float viewSlide=0;  // Horizontal page offset applied around the expanded content.
     FrameClock clock;
+    HMONITOR refreshMonitor = nullptr;
+    LONGLONG refreshPeriod = 0;
+    ULONGLONG refreshRetryAt = 0;
     double lastSeconds = 0;
     float drawnWidth = 0, drawnHeight = 0;
+    // Retain a stable allocation through transitions; release expanded high
+    // water pixels once the compact shape has settled.
+    float canvasWidth=480,canvasHeight=260;
     ULONGLONG activeUntil = 0;
     HWINEVENTHOOK foregroundHook = nullptr;
     bool watchingOutside=false;
@@ -254,29 +341,85 @@ struct IslandWindow::Impl {
     static inline std::vector<Impl*> instances;
     static inline HHOOK outsideHook=nullptr;  // Shared only while at least one island is expanded.
 
-    Impl(HINSTANCE i, Act a) : instance(i), act(std::move(a)) {}
+    Impl(HINSTANCE i, Act a, std::function<bool()> allow = {})
+        : instance(i), act(std::move(a)), notificationAllowed(std::move(allow)) {}
     ~Impl() { Stop(); }
 
-    float ScaleFactor() const { return sampleRendering?previewScale.x:Scale(display.size); }
+    float ScaleFactor() const {
+        if(!sampleRendering)return Scale(display.size);
+        // The large, strongest-bounce workspace can exceed the fixed preview
+        // viewport mid-flight. Fit that foreground while keeping desktop size.
+        return std::min({previewScale.x,936.f/std::max(1.f,width.x),284.f/std::max(1.f,height.x)});
+    }
     // Effective DPI folds the size option into the canvas, so layouts stay in base DIP.
     unsigned CanvasDpi() const { return static_cast<unsigned>(std::lround(static_cast<float>(dpi) * ScaleFactor())); }
     int Px(float value) const { return static_cast<int>(std::lround(value * static_cast<float>(CanvasDpi()) / 96.f)); }
     bool HasMedia() const { return view.media.available; }
+    bool HasCompactWidgets() const {
+        return display.leftWidget!=dynamic_island::CompactWidget::None||display.rightWidget!=dynamic_island::CompactWidget::None;
+    }
     bool ReadMonitor(MONITORINFO& info) const {
         if(targetMonitor){info.rcMonitor=targetMonitor->bounds;info.rcWork=targetMonitor->work;info.dwFlags=targetMonitor->primary?MONITORINFOF_PRIMARY:0;return true;}
         return GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&info)!=FALSE;
     }
     bool Glass() const { return display.material != IslandMaterial::None; }
+    bool AboveApplications() const { return display.topmost || transientLayer; }
     bool Attached() const {return display.shape==IslandShape::Standard;}
     bool Wanted() const { return !suppressed; }  // The idle pill always shows.
+    bool Workspace() const {
+        return display.expandedWidgets.size()!=1||display.expandedWidgets.front()!=dynamic_island::ExpandedWidget::Music;
+    }
+    struct WorkspaceGeometry { float width,height; };
+    // One row: retain each module's proportions, fitting the complete row on
+    // narrow displays rather than wrapping or squeezing individual contents.
+    static constexpr float WorkspacePad=18,WorkspaceTop=16,WorkspaceGap=18,ModuleHeight=144;
+    float WidgetWidth(dynamic_island::ExpandedWidget value) const {
+        using W=dynamic_island::ExpandedWidget;
+        switch(value){case W::Music:return 232;case W::CalendarWeather:return display.calendarStyle==IslandCalendarStyle::ChineseAlmanac?IslandAlmanacWidth:300;
+        case W::Focus:return 130;case W::System:return 276;case W::Todos:return 232;case W::Clock:return 200;}
+        return 180;
+    }
+    float WidgetHeight(dynamic_island::ExpandedWidget value) const {
+        return value==dynamic_island::ExpandedWidget::CalendarWeather&&display.calendarStyle==IslandCalendarStyle::ChineseAlmanac
+            ?IslandAlmanacHeight:ModuleHeight;
+    }
+    float WorkspaceHeight() const {
+        float result=ModuleHeight;
+        for(const auto item:display.expandedWidgets)result=std::max(result,WidgetHeight(item));
+        return result;
+    }
+    float WorkspaceNaturalWidth() const {
+        const auto count=display.expandedWidgets.size();
+        if(!count)return 372;
+        float result=WorkspacePad*2+static_cast<float>(count-1)*WorkspaceGap;
+        for(const auto item:display.expandedWidgets)result+=WidgetWidth(item);
+        return result;
+    }
+    WorkspaceGeometry WorkspaceSize() const {
+        if(display.expandedWidgets.empty())return {372,156};
+        const float desired=WorkspaceNaturalWidth();
+        float available=CanvasWidth;
+        MONITORINFO monitor{sizeof(monitor)};
+        if(!sampleRendering&&ReadMonitor(monitor))
+            available=std::max(280.f,static_cast<float>(monitor.rcWork.right-monitor.rcWork.left)*96.f/
+                (static_cast<float>(dpi)*Scale(display.size))-24);
+        available=std::min(available,CanvasWidth);
+        const float fit=std::min(1.f,available/desired);
+        return {desired*fit,(WorkspaceTop*2+WorkspaceHeight())*fit};
+    }
 
     void Targets() {
         shape.target=Attached()?1.f:0.f;
         if (reminders.empty() && page == IslandPage::Reminder) page = IslandPage::Music;
-        if (!HasMedia() && page == IslandPage::Music && !reminders.empty()) page = IslandPage::Reminder;
-        if (notice && !expanded) { width.target = NoticeWidth; height.target = NoticeHeight; }
+        if (!Workspace() && !HasMedia() && page == IslandPage::Music && !reminders.empty()) page = IslandPage::Reminder;
+        if (notificationDetail && notice) { width.target = PageWidth; height.target = PageHeight; }
+        else if (notice && !expanded) { width.target = NoticeWidth; height.target = NoticeHeight; }
         else if (expanded && page == IslandPage::Reminder) { width.target = PageWidth; height.target = PageHeight; }
-        else if (expanded) { width.target = ExpandedWidth; height.target = ExpandedHeight; }
+        else if (expanded) {
+            const auto size=WorkspaceSize();
+            width.target=Workspace()?size.width:ExpandedWidth;
+            height.target=Workspace()?size.height:ExpandedHeight;
+        }
         else if (HasMedia()) {
             width.target = CompactWidth + (hovered ? HoverGrowWidth : 0);
             height.target = CompactHeight + (hovered ? HoverGrowHeight : 0);
@@ -284,19 +427,19 @@ struct IslandWindow::Impl {
             width.target = IdleWidth + (hovered ? HoverGrowWidth * .5f : 0);
             height.target = IdleHeight + (hovered ? HoverGrowHeight * .5f : 0);
         }
-        if(!expanded&&!notice&&(display.leftWidget!=dynamic_island::CompactWidget::None||display.rightWidget!=dynamic_island::CompactWidget::None)){
-            width.target=HasMedia()?360.f:260.f;height.target=36.f;
+        if(!expanded&&!notice&&HasCompactWidgets()){
+            width.target=260.f;height.target=36.f;
         }
         presence.target = Wanted() ? 1.f : 0.f;
         const bool idle = display.autoHide && GetTickCount64() >= activeUntil;
         tuck.target = idle && !hovered && !expanded && !notice ? 1.f : 0.f;
     }
     // Keeps the island out for a while after something happens, then tucks it.
-    void Activity(ULONGLONG hold = IdleDelay) {
+    void Activity(ULONGLONG hold = IdleDelay, bool animate = true) {
         activeUntil = std::max(activeUntil, GetTickCount64() + hold);
         if (!hwnd || !display.autoHide) return;
         SetTimer(hwnd, IdleTimer, static_cast<UINT>(activeUntil - GetTickCount64()) + 20, nullptr);
-        Animate();
+        if (animate) Animate();
     }
     static bool Animations() {
         BOOL animate = TRUE;
@@ -366,17 +509,35 @@ struct IslandWindow::Impl {
     // The refresh this frame is shown on: the next vblank of the island's own
     // display, as the glass counts it. (DWM's timing info follows the fastest
     // monitor, 180 Hz next to a 100 Hz island, and was off by up to 8 ms.)
-    LONGLONG NextDisplayQpc() const {
+    void InvalidateDisplayTiming() {
+        refreshMonitor = nullptr;
+        refreshPeriod = 0;
+        refreshRetryAt = 0;
+    }
+    LONGLONG NextDisplayQpc() {
         LARGE_INTEGER now{};
         QueryPerformanceCounter(&now);
-        DEVMODEW mode{};
-        mode.dmSize = sizeof(mode);
-        MONITORINFOEXW monitor{};
-        monitor.cbSize = sizeof(monitor);
-        const double hz = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &monitor) &&
-                EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1
-            ? mode.dmDisplayFrequency : 60.0;
-        const LONGLONG period = static_cast<LONGLONG>(static_cast<double>(QpcFrequency()) / hz);
+        const HMONITOR current = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+        if (!refreshPeriod || current != refreshMonitor ||
+            (refreshRetryAt && GetTickCount64() >= refreshRetryAt)) {
+            // Display-mode enumeration belongs to configuration changes, not
+            // every frame. Keep checking the monitor so crossing screens still
+            // picks the correct period without changing the motion's clock.
+            DEVMODEW mode{};
+            mode.dmSize = sizeof(mode);
+            MONITORINFOEXW monitor{};
+            monitor.cbSize = sizeof(monitor);
+            const bool read = GetMonitorInfoW(current, &monitor) &&
+                EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1;
+            const double hz = read ? mode.dmDisplayFrequency : 60.0;
+            refreshMonitor = current;
+            refreshPeriod = static_cast<LONGLONG>(static_cast<double>(QpcFrequency()) / hz);
+            // Hot-plug and driver recovery may briefly make enumeration fail.
+            // Retry without turning that transient fallback into a permanent
+            // 60 Hz cache or querying a broken driver on every display frame.
+            refreshRetryAt = read ? 0 : GetTickCount64() + 1000;
+        }
+        const LONGLONG period = refreshPeriod;
         const LONGLONG vblank = clock.LastVBlank();
         if (!vblank || now.QuadPart - vblank > 4 * period) return now.QuadPart + period;
         return vblank + std::max<LONGLONG>(1, (now.QuadPart - vblank + period - 1) / period) * period;
@@ -449,21 +610,26 @@ struct IslandWindow::Impl {
     // Playback bars are drawn on the compact capsule and the music page only;
     // the repaint timer runs just while they are visible.
     bool BarsShown() const {
+        if (notice && notice->transient && notice->audioLevel)
+            return visible && !suppressed && notice->presentationActive && tuck.target < 1 &&
+                (!notice->audioPlaying || notice->audioPlaying());
         return visible && !suppressed && view.media.playing && !notice && tuck.target < 1 &&
-               (!expanded || page == IslandPage::Music);
+               (!expanded ? !HasCompactWidgets() :
+                page == IslandPage::Music && (!Workspace()||dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::Music)));
     }
     void Pulse() {
         if (!hwnd) return;
-        if (BarsShown()) SetTimer(hwnd, BarsTimer, 80, nullptr);
+        if (BarsShown()) SetTimer(hwnd, BarsTimer, notice && notice->voiceCaption ? 30 : 80, nullptr);
         else KillTimer(hwnd, BarsTimer);
     }
     void Show(bool show) {
         if (!hwnd || visible == show) return;
+        if(!show)StopClockFlip();
         visible = show;
         Pulse();
-        if (!show) { DetachGlass(); ShowWindow(hwnd, SW_HIDE); return; }
+        if (!show) { DetachGlass(); window_layer::WantHidden(hwnd); ShowWindow(hwnd, SW_HIDE); return; }
         Place();
-        if (display.topmost)
+        if (AboveApplications())
             SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         else {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -487,7 +653,8 @@ struct IslandWindow::Impl {
         POINT at{center - liveWidth / 2,
                  static_cast<LONG>(std::lround(shown + (tucked - shown) * std::clamp(tuck.x, 0.f, 1.2f)))};
         const auto opacity = static_cast<BYTE>(std::lround(std::clamp(presence.x, 0.f, 1.f) * 255));
-        if (!surface.Upload(bitmap) || !surface.Compose(hwnd, at, {liveWidth, liveHeight}, {}, opacity)) return false;
+        if (!surface.Upload(bitmap, static_cast<unsigned>(liveWidth), static_cast<unsigned>(liveHeight)) ||
+            !surface.Compose(hwnd, at, {liveWidth, liveHeight}, {}, opacity)) return false;
         SubmitGlass();
         return true;
     }
@@ -543,8 +710,19 @@ struct IslandWindow::Impl {
         p.cornerRadius = Radius() * scale;
         p.opacityEnabled = 1;
         p.opacity = std::clamp(presence.x, 0.f, 1.f);
-        MaterialContact(hwnd, width.x * scale, height.x * scale, dpi, p.contactX, p.contactY);
-        if (animating && trajectory.size() > 1 && p.reducedMotion == 0 && (!keyframes.empty() || BuildKeyframes())) {
+        // Frosted glass disables interaction input in the material worker. Keep
+        // a stable sentinel so pointer motion over the island cannot turn into
+        // a stream of identical visual material updates while it is expanding.
+        if (p.frosted) { p.contactX = -.62f; p.contactY = -.85f; }
+        else MaterialContact(hwnd, width.x * scale, height.x * scale, dpi, p.contactX, p.contactY);
+        const bool timeline = animating && trajectory.size() > 1 && p.reducedMotion == 0 &&
+            (!keyframes.empty() || BuildKeyframes());
+        if (timeline) {
+            // Radius, opacity and shape are sampled from the immutable timeline
+            // by the glass worker. Keep the scalar sentinel stable so frosted
+            // glass does not wake that worker once per UI frame for values it
+            // deliberately ignores.
+            p.islandShape = 0;
             // Repeated unchanged while the motion runs; the glass plays it.
             const auto& k = keyframes.front();
             p.lensOverride = 2;
@@ -557,6 +735,12 @@ struct IslandWindow::Impl {
             p.timelineStart = trajectoryStart;
             p.islandShapeTimeline=shapeFrames.data();
         }
+        if (timeline && p.frosted && lastGlass.owner == p.owner &&
+            lastGlass.timeline == p.timeline && lastGlass.timelineCount == p.timelineCount &&
+            lastGlass.timelineStepMs == p.timelineStepMs && lastGlass.timelineStart == p.timelineStart &&
+            lastGlass.islandShapeTimeline == p.islandShapeTimeline) {
+            return;
+        }
         SubmitMaterial(glass, p, lastGlass);
     }
     void DetachGlass() {
@@ -567,7 +751,8 @@ struct IslandWindow::Impl {
     // --- Drawing -------------------------------------------------------------
 
     float Expansion() const {
-        return std::clamp((height.x - CompactHeight) / (ExpandedHeight - CompactHeight), 0.f, 1.f);
+        const float full=notificationDetail?PageHeight:Workspace()&&page==IslandPage::Music?WorkspaceSize().height:ExpandedHeight;
+        return std::clamp((height.x - CompactHeight) / (full - CompactHeight), 0.f, 1.f);
     }
     void FadeImage(const std::shared_ptr<const WidgetBitmap>& image, WidgetRect r, float radius, float alpha) {
         if (alpha <= .01f) return;
@@ -609,7 +794,8 @@ struct IslandWindow::Impl {
     double Position() const {
         const auto& media = view.media;
         double position = media.position;
-        if (media.playing) position += static_cast<double>(GetTickCount64() - mediaAt) / 1000;
+        if (media.playing && (media.positionKnown || (media.app.empty() && media.duration > 0)))
+            position += static_cast<double>(GetTickCount64() - mediaAt) / 1000;
         return media.duration > 0 ? std::min(position, media.duration) : position;
     }
     // The line containing position; -1 before the first line and in gaps
@@ -679,14 +865,10 @@ struct IslandWindow::Impl {
     }
     void Compact(float w, float h, float alpha) {
         if(alpha<=.01f)return;
-        if(display.leftWidget!=dynamic_island::CompactWidget::None||display.rightWidget!=dynamic_island::CompactWidget::None){
+        if(HasCompactWidgets()){
             const float inset=12+dynamic_island::IslandShoulder(h)*std::clamp(shape.x,0.f,1.f);
             DrawCompact(*canvas,display.leftWidget,{inset,1,98,h-2},compactData,weather,performanceSample,view.english,alpha);
             DrawCompact(*canvas,display.rightWidget,{w-inset-98,1,98,h-2},compactData,weather,performanceSample,view.english,alpha,true);
-            if(HasMedia()){
-                const float center=w/2;FadeImage(cover,{center-16,(h-24)/2,24,24},6,alpha);
-                Bars(center+14,h/2+7,14,3,2,2,alpha);
-            }
             return;
         }
         if (!HasMedia()) return;
@@ -768,137 +950,758 @@ struct IslandWindow::Impl {
         Control(2, cx, 128, alpha);
         Control(3, cx + 72, 128, alpha);
     }
+    // --- Calendar module ---------------------------------------------------------
+    static constexpr std::uint32_t CalendarRed=0xff453a;
+    static constexpr double MonthSeconds=.34,DaySeconds=.32,HoverSeconds=.14,PillSeconds=.2;
+    void EnsureCalendar() {
+        if(calendarYear)return;
+        calendarYear=today.year;calendarMonth=today.month;calendarSelected=today;
+    }
+    void ResetCalendar() {
+        calendarYear=0;EnsureCalendar();
+        monthMotion.start=dayMotion.start=calendarHoverAt=calendarPillAt=-1;
+        calendarHover=calendarHoverBefore=-1;calendarPill=false;
+    }
+    static float Progress(double start,double seconds) {
+        return start<0?1.f:static_cast<float>(std::clamp((Seconds()-start)/seconds,0.,1.));
+    }
+    bool CalendarAnimating() const {
+        const double now=Seconds();
+        const auto live=[&](double start,double seconds){return start>=0&&now-start<seconds;};
+        return live(monthMotion.start,MonthSeconds)||live(dayMotion.start,DaySeconds)||
+            live(calendarHoverAt,HoverSeconds)||live(calendarPillAt,PillSeconds);
+    }
+    void CalendarTick() {
+        if(!hwnd)return;
+        if(!CalendarAnimating()){KillTimer(hwnd,CalendarTimer);if(!animating)Place();return;}
+        if(!animating)Place();
+    }
+    double StartCalendarMotion() {
+        if(!hwnd||!Animations())return -1;
+        SetTimer(hwnd,CalendarTimer,15,nullptr);
+        return Seconds();
+    }
+    void ShiftCalendarMonth(int step) {
+        EnsureCalendar();
+        const calendar::Date from{calendarYear,calendarMonth,1};
+        int month=calendarMonth+step,year=calendarYear;
+        while(month<1){month+=12;--year;}
+        while(month>12){month-=12;++year;}
+        if(year<1901||year>2099)return;
+        calendarYear=year;calendarMonth=month;
+        monthMotion={StartCalendarMotion(),step>0?1:-1,from};
+        Place();
+    }
+    void SelectCalendarDay(calendar::Date day) {
+        EnsureCalendar();
+        if(day==calendarSelected)return;
+        dayMotion={StartCalendarMotion(),day>calendarSelected?1:-1,calendarSelected};
+        calendarSelected=day;
+        Place();
+    }
+    void CalendarToday() {
+        EnsureCalendar();
+        if(calendarYear!=today.year||calendarMonth!=today.month){
+            const calendar::Date from{calendarYear,calendarMonth,1};
+            const int direction=calendar::Date{today.year,today.month,1}>from?1:-1;
+            calendarYear=today.year;calendarMonth=today.month;
+            monthMotion={StartCalendarMotion(),direction,from};
+        }
+        SelectCalendarDay(today);
+        Place();
+    }
+    // Soft round pill with optional dimmed suffix; returns its width.
+    float CalendarTag(float x,float y,const std::wstring& label,const std::wstring& suffix,bool hot,float alpha) {
+        auto& c=*canvas;
+        const float labelWidth=c.MeasureText(label,10.5f,WidgetTextWeight::Medium);
+        const float suffixWidth=suffix.empty()?0:c.MeasureText(suffix,10.5f,WidgetTextWeight::Medium)+5;
+        const float tagWidth=labelWidth+suffixWidth+16;
+        c.Rounded({x,y,tagWidth,20},10,hot?CalendarRed:0xffffff,(hot?.16f:.08f)*alpha);
+        c.Text(label,{x+8,y,labelWidth+2,20},10.5f,hot?0xff6961:0xffffff,alpha,WidgetTextWeight::Medium);
+        if(!suffix.empty())c.Text(suffix,{x+8+labelWidth+5,y,suffixWidth,20},10.5f,0xffffff,.58f*alpha,WidgetTextWeight::Medium);
+        return tagWidth;
+    }
+    void WeatherGlyph(float x,float y,float alpha) {
+        auto& c=*canvas;
+        const int code=weather.code;
+        const bool clear=code<=1,rain=(code>=51&&code<=67)||(code>=80&&code<=82)||(code>=95&&code<=99),snow=(code>=71&&code<=77)||code==85||code==86;
+        if(code<=2){
+            if(weather.isDay)c.Ellipse({x+(clear?3.f:10.f),y+(clear?0.f:-1.f),clear?14.f:10.f,clear?14.f:10.f},0xffd60a,alpha);
+            else c.AnnularSector(x+(clear?10.f:16.f),y+6,0,clear?6.f:5.f,200,220,0xf2f2f7,alpha);
+            if(clear)return;
+        }
+        const std::uint32_t cloud=rain||snow||code>=45?0xc7c7cc:0xe5e5ea;
+        c.Ellipse({x+2,y+4,10,10},cloud,alpha);
+        c.Ellipse({x+7,y+1,12,12},cloud,alpha);
+        c.Rounded({x,y+8,21,7},3.5f,cloud,alpha);
+        if(rain)for(int i=0;i<3;++i)c.Line(x+5+static_cast<float>(i)*5,y+17,x+3+static_cast<float>(i)*5,y+21,0x64d2ff,alpha,1.5f);
+        if(snow)for(int i=0;i<3;++i)c.Ellipse({x+4+static_cast<float>(i)*5,y+17,3,3},0xffffff,alpha);
+    }
+    std::wstring CalendarWeekday(calendar::Date d) const {
+        static constexpr const wchar_t* zh[7]{L"星期日",L"星期一",L"星期二",L"星期三",L"星期四",L"星期五",L"星期六"};
+        static constexpr const wchar_t* en[7]{L"Sunday",L"Monday",L"Tuesday",L"Wednesday",L"Thursday",L"Friday",L"Saturday"};
+        const int index=std::clamp(calendar::Weekday(d),0,6);
+        return view.english?en[index]:zh[index];
+    }
+    static int CalendarKey(calendar::Date d) { return d.year * 10000 + d.month * 100 + d.day; }
+    const CalendarInfo& CachedCalendarInfo(calendar::Date d) {
+        const int key = CalendarKey(d);
+        const auto found = calendarInfo.find(key);
+        if (found != calendarInfo.end()) return found->second;
+        const auto lunar = calendar::LookupLunar(d);
+        CalendarInfo info;
+        info.lunarDate = text::Wide(lunar.lunarDate);
+        if (!lunar.festivals.empty()) {
+            info.mark = text::Wide(lunar.festivals.front());
+            info.festival = true;
+        } else if (!lunar.solarTerm.empty()) {
+            info.mark = text::Wide(lunar.solarTerm);
+        }
+        if (calendarInfo.size() >= 256) calendarInfo.clear();
+        return calendarInfo.emplace(key, std::move(info)).first->second;
+    }
+    std::pair<std::wstring, bool> CalendarMark(calendar::Date d) {
+        const auto& info = CachedCalendarInfo(d);
+        return {info.mark, info.festival};
+    }
+    void CalendarDayPane(calendar::Date d,float x,float y,float paneWidth,float alpha) {
+        if(alpha<=.01f)return;
+        auto& c=*canvas;
+        const bool isToday=d==today;
+        const auto weekday=CalendarWeekday(d);
+        c.Text(isToday?(view.english?L"Today · "+weekday:L"今天 · "+weekday):weekday,{x,y,paneWidth,15},11,
+            isToday?CalendarRed:0xffffff,(isToday?1.f:.58f)*alpha,WidgetTextWeight::Semibold);
+        c.Text(std::to_wstring(d.day),{x-1,y+14,paneWidth,48},40,0xffffff,alpha,WidgetTextWeight::Bold);
+        const auto& lunar=CachedCalendarInfo(d);
+        const std::wstring week=view.english?L"Week "+std::to_wstring(IsoWeek(d)):L"第"+std::to_wstring(IsoWeek(d))+L"周";
+        const std::wstring line=view.english||lunar.lunarDate.empty()?week:lunar.lunarDate+L" · "+week;
+        c.Text(FitWeightedText(c,line,paneWidth,10.5f,WidgetTextWeight::Normal),{x,y+62,paneWidth,15},10.5f,0xffffff,.58f*alpha);
+        if(isToday&&weather.available){
+            WeatherGlyph(x,y+86,alpha);
+            const auto temperature=std::to_wstring(weather.temperature)+L"°";
+            const float tw=c.MeasureText(temperature,15,WidgetTextWeight::Semibold);
+            c.Text(temperature,{x+28,y+82,tw+2,22},15,0xffffff,alpha,WidgetTextWeight::Semibold);
+            const float rx=x+28+tw+7,rw=std::max(1.f,x+paneWidth-rx);
+            c.Text(FitWeightedText(c,weather.condition,rw,10,WidgetTextWeight::Normal),{rx,weather.hasRange?y+80:y+86,rw,13},10,0xffffff,.58f*alpha);
+            if(weather.hasRange)
+                c.Text(std::to_wstring(weather.low)+L"° / "+std::to_wstring(weather.high)+L"°",{rx,y+92,rw,13},10,0xffffff,.58f*alpha);
+        }
+        const float tagY=y+ModuleHeight-20;
+        c.PushClip({x,tagY,paneWidth+14,20});
+        const auto mark=CalendarMark(d);
+        if(isToday){
+            if(!mark.first.empty())CalendarTag(x,tagY,(view.english?L"Today · ":L"今日 · ")+mark.first,{},mark.second,alpha);
+            else for(int offset=1;offset<=60;++offset){
+                const auto next=calendar::AddDays(d,offset);if(!next)break;
+                const auto upcoming=CalendarMark(*next);if(upcoming.first.empty())continue;
+                const std::wstring when=offset==1?(view.english?L"tomorrow":L"明天"):
+                    view.english?L"in "+std::to_wstring(offset)+L" days":std::to_wstring(offset)+L" 天后";
+                CalendarTag(x,tagY,upcoming.first,when,false,alpha);
+                break;
+            }
+        }else{
+            const auto days=CivilDays(d)-CivilDays(today);
+            const auto count=std::to_wstring(days<0?-days:days);
+            const std::wstring relative=days==1?(view.english?L"Tomorrow":L"明天"):days==-1?(view.english?L"Yesterday":L"昨天"):
+                view.english?(days>0?L"In "+count+L" days":count+L" days ago"):count+(days>0?L" 天后":L" 天前");
+            float at=x;
+            if(!mark.first.empty())at+=CalendarTag(at,tagY,mark.first,{},mark.second,alpha)+5;
+            CalendarTag(at,tagY,relative,{},false,alpha);
+        }
+        c.PopClip();
+    }
+    void CalendarHeader(int year,int month,float x,float y,float alpha) {
+        if(alpha<=.01f)return;
+        static constexpr const wchar_t* zh[12]{L"一月",L"二月",L"三月",L"四月",L"五月",L"六月",L"七月",L"八月",L"九月",L"十月",L"十一月",L"十二月"};
+        static constexpr const wchar_t* en[12]{L"January",L"February",L"March",L"April",L"May",L"June",L"July",L"August",L"September",L"October",L"November",L"December"};
+        auto& c=*canvas;
+        const std::wstring name=view.english?en[month-1]:zh[month-1];
+        const float nameWidth=c.MeasureText(name,13,WidgetTextWeight::Semibold);
+        c.Text(name,{x,y,nameWidth+2,20},13,0xffffff,alpha,WidgetTextWeight::Semibold);
+        c.Text(std::to_wstring(year),{x+nameWidth+4,y,44,20},13,0xffffff,.34f*alpha,WidgetTextWeight::Medium);
+    }
+    float CalendarHoverAlpha(int id) const {
+        const float t=EaseOut(Progress(calendarHoverAt,HoverSeconds));
+        if(id==calendarHover)return t;
+        if(id==calendarHoverBefore)return 1-t;
+        return 0;
+    }
+    void CalendarGrid(int year,int month,WidgetRect area,float alpha,bool interactive) {
+        if(alpha<=.01f)return;
+        auto& c=*canvas;
+        const int first=(calendar::Weekday({year,month,1})+6)%7,days=calendar::DaysInMonth(year,month);
+        const int rows=(first+days+6)/7;
+        const float cellWidth=area.width/7,cellHeight=area.height/static_cast<float>(rows);
+        for(int day=1;day<=days;++day){
+            const int index=first+day-1,column=index%7,row=index/7;
+            const calendar::Date date{year,month,day};
+            const float cx=area.x+cellWidth*(static_cast<float>(column)+.5f),cy=area.y+cellHeight*(static_cast<float>(row)+.5f)-1;
+            const bool isToday=date==today,selected=date==calendarSelected&&!isToday;
+            const int id=CalendarDayHit+day;
+            if(isToday)c.Ellipse({cx-9.5f,cy-9.5f,19,19},CalendarRed,alpha);
+            else{
+                const float hover=interactive?CalendarHoverAlpha(id):0;
+                const float pop=selected?SpringSettle(Progress(dayMotion.start,DaySeconds)):1;
+                const float radius=9.5f*(.6f+.4f*std::max(selected?pop:0.f,hover));
+                const float fill=std::max(selected?.2f*std::min(1.f,EaseOut(Progress(dayMotion.start,DaySeconds))*1.2f):0.f,.1f*hover);
+                if(fill>0)c.Ellipse({cx-radius,cy-radius,radius*2,radius*2},0xffffff,fill*alpha);
+            }
+            const bool weekend=column>=5;
+            const bool past=date<today;
+            const float shade=isToday?1.f:past?.34f:weekend?.58f:.96f;
+            c.Text(std::to_wstring(day),{cx-cellWidth/2,cy-8,cellWidth,16},10.5f,0xffffff,shade*alpha,
+                isToday?WidgetTextWeight::Bold:WidgetTextWeight::Medium,WidgetTextAlign::Center);
+            if(const auto mark=CalendarMark(date);!mark.first.empty())
+                c.Ellipse({cx-1.5f,cy+7,3,3},isToday?0xffffff:mark.second?CalendarRed:0xffffff,(isToday||mark.second?1.f:.58f)*alpha);
+            if(interactive)workspaceHits.push_back({{cx-cellWidth/2,area.y+cellHeight*static_cast<float>(row),cellWidth,cellHeight},id,{}});
+        }
+    }
+    void CalendarCard(WidgetRect card,float alpha) {
+        if(alpha<=.01f)return;
+        EnsureCalendar();
+        if(display.calendarStyle==IslandCalendarStyle::ChineseAlmanac){
+            if(!almanacReading||almanacReading->date!=calendarSelected)almanacReading=ReadIslandAlmanac(calendarSelected);
+            const bool sun=calendarSelected==today&&weather.available&&!weather.failed;
+            DrawIslandAlmanacCard(*canvas,card,*almanacReading,sun?weather.sunrise:L"",sun?weather.sunset:L"",view.english,alpha);
+            if(calendarSelected!=today)workspaceHits.push_back({{card.x+51,card.y+54,106,96},CalendarTodayHit,{}});
+            workspaceHits.push_back({card,CalendarAreaHit,{}});
+            return;
+        }
+        auto& c=*canvas;
+        const float paneWidth=std::min(104.f,card.width*.35f),gridX=card.x+paneWidth+14,gridWidth=card.x+card.width-gridX;
+        // Hover transitions follow the shared hit id; record changes here so
+        // the fade starts from the frame on which the pointer moved.
+        const int hoverNow=hoverHit>=CalendarDayHit&&hoverHit<CalendarAreaHit?hoverHit:-1;
+        if(hoverNow!=calendarHover){calendarHoverBefore=calendarHover;calendarHover=hoverNow;calendarHoverAt=StartCalendarMotion();}
+        // Left: the selected day, sliding sideways when the selection changes.
+        c.PushClip({card.x,card.y,paneWidth+14,card.height});
+        {
+            const float t=Progress(dayMotion.start,DaySeconds),slide=SpringSettle(t),fade=EaseOut(t);
+            const float shift=static_cast<float>(dayMotion.direction)*10;
+            if(t<1)CalendarDayPane(dayMotion.from,card.x-shift*fade,card.y,paneWidth,(1-fade)*alpha);
+            CalendarDayPane(calendarSelected,card.x+shift*(1-slide),card.y,paneWidth,fade*alpha);
+        }
+        c.PopClip();
+        // Right: month header, navigation and the month grid.
+        const float monthT=Progress(monthMotion.start,MonthSeconds),monthSlide=SpringSettle(monthT),monthFade=EaseOut(monthT);
+        const float monthShift=static_cast<float>(monthMotion.direction)*22;
+        c.PushClip({gridX,card.y,gridWidth-46,20});
+        if(monthT<1)CalendarHeader(monthMotion.from.year,monthMotion.from.month,gridX,card.y,(1-monthFade)*alpha);
+        CalendarHeader(calendarYear,calendarMonth,gridX,card.y,monthFade*alpha);
+        c.PopClip();
+        const bool away=calendarSelected!=today||calendarYear!=today.year||calendarMonth!=today.month;
+        if(away!=calendarPill){calendarPill=away;calendarPillAt=StartCalendarMotion();}
+        const float pillT=EaseOut(Progress(calendarPillAt,PillSeconds)),pillShown=calendarPill?pillT:1-pillT;
+        const std::wstring todayLabel=view.english?L"Today":L"今天";
+        const float pillWidth=c.MeasureText(todayLabel,9.5f,WidgetTextWeight::Semibold)+14;
+        const float right=gridX+gridWidth;
+        if(pillShown>.01f){
+            const float scale=.8f+.2f*(calendarPill?SpringSettle(Progress(calendarPillAt,PillSeconds)):1.f);
+            const float pw=pillWidth*scale,ph=18*scale,px=right-46-pillWidth+(pillWidth-pw)/2,py=card.y+1+(18-ph)/2;
+            const float hover=CalendarHoverAlpha(CalendarTodayHit);
+            c.Rounded({px,py,pw,ph},ph/2,CalendarRed,(.14f+.1f*hover)*pillShown*alpha);
+            c.Text(todayLabel,{px,py,pw,ph},9.5f*scale,CalendarRed,pillShown*alpha,WidgetTextWeight::Semibold,WidgetTextAlign::Center);
+            if(calendarPill)workspaceHits.push_back({{right-46-pillWidth,card.y,pillWidth,20},CalendarTodayHit,{}});
+        }
+        for(int step=0;step<2;++step){
+            const int id=step?CalendarNextHit:CalendarPrevHit;
+            const float cx=right-32+static_cast<float>(step)*22,cy=card.y+10;
+            const float hover=CalendarHoverAlpha(id);
+            if(hover>0)c.Ellipse({cx-10,cy-10,20,20},0xffffff,.1f*hover*alpha);
+            const float dir=step?1.f:-1.f;
+            c.Line(cx-2*dir,cy-4,cx+2*dir,cy,0xffffff,(.58f+.42f*hover)*alpha,1.6f);
+            c.Line(cx+2*dir,cy,cx-2*dir,cy+4,0xffffff,(.58f+.42f*hover)*alpha,1.6f);
+            workspaceHits.push_back({{cx-11,cy-11,22,22},id,{}});
+        }
+        static constexpr const wchar_t* zhWeek=L"一二三四五六日";
+        static constexpr const wchar_t* enWeek=L"MTWTFSS";
+        const float cellWidth=gridWidth/7;
+        for(int day=0;day<7;++day)
+            c.Text(std::wstring(1,(view.english?enWeek:zhWeek)[day]),{gridX+cellWidth*static_cast<float>(day),card.y+25,cellWidth,13},8.5f,
+                0xffffff,.34f*alpha,WidgetTextWeight::Medium,WidgetTextAlign::Center);
+        const WidgetRect area{gridX,card.y+40,gridWidth,card.height-40};
+        c.PushClip(area);
+        if(monthT<1){
+            c.Offset(viewSlide-monthShift*monthFade,0);
+            CalendarGrid(monthMotion.from.year,monthMotion.from.month,area,(1-monthFade)*alpha,false);
+        }
+        c.Offset(viewSlide+monthShift*(1-monthSlide),0);
+        CalendarGrid(calendarYear,calendarMonth,area,monthFade*alpha,true);
+        c.Offset(viewSlide,0);
+        c.PopClip();
+        workspaceHits.push_back({card,CalendarAreaHit,{}});
+    }
+    // Today's to-dos, in the spirit of a Reminders widget: a header with a
+    // completion ring, up to four rows (circle completes, title edits) and a
+    // quiet "new" pill. Completed rows sink below open ones and are struck out.
+    void TodoCard(WidgetRect card,float alpha) {
+        if(alpha<=.01f)return;
+        auto& c=*canvas;
+        const float x=card.x,y=card.y,w=card.width;
+        if (!todoCacheValid) {
+            todoRows = todos.forDay ? todos.forDay(today) : std::vector<IslandTodo>{};
+            std::stable_partition(todoRows.begin(),todoRows.end(),[](const auto& task){return !task.completed;});
+            todoWritable = !todos.writable || todos.writable();
+            todoCacheValid = true;
+        }
+        const auto& rows = todoRows;
+        const auto done=static_cast<std::size_t>(std::count_if(rows.begin(),rows.end(),[](const auto& task){return task.completed;}));
+        const bool writable=todoWritable;
+        const std::wstring title=view.english?L"Today":L"今天";
+        const float titleWidth=c.MeasureText(title,13,WidgetTextWeight::Semibold);
+        c.Text(title,{x,y,titleWidth+2,20},13,0xffffff,alpha,WidgetTextWeight::Semibold);
+        const std::wstring summary=rows.empty()?std::wstring{}:std::to_wstring(rows.size()-done)+(view.english?L" open":L" 项待办");
+        c.Text(summary,{x+titleWidth+8,y+1,100,20},10.5f,0xffffff,.42f*alpha,WidgetTextWeight::Medium);
+        // Completion ring: grey track, green arc for the completed share.
+        const float rx=x+w-9,ry=y+10;
+        if(!rows.empty())c.AnnularSector(rx,ry,6.5f,8.5f,0,360,0xffffff,.12f*alpha);
+        if(!rows.empty()&&done)c.AnnularSector(rx,ry,6.5f,8.5f,0,360.f*static_cast<float>(done)/static_cast<float>(rows.size()),Green,alpha);
+        if(rows.empty()){
+            c.AnnularSector(x+w/2,y+58,13,14.5f,0,360,0xffffff,.22f*alpha);
+            c.Line(x+w/2-5,y+58,x+w/2-1.5f,y+61.5f,0xffffff,.45f*alpha,1.8f);
+            c.Line(x+w/2-1.5f,y+61.5f,x+w/2+5.5f,y+54.5f,0xffffff,.45f*alpha,1.8f);
+            c.Text(view.english?L"Nothing due today":L"今天没有待办",{x,y+80,w,18},12,0xffffff,.82f*alpha,WidgetTextWeight::Medium,WidgetTextAlign::Center);
+        }
+        const std::size_t shown=std::min<std::size_t>(4,rows.size());
+        for(std::size_t row=0;row<shown;++row){
+            const auto& task=rows[row];
+            const float top=y+28+static_cast<float>(row)*24;
+            const int toggle=800+static_cast<int>(row),edit=810+static_cast<int>(row);
+            const bool hot=hoverHit==toggle||hoverHit==edit;
+            if(hot)c.Rounded({x-6,top-1,w+12,23},8,0xffffff,.07f*alpha);
+            const std::uint32_t ring=task.color?task.color:0xffffff;
+            const float cx=x+7,cy=top+10.5f;
+            if(task.completed){
+                c.AnnularSector(cx,cy,0,7,0,360,Green,alpha);
+                c.Line(cx-3,cy,cx-.8f,cy+2.4f,0x0d2a1d,alpha,1.6f);
+                c.Line(cx-.8f,cy+2.4f,cx+3.4f,cy-2.6f,0x0d2a1d,alpha,1.6f);
+            }else{
+                c.AnnularSector(cx,cy,5.6f,7,0,360,ring,(task.color?.95f:.5f)*alpha);
+                if(hoverHit==toggle)c.AnnularSector(cx,cy,0,3,0,360,ring,.6f*alpha);
+            }
+            const float timeWidth=task.time.empty()?0:c.MeasureText(task.time,10,WidgetTextWeight::Medium)+8;
+            const float textX=x+21,textWidth=std::max(1.f,w-21-timeWidth);
+            const auto fitted=FitWeightedText(c,task.title,textWidth,11.5f,WidgetTextWeight::Medium);
+            c.Text(fitted,{textX,top,textWidth,21},11.5f,0xffffff,(task.completed?.36f:.95f)*alpha,WidgetTextWeight::Medium);
+            if(task.completed){
+                const float strike=std::min(textWidth,c.MeasureText(fitted,11.5f,WidgetTextWeight::Medium));
+                c.Line(textX,top+11,textX+strike,top+11,0xffffff,.36f*alpha,1);
+            }
+            if(timeWidth>0)c.Text(task.time,{x+w-timeWidth,top,timeWidth,21},10,0xffffff,(task.completed?.24f:.42f)*alpha,
+                WidgetTextWeight::Medium,WidgetTextAlign::Right);
+            if(writable){
+                workspaceHits.push_back({{x-6,top-1,22,23},toggle,task});
+                workspaceHits.push_back({{x+16,top-1,w-10,23},edit,task});
+            }
+        }
+        const float footY=y+ModuleHeight-20;
+        if(writable){
+            const std::wstring add=view.english?L"New":L"新待办";
+            const float addWidth=c.MeasureText(add,10.5f,WidgetTextWeight::Semibold)+28;
+            const float addX=rows.empty()?x+(w-addWidth)/2:x;
+            c.Rounded({addX,footY,addWidth,20},10,0x5b7bea,(hoverHit==720?.34f:.22f)*alpha);
+            c.Line(addX+10,footY+10,addX+16,footY+10,0xaebfff,alpha,1.5f);
+            c.Line(addX+13,footY+7,addX+13,footY+13,0xaebfff,alpha,1.5f);
+            c.Text(add,{addX+20,footY,addWidth-22,20},10.5f,0xaebfff,alpha,WidgetTextWeight::Semibold);
+            workspaceHits.push_back({{addX,footY,addWidth,20},720,{}});
+        }
+        if(rows.size()>shown)
+            c.Text(view.english?L"+"+std::to_wstring(rows.size()-shown)+L" more":L"还有 "+std::to_wstring(rows.size()-shown)+L" 项",
+                {x+w-90,footY,90,20},10,0xffffff,.38f*alpha,WidgetTextWeight::Medium,WidgetTextAlign::Right);
+    }
+    bool ClockFlipShown()const{
+        return visible&&!suppressed&&expanded&&!notice&&!notificationDetail&&!sampleRendering&&tuck.target<1&&
+            page==IslandPage::Music&&display.clockStyle==IslandClockStyle::Flip&&
+            dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::Clock);
+    }
+    void StopClockFlip(){clockFlip.Stop();if(hwnd)KillTimer(hwnd,ClockFlipTimer);}
+    void TickClockFlip(){
+        const auto now=GetTickCount64();
+        if(clockFlip.Observe(compactData.time,now,ClockFlipShown())){
+            // A short-lived timer for this transition only; no idle polling or worker.
+            if(!SetTimer(hwnd,ClockFlipTimer,16,nullptr))clockFlip.Stop();
+        }else if(!clockFlip.Active(now))KillTimer(hwnd,ClockFlipTimer);
+    }
+    void ClockCard(WidgetRect card,float alpha) {
+        const auto now=GetTickCount64();
+        const bool flipping=ClockFlipShown()&&clockFlip.Active(now);
+        DrawIslandClockCard(*canvas,card,compactData.time,view.english,display.clockStyle,alpha,
+            flipping?&clockFlip.previous:nullptr,flipping?clockFlip.Progress(now):1.f);
+    }
+    void WorkspaceView(float w,float,float alpha) {
+        workspaceHits.clear();
+        if(alpha<=.01f)return;
+        using W=dynamic_island::ExpandedWidget;
+        auto& c=*canvas;
+        const auto text=[&](const std::wstring& value,WidgetRect r,float size=12,std::uint32_t color=0xffffff,float opacity=1.f){
+            c.Text(FitWeightedText(c,value,r.width,size,WidgetTextWeight::Medium),r,size,color,alpha*opacity,WidgetTextWeight::Medium);
+        };
+        if(display.expandedWidgets.empty()){
+            text(view.english?L"No enabled widgets":L"暂无启用的组件",{24,55,w-48,26},16);
+            text(view.english?L"Enable music in island settings":L"可在灵动岛设置中启用音乐",{24,87,w-48,22},12,0xa1a1a6);
+            return;
+        }
+        const float naturalWidth=WorkspaceNaturalWidth();
+        // Lay out the cards once at their settled fit. Scaling every glyph by
+        // the width spring made icons and text repeatedly shrink/grow during
+        // the shell's bounce, with a fresh raster on every animation frame.
+        const float layoutWidth=WorkspaceSize().width;
+        const float rowScale=std::max(.01f,std::min(1.f,layoutWidth/naturalWidth));
+        const float savedSlide=viewSlide;
+        // Place() centers integer-pixel HWND widths. Mirror that arithmetic so
+        // a one-pixel change in the shell cannot shift the stationary content
+        // by half a pixel and alternate its antialiasing from frame to frame.
+        const float px=static_cast<float>(CanvasDpi())/96;
+        const float centered=static_cast<float>(Px(w)/2-Px(layoutWidth)/2)/px;
+        viewSlide=(savedSlide+centered)/rowScale;
+        c.Scale(rowScale);c.Offset(viewSlide,0);
+        float nextX=WorkspacePad;
+        for(std::size_t index=0;index<display.expandedWidgets.size();++index){
+            const auto kind=display.expandedWidgets[index];
+            const float cardWidth=WidgetWidth(kind),cardHeight=WidgetHeight(kind),x=nextX,y=WorkspaceTop+(WorkspaceHeight()-cardHeight)/2;
+            nextX+=cardWidth+WorkspaceGap;
+            const WidgetRect card{x,y,cardWidth,cardHeight};
+            if(kind==W::CalendarWeather){CalendarCard(card,alpha);continue;}
+            if(kind==W::Clock){ClockCard(card,alpha);continue;}
+            if(kind==W::System){DrawIslandPerformanceCard(c,card,performanceSample,compactData,view.english,alpha);continue;}
+            c.PushClip(card);
+            const float inner=cardWidth-24,cx=x+cardWidth/2;
+            if(kind==W::Music){
+                if(HasMedia()){
+                    FadeImage(cover,{x,y+4,52,52},11,alpha);
+                    c.Text(FitWeightedText(c,view.media.title,cardWidth-64,13,WidgetTextWeight::Semibold),{x+64,y+11,cardWidth-64,20},13,
+                        0xffffff,alpha,WidgetTextWeight::Semibold);
+                    if(ShowLyric())Lyric({x+64,y+33,cardWidth-64,18},11,0xe5e5ea,alpha);
+                    else text(view.media.artist,{x+64,y+33,cardWidth-64,18},11,0xffffff,.58f);
+                    const float progress=view.media.duration>0?static_cast<float>(std::clamp(Position()/view.media.duration,0.,1.)):0;
+                    const float barX=x+38,barWidth=cardWidth-76;
+                    c.Rounded({barX,y+85,barWidth,3},1.5f,0xffffff,.16f*alpha);
+                    if(progress>0)c.Rounded({barX,y+85,barWidth*progress,3},1.5f,0xffffff,.92f*alpha);
+                    c.Text(Duration(static_cast<unsigned>(std::max(0.,Position()))),{x,y+79,34,14},9.5f,0xffffff,.34f*alpha);
+                    c.Text(L"-"+Duration(static_cast<unsigned>(std::max(0.,view.media.duration-Position()))),{x+cardWidth-34,y+79,34,14},9.5f,
+                        0xffffff,.34f*alpha,WidgetTextWeight::Normal,WidgetTextAlign::Right);
+                    for(int id=1;id<=3;++id){
+                        const float at=cx+static_cast<float>(id-2)*56;
+                        Control(id,at,y+124,alpha);
+                        workspaceHits.push_back({{at-20,y+106,40,36},id,{}});
+                    }
+                }else{
+                    c.AnnularSector(cx,y+46,0,23,0,360,0xffffff,.07f*alpha);
+                    c.Line(cx+4,y+32,cx+4,y+54,0xffffff,.7f*alpha,2);
+                    c.Line(cx+4,y+32,cx+12,y+36,0xffffff,.7f*alpha,2);
+                    c.AnnularSector(cx,y+55,0,5,0,360,0xffffff,.7f*alpha);
+                    c.Text(view.english?L"Nothing playing":L"暂无播放内容",{x,y+86,cardWidth,20},13,0xffffff,alpha,
+                        WidgetTextWeight::Semibold,WidgetTextAlign::Center);
+                    c.Text(view.english?L"Play a song to begin":L"播放音乐后显示控制",{x,y+109,cardWidth,18},11,0xffffff,.45f*alpha,
+                        WidgetTextWeight::Normal,WidgetTextAlign::Center);
+                }
+            }else if(kind==W::Focus){
+                c.Text(Duration(view.focusing?view.remaining:view.finished?0:1500),{x+10,y+23,cardWidth-20,30},24,0xffffff,alpha,WidgetTextWeight::Bold,WidgetTextAlign::Center);
+                text(view.focusing?(view.english?L"in focus":L"专注中"):view.finished?(view.english?L"well done":L"专注完成"):(view.english?L"a little focus":L"一段专注"),
+                    {x+13,y+53,inner,17},9,0xe9a16b,.9f);
+                const float progress=view.focusing?static_cast<float>(view.remaining)/1500.f:view.finished?0.f:1.f;
+                const float arm=cardWidth-36,angle=(-18-24*(1-progress))*3.14159265f/180;
+                const float pivotX=x+17,pivotY=y+112;
+                c.Line(pivotX,pivotY,x+cardWidth-15,pivotY+2,0xb57e4d,.5f*alpha,2);
+                c.Line(pivotX,pivotY,pivotX+std::cos(angle)*arm,pivotY+std::sin(angle)*arm,0xe8b885,.85f*alpha,2);
+                c.AnnularSector(pivotX,pivotY,0,4,0,360,0xe2b36f,alpha);
+                c.AnnularSector(pivotX+std::cos(angle)*arm,pivotY+std::sin(angle)*arm,0,2.5f,0,360,0xffd6ad,alpha);
+                const int action=view.focusing?701:700;
+                const WidgetRect control{x+12,y+128,inner,26};
+                if(hoverHit==action)c.Rounded(control,13,0xffffff,.07f*alpha);
+                if(view.focusing)c.Rounded({cx-5,y+136,10,10},2,0xffffff,.85f*alpha);
+                else Triangle(c,cx,y+141,10,12,false,.9f*alpha);
+                workspaceHits.push_back({control,action,{}});
+            }else if(kind==W::Todos){c.PopClip();TodoCard(card,alpha);continue;
+            }
+            c.PopClip();
+        }
+        for(auto& hit:workspaceHits){
+            hit.rect.x=hit.rect.x*rowScale+savedSlide+centered;hit.rect.y*=rowScale;
+            hit.rect.width*=rowScale;hit.rect.height*=rowScale;
+        }
+        viewSlide=savedSlide;c.Scale(1);c.Offset(savedSlide,0);
+    }
+    void VoiceBars(float x, float cy, float alpha, bool wide = false) {
+        if (!notice || !notice->audioLevel) return;
+        const float reading = notice->audioLevel();
+        const float level = std::isfinite(reading) ? std::clamp(reading, 0.f, 1.f) : 0.f;
+        constexpr float gains[]{.55f, 1.f, .78f, .42f, .82f, .61f, .95f, .5f, .88f, .58f};
+        constexpr std::uint32_t colors[]{0x9bdfbd,0xbbe9cf,0xccebdc,0xe2eee5,0xdaf0e4,
+            0xf4f0dc,0xf0dfce,0xf2d4b9,0xf4c9aa,0xe7bb9a};
+        for (unsigned bar = 0; bar < (wide ? 10u : 4u); ++bar) {
+            const float barHeight = 3.f + 25.f * level * gains[bar];
+            canvas->Rounded({x + static_cast<float>(bar) * (wide ? 4.f : 5.f), cy - barHeight / 2, wide ? 2.5f : 3.f, barHeight},
+                1.25f, wide ? colors[bar] : 0x83e6c5, .92f * alpha);
+        }
+    }
     void NoticeView(float w, float h, float alpha) {
         if (!notice || alpha <= .01f) return;
         auto& c = *canvas;
-        if (!notice->app.empty()) {
-            // A chat program: its colour and initial in a disc.
-            const float my = h / 2;
-            c.AnnularSector(34, my, 0, 17, 0, 360, notice->color, alpha);
-            c.Text(notice->app.substr(0, 1), {17, my - 11, 34, 22}, 14, 0xffffff, alpha, WidgetTextWeight::Semibold, WidgetTextAlign::Center);
-            const float l = 62, r = w - 20;
-            c.Text(notice->app + L" · 新消息", {l, my - 21, r - l, 16}, 11.5f, 0xffffff, .55f * alpha);
-            c.Text(FitWeightedText(c, notice->title, r - l, 14.5f, WidgetTextWeight::Semibold), {l, my - 4, r - l, 22}, 14.5f,
-                   0xffffff, alpha, WidgetTextWeight::Semibold);
+        const float cy = h / 2;
+        if (notice->transient && notice->voiceCaption) {
+            if (!notice->icon || !c.ImageBitmap(notice->icon, {18, cy - 22, 44, 44}, alpha))
+                c.AnnularSector(40, cy, 0, 22, 0, 360, 0x83e6c5, alpha);
+            constexpr float left = 76;
+            const float textWidth = std::max(0.f, w - left - 74);
+            c.Text(FitWeightedText(c, notice->time, textWidth, 11.5f, WidgetTextWeight::Normal),
+                {left, cy - 21, textWidth, 16}, 11.5f, 0xffffff, .55f * alpha);
+            const auto caption = notice->voiceCaption();
+            const float size = caption.size() == 1 ? 20.f : 15.f;
+            c.Text(FitWeightedText(c, caption, textWidth, size, WidgetTextWeight::Normal),
+                {left, cy - 4, textWidth, 25}, size, 0xffffff, alpha, WidgetTextWeight::Normal);
+            VoiceBars(w - 57, cy, alpha, true);
             return;
         }
-        // Bell in an orange disc, like a system reminder.
-        const float cy = h / 2;
-        c.AnnularSector(34, cy, 0, 17, 0, 360, 0xff9f0a, alpha);
-        c.AnnularSector(34, cy - 1.5f, 4.2f, 6.2f, -90, 180, 0xffffff, alpha);
-        c.Rounded({27.8f, cy - 1.5f, 12.4f, 6}, 1.5f, 0xffffff, alpha);
-        c.Rounded({26, cy + 3.5f, 16, 2}, 1, 0xffffff, alpha);
-        c.AnnularSector(34, cy + 7.2f, 0, 1.8f, 0, 360, 0xffffff, alpha);
-        const float left = 62, right = w - 20;
-        c.Text(L"待办提醒" + (notice->time.empty() ? std::wstring{} : L" · " + notice->time), {left, cy - 21, right - left, 16}, 11.5f,
+        // Bundled icons retain their own transparent silhouette. Todo notices
+        // and unavailable assets keep the existing bell fallback.
+        if (!notice->transient || !notice->icon || !c.ImageBitmap(notice->icon, {17, cy - 17, 34, 34}, alpha)) {
+            c.AnnularSector(34, cy, 0, 17, 0, 360, 0xff9f0a, alpha);
+            c.AnnularSector(34, cy - 1.5f, 4.2f, 6.2f, -90, 180, 0xffffff, alpha);
+            c.Rounded({27.8f, cy - 1.5f, 12.4f, 6}, 1.5f, 0xffffff, alpha);
+            c.Rounded({26, cy + 3.5f, 16, 2}, 1, 0xffffff, alpha);
+            c.AnnularSector(34, cy + 7.2f, 0, 1.8f, 0, 360, 0xffffff, alpha);
+        }
+        const bool voice = notice->transient && static_cast<bool>(notice->audioLevel);
+        if (voice) {
+            // Use the voice's current PCM envelope, not the music player's
+            // transport state or a clock-driven imitation of an audio signal.
+            VoiceBars(61, cy, alpha);
+        }
+        const float left = voice ? 90.f : 62.f, right = w - 20;
+        const auto heading = notice->transient ? notice->time :
+            (view.english ? L"To-do reminder" : L"待办提醒") + (notice->time.empty() ? std::wstring{} : L" · " + notice->time);
+        c.Text(FitWeightedText(c, heading, right - left, 11.5f, WidgetTextWeight::Normal), {left, cy - 21, right - left, 16}, 11.5f,
                0xffffff, .55f * alpha);
         c.Text(FitWeightedText(c, notice->title, right - left, 14.5f, WidgetTextWeight::Semibold), {left, cy - 4, right - left, 22}, 14.5f,
                0xffffff, alpha, WidgetTextWeight::Semibold);
+    }
+    float NotificationViewportHeight() const {
+        return PageHeight - 80;
+    }
+    void NotificationDetailView(float w, float h, float alpha) {
+        if (!notice || alpha <= .01f) return;
+        auto& c = *canvas;
+        if (!notice->icon || !c.ImageBitmap(notice->icon, {20, 18, 28, 28}, alpha))
+            c.AnnularSector(34, 32, 0, 13, 0, 360, 0xff9f0a, alpha);
+        const bool voice = static_cast<bool>(notice->audioLevel);
+        if (voice) VoiceBars(58, 32, alpha);
+        const float headingX = voice ? 86.f : 58.f;
+        c.Text(view.english ? L"Notification" : L"通知详情", {headingX, 21, w - headingX - 58, 22}, 12,
+               0xffffff, .55f * alpha);
+        const float closeX = w - 42;
+        c.Rounded({closeX, 18, 26, 26}, 13, 0xffffff, (hoverHit == 410 ? .16f : .08f) * alpha);
+        c.Line(closeX + 9, 27, closeX + 17, 35, 0xffffff, .7f * alpha, 1.5f);
+        c.Line(closeX + 17, 27, closeX + 9, 35, 0xffffff, .7f * alpha, 1.5f);
+        // Keep one final-width layout throughout the spring animation, so
+        // glyphs do not reflow or create new text layouts on every frame.
+        constexpr float textWidth = PageWidth - 40;
+        const float titleHeight = c.MeasureWrappedText(notice->time, textWidth, 17, WidgetTextWeight::Semibold);
+        const float bodyHeight = c.MeasureWrappedText(notice->title, textWidth, 14);
+        notificationContentHeight = titleHeight + (notice->title.empty() ? 0.f : 8.f + bodyHeight);
+        const float viewportHeight = NotificationViewportHeight();
+        const float limit = std::max(0.f, notificationContentHeight - viewportHeight);
+        notificationScroll = std::clamp(notificationScroll, 0.f, limit);
+        c.PushClip({20, 60, std::max(0.f, w - 40), std::min(viewportHeight, std::max(0.f, h - 80))});
+        c.WrappedText(notice->time, {20, 60 - notificationScroll, textWidth, titleHeight}, 17,
+                      0xffffff, alpha, WidgetTextWeight::Semibold);
+        c.WrappedText(notice->title, {20, 68 + titleHeight - notificationScroll, textWidth, bodyHeight}, 14,
+                      0xffffff, .82f * alpha);
+        c.PopClip();
+        if (limit > 0) {
+            const float thumb = std::max(16.f, viewportHeight * viewportHeight / notificationContentHeight);
+            c.Rounded({w - 10, 60, 3, viewportHeight}, 1.5f, 0xffffff, .08f * alpha);
+            c.Rounded({w - 10, 60 + (viewportHeight - thumb) * notificationScroll / limit, 3, thumb},
+                      1.5f, 0xffffff, .4f * alpha);
+        }
+    }
+    void OpenNotificationDetail() {
+        if (!notice || !notice->transient || notice->activate || notice->voiceCaption || notificationDetail) return;
+        notificationDetail = true;
+        notificationScroll = notificationContentHeight = 0;
+        // Preserve the capsule's existing delivery timer and hover grace period.
+        // Opening the reminder does not create another delivery or history entry.
+        Expand(true);
     }
     bool ShowNotice(const std::string& id, const std::wstring& title, const std::wstring& time) {
         // In the desktop layer windows may cover the island, so the reminder
         // would count as delivered unseen; the normal popup takes it instead.
         if (!hwnd || suppressed || window_layer::Suppressed(hwnd)) return false;
         if(window_layer::enabled && window_layer::ReadContext().foreignForeground)return false;
-        const Notice next{id, title, time};
+        const Notice next{id, title, time, false, {}, 0, {}};
         reminders.erase(std::remove_if(reminders.begin(), reminders.end(), [&](const Notice& n) { return n.id == id; }), reminders.end());
         reminders.insert(reminders.begin(), next);
         if (reminders.size() > static_cast<std::size_t>(MaxReminders)) reminders.resize(static_cast<std::size_t>(MaxReminders));
         // Several reminders due together are shown one after another.
-        if (notice && notice->id != id) {
+        if (notice && (notice->transient || notice->id != id)) {
             if (queued.size() < static_cast<std::size_t>(MaxReminders)) queued.push_back(next);
             return true;
         }
         notice = next;
+        SyncNoticeLayer();
         if (expanded) Expand(false);
         SetTimer(hwnd, NoticeTimer, NoticeMilliseconds, nullptr);
         Activity(NoticeMilliseconds);
         Animate();
         return true;
     }
-    // QQ, WeChat and similar programs flash their taskbar button for a new
-    // message (Windows does not hand their notification text to other apps).
-    // The shell hook reports the flash; the island names the program and
-    // opens its window on click. A flash repeats, so once per program per 8 s.
-    struct ChatApp { const wchar_t* exe; const wchar_t* name; std::uint32_t color; };
-    static const ChatApp* Chat(HWND window) {
-        static constexpr ChatApp apps[]{
-            {L"weixin.exe", L"微信", 0x07c160}, {L"wechat.exe", L"微信", 0x07c160}, {L"wxwork.exe", L"企业微信", 0x2b7bf6},
-            {L"qq.exe", L"QQ", 0x12b7f5}, {L"tim.exe", L"TIM", 0x2c8cf0}, {L"dingtalk.exe", L"钉钉", 0x1677ff},
-            {L"feishu.exe", L"飞书", 0x3370ff}, {L"lark.exe", L"飞书", 0x3370ff}};
-        DWORD pid = 0;
-        if (!window || !GetWindowThreadProcessId(window, &pid) || !pid) return nullptr;
-        const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!process) return nullptr;
-        wchar_t path[MAX_PATH]{};
-        DWORD size = MAX_PATH;
-        const bool named = QueryFullProcessImageNameW(process, 0, path, &size) != FALSE;
-        CloseHandle(process);
-        if (!named) return nullptr;
-        const wchar_t* file = wcsrchr(path, L'\\');
-        file = file ? file + 1 : path;
-        for (const auto& app : apps) if (_wcsicmp(file, app.exe) == 0) return &app;
-        return nullptr;
-    }
-    std::map<std::wstring, ULONGLONG> chatShown;
-    void ChatFlash(HWND window) {
-        if (!display.messages || !hwnd) return;
-        const auto* app = Chat(window);
-        if (!app) return;
-        // Logged so a report shows whether the program signalled at all.
-        diag::Log("island", std::string("chat flash ") + text::Utf8(app->exe) + (suppressed ? " (fullscreen)" : "") +
-            (GetForegroundWindow() == window ? " (foreground)" : ""));
-        if (suppressed) return;
-        // The flash of a window the user is looking at is not news.
-        if (GetForegroundWindow() == window) return;
-        const auto now = GetTickCount64();
-        auto& last = chatShown[app->name];
-        if (last && now - last < 8000) return;
-        last = now;
-        wchar_t title[256]{};
-        GetWindowTextW(window, title, 256);
-        // The window title is the chat for detached chat windows; the main
-        // window is titled with the program itself.
-        std::wstring text = title;
-        if (text.empty() || text == app->name || _wcsicmp(text.c_str(), L"QQ") == 0 || text == L"WeChat")
-            text = L"你有新的消息";
-        Notice next{std::string("msg:") + std::to_string(reinterpret_cast<std::uintptr_t>(window)), text, {}, app->name, window, app->color};
-        if (notice && notice->id != next.id) {
-            if (queued.size() < static_cast<std::size_t>(MaxReminders)) queued.push_back(next);
-            return;
+    const char* NotificationBlockReason() const {
+        if (!hwnd || !prefs.enabled) return "stopped";
+        if (suppressed || window_layer::Suppressed(hwnd)) return "suppressed";
+        MONITORINFO monitor{sizeof(monitor)}; RECT area{};
+        if(ReadMonitor(monitor))area=monitor.rcWork;else GetWindowRect(hwnd,&area);
+        // Use the target screen, including while the idle capsule is tucked
+        // above its edge. Global BUSY can describe a different monitor.
+        const bool protectedOnTarget=window_layer::Protected(area,window_layer::ReadContext(),true);
+        if(protectedOnTarget)return "fullscreen";
+        if(notificationAllowed)return notificationAllowed()?"ready":"unavailable";
+        const auto desktop=OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+        if(!desktop)return "locked";
+        wchar_t name[80]{};DWORD bytes=0;
+        const bool present=GetUserObjectInformationW(desktop,UOI_NAME,name,sizeof(name),&bytes)&&_wcsicmp(name,L"Default")==0;
+        CloseDesktop(desktop);
+        if(!present)return "locked";
+        QUERY_USER_NOTIFICATION_STATE state=QUNS_NOT_PRESENT;
+        if(FAILED(SHQueryUserNotificationState(&state)))return "system-unavailable";
+        if(AllowIslandNotificationState(state,protectedOnTarget))return "ready";
+        switch(state){
+        case QUNS_NOT_PRESENT:return "not-present";
+        case QUNS_RUNNING_D3D_FULL_SCREEN:return "exclusive-fullscreen";
+        case QUNS_PRESENTATION_MODE:return "presentation";
+        case QUNS_QUIET_TIME:return "quiet-time";
+        default:return "system-unavailable";
         }
-        notice = next;
-        if (expanded) Expand(false);
-        SetTimer(hwnd, NoticeTimer, NoticeMilliseconds, nullptr);
-        Activity(NoticeMilliseconds);
-        Animate();
     }
-    static void OpenChat(HWND window) {
-        if (!IsWindow(window)) return;
-        if (IsIconic(window)) ShowWindow(window, SW_RESTORE);
-        else if (!IsWindowVisible(window)) ShowWindow(window, SW_SHOW);
-        // The island never activates, so Windows may refuse a plain request.
-        if (!SetForegroundWindow(window)) SwitchToThisWindow(window, TRUE);
+    bool NotificationsAllowed() const {
+        const auto* reason=NotificationBlockReason();
+        if(notificationDisplayStatus!=reason){
+            notificationDisplayStatus=reason;
+            diag::Log("island-notifications",std::string("display-gate=")+reason);
+        }
+        return notificationDisplayStatus=="ready";
+    }
+    void SyncNoticeLayer() {
+        const bool next = notice && notice->transient;
+        if (transientLayer == next) return;
+        transientLayer = next;
+        if (!hwnd) return;
+        window_layer::ConfigureIsland(hwnd, AboveApplications(), transientLayer || display.hideFullscreen);
+        if (AboveApplications()) {
+            RemovePropW(hwnd, lume::window_ids::DesktopWidgetProp);
+            desktop_level::Forget(hwnd);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        } else {
+            SetPropW(hwnd, lume::window_ids::DesktopWidgetProp, reinterpret_cast<HANDLE>(1));
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            desktop_level::Place(hwnd, false);
+        }
+    }
+    void ArmNotice() {
+        SyncNoticeLayer();
+        if (!notice || !hwnd) return;
+        const UINT duration = notice->transient ? notice->durationMs : NoticeMilliseconds;
+        SetTimer(hwnd, NoticeTimer, duration, nullptr);
+        PresentNotice(true);
+        Activity(duration);
+        Animate();
+        if(notice&&notice->transient)diag::Log("island-notifications","capsule-start type="+
+            (notice->coalesceKey.empty()?std::string("reminder"):notice->coalesceKey)+" durationMs="+std::to_string(duration));
+    }
+    void PresentNotice(bool present) {
+        if (!notice || !notice->transient || notice->presentationActive == present) return;
+        notice->presentationActive = present;
+        if (notice->presented) notice->presented(present);
+        Pulse();
+    }
+    bool ShowNotification(const IslandNotification& value) {
+        if (!NotificationsAllowed() || value.id.empty() || value.id.size() > 256 || value.title.empty()) return false;
+        if(value.coalesceKey.size()>32)return false;
+        Notice next{value.id, value.body.substr(0, 512), value.title.substr(0, 128), true, value.activate,
+            GetTickCount64() + 60000, notificationIcons.Load(value.icon),value.coalesceKey,
+            std::clamp(value.durationMs, 1000u, 60000u), value.presented, false, value.audioLevel, value.audioPlaying, value.voiceCaption};
+        if (value.immediate && (!notice || notice->id != next.id)) {
+            // Timed voice reminders show at their scheduled instant. Preserve
+            // ordinary content to resume afterwards, without replaying a voice.
+            if (notice) {
+                PresentNotice(false);
+                if (!notice->presented && queued.size() < static_cast<std::size_t>(MaxReminders))
+                    queued.push_front(*notice);
+                notice.reset();
+            }
+            notificationDetail = false;
+            notificationScroll = notificationContentHeight = 0;
+            notice = std::move(next);
+            if (expanded) Expand(false);
+            ArmNotice();
+            return true;
+        }
+        const auto sameGroup=[&](const Notice& item){return item.transient&&!next.coalesceKey.empty()&&item.coalesceKey==next.coalesceKey;};
+        if(notice&&sameGroup(*notice)&&!notificationDetail){
+            queued.erase(std::remove_if(queued.begin(),queued.end(),sameGroup),queued.end());
+            PresentNotice(false);
+            notice=std::move(next);ArmNotice();return true;
+        }
+        const auto group=std::find_if(queued.begin(),queued.end(),sameGroup);
+        if(group!=queued.end()){*group=std::move(next);return true;}
+        if (notice && notice->transient && notice->id == next.id) {
+            next.expiresAt = notice->expiresAt;
+            // Refreshing text for the same visible notice retains its lease.
+            next.presented = notice->presented;
+            next.presentationActive = notice->presentationActive;
+            next.audioLevel = notice->audioLevel;
+            next.audioPlaying = notice->audioPlaying;
+            next.voiceCaption = notice->voiceCaption;
+            notice = std::move(next); Place(); return true;
+        }
+        const auto duplicate = std::find_if(queued.begin(), queued.end(), [&](const Notice& item) {
+            return item.transient && item.id == next.id;
+        });
+        if (duplicate != queued.end()) {
+            next.expiresAt = duplicate->expiresAt; *duplicate = std::move(next); return true;
+        }
+        if (notice) {
+            if (queued.size() >= static_cast<std::size_t>(MaxReminders)) return false;
+            queued.push_back(std::move(next)); return true;
+        }
+        notice = std::move(next);
+        if (expanded) Expand(false);
+        ArmNotice();
+        return notice && notice->transient;
+    }
+    void ClearNotifications() {
+        queued.erase(std::remove_if(queued.begin(), queued.end(), [](const Notice& item) { return item.transient; }), queued.end());
+        if (notice && notice->transient) DismissNotice();
     }
     void DismissNotice(bool all = false) {
         if (!notice) return;
+        PresentNotice(false);
+        if (notificationDetail) {
+            notificationDetail = false;
+            notificationScroll = notificationContentHeight = 0;
+            Expand(false);
+        }
+        if(notice->transient)diag::Log("island-notifications","capsule-end type="+
+            (notice->coalesceKey.empty()?std::string("reminder"):notice->coalesceKey));
         notice.reset();
         if (hwnd) KillTimer(hwnd, NoticeTimer);
         if (all) queued.clear();
+        while (!queued.empty() && queued.front().transient &&
+               (queued.front().expiresAt <= GetTickCount64() || !NotificationsAllowed())) queued.pop_front();
         if (!queued.empty() && hwnd && !suppressed) {
             notice = queued.front();
             queued.pop_front();
-            SetTimer(hwnd, NoticeTimer, NoticeMilliseconds, nullptr);
-            Activity(NoticeMilliseconds);
-            Animate();
+            ArmNotice();
             return;
         }
+        SyncNoticeLayer();
         Activity(LeaveDelay);
         Animate();
     }
     std::vector<IslandPage> Pages() const {
         std::vector<IslandPage> pages;
-        if (HasMedia() || reminders.empty()) pages.push_back(IslandPage::Music);
+        if (Workspace() || HasMedia() || reminders.empty()) pages.push_back(IslandPage::Music);
         if (!reminders.empty()) pages.push_back(IslandPage::Reminder);
         return pages;
     }
@@ -974,6 +1777,26 @@ struct IslandWindow::Impl {
         Animate();
     }
     void Wheel(int delta) {
+        if (notificationDetail) {
+            const float limit = std::max(0.f, notificationContentHeight - NotificationViewportHeight());
+            notificationScroll = std::clamp(notificationScroll - static_cast<float>(delta) * 42.f / WHEEL_DELTA, 0.f, limit);
+            if (!animating) Place();
+            return;
+        }
+        if (notice && notice->transient && !notice->activate) { OpenNotificationDetail(); return; }
+        // Over the calendar the wheel turns months; one step per gesture burst.
+        if(expanded&&Workspace()&&hoverHit>CalendarDayHit&&hoverHit<=CalendarAreaHit){
+            const double now=Seconds();
+            if(now-calendarWheelAt>=.28){
+                calendarWheelAt=now;
+                if(display.calendarStyle==IslandCalendarStyle::ChineseAlmanac){
+                    EnsureCalendar();
+                    if(const auto next=calendar::AddDays(calendarSelected,delta<0?1:-1);next&&next->year>=1900&&next->year<=2100)
+                        SelectCalendarDay(*next);
+                }else ShiftCalendarMonth(delta<0?1:-1);
+            }
+            return;
+        }
         const auto pages = Pages();
         if (pages.empty()) return;
         if (!expanded) {
@@ -991,7 +1814,15 @@ struct IslandWindow::Impl {
         const float w = std::clamp(width.x, 1.f, CanvasWidth), h = std::clamp(height.x, 1.f, CanvasHeight);
         drawnWidth = w;
         drawnHeight = h;
-        if (!canvas->Begin(CanvasWidth, CanvasHeight, CanvasDpi())) return false;
+        if(!expanded&&width.Settled()&&height.Settled()){
+            canvasWidth=480;canvasHeight=260;
+        }
+        if(expanded&&Workspace()&&!notificationDetail){
+            const auto size=WorkspaceSize();
+            canvasWidth=std::max(canvasWidth,std::min(CanvasWidth,std::ceil(size.width*1.18f)));
+            canvasHeight=std::max(canvasHeight,std::min(CanvasHeight,std::ceil(size.height*1.18f)));
+        }
+        if (!canvas->Begin(canvasWidth,canvasHeight,CanvasDpi())) return false;
         if (view.media.artwork != coverKey) {
             coverKey = view.media.artwork;
             cover = DecodeArtwork(coverKey);
@@ -1009,17 +1840,29 @@ struct IslandWindow::Impl {
             canvas->Rounded({0, 0, w, h}, radius, 0x2a2a2e, 1);
             canvas->Rounded({.75f, .75f, w - 1.5f, h - 1.5f}, radius - .75f, 0x000000, 1);
         }
+        if (notificationDetail && notice) {
+            const float detailAlpha = std::clamp((h - NoticeHeight) / (PageHeight - NoticeHeight), 0.f, 1.f);
+            NoticeView(w, h, 1 - detailAlpha);
+            NotificationDetailView(w, h, detailAlpha);
+            return FinishShape();
+        }
         if (notice && !expanded) { NoticeView(w, h, std::clamp((h - CompactHeight) / (NoticeHeight - CompactHeight), 0.f, 1.f)); return FinishShape(); }
         // A tucked island exposes only its empty edge, never artwork or lyrics.
         const float revealed=1-std::clamp(tuck.x*1.4f,0.f,1.f);
         Compact(w, h, std::clamp(1 - e * 3, 0.f, 1.f)*revealed);
-        const float content = std::clamp((e - .55f) / .45f, 0.f, 1.f) * std::clamp(pageFade.x, 0.f, 1.f)*revealed;
+        const float openingReveal=std::clamp((e-.55f)/.45f,0.f,1.f);
+        // The shell may overshoot and contract again. Content reveals once;
+        // reusing that oscillation as opacity made dark print pulse on paper.
+        if(Workspace())workspaceReveal=expanded?std::max(workspaceReveal,openingReveal):std::min(workspaceReveal,openingReveal);
+        else workspaceReveal=openingReveal;
+        const float content = workspaceReveal * std::clamp(pageFade.x, 0.f, 1.f)*revealed;
         // The new page slides in sideways while it fades in.
         const float slide = (1 - std::clamp(pageFade.x, 0.f, 1.f)) * 56 * static_cast<float>(pageDirection);
         canvas->PushClip({0, 0, w, h});
+        viewSlide = slide;
         canvas->Offset(slide, 0);
         switch (page) {
-        case IslandPage::Music: Expanded(w, content); break;
+        case IslandPage::Music: if(Workspace())WorkspaceView(w,h,content);else Expanded(w, content); break;
         case IslandPage::Reminder: ReminderPage(w, h, content); break;
         }
         canvas->Offset(0, 0);
@@ -1030,27 +1873,11 @@ struct IslandWindow::Impl {
 
     bool FinishShape() {
         if(!canvas->Finish(bitmap))return false;
+        const auto scale=static_cast<float>(CanvasDpi())/96.f;
         if(shape.x<=0)return true;
-        const float scale=static_cast<float>(CanvasDpi())/96.f;
         const float w=drawnWidth*scale,h=drawnHeight*scale;
         const float radius=Radius()*scale,mix=std::clamp(shape.x,0.f,1.f);
-        const unsigned liveW=std::min(bitmap.width,static_cast<unsigned>(std::ceil(w)));
-        const unsigned liveH=std::min(bitmap.height,static_cast<unsigned>(std::ceil(h)));
-        for(unsigned y=0;y<liveH;++y)for(unsigned x=0;x<liveW;++x) {
-            auto& pixel=bitmap.pixels[static_cast<std::size_t>(y)*bitmap.width+x];
-            if(!pixel)continue;
-            const float distance=dynamic_island::MorphShapeDistance(static_cast<float>(x)+.5f,static_cast<float>(y)+.5f,w,h,radius,mix,scale);
-            if(distance<=-.708f)continue;
-            if(distance>=.708f){pixel=0;continue;}
-            unsigned coverage=0;
-            for(int sy=0;sy<8;++sy)for(int sx=0;sx<8;++sx)
-                coverage+=dynamic_island::MorphShapeDistance(static_cast<float>(x)+(static_cast<float>(sx)+.5f)/8,
-                    static_cast<float>(y)+(static_cast<float>(sy)+.5f)/8,w,h,radius,mix,scale)<=0?1u:0u;
-            std::uint32_t next=0;
-            for(unsigned shift:{0u,8u,16u,24u})next|=((((pixel>>shift)&255)*coverage+32)/64)<<shift;
-            pixel=next;
-        }
-        return true;
+        return shapeMask.Apply(bitmap,w,h,radius,mix,scale);
     }
 
     // --- Fullscreen and games ------------------------------------------------
@@ -1065,10 +1892,13 @@ struct IslandWindow::Impl {
         return window_layer::Protected(area,window_layer::ReadContext(),display.hideFullscreen)||window_layer::Suppressed(hwnd);
     }
     void CheckForeground() {
+        const bool hasNotifications = (notice && notice->transient) ||
+            std::any_of(queued.begin(), queued.end(), [](const Notice& item) { return item.transient; });
+        if (hasNotifications && !NotificationsAllowed()) ClearNotifications();
         const bool next = FullscreenInFront();
         if (next == suppressed) return;
         suppressed = next;
-        if (suppressed) { expanded = hoverExpanded = false; notice.reset(); queued.clear(); WatchOutside(false); Settle(); }  // Leave at once, no animation over a game.
+        if (suppressed) { PresentNotice(false); expanded = hoverExpanded = notificationDetail = false; notice.reset(); queued.clear(); SyncNoticeLayer(); WatchOutside(false); SyncPerformance(); Settle(); }  // Leave at once, no animation over a game.
         else Animate();
         Pulse();
     }
@@ -1083,8 +1913,10 @@ struct IslandWindow::Impl {
         prefs = next;
         if (hwnd && display.topmost!=options.topmost) Stop();
         display = options;
+        todoCacheValid = false;
+        calendarInfo.clear();
         if (hwnd) {
-            window_layer::ConfigureIsland(hwnd,display.topmost,display.hideFullscreen);
+            window_layer::ConfigureIsland(hwnd,AboveApplications(),transientLayer || display.hideFullscreen);
             SyncPerformance();
             CheckForeground();Animate();return true;
         }
@@ -1095,6 +1927,7 @@ struct IslandWindow::Impl {
         wc.lpszClassName = ClassName;
         if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
         expanded = hoverExpanded = hovered = visible = false;
+        InvalidateDisplayTiming();
         const DWORD style = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | (display.topmost ? WS_EX_TOPMOST : 0);
         MONITORINFO target{sizeof(target)};
         ReadMonitor(target);
@@ -1110,8 +1943,6 @@ struct IslandWindow::Impl {
         if (!display.topmost) SetPropW(hwnd, lume::window_ids::DesktopWidgetProp, reinterpret_cast<HANDLE>(1));
         if (!SetTimer(hwnd, TickTimer, 1000, nullptr)) { Stop(); return false; }
         SyncPerformance();
-        // Taskbar-button flashes of chat programs (best effort).
-        RegisterShellHookWindow(hwnd);
         instances.push_back(this);
         foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundEvent, 0, 0,
                                          WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
@@ -1126,28 +1957,44 @@ struct IslandWindow::Impl {
         Animate();
         return true;
     }
-    // Rates need consecutive samples. Keep them warm across page changes.
-    void SyncPerformance() {
+    bool CompactPerformance() const {
         using W=dynamic_island::CompactWidget;
         const auto needsSample=[](W value){return value==W::Network||value==W::Cpu||value==W::Memory||value==W::CpuMemory;};
-        const bool want = preview != nullptr || (hwnd && (needsSample(display.leftWidget)||needsSample(display.rightWidget)));
-        if (want && !performance.Running()) {
+        return needsSample(display.leftWidget)||needsSample(display.rightWidget);
+    }
+    bool ExpandedPerformance() const {
+        return dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::System);
+    }
+    // Only visible meters consume samples. The sampler reacquires a fresh
+    // baseline after suspension; hidden expanded cards do not keep it warm.
+    void SyncPerformance() {
+        const bool want = preview != nullptr || (hwnd && (CompactPerformance()||ExpandedPerformance()));
+        if (want) {
+            performance.SetActive(preview!=nullptr||(window_layer::ContentVisible(hwnd)&&
+                (expanded?(!notificationDetail&&page==IslandPage::Music&&ExpandedPerformance()):(!notice&&CompactPerformance()))));
+            // A preview may have started sampling before the HWND existed.
             performanceTarget = hwnd;
-            performanceSample.reset();
-            performance.Start();
-        } else if (!want && performance.Running()) {
+            if (!performance.Running()) {
+                performanceSample.reset();
+                performance.Start();
+            } else performanceSample = performance.Latest();
+        } else {
             performanceTarget = nullptr;
-            performance.Stop();
+            if (performance.Running()) performance.Stop();
             performanceSample.reset();
         }
     }
     void Stop() {
+        ClearNotifications();
+        notificationDetail = false;
+        notificationScroll = notificationContentHeight = 0;
         expanded = false;
         // Join before destroying the HWND; late posted messages are ignored.
         performanceTarget = nullptr;
         performance.Stop();
         performanceSample.reset();
         StopClock();
+        InvalidateDisplayTiming();
         WatchOutside(false);
         DetachGlass();
         if (foregroundHook) { UnhookWinEvent(foregroundHook); foregroundHook = nullptr; }
@@ -1156,13 +2003,16 @@ struct IslandWindow::Impl {
             const auto old = hwnd;
             hwnd = nullptr;
             if (GetCapture() == old) ReleaseCapture();
-            DeregisterShellHookWindow(old);
             DestroyWindow(old);
         }
         surface.Release();
+        shapeMask.Reset();
         canvas.reset();
         preview.reset();
+        notificationIcons.Clear();
+        notificationDisplayStatus.clear();
         bitmap = {};
+        canvasWidth=480;canvasHeight=260;
         expanded = hoverExpanded = hovered = visible = false;
         pressed = hoverHit = -1;
     }
@@ -1188,9 +2038,14 @@ struct IslandWindow::Impl {
         }
     }
     void Expand(bool next, bool byHover = false) {
+        if (!next && notificationDetail) { DismissNotice(); return; }
+        if (next && notice && notice->transient && !notice->activate && !notificationDetail) { OpenNotificationDetail(); return; }
         if (!hwnd || expanded == next) return;
+        StopClockFlip();GetLocalTime(&compactData.time);clockFlip.Observe(compactData.time,GetTickCount64(),false);
+        if (next && notice && notice->transient && !notificationDetail) ClearNotifications();
         expanded = next;
         if (next) {
+            ResetCalendar();
             const auto pages = Pages();
             if (pages.empty()) { expanded = false; return; }
             if (std::find(pages.begin(),pages.end(),page)==pages.end()) page=pages.front();
@@ -1199,7 +2054,7 @@ struct IslandWindow::Impl {
         hoverExpanded = next && byHover;
         SyncPerformance();
         WatchOutside(next);
-        if (!next) Activity(LeaveDelay);
+        if (!next) Activity(LeaveDelay, false);
         KillTimer(hwnd, CollapseTimer);
         Animate();
         if (act) act(dynamic_island::Action::ExpansionChanged);
@@ -1217,6 +2072,11 @@ struct IslandWindow::Impl {
             if(display.leftWidget!=dynamic_island::CompactWidget::None&&x<120)return 600;
             if(display.rightWidget!=dynamic_island::CompactWidget::None&&x>width.x-120)return 601;
         }
+        if (notificationDetail) {
+            if (Expansion() < .9f) return 412;
+            if (y >= 18 && y < 44 && x >= width.x - 42 && x < width.x - 16) return 410;
+            return 412;
+        }
         if (!expanded || Expansion() < .9f) return 0;
         if (page == IslandPage::Reminder) {
             if (y < 40 && x >= width.x - 76) return 540;
@@ -1226,6 +2086,12 @@ struct IslandWindow::Impl {
                     return (x < 48 ? 500 : 520) + static_cast<int>(i);
             }
             return 299;
+        }
+        if(Workspace()){
+            for(const auto& hit:workspaceHits){const auto& r=hit.rect;
+                if(x>=r.x&&x<r.x+r.width&&y>=r.y&&y<r.y+r.height)return hit.action;
+            }
+            return 0;
         }
         if (!HasMedia()) return 0;
         if (y >= 110 && y < 146) {
@@ -1262,6 +2128,27 @@ struct IslandWindow::Impl {
         Activity();
     }
     void Click(int hit) {
+        if(hit>CalendarDayHit&&hit<=CalendarDayHit+31){EnsureCalendar();SelectCalendarDay({calendarYear,calendarMonth,hit-CalendarDayHit});return;}
+        if(hit==CalendarPrevHit||hit==CalendarNextHit){ShiftCalendarMonth(hit==CalendarNextHit?1:-1);return;}
+        if(hit==CalendarTodayHit){CalendarToday();return;}
+        if(hit==CalendarAreaHit)return;
+        if(hit==720){if(todos.edit&&(!todos.writable||todos.writable()))todos.edit({},today);return;}
+        if(hit==700||hit==701){if(act)act(hit==700?dynamic_island::Action::Focus:dynamic_island::Action::CancelFocus);return;}
+        if(hit>=810&&hit<814){
+            const auto found=std::find_if(workspaceHits.begin(),workspaceHits.end(),[&](const auto& value){return value.action==hit;});
+            if(found!=workspaceHits.end()&&found->todo&&todos.edit&&(!todos.writable||todos.writable()))todos.edit(found->todo->id,today);
+            return;
+        }
+        if(hit>=800&&hit<804){
+            const auto found=std::find_if(workspaceHits.begin(),workspaceHits.end(),[&](const auto& value){return value.action==hit;});
+            if(found==workspaceHits.end()||!found->todo||!todos.toggle||(todos.writable&&!todos.writable()))return;
+            const auto id=found->todo->id;
+            // Resolve the current task again; store notifications can replace a row.
+            const auto rows=todos.forDay?todos.forDay(today):std::vector<IslandTodo>{};
+            const auto task=std::find_if(rows.begin(),rows.end(),[&](const auto& value){return value.id==id;});
+            if(task!=rows.end()){const auto current=*task;todos.toggle(current);Place();}
+            return;
+        }
         if(hit==600||hit==601){
             using W=dynamic_island::CompactWidget;
             const auto choice=hit==600?display.leftWidget:display.rightWidget;
@@ -1271,13 +2158,15 @@ struct IslandWindow::Impl {
             Expand(!expanded);
             return;
         }
-        if (hit == 400 && notice && notice->target) {
-            const auto target = notice->target;
-            DismissNotice();
-            OpenChat(target);
-            return;
-        }
         if (hit == 400) {
+            if (notice && notice->transient) {
+                if (notice->activate) {
+                    const auto activate = notice->activate;
+                    DismissNotice();
+                    activate();
+                } else OpenNotificationDetail();
+                return;
+            }
             // The reminder page lists every reminder, including any still queued.
             DismissNotice(true);
             if (!reminders.empty()) {
@@ -1287,6 +2176,8 @@ struct IslandWindow::Impl {
             }
             return;
         }
+        if (hit == 410) { DismissNotice(); return; }
+        if (hit == 412) return;
         if (hit == 540) { reminders.clear(); Expand(false); Animate(); return; }
         if (hit >= 500 && hit < 520 + MaxReminders) {
             const auto index = static_cast<std::size_t>(hit >= 520 ? hit - 520 : hit - 500);
@@ -1317,14 +2208,12 @@ struct IslandWindow::Impl {
         menuOpen = true;
         KillTimer(hwnd, CollapseTimer);
         const bool frosted = display.material == IslandMaterial::Frosted, none = display.material == IslandMaterial::None;
-        const UINT command = LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, expanded, display.messages,
-                                                       HasMedia() || !reminders.empty());
+        const UINT command = LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, expanded, true);
         menuOpen = false;
         Gdiplus::GdiplusShutdown(token);
         using dynamic_island::Action;
         switch (command) {
         case 2: Expand(!expanded); break;
-        case 12: if (act) act(Action::ToggleMessages); break;
         case 7: if (act) act(Action::MaterialNone); break;
         case 8: if (act) act(Action::MaterialLiquid); break;
         case 9: if (act) act(Action::MaterialFrosted); break;
@@ -1339,8 +2228,8 @@ struct IslandWindow::Impl {
     void SyncHoverExpansion() {
         if(!hwnd)return;
         KillTimer(hwnd,HoverTimer);
-        if(display.hoverExpand&&hovered&&!expanded&&!suppressed&&!menuOpen)
-            SetTimer(hwnd,HoverTimer,std::clamp(display.hoverDelayMs,100u,1000u),nullptr);
+        if(display.hoverExpand&&hovered&&!expanded&&!suppressed&&!menuOpen&&(!notice||!notice->transient))
+            SetTimer(hwnd,HoverTimer,SnapIslandHoverDelay(display.hoverDelayMs),nullptr);
     }
     void Hover(bool inside) {
         if (inside == hovered) return;
@@ -1353,7 +2242,7 @@ struct IslandWindow::Impl {
             hoverHit = -1;
             // Collapse after leaving: quickly when opened by hover, otherwise after a pause.
             if (expanded) SetTimer(hwnd, CollapseTimer, hoverExpanded ? 450 : 3500, nullptr);
-            Activity(LeaveDelay);
+            Activity(LeaveDelay, false);
         }
         Animate();
     }
@@ -1370,17 +2259,12 @@ struct IslandWindow::Impl {
             self->CheckForeground();
             if(!self->suppressed&&!window_layer::Suppressed(hwnd)) {
                 self->Animate();
-                if(!self->display.topmost&&IsWindowVisible(hwnd))desktop_level::Place(hwnd,false);
+                if(!self->AboveApplications()&&IsWindowVisible(hwnd))desktop_level::Place(hwnd,false);
             }
             return 0;
         }
-        if (!self->display.topmost) {
+        if (!self->AboveApplications()) {
             if (message == WM_WINDOWPOSCHANGING) desktop_level::Changing(l);
-        }
-        static const UINT shellHook = RegisterWindowMessageW(L"SHELLHOOK");
-        if (shellHook && message == shellHook) {
-            if ((w & 0x7fff) == HSHELL_REDRAW && (w & HSHELL_HIGHBIT)) self->ChatFlash(reinterpret_cast<HWND>(l));
-            return 0;
         }
         switch (message) {
         case WM_DROPFILES: {
@@ -1401,7 +2285,9 @@ struct IslandWindow::Impl {
         case WM_CANCELMODE:
             if(window_layer::Suppressed(hwnd)) {
                 self->suppressed=true;
-                self->expanded=self->hoverExpanded=false;self->WatchOutside(false);
+                self->PresentNotice(false);
+                self->notice.reset();self->queued.clear();self->SyncNoticeLayer();
+                self->expanded=self->hoverExpanded=self->notificationDetail=false;self->WatchOutside(false);
                 self->DetachGlass();self->clock.Pause();self->animating=false;
             }
             return 0;
@@ -1409,7 +2295,11 @@ struct IslandWindow::Impl {
         case PerformanceMessage:
             if (!self->performanceTarget.load()) return 0;  // a late sample after shutdown
             self->performanceSample = self->performance.Latest();
-            if (self->visible && !self->expanded) self->Place();
+            // Warming a collapsed expanded-widget is data-only. Compact
+            // meters and the visible performance page still repaint normally.
+            if (self->visible && !self->animating &&
+                (self->expanded ? (!self->notificationDetail&&self->page==IslandPage::Music&&self->ExpandedPerformance()) :
+                                  (!self->notice&&self->CompactPerformance()))) self->Place();
             return 0;
         case FrameMessage:
             self->clock.Consumed();
@@ -1430,26 +2320,41 @@ struct IslandWindow::Impl {
         case WM_TIMER:
             switch (w) {
             case TickTimer:
+                self->SyncPerformance();
                 self->compactData.Refresh();self->compactData.files=static_cast<unsigned>(self->heldFiles.size());
-                if(!self->expanded&&self->visible)self->Place();
+                self->TickClockFlip();
+                if(self->visible&&!self->animating)self->Place();
                 self->CheckForeground();
                 if (const auto now = Today(); now != self->today) {
                     self->today = now;
-                    if (self->visible) self->Place();
+                    self->todoCacheValid = false;
+                    self->calendarInfo.clear();
+                    if (self->visible && !self->animating) self->Place();
                 }
                 // Other topmost windows may have covered the island.
-                if (self->visible && self->display.topmost)
+                if (self->visible && self->AboveApplications())
                     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 if (self->act) self->act(dynamic_island::Action::Tick);
                 return 0;
             case AnimationTimer: self->Frame(); return 0;
+            case CalendarTimer: self->CalendarTick(); return 0;
+            case ClockFlipTimer:
+                if(!self->ClockFlipShown()){self->StopClockFlip();return 0;}
+                if(!self->clockFlip.Active(GetTickCount64()))self->StopClockFlip();
+                if(!self->animating)self->Place();
+                return 0;
             case BarsTimer:
-                if (!self->BarsShown()) KillTimer(hwnd, BarsTimer);
+                if (!self->BarsShown()) {
+                    // Commit the final caption even when audio could not start.
+                    if (self->notice && self->notice->voiceCaption && !self->animating) self->Place();
+                    KillTimer(hwnd, BarsTimer);
+                }
                 else if (!self->animating) self->Place();  // A running animation already redraws.
                 return 0;
             case HoverTimer:
                 KillTimer(hwnd, HoverTimer);
-                if (self->display.hoverExpand&&self->hovered&&!self->suppressed&&!self->menuOpen) self->Expand(true, true);
+                if (self->display.hoverExpand&&self->hovered&&!self->suppressed&&!self->menuOpen&&
+                    (!self->notice||!self->notice->transient)) self->Expand(true, true);
                 return 0;
             case CollapseTimer:
                 KillTimer(hwnd, CollapseTimer);
@@ -1457,7 +2362,7 @@ struct IslandWindow::Impl {
                 return 0;
             case NoticeTimer:
                 KillTimer(hwnd, NoticeTimer);
-                if (self->hovered) SetTimer(hwnd, NoticeTimer, 2500, nullptr);  // Keep while read.
+                if (self->hovered && self->notice) SetTimer(hwnd, NoticeTimer, 2500, nullptr);  // Keep the capsule while it is being read.
                 else self->DismissNotice();
                 return 0;
             case IdleTimer:
@@ -1476,7 +2381,7 @@ struct IslandWindow::Impl {
             const auto hit = self->Hit(l);
             if (self->hoverHit != hit) {
                 self->hoverHit = hit;
-                self->Place();
+                if (!self->animating) self->Place();
             }
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);
@@ -1500,8 +2405,18 @@ struct IslandWindow::Impl {
             self->Menu(point);
             return 0;
         }
-        case WM_DPICHANGED: self->dpi = HIWORD(w); if(self->canvas)self->Animate(); return 0;
-        case WM_DISPLAYCHANGE: self->Place(); return 0;
+        case WM_DPICHANGED:
+            self->InvalidateDisplayTiming();
+            self->dpi = HIWORD(w);
+            if(self->canvas)self->Animate();
+            return 0;
+        case WM_DISPLAYCHANGE:
+            self->InvalidateDisplayTiming();
+            self->Place();
+            return 0;
+        case WM_SETTINGCHANGE:
+            self->InvalidateDisplayTiming();
+            break;
         case WM_CLOSE: if (self->act) self->act(dynamic_island::Action::Close); return 0;
         case WM_NCDESTROY:
             if (!self->display.topmost) desktop_level::Forget(hwnd);
@@ -1514,13 +2429,15 @@ struct IslandWindow::Impl {
         return DefWindowProcW(hwnd, message, w, l);
     }
 };
-IslandWindow::IslandWindow(HINSTANCE i, Act act) : impl_(std::make_unique<Impl>(i, std::move(act))) {}
+IslandWindow::IslandWindow(HINSTANCE i, Act act, std::function<bool()> allow)
+    : impl_(std::make_unique<Impl>(i, std::move(act), std::move(allow))) {}
 IslandWindow::~IslandWindow() = default;
 std::optional<performance::Snapshot> IslandWindow::PerformanceReading() const { return impl_->performanceSample; }
 bool IslandWindow::Start(const widget::Preferences& p, const IslandDisplay& d) { return impl_->Start(p, d); }
 void IslandWindow::SetMonitor(const IslandMonitor& monitor) {
     if(impl_->targetMonitor&&*impl_->targetMonitor==monitor)return;
     impl_->targetMonitor=monitor;
+    impl_->InvalidateDisplayTiming();
     if(!impl_->hwnd)return;
     impl_->DetachGlass();
     impl_->StopClock();
@@ -1534,6 +2451,7 @@ void IslandWindow::Stop() { impl_->Stop(); }
 bool IslandWindow::SetDisplay(const IslandDisplay& d) {
     if (!impl_->hwnd) { impl_->display = d; return true; }
     const auto previous = impl_->display;
+    impl_->StopClockFlip();
     const bool startAutoHide = d.autoHide && !previous.autoHide;
     if (!impl_->Start(impl_->prefs, d)) {
         // A layering change destroys the window before creating the new one:
@@ -1564,21 +2482,25 @@ void IslandWindow::Update(IslandPresentation view) {
     // A new track or a play/pause change briefly brings a tucked island out.
     if (oldId != impl_->view.media.id || oldPlaying != impl_->view.media.playing) impl_->Activity();
     if (had != impl_->HasMedia()) impl_->Animate();  // Grow from idle to compact or hide.
-    else if (impl_->visible && !IsIconic(impl_->hwnd)) impl_->Place();
+    else if (impl_->visible && !impl_->animating && !IsIconic(impl_->hwnd)) impl_->Place();
 }
 void IslandWindow::Expand(bool expanded) { impl_->Expand(expanded); }
-void IslandWindow::SetTodoSource(IslandTodoSource source) { impl_->todos = std::move(source); }
+void IslandWindow::SetTodoSource(IslandTodoSource source) { impl_->todos = std::move(source); impl_->todoCacheValid = false; }
 void IslandWindow::SetWeather(dynamic_island::Weather value) {
     impl_->weather = std::move(value);
-    if (impl_->hwnd && impl_->visible && !impl_->expanded) impl_->Place();
+    // A running animation consumes the latest data on its next display frame.
+    if (impl_->hwnd && impl_->visible && !impl_->animating) impl_->Place();
 }
 void IslandWindow::RefreshTodos() {
-    if (impl_->hwnd && impl_->visible && impl_->expanded && impl_->page == IslandPage::Reminder) impl_->Place();
+    impl_->todoCacheValid = false;
+    if (impl_->hwnd && impl_->visible && !impl_->animating && impl_->expanded && (impl_->page == IslandPage::Reminder || impl_->Workspace())) impl_->Place();
 }
 IslandPage IslandWindow::Page() const { return impl_->page; }
 bool IslandWindow::ShowNotice(const std::string& id, const std::wstring& title, const std::wstring& time) {
     return impl_->ShowNotice(id, title, time);
 }
+bool IslandWindow::ShowNotification(const IslandNotification& value) { return impl_->ShowNotification(value); }
+void IslandWindow::ClearNotifications() { impl_->ClearNotifications(); }
 HWND IslandWindow::Handle() const { return impl_->hwnd; }
 bool IslandWindow::Expanded() const { return impl_->expanded; }
 bool IslandWindow::Shown() const { return impl_->hwnd && impl_->visible; }
@@ -1613,6 +2535,9 @@ IslandPreviewFrame IslandWindow::Preview(const IslandDisplay& display,bool expan
     impl_->compactData.Refresh();impl_->compactData.files=static_cast<unsigned>(impl_->heldFiles.size());
     impl_->SyncPerformance();impl_->performanceSample=impl_->performance.Latest();
     p.compactData=impl_->compactData;p.weather=impl_->weather;p.performanceSample=impl_->performanceSample;p.view.english=impl_->view.english;
+    wchar_t time[16]{};swprintf_s(time,L"%02u:%02u",p.compactData.time.wHour,p.compactData.time.wMinute);
+    p.view.time=time;p.today=Today();p.todos.forDay=impl_->todos.forDay;
+    p.view.remaining=impl_->view.remaining;p.view.focusing=impl_->view.focusing;p.view.finished=impl_->view.finished;
     if(!p.canvas)p.canvas=std::make_unique<WidgetCanvas>();
     p.display=display;p.dpi=96;p.page=IslandPage::Music;p.mediaAt=GetTickCount64();
     p.expanded=expanded;p.hovered=false;p.suppressed=false;p.pageFade.Snap(1);p.tuck.Snap(0);
@@ -1640,6 +2565,7 @@ IslandPreviewFrame IslandWindow::Preview(const IslandDisplay& display,bool expan
     result.cornerRadius=p.Radius()*p.ScaleFactor();result.accent=p.accent;
     result.shapeMix=std::clamp(p.shape.x,0.f,1.f);result.topOffset=8*p.ScaleFactor()*(1-result.shapeMix);
     result.animating=moving;
+    if(result.width>p.bitmap.width||result.height>p.bitmap.height)return {};
     result.pixels.width=result.width;result.pixels.height=result.height;
     result.pixels.pixels.resize(static_cast<std::size_t>(result.width)*result.height);
     for(unsigned y=0;y<result.height;++y)

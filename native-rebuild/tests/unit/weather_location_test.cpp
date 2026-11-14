@@ -36,12 +36,25 @@ struct DeviceHarness {
             Expect(!replies.empty(), "no unexpected device location request");
             auto result = std::move(replies.front()); replies.pop_front(); return result;
         }, [&] { return now; }, Local, [](std::string_view text) { return std::string(text); },
-        [&](Millis) { return deviceLocation; }};
+        [&](Millis, const Cancellation&) { return deviceLocation; }};
     LocationResult Resolve() { return location.Resolve("auto", cancel); }
 };
 HttpResponse Good(const Json& value) { return {200, value.dump(), {}, {}, {}}; }
 HttpResponse Ip(std::string name = u8"昆山", std::string zone = "Asia/Shanghai") {
     return Good({{"city", name}, {"latitude", 31.385123}, {"longitude", 120.981234}, {"timezone", zone}});
+}
+void CancelDuringDeviceLocation() {
+    Cancellation cancel;int requests=0;bool passed=false;
+    WeatherLocation location{
+        [&](const HttpRequest&,const Cancellation&){++requests;return HttpResponse{};},
+        []{return Now;},Local,{},
+        [&](Millis,const Cancellation& token)->std::optional<Location>{
+            passed=&token==&cancel;cancel.Cancel();
+            return Location{31.385123,120.981234,{}, {}};
+        }};
+    const auto result=location.Resolve("auto",cancel);
+    Expect(passed&&result.error==ProviderError::Cancelled&&!result.location&&requests==0,
+        "device location receives cancellation and a cancelled fix starts no reverse geocode or IP fallback");
 }
 void FixedAndCached() {
     Harness h;
@@ -139,7 +152,7 @@ struct ChinaHarness {
             Expect(!replies.empty(), "no unexpected location request");
             auto result = std::move(replies.front()); replies.pop_front(); return result;
         }, [&] { return now; }, Local, [](std::string_view text) { return std::string(text); },
-        [&](Millis) { return deviceLocation; },
+        [&](Millis, const Cancellation&) { return deviceLocation; },
         LocationEnvironment{{"CN"}, [](Millis time) { return Local(time, "Asia/Shanghai"); }},
         LocationStore{[&] { return stored; }, [&](std::string_view text) { stored = std::string(text); return true; }}};
     LocationResult Resolve() { return location.Resolve("auto", cancel); }
@@ -220,7 +233,7 @@ void TrustedLocationPersists() {
 }
 }
 int main() {
-    FixedAndCached(); FallbackAndNames(); InvalidAndCancelled();
+    FixedAndCached(); FallbackAndNames(); InvalidAndCancelled(); CancelDuringDeviceLocation();
     DeviceLocationWins(); DeviceLocationUnavailableFallsBack();
     ProxyExitsRejected(); FarMoveNeedsConfirmation(); DeviceFixOutranksIp(); TrustedLocationPersists();
     std::cout << "weather automatic location, fixed cities, Chinese names, cache and cancellation passed\n";

@@ -37,6 +37,14 @@ int main(){
         Expect(!session.HandlePage(PageCommand::PerformanceEnable),"almanac does not control other widgets");
         auto reply=session.HandlePage(PageCommand::AlmanacEnable);
         Expect(reply&&session.Running()&&session.Handle(),"real native almanac starts");
+        // The lease is synchronous; graphics initialization belongs to the
+        // material worker. Pump the owner while waiting for that real device.
+        const auto graphicsDeadline=GetTickCount64()+2000;
+        while(stats().devices!=1&&GetTickCount64()<graphicsDeadline){
+            MSG message{};
+            while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
+            Sleep(5);
+        }
         Expect(stats().users==2&&stats().devices==1,"different business sessions share one material GPU device");
         Expect(reply->find(L"\"saved\":true")!=std::wstring::npos,"successful enable persisted");
         Expect(session.Snapshot().width==320&&session.Snapshot().height==152,"source default size");

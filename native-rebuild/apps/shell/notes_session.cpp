@@ -164,12 +164,17 @@ struct NotesSession::Impl {
     }
     void DesktopMenu(const std::string &id, UINT command) {
         auto found = desktops.find(id);
-        if (stopped || found == desktops.end()) return;
+        if (stopped || applying || found == desktops.end()) return;
         if (command == 1) { found->second->window.RequestClose(); return; }
         if (command == 11) { OpenWindow(); return; }
         if (command == 3) {
             HandleMessage(L"{\"version\":1,\"scope\":\"notes\",\"action\":\"createDesktop\"}", id);
             Broadcast(); return;
+        }
+        const auto request = materialSelection;
+        if (request && (command == 8 || command == 9)) {
+            request({NativeMaterialTarget::Note, command == 9, id, found->second->window.Handle()});
+            return;
         }
         auto value = found->second->window.Bounds();
         if (command == 8) value.frosted = false;
@@ -180,6 +185,22 @@ struct NotesSession::Impl {
             value = widget::Defaults(Limits); value.enabled = true; value.placed = true; value.x = x; value.y = y;
         } else return;
         DesktopPreferences(id, value);
+    }
+    std::optional<std::wstring> HandleMaterialSelection(const NativeMaterialRequest &request) {
+        if (stopped || applying || !restored || request.target != NativeMaterialTarget::Note ||
+            !request.source || !IsWindow(request.source)) return {};
+        const auto entry = desktops.find(request.id);
+        if (entry == desktops.end() || !entry->second->window.IsOpen() ||
+            entry->second->window.Handle() != request.source) return {};
+        const auto item = std::find_if(state.desktopNotes.begin(), state.desktopNotes.end(),
+            [&](const auto &note) { return note.id == request.id; });
+        if (item == state.desktopNotes.end()) return {};
+        // Geometry/lock may change while Windows consent is open. Only change
+        // the requested material on the latest committed note preferences.
+        auto value = item->preferences;
+        value.frosted = request.frosted;
+        DesktopPreferences(request.id, value);
+        return State();
     }
     bool Runtime(const widget::Preferences &value, const std::string &editId = {}) {
         bool ok = true;
@@ -528,6 +549,7 @@ struct NotesSession::Impl {
     };
     HINSTANCE instance = nullptr;
     NotesSessionOptions options;
+    NativeMaterialSelectionHandler materialSelection;
     LocalSettingsFileStore localFiles;
     settings::IFileStore &files;
     notes::NotesStore store;
@@ -548,6 +570,8 @@ NotesSession::NotesSession(HINSTANCE instance, NotesSessionOptions options)
     : impl_(std::make_unique<Impl>(instance, std::move(options))) {}
 NotesSession::~NotesSession() = default;
 bool NotesSession::Restore() { return impl_->Restore(); }
+void NotesSession::SetMaterialSelectionHandler(NativeMaterialSelectionHandler handler) { impl_->materialSelection = std::move(handler); }
+std::optional<std::wstring> NotesSession::HandleMaterialSelection(const NativeMaterialRequest &request) { return impl_->HandleMaterialSelection(request); }
 std::optional<std::vector<std::wstring>> NotesSession::HandleMessage(const std::wstring &message) {
     auto replies = impl_->HandleMessage(message);
     // Keep an open notes window current with changes made from the manager.

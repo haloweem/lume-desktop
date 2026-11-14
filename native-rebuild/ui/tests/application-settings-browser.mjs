@@ -12,15 +12,11 @@ const {chromium}=createRequire(import.meta.url)(path.resolve(process.argv[2]));
 const ui=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const output=path.resolve(process.argv[3]);
 const artifacts=path.resolve(ui,'../../build-artifacts');
-const nativePreviewPath=path.join(artifacts,'native-rebuild/release/verification/dynamic-island/compact-widgets-scene.png');
-const nativePreview=fs.existsSync(nativePreviewPath)?`data:image/png;base64,${fs.readFileSync(nativePreviewPath).toString('base64')}`:'';
-const nativeReadingsPath=path.join(artifacts,'native-rebuild/release/verification/dynamic-island/compact-readings.json');
-const nativeReadings=fs.existsSync(nativeReadingsPath)?JSON.parse(fs.readFileSync(nativeReadingsPath,'utf8')):[];
 assert.ok(output.startsWith(artifacts+path.sep),'测试产物仅写项目 build-artifacts');
 fs.mkdirSync(output,{recursive:true});
 function installNativeFixture(initialSettings={}) {
   const listeners=new Set(),commands=[];
-  const {nativePreview='',nativeReadings=[],...settingsOverrides}=initialSettings;
+  const settingsOverrides=initialSettings;
   let settings={version:1,type:'app-settings-state',revision:1,language:'zh-CN',balancedMode:true,autostart:false,
     busy:false,error:'',update:{status:'idle',version:'',progress:0},...settingsOverrides};
   let account={version:1,type:'account-state',revision:1,status:'signed-in',busy:false,error:'',
@@ -49,20 +45,6 @@ function installNativeFixture(initialSettings={}) {
       if(command==='v1|ready')queueMicrotask(()=>{receive(settings);receive(account);receive(wallpaper);receive(island);});
       if(typeof command==='string'&&command.startsWith('v1|dynamicIsland|')){
         const [, ,action,value]=command.split('|');
-        if(action==='preview'&&value!=='stop'){
-          const readings=nativeReadings.length===30?nativeReadings:
-            Array.from({length:30},(_,index)=>({id:index+1,text:'',secondary:'',available:false,progress:null}));
-          const preview={version:1,type:'dynamicIsland-preview',mode:value,shape:island.shape,
-            material:island.material,size:island.size,width:nativePreview?960:0,height:nativePreview?300:0,
-            image:nativePreview,error:nativePreview?'':'render',animating:false,
-            leftWidget:island.leftWidget,rightWidget:island.rightWidget,readings};
-          queueMicrotask(()=>{if(window.harness.holdPreview)window.harness.pendingPreview=preview;else receive(preview);});
-        }
-        if(['leftWidget','rightWidget'].includes(action)){
-          const previous=island[action];island={...island,[action]:Number(value),saved:true,result:'applied',error:''};
-          if(window.harness.rejectIslandSave){island={...island,[action]:previous,saved:false,error:'save'};window.harness.rejectIslandSave=false;}
-          queueMicrotask(()=>receive(island));
-        }
         if(['topmost','hideFullscreen','autoHide'].includes(action)){
           const previous=island[action];island={...island,[action]:value==='true',saved:true,result:'applied',error:''};
           if(window.harness.rejectIslandSave){island={...island,[action]:previous,saved:false,error:'save'};window.harness.rejectIslandSave=false;}
@@ -129,9 +111,10 @@ try {
     await page.evaluate(()=>harness.accountSnapshot({status:'signed-in',error:'',
       profile:{id:'test-user',displayName:'测试用户',avatarUrl:'',vip:true,vipExpiresAt:'2030-01-01T00:00:00Z'}}));
     assert.deepEqual(await page.locator('link[rel="stylesheet"]').evaluateAll(links=>links.map(link=>link.getAttribute('href'))),
-      ['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css','lume-icons.css','application-settings.css','music.css']);
+      ['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css',
+        'island-notifications.css','todo-board.css','lume-icons.css','application-settings.css','music.css','interaction-motion.css','settings-choice.css']);
     await page.locator('[data-titlebar-settings]').click();
-    for(const section of ['general','user','autostart',...(DIAGNOSTICS_ENABLED?['diagnostics']:[]),'about']) {
+    for(const section of ['general','user','autostart',...(DIAGNOSTICS_ENABLED?['diagnostics']:[]),'support','about']) {
       await page.locator(`button[data-settings-section="${section}"]`).click();
       const geometry=await page.evaluate(section=>{
         const box=selector=>{const r=document.querySelector(selector).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};};
@@ -346,94 +329,19 @@ try {
   for(const width of [1536,680]){
     const islandPage=await browser.newPage({viewport:{width,height:864}});
     islandPage.on('pageerror',e=>errors.push(e.message));
-    await islandPage.addInitScript(installNativeFixture,{nativePreview,nativeReadings});
+    await islandPage.addInitScript(installNativeFixture);
     await islandPage.goto(`http://127.0.0.1:${server.address().port}/`);
     await islandPage.waitForFunction(()=>harness.commands.includes('v1|ready'));
     await islandPage.evaluate(()=>harness.receive({version:1,type:'navigate',page:'dynamicIsland'}));
-    await islandPage.waitForFunction(()=>document.querySelectorAll('[data-island-compact-widget]').length===31);
-    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="20"] svg')?.textContent.includes('12°–20°'));
-    const picker=islandPage.locator('.island-compact-picker');
-    const previewStage=islandPage.locator('[data-island-preview-stage]');
-    const pickerBox=await picker.boundingBox(),previewBox=await previewStage.boundingBox();
-    assert.ok(pickerBox.y>=previewBox.y+previewBox.height-1,'compact chooser stays below the live preview');
-    if(width===1536)assert.equal(await picker.locator('.island-compact-picker__grid').first().evaluate(element=>
-      getComputedStyle(element).gridTemplateColumns.split(' ').length),6,'desktop chooser has six options per row');
-    assert.equal(await picker.evaluate(element=>{
-      const style=getComputedStyle(element);return style.backgroundColor==='rgba(0, 0, 0, 0)'&&style.borderStyle==='none';
-    }),true,'compact widgets have no enclosing blue-gray panel');
-    const capsuleRatio=await picker.locator('.island-compact-picker__chip').first().evaluate(element=>{
-      const box=element.getBoundingClientRect();return box.width/box.height;
-    });
-    assert.ok(capsuleRatio>=2.35&&capsuleRatio<=2.45,'compact options keep the reference capsule proportion');
-    assert.equal(await picker.locator('.island-compact-picker__sample svg').evaluateAll(images=>images.length===31&&images.every(image=>{
-      const box=image.getBBox();return box.x>=0&&box.y>=0&&box.x+box.width<=94&&box.y+box.height<=38;
-    })),true,'all static reference drawings fit inside their capsules');
-    assert.equal(await picker.locator('[data-island-compact-widget="14"] .island-compact-picker__sample').textContent(),'48%',
-      'processor option shows the fixed reference ring value even when native data is unavailable');
-    assert.equal(await picker.locator('[data-island-compact-widget="6"] .island-compact-picker__sample').textContent(),'56%',
-      'day progress uses the fixed reference bar value');
-    assert.equal(await picker.locator('.island-compact-picker__current, .island-compact-picker__sides, .island-compact-picker__top').count(),0,
-      'old blue-gray controls and heading are removed');
-    if(nativePreview){
-      await islandPage.locator('[data-island-native-preview]').waitFor({state:'visible'});
-      await islandPage.evaluate(()=>{
-        harness.holdPreview=true;
-        const img=document.querySelector('[data-island-native-preview]'),stage=document.querySelector('[data-island-preview-stage]');
-        harness.previewNode=img;harness.gridNode=document.querySelector('.island-compact-picker__grid');
-        harness.previewFlashes=[];
-        harness.previewObserver=new MutationObserver(()=>{
-          if(img.hidden||!img.getAttribute('src')||!stage.classList.contains('has-native-preview'))harness.previewFlashes.push('blank');
-        });
-        harness.previewObserver.observe(stage,{subtree:true,attributes:true,childList:true});
-      });
-    }
-    await picker.locator('[data-island-compact-widget="20"]').click();
-    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="20"]')?.getAttribute('aria-pressed')==='true');
-    if(nativePreview){
-      await islandPage.waitForFunction(()=>harness.pendingPreview?.leftWidget===20);
-      assert.deepEqual(await islandPage.evaluate(()=>({flashes:harness.previewFlashes,
-        sameImage:harness.previewNode===document.querySelector('[data-island-native-preview]'),
-        sameGrid:harness.gridNode===document.querySelector('.island-compact-picker__grid')})),{flashes:[],sameImage:true,sameGrid:true},
-        'acknowledged selection keeps the old frame and DOM while the native reply is delayed');
-      await islandPage.evaluate(()=>{
-        const canvas=document.createElement('canvas');canvas.width=960;canvas.height=300;
-        const context=canvas.getContext('2d');context.drawImage(harness.previewNode,0,0,960,300);
-        context.fillStyle='#242f2e';context.fillRect(0,0,1,1);
-        harness.changedImage=canvas.toDataURL('image/png');
-        harness.holdPreview=false;harness.receive({...harness.pendingPreview,image:harness.changedImage});
-      });
-      await islandPage.waitForFunction(()=>document.querySelector('[data-island-native-preview]').src===harness.changedImage);
-      assert.deepEqual(await islandPage.evaluate(()=>harness.previewFlashes),[],'decoded replacement also stays continuously visible');
-    }
-    await previewStage.locator('[data-island-compact-side="right"]').click();
-    assert.equal(await picker.locator('[data-island-selection-side]').textContent(),'右侧图标');
-    assert.match(await picker.locator('[data-island-selection-hint]').textContent(),/左半边/);
-    await picker.locator('[data-island-compact-widget="1"]').click();
-    await islandPage.waitForFunction(()=>document.querySelector('[data-island-compact-widget="1"]')?.getAttribute('aria-pressed')==='true');
-    assert.deepEqual(await islandPage.evaluate(()=>harness.commands.filter(command=>typeof command==='string'&&
-      /dynamicIsland\|(leftWidget|rightWidget)\|/.test(command))),
-      ['v1|dynamicIsland|leftWidget|20','v1|dynamicIsland|rightWidget|1']);
-    if(width===1536){
-      await islandPage.setViewportSize({width,height:1400});
-      await islandPage.screenshot({path:path.join(output,'island-home-1536.png'),
-        clip:{x:0,y:0,width:1536,height:1120}});
-      await islandPage.setViewportSize({width,height:864});
-    }
-    await previewStage.locator('[data-island-compact-side="left"]').click();
-    await islandPage.evaluate(()=>{harness.rejectIslandSave=true;});
-    await picker.locator('[data-island-compact-widget="15"]').click();
-    await islandPage.waitForFunction(()=>document.querySelector('[data-settings-scope="dynamicIsland"] .status')?.textContent.includes('失败'));
-    assert.equal(await picker.locator('[data-island-compact-widget="20"]').getAttribute('aria-pressed'),'true',
-      'failed side save preserves the confirmed selection');
-    await picker.locator('[data-island-compact-clear]').click();
-    await islandPage.waitForFunction(()=>document.querySelector('[data-island-selection-name]')?.textContent==='无');
-    await previewStage.locator('[data-island-compact-side="right"]').click();
-    assert.equal(await picker.locator('[data-island-selection-name]').textContent(),'农历','clearing left does not clear right');
-    if(nativePreview){
-      assert.deepEqual(await islandPage.evaluate(()=>harness.previewFlashes),[],'switching, rollback and clearing never blank the preview');
-      await islandPage.evaluate(()=>harness.previewObserver.disconnect());
-    }
-    await islandPage.screenshot({path:path.join(output,`island-compact-picker-${width}.png`)});
+    await islandPage.locator('[data-island-styles]').waitFor();
+    assert.equal(await islandPage.locator('[data-island-compact-widget],[data-island-native-preview]').count(),0);
+    assert.equal(await islandPage.locator('[data-island-style-widget]').count(),5);
+    await islandPage.locator('[data-island-style-widget="system"]').click();
+    assert.equal(await islandPage.locator('[data-island-style-card]').count(),1);
+    await islandPage.locator('[data-island-style-widget="clock"]').click();
+    assert.equal(await islandPage.locator('[data-island-clock-style]').count(),6);
+    assert.deepEqual(await islandPage.evaluate(()=>harness.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dynamicIsland|preview|'))),[]);
+    await islandPage.screenshot({path:path.join(output,`island-styles-${width}.png`)});
     await islandPage.locator('[data-tab="settings"]').click();
     const layer=islandPage.locator('#dynamicIsland-layer');
     await layer.click();

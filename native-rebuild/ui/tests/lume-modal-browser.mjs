@@ -271,7 +271,7 @@ try {
       harness.settings({error:"",update:{status:"available",version:"1.0.8",progress:0}});
       harness.receive({version:1,type:"app-update-notice",kind:"available",updateVersion:"1.0.8",error:"",manual:true});
     });
-    assert.equal(await page.locator("[data-lume-modal-title]").textContent(),"免费下载额度已用完","background updates do not replace a quota prompt");
+    assert.equal(await page.locator("[data-lume-modal-title]").textContent(),"今日下载额度已用尽","background updates do not replace the signed-in quota prompt");
     await page.keyboard.press("Escape");
     await page.waitForFunction(()=>document.querySelector("[data-lume-modal-title]").textContent==="发现新版本");
     await page.evaluate(()=>harness.settings({language:"en"}));

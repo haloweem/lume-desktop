@@ -1,14 +1,15 @@
 import { createBridge } from "./bridge.js";
 import { prepareInitialView } from "./startup.js";
 import {mountSettingsSelect} from './settings-frame.js';
+import {mountSettingsChoice} from './settings-choice.js';
 import {mountSettingsRanges} from './settings-range.js';
+import {mountInteractionMotion} from './interaction-motion.js';
 import {
   initialState,
   reduce,
   createVisibilityTimer,
   createClockPreviewTimer,
   createVisibilityCleanup,
-  settingsNotice,
 } from "./state.js";
 import { mountTitlebar } from "./titlebar.js";
 import {
@@ -24,22 +25,17 @@ import {
   updateWallpaperDownloadControls,
   unavailablePage,
   updateHomeCarousel,
+  rememberedHomeSlide,
 } from "./pages.js";
-import { clockPage, updateClockPreview, syncClockControls } from "./clock.js";
-import { calendarPage, calendarNotice, syncCalendarControls } from "./calendar.js";
-import { performancePage, performanceNotice, syncPerformanceControls, syncPerformanceResourceOverview } from "./performance.js";
-import { spectrumPage, spectrumNotice, syncSpectrumControls } from "./spectrum.js";
-import { todayTodoPage, todayTodoNotice, syncTodayTodoControls } from "./today-todo.js";
-import { almanacPage, almanacNotice, syncAlmanacControls } from "./almanac.js";
-import { weatherPage, weatherNotice, syncWeatherControls } from "./weather.js";
-import { organizerPage, organizerNotice, syncOrganizerControls } from "./organizer.js";
-import { desktopIconsPage, desktopIconsNotice, syncDesktopIconsControls } from "./desktop-icons.js";
-import { taskbarPage, taskbarNotice, syncTaskbarControls } from "./taskbar.js";
-import { minimizePage, minimizeNotice, syncMinimizeControls } from "./minimize.js";
-import { radialPage, radialNotice, syncRadialControls, mountRadialShortcut } from "./radial.js";
-import { dockPage, dockNotice, syncDockControls } from "./dock.js";
-import { islandPage, islandStatus, syncIslandControls, validIslandHoverDelay, previewIslandHoverDelay } from './dynamic-island.js';
-import {createIslandPreviewController} from './island-preview-controller.js';
+import {updateClockPreview} from './clock.js';
+import {mountRadialShortcut} from './radial.js';
+import {islandStatus,syncIslandControls,validIslandHoverDelay,previewIslandHoverDelay} from './dynamic-island.js';
+import {createComponentSettingsController} from './component-settings.js';
+import {createComponentSettingsCommands} from './component-settings-commands.js';
+import {islandStyleWidgets} from './island-styles.js';
+import {mountExpandedWidgetPicker} from './expanded-widgets.js';
+import {mountTodoBoards} from './todo-board.js';
+import {mountIslandNotifications,syncIslandNotifications} from './island-notifications.js';
 import {
   selectedWallpaper,
   selectedWallpaperEngagement,
@@ -51,6 +47,7 @@ import {
   rememberWallpaperAssetFailure,
   rememberWallpaperAssetSuccess,
   wallpaperPreloadTargets,
+  wallpaperHomePreloadTargets,
   createWallpaperPreviewController,
   wallpaperNotice,
   wallpaperEngagementError,
@@ -58,6 +55,7 @@ import {
 import { modules, widgets, localizedItem } from "./catalog.js";
 import { isWindowDragTarget } from "./window-interaction.js";
 import {mountWallpaperImages} from "./wallpaper-images.js";
+import {createWallpaperPreloader} from './wallpaper-preloader.js';
 import { mountWallpaperDrop } from "./wallpaper-drop.js";
 import { mountMusicDrop } from "./music-drop.js";
 import { createWallpaperScrollMemory } from "./wallpaper-navigation.js";
@@ -80,7 +78,7 @@ const diagnostics = {
   },
   buildReport: options => buildDiagnosticReport({
     ...options,
-    version: "1.0.9",
+    version: "1.1.3",
     events: diagnosticsRecorder.list(),
     health: diagnosticsRecorder.health(),
     native: diagnosticsRecorder.native(),
@@ -107,6 +105,7 @@ let state = initialState(),
 const content = document.querySelector("#content"),
   app = document.querySelector("#app"),
   notice = document.querySelector("#notice");
+const interactionMotion=mountInteractionMotion(app);
 const notices = createNoticeController(notice);
 function exitMusicFullscreen() {
   if(!state.fullscreen)return false;
@@ -115,8 +114,8 @@ function exitMusicFullscreen() {
 }
 let wallpaperPreviewLease=null,wallpaperPreviewIntent=null,wallpaperPendingRemove=null;
 let wallpaperStatsId="";
-const wallpaperPreloadCache=new Map();
-const WALLPAPER_PRELOAD_CACHE_LIMIT=24;
+const wallpaperPreloader=createWallpaperPreloader({onSuccess:rememberWallpaperAssetSuccess,onFailure:rememberWallpaperAssetFailure});
+let rememberedHomeView=null;
 const wallpaperScroll=createWallpaperScrollMemory();
 const unmountWallpaperImages=mountWallpaperImages(content);
 const unmountWallpaperDrop=mountWallpaperDrop(document,{
@@ -146,67 +145,54 @@ const wallpaperPreview=createWallpaperPreviewController({
   onChange:playing=>updateWallpaperPreviewButton(content,playing),
   onError:failWallpaperPreview,
 });
-const islandPreview=createIslandPreviewController({
-  send:mode=>bridge.send('dynamicIsland','preview',mode),
-  getMode:()=>state.dynamicIslandPreviewMode||'compact',
-  onFrame:message=>dispatch({type:'host',message}),
-  onTimeout:()=>{
-    if(state.dynamicIslandPreview?.image)return;
-    const {shape,size,material,leftWidget,rightWidget}=state.dynamicIsland;
-    dispatch({type:'host',message:{version:1,type:'dynamicIsland-preview',
-      mode:state.dynamicIslandPreviewMode||'compact',
-      shape,size,material,leftWidget,rightWidget,readings:[],width:0,height:0,image:'',error:'render'}});
-  },
-});
 const visibilityCleanup=createVisibilityCleanup(
   releaseHiddenPageResources,
   generation=>bridge.lifecycle("cleanup",generation),
 );
-const unmountSelect=mountSettingsSelect(content,(id,value)=>{
-  if(id==='clock-style') request('clock','style',value);
-  if(id==='calendar-theme') request('calendar','theme',value);
-  if(id==='calendar-material') request('calendar','material',value);
-  if(id==='performance-material') request('performance','material',value);
-  if(id==='spectrum-style') request('spectrum','style',value);
-  if(id==='todayTodo-material') request('todayTodo','material',value);
-  if(id==='almanac-material') request('almanac','material',value);
-  if(id==='weather-material') request('weather','material',value);
-  if(id==='weather-city') request('weather','city',value);
-  if(id==='organizer-material') request('organizer','material',value);
-  if(id==='minimize-engine') request('minimize','engine',value);
-  if(id==='taskbar-hide-behavior') request('taskbar','hideBehavior',value);
-  if(id==='radial-material') request('radial','material',value);
-  if(id==='dock-material') request('dock','material',value);
-  if(id==='dynamicIsland-size') request('dynamicIsland','size',value);
-  if(id==='dynamicIsland-material') request('dynamicIsland','material',value);
-  if(id==='dynamicIsland-layer'&&['desktop','above'].includes(value))request('dynamicIsland','topmost',value==='above');
-  if(id==='dock-icon-scale') request('dock','iconScale',Number(value));
-  if(id==='dock-position') request('dock','position',Number(value));
-  if(id==='dock-bottom-offset') request('dock','bottomOffset',Number(value));
-  if(id==='dock-icon-spacing') request('dock','iconSpacing',Number(value));
-});
+const componentCommands=createComponentSettingsCommands({getState:()=>state,request,
+  send:(...command)=>bridge.send(...command),showNotice});
+const unmountSelect=mountSettingsSelect(content,(id,value)=>componentCommands.select(id,value));
+const unmountChoice=mountSettingsChoice(content);
 const radialShortcut=mountRadialShortcut(content,{
   getState:()=>state,onShortcut:code=>request('radial','shortcut',code),
   onCaptureChange:active=>bridge.send('radial','capture',active),
 });
+const componentSettings=createComponentSettingsController({
+  root:content,showNotice,
+  afterSync:(scope,nextState)=>{
+    if(scope==='radial'||scope==='all')radialShortcut.sync();
+    if(scope==='all')syncWallpaperControls(content,nextState,wallpaperPreview.playing);
+    unmountChoice.refresh();
+  },
+});
 // A per-style key such as "pulse.barWidth" becomes v1|spectrum|pulse|barWidth|N.
 const unmountRanges=mountSettingsRanges(content,(scope,key,value)=>request(scope,...key.split('.'),value));
+const todoBoards=mountTodoBoards(content,{bridge});
+let islandNotificationTimeout=null;
+function sendIslandNotificationCommand(command){
+  const {action,...fields}=command;
+  delete fields.version;delete fields.scope;
+  if(action!=='snapshot'&&['loading','saving','unavailable'].includes(state.islandNotificationsStatus))return false;
+  if(action==='snapshot'&&state.islandNotificationsStatus==='saving')return false;
+  clearTimeout(islandNotificationTimeout);
+  dispatch({type:'request',scope:'island-notifications',key:action});
+  const sent=bridge.islandNotifications(action,fields);
+  if(!sent){dispatch({type:'unavailable',scope:'island-notifications'});return false;}
+  if(['loading','saving'].includes(state.islandNotificationsStatus))islandNotificationTimeout=setTimeout(()=>{
+    islandNotificationTimeout=null;dispatch({type:'unavailable',scope:'island-notifications'});
+  },5000);
+  return true;
+}
+const unmountIslandNotifications=mountIslandNotifications(content,{getState:()=>state,send:sendIslandNotificationCommand});
+const unmountExpandedWidgets=mountExpandedWidgetPicker(content,{
+  getState:()=>state,
+  onChange:code=>request('dynamicIsland','expandedLayout',code),
+});
 function notify(title) {
   showNotice(t(`${title}暂未接入`,`${title} is not yet available`));
 }
 function showNotice(text, options) {
   notices.show(text, options);
-}
-function localizedSettingsNotice(status, options) {
-  // Keep notification timing in settingsNotice; translate only its fixed copy.
-  const feedback = settingsNotice(status, options);
-  return {
-    "桌面时钟启动失败，请检查字体和安装文件":t("桌面时钟启动失败，请检查字体和安装文件","Could not start the desktop clock. Check the fonts and installation files."),
-    "时钟恢复失败，请重新启用组件":t("时钟恢复失败，请重新启用组件","Could not restore the clock. Enable the widget again."),
-    "保存失败，已恢复此前设置，请重试":t("保存失败，已恢复此前设置，请重试","Could not save. Previous settings restored. Please try again."),
-    "宿主未连接，设置未保存":t("宿主未连接，设置未保存","Host disconnected. Settings were not saved."),
-    "已应用并保存":t("已应用并保存","Applied and saved"),
-  }[feedback] || feedback;
 }
 const titlebar = mountTitlebar(
   document.querySelector("#titlebar"),
@@ -345,29 +331,19 @@ function requestMusicLyrics() {
 }
 function dispatch(event) {
   if (event.type==="wallpaper-filter" || event.type==="wallpaper-page") wallpaperScroll.reset();
-  const previousStatus = state.status;
-  const previousCalendarStatus = state.calendarStatus;
-  const previousPerformanceStatus = state.performanceStatus;
-  const previousSpectrumStatus = state.spectrumStatus;
-  const previousTodayTodoStatus = state.todayTodoStatus;
-  const previousAlmanacStatus = state.almanacStatus;
-  const previousWeatherStatus = state.weatherStatus;
-  const previousOrganizerStatus = state.organizerStatus;
-  const previousIconsStatus = state.iconsStatus;
-  const previousTaskbarStatus = state.taskbarStatus;
-  const previousMinimizeStatus = state.minimizeStatus;
-  const previousRadialStatus = state.radialStatus;
-  const previousDockStatus = state.dockStatus;
+  const previousState=state;
   const previousWallpaper=state.wallpaper;
-  const previousIslandAppearance=state.dynamicIsland;
   state = reduce(state, event);
-  if(event.type==='host'&&event.message.type==='dynamicIsland-preview') {
-    syncIslandControls(content,state);return;
+  if((event.type==='host'&&event.message.type==='island-notifications-state')||
+     (['request','unavailable'].includes(event.type)&&event.scope==='island-notifications')){
+    if(event.type==='host'&&state.islandNotificationsStatus!=='saving'){clearTimeout(islandNotificationTimeout);islandNotificationTimeout=null;}
+    syncIslandNotifications(content,state);unmountChoice.refresh();return;
   }
+  if(event.type==='host'&&event.message.type==='wallpaper-state'&&!previousWallpaper.catalog.length&&state.wallpaper.catalog.length)
+    state={...state,slide:rememberedHomeSlide(state)};
   if((event.type==='host'&&event.message.type==='dynamicIsland-state') ||
      (['request','unavailable'].includes(event.type)&&event.scope==='dynamicIsland')) {
     syncIslandControls(content,state);
-    if(['shape','size','material','leftWidget','rightWidget','animationSpeed','bounce'].some(key=>previousIslandAppearance[key]!==state.dynamicIsland[key]))islandPreview.refresh();
     if(['error','unavailable','recovered'].includes(state.dynamicIslandStatus) &&
       !content.querySelector('[data-settings-scope="dynamicIsland"]'))showNotice(islandStatus(state));
     return;
@@ -394,7 +370,6 @@ function dispatch(event) {
     return;
   }
   if (event.type === "host" && event.message.type === "resource-snapshot") {
-    if (state.view === "performance") syncPerformanceResourceOverview(content,state);
     return;
   }
   if (event.type === "host" && event.message.type === "music-score") {
@@ -453,63 +428,8 @@ function dispatch(event) {
     updateHomeCarousel(content, state);
     carouselTimer.dispose();
     updateVisibility();
-  } else if (
-    event.type === "request" ||
-    event.type === "unavailable" ||
-    (event.type === "host" && ["settings","calendar-settings","reminder-status","performance-state","spectrum-state","almanac-state","todayTodo-state","weather-state","organizer-state","icons-state","taskbar-state","minimize-state","radial-state","dock-state"].includes(event.message.type))
-  ) {
-    const scope=event.type === 'host' ? (event.message.type === 'settings' ? 'clock' : event.message.type==='radial-state'?'radial':event.message.type==='dock-state'?'dock':event.message.type==='taskbar-state'?'taskbar':event.message.type==='minimize-state'?'minimize':event.message.type==='icons-state'?'icons':event.message.type==='organizer-state'?'organizer':event.message.type==='weather-state'?'weather':event.message.type==='todayTodo-state'?'todayTodo':event.message.type==='almanac-state'?'almanac':event.message.type==='performance-state'?'performance':event.message.type==='spectrum-state'?'spectrum':'calendar') : (event.scope || 'clock');
-    if(scope==='clock' || scope==='all') syncClockControls(content, state);
-    if(scope==='calendar' || scope==='all') syncCalendarControls(content, state);
-    if(scope==='performance' || scope==='all') syncPerformanceControls(content, state);
-    if(scope==='spectrum' || scope==='all') syncSpectrumControls(content, state);
-    if(scope==='todayTodo' || scope==='all') syncTodayTodoControls(content, state);
-    if(scope==='almanac' || scope==='all') syncAlmanacControls(content, state);
-    if(scope==='weather' || scope==='all') syncWeatherControls(content, state);
-    if(scope==='organizer' || scope==='all') syncOrganizerControls(content, state);
-    if(scope==='icons' || scope==='all') syncDesktopIconsControls(content,state);
-    if(scope==='taskbar' || scope==='all') syncTaskbarControls(content,state);
-    if(scope==='minimize' || scope==='all') syncMinimizeControls(content,state);
-    if(scope==='dock' || scope==='all') syncDockControls(content,state);
-    if(scope==='all') syncIslandControls(content,state);
-    if(scope==='radial' || scope==='all') {
-      syncRadialControls(content,state);radialShortcut.sync();
-    }
-    if(scope==='all') syncWallpaperControls(content,state,wallpaperPreview.playing);
-    const feedback = scope==='dock' ? dockNotice(state,{
-      previousStatus:previousDockStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="dock"] .status'),
-    }) : scope==='radial' ? radialNotice(state,{
-      previousStatus:previousRadialStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="radial"] .status'),
-    }) : scope==='taskbar' ? taskbarNotice(state,{
-      previousStatus:previousTaskbarStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="taskbar"] .status'),
-    }) : scope==='minimize' ? minimizeNotice(state,{
-      previousStatus:previousMinimizeStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="minimize"] .status'),
-    }) : scope==='icons' ? desktopIconsNotice(state,{
-      previousStatus:previousIconsStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="icons"] .status'),
-    }) : scope==='organizer' ? organizerNotice(state,{
-      previousStatus:previousOrganizerStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="organizer"] .status'),
-    }) : scope==='weather' ? weatherNotice(state,{
-      previousStatus:previousWeatherStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="weather"] .status'),
-    }) : scope==='todayTodo' ? todayTodoNotice(state,{
-      previousStatus:previousTodayTodoStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="todayTodo"] .status'),
-    }) : scope==='almanac' ? almanacNotice(state,{
-      previousStatus:previousAlmanacStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="almanac"] .status'),
-    }) : scope==='performance' ? performanceNotice(state,{
-      previousStatus:previousPerformanceStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="performance"] .status'),
-    }) : scope==='spectrum' ? spectrumNotice(state,{
-      previousStatus:previousSpectrumStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="spectrum"] .status'),
-    }) : scope==='calendar' ? calendarNotice(state,{
-      previousStatus:previousCalendarStatus,hasInlineStatus:!!content.querySelector('[data-settings-scope="calendar"] .status'),
-    }) : localizedSettingsNotice(state.status, {
-      previousStatus,error: state.error,hasInlineStatus: !!content.querySelector('[data-settings-scope="clock"] .status'),
-    });
-    if (feedback) {
-      const status = scope === "clock" ? state.status : state[`${scope}Status`];
-      const error = scope === "clock" ? state.error : state[`${scope}Error`];
-      const success = !error && (status === "saved" || (scope === "taskbar" && status === "applied" &&
-        !state.taskbar.pendingRecovery && state.taskbar.enabled === state.taskbar.running));
-      showNotice(feedback, { autoDismiss: success });
-    }
+  } else if (componentSettings.receive(event,previousState,state)) {
+    return;
   } else if (event.type === "host" && event.message.type === "window") {
     app.classList.toggle("fullscreen", state.fullscreen);
     titlebar.update(state.fullscreen);
@@ -524,6 +444,7 @@ function receiveNotes(message) {
   syncNotesControls();
 }
 function render() {
+  interactionMotion.capture();
   radialShortcut.cancel();
   syncWallpaperStats();
   wallpaperScroll.capture(content);
@@ -535,12 +456,29 @@ function render() {
     ? {selectionId:previewItem.id,wantsPlay:true,failed:false} : null;
   app.classList.toggle("fullscreen", state.fullscreen);
   titlebar.update(state.fullscreen);
+  const homeRoot=content.querySelector('.HomeRoot:has(> .HomeHero)');
+  if(homeRoot)rememberedHomeView={root:homeRoot,key:homeRoot.dataset.homeKey};
   switch (state.view) {
     case "applicationSettings":
       applicationSettings.show(applicationSettingsSection);
       break;
     case "home":
-      content.innerHTML = home(state);
+      {
+        const key=JSON.stringify([t('首页','Home'),state.wallpaper.catalogStatus,
+          wallpaperHomeItems(state).map(item=>[item.id,item.title,item.width,item.height,item.kind,wallpaperHeroImageUrl(item)])]);
+        if(rememberedHomeView?.key===key){
+          if(!content.contains(rememberedHomeView.root))content.replaceChildren(rememberedHomeView.root);
+          updateHomeCarousel(content,state);
+        }else{
+          const template=document.createElement('template');template.innerHTML=home(state);
+          const oldImage=rememberedHomeView?.root.querySelector('.preview.current img');
+          const nextImage=template.content.querySelector('.preview.current img');
+          if(oldImage&&nextImage&&oldImage.getAttribute('src')===nextImage.getAttribute('src'))nextImage.replaceWith(oldImage);
+          content.replaceChildren(template.content);
+          const root=content.querySelector('.HomeRoot');root.dataset.homeKey=key;
+          rememberedHomeView={root,key};
+        }
+      }
       break;
     case "desktopBeauty":
       content.innerHTML = catalog(state, false);
@@ -548,47 +486,8 @@ function render() {
     case "widgets":
       content.innerHTML = catalog({...state,musicDesktop:musicDesktopState}, true);
       break;
-    case "clock":
-      content.innerHTML = clockPage(state, tab);
-      break;
-    case "calendar":
-      content.innerHTML = calendarPage(state, tab);
-      break;
-    case "performance":
-      content.innerHTML = performancePage(state, tab);
-      break;
-    case "spectrum":
-      content.innerHTML = spectrumPage(state, tab);
-      break;
-    case "todayTodo":
-      content.innerHTML = todayTodoPage(state, tab);
-      break;
-    case "almanac":
-      content.innerHTML = almanacPage(state, tab);
-      break;
-    case "weather":
-      content.innerHTML = weatherPage(state, tab);
-      break;
-    case "organizer":
-      content.innerHTML = organizerPage(state, tab);
-      break;
-    case "icons":
-      content.innerHTML = desktopIconsPage(state,tab);
-      break;
-    case "taskbar":
-      content.innerHTML = taskbarPage(state,tab);
-      break;
-    case "minimize":
-      content.innerHTML = minimizePage(state,tab);
-      break;
-    case "radial":
-      content.innerHTML = radialPage(state,tab);
-      break;
-    case "dock":
-      content.innerHTML = dockPage(state,tab);
-      break;
     case "dynamicIsland":
-      content.innerHTML = islandPage(state,tab);
+      content.innerHTML = componentSettings.render(state.view,state,tab);
       break;
     case "music":
       openMusicPage();
@@ -605,15 +504,16 @@ function render() {
       updateWallpaperDetailLayout(content);
       break;
     default: {
+      const page=componentSettings.render(state.view,state,tab);
+      if(page!==undefined){content.innerHTML=page;break;}
       const item = [...modules, ...widgets].find(item => item.title === unavailableTitle);
       content.innerHTML = unavailablePage(item ? localizedItem(item).title
         : unavailableTitle === "此功能" ? t("此功能","This feature") : unavailableTitle);
     }
   }
   wallpaperScroll.restore(content,state);
-  syncRadialControls(content,state);
-  syncDockControls(content,state);
-  syncIslandControls(content,state);
+  componentSettings.syncScopes(['radial','dock','dynamicIsland'],state);
+  unmountChoice.refresh();
   titlebar.setSurface(state.view==="music"?"music":"panel");
   syncTitlebarImmersive();
   syncDropZone();
@@ -640,55 +540,14 @@ const carouselTimer = createVisibilityTimer(
   () => dispatch({ type: "carousel", delta: 1, count: wallpaperHomeItems(state).length }),
   10000,
 );
-const resourceTimer = createVisibilityTimer(
-  () => {
-    if (state.view === "performance" && state.visible && document.visibilityState === "visible")
-      bridge.send("performance","resource-snapshot");
-  },
-  1000,
-);
-let resourceSampling = false;
 function preloadWallpaperAssets() {
-  if (typeof Image !== "function") return;
-  for (const target of wallpaperPreloadTargets(state)) {
-    // Keep a session-owned image reference for the current and next hero.
-    // List thumbnails remain lazy in the page and are warmed only for the
-    // first visible page.
-    const key=`${target.source}\n${target.url}`;
-    if (wallpaperPreloadCache.has(key)) continue;
-    while (wallpaperPreloadCache.size>=WALLPAPER_PRELOAD_CACHE_LIMIT)
-      wallpaperPreloadCache.delete(wallpaperPreloadCache.keys().next().value);
-    const image=new Image();
-    image.decoding="async";
-    image.onload=()=>{
-      rememberWallpaperAssetSuccess(target.source,image.currentSrc || image.src);
-    };
-    image.onerror=()=>{
-      rememberWallpaperAssetFailure(target.source,image.currentSrc || image.src);
-      wallpaperPreloadCache.delete(key);
-    };
-    wallpaperPreloadCache.set(key,image);
-    image.src=target.url;
-  }
+  wallpaperPreloader.warm([...wallpaperPreloadTargets(state),...wallpaperHomePreloadTargets(state)]);
 }
 function updateVisibility() {
   const visible = document.visibilityState === "visible" && state.visible;
-  const islandHomeVisible=visible&&state.view==='dynamicIsland'&&tab==='home';
-  if(!islandHomeVisible&&state.dynamicIslandPreview) {
-    state={...state,dynamicIslandPreview:null};
-    syncIslandControls(content,state);
-  }
-  islandPreview.update(islandHomeVisible);
   unmountWallpaperImages.setVisible(visible);
+  wallpaperPreloader.setVisible(visible);
   if(!visible)radialShortcut.cancel();
-  const resourceVisible = visible && state.view === "performance";
-  if (resourceVisible && !resourceSampling) {
-    resourceSampling = true;
-    bridge.send("performance","resource-snapshot");
-  } else if (!resourceVisible) {
-    resourceSampling = false;
-  }
-  resourceTimer.update(resourceVisible,true);
   musicRuntime?.setVisible(visible,musicState);
   if(musicRuntime && musicNativeVisible!==visible) {
     musicNativeVisible=visible;
@@ -725,12 +584,8 @@ function updateVisibility() {
 function releaseHiddenPageResources() {
   // Hidden manager pages do not need decoded hero images. Browser disk cache
   // keeps the next restore fast while releasing the JS-owned Image references.
-  for (const image of wallpaperPreloadCache.values()) {
-    image.onload=null;
-    image.onerror=null;
-    image.src="";
-  }
-  wallpaperPreloadCache.clear();
+  wallpaperPreloader.setVisible(false);
+  if(rememberedHomeView&&!content.contains(rememberedHomeView.root))rememberedHomeView=null;
 }
 function stopWallpaperPreview() {
   const leased=wallpaperPreviewLease!==null;
@@ -790,8 +645,10 @@ function continueWallpaperPreview() {
   const item=selectedWallpaper(state);
   if (!item || item.missing) {stopWallpaperPreview();return;}
   if(lease.started){
-    // Finishing a download replaces remote preview traffic with the local lease.
-    if(item.libraryItem&&!item.libraryItem.missing&&lease.mediaUrl.startsWith('https://static.lumedesktop.com/')){
+    // A refreshed catalog can replace an old full-size URL with a short clip;
+    // a finished download can replace it with local media. Keep playback intent.
+    const source=item.libraryItem&&!item.libraryItem.missing?item.libraryItem.url:item.url;
+    if(source&&source!==lease.assetSource){
       stopWallpaperPreview();beginWallpaperPreview(item);
     }
     return;
@@ -811,10 +668,11 @@ function continueWallpaperPreview() {
   playWallpaperPreviewAttempt(lease,media,source,candidate);
 }
 function ensureWallpaperCatalog() {
-  if (!["home","wallpaperOfficial","search","music"].includes(state.view) || state.wallpaperCatalogRequested ||
-    ["loading","saving","unavailable"].includes(state.wallpaperStatus)) return;
+  if (!["home","wallpaperOfficial","wallpaperDetail","search","music"].includes(state.view) || state.wallpaperCatalogRequested ||
+    ["loading","saving","unavailable"].includes(state.wallpaperStatus) || state.wallpaper.catalogStatus==="loading") return;
   state=reduce(state,{type:"wallpaper-catalog-requested"});
   if (state.wallpaper.catalogStatus==="idle" || state.wallpaper.catalogStatus==="failed") requestWallpaper("refresh");
+  else if (state.wallpaper.catalogError==="WALLPAPER_CATALOG_CACHED") requestWallpaper("refreshVideos");
 }
 function syncWallpaperStats() {
   const id=state.view==="wallpaperDetail" ? selectedWallpaper(state)?.officialId || "" : "";
@@ -929,7 +787,7 @@ content.addEventListener("click", (event) => {
     state=reduce(state,{type:"wallpaper-select",source:button.dataset.wallpaperSource,id:button.dataset.wallpaperId});
     dispatch({type:"navigate",view:"wallpaperDetail"});
   } else if (button.dataset.view) {
-    tab = "settings";
+    tab = button.dataset.view === "todayTodo" ? "todo" : button.dataset.view === "dock" ? "dock" : "settings";
     dispatch({ type: "navigate", view: button.dataset.view });
   } else if (button.dataset.action === "back") {
     tab = "settings";
@@ -952,6 +810,9 @@ content.addEventListener("click", (event) => {
     else if(id==="notes"){if(!bridge.notes("openWindow"))showNotice(t("便签暂不可用","Notes are unavailable"));}
     else if (["widgets", "clock", "calendar", "performance", "spectrum", "almanac", "todayTodo", "weather","organizer","icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(id)) {
       if(id==="dynamicIsland")tab="home";
+      else if(id==="todayTodo")tab="todo";
+      else if(id==="dock")tab="dock";
+      else tab="settings";
       dispatch({ type: "navigate", view: id });
     }
     else {
@@ -964,17 +825,16 @@ content.addEventListener("click", (event) => {
       state = {...state, notes:{...state.notes, pending:true}};
       syncNotesControls();
     }
-  } else if(button.dataset.islandCompactSide){
-    state={...state,islandCompactSide:button.dataset.islandCompactSide};syncIslandControls(content,state);
-  } else if(button.hasAttribute('data-island-compact-clear')){
-    const side=state.islandCompactSide==='right'?'right':'left';
-    request('dynamicIsland',side+'Widget',0);
-  } else if(button.dataset.islandCompactWidget!==undefined){
-    const side=state.islandCompactSide==='right'?'right':'left',id=Number(button.dataset.islandCompactWidget);
-    if(Number.isInteger(id)&&id>=0&&id<=30&&state.dynamicIsland[side+'Widget']!==id){
-      state={...state,dynamicIslandPreviewMode:'compact'};
-      request('dynamicIsland',side+'Widget',id);islandPreview.refresh();
+  } else if(button.dataset.islandStyleWidget){
+    if(islandStyleWidgets.includes(button.dataset.islandStyleWidget)){
+      state={...state,islandStyleWidget:button.dataset.islandStyleWidget};syncIslandControls(content,state);
     }
+  } else if(button.dataset.islandClockStyle){
+    const style=button.dataset.islandClockStyle;
+    if(['simple','progress','digital','date','flip','pixel'].includes(style)&&style!==(state.dynamicIsland.clockStyle??'simple'))request('dynamicIsland','clockStyle',style);
+  } else if(button.dataset.islandCalendarStyle){
+    const style=button.dataset.islandCalendarStyle;
+    if(['default','chinese-almanac'].includes(style)&&style!==(state.dynamicIsland.calendarStyle??'default'))request('dynamicIsland','calendarStyle',style);
   } else if (button.dataset.islandPreference) {
     const key=button.dataset.islandPreference;
     if(['material','size','animationSpeed','bounce'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
@@ -986,65 +846,11 @@ content.addEventListener("click", (event) => {
     if(['click','hover'].includes(mode)&&state.dynamicIsland.hover!==(mode==='hover'))request('dynamicIsland','hover',mode==='hover');
   } else if (button.matches('button[data-island-shape]')) {
     if(button.dataset.islandShape!==state.dynamicIsland.shape)request('dynamicIsland','shape',button.dataset.islandShape);
-  } else if (button.dataset.islandPreviewMode) {
-    state={...state,dynamicIslandPreviewMode:button.dataset.islandPreviewMode};
-    syncIslandControls(content,state);
-    islandPreview.refresh();
-  } else if (button.dataset.action === "toggle")
-    request("clock", "enabled", !state.clock.enabled);
-  else if (button.dataset.action === "radial-toggle") request("radial","enabled",!state.radial.enabled);
-  else if (button.dataset.action === "radial-reset") request("radial","reset");
-  else if (button.dataset.action?.startsWith('dynamicIsland-')) {
-    const action=button.dataset.action.slice('dynamicIsland-'.length);
-    if(action==='toggle')request('dynamicIsland','enabled',!state.dynamicIsland.enabled);
-    else if(action==='lock')request('dynamicIsland','locked',!state.dynamicIsland.locked);
-    else if(['hideFullscreen','topmost','hover','autoHide'].includes(action))request('dynamicIsland',action,!state.dynamicIsland[action]);
-    else if(['reset','resetAppearance','expand','collapse','focus','stopFocus'].includes(action))request('dynamicIsland',action);
-  }
-  else if (button.dataset.action === "dock-toggle") request("dock","enabled",!state.dock.enabled);
-  else if (button.dataset.action === "dock-reset") request("dock","reset");
-  else if (button.dataset.action === "dock-reflection") request("dock","reflection",!state.dock.reflection);
-  else if (button.dataset.action === "dock-system-tray") request("dock","systemTray",!state.dock.systemTray);
+  } else if (componentCommands.action(button.dataset.action)) return;
   else if (button.dataset.action === "music-toggle")
     ensureMusicDesktopController().then(controller=>{
       controller.setEnabled(!musicDesktopState.enabled);
     });
-  else if (button.dataset.action === "calendar-toggle")
-    request("calendar", "enabled", !state.calendar.enabled);
-  else if (button.dataset.action === "performance-toggle")
-    request("performance", "enabled", !state.performance.enabled);
-  else if (button.dataset.action === "performance-reset") request("performance", "reset");
-  else if (button.dataset.action === "spectrum-toggle") request("spectrum", "enabled", !state.spectrum.enabled);
-  else if (button.dataset.action === "spectrum-reset") request("spectrum", "reset");
-  else if (button.dataset.action === "todayTodo-toggle") request("todayTodo", "enabled", !state.todayTodo.enabled);
-  else if (button.dataset.action === "todayTodo-reset") request("todayTodo", "reset");
-  else if (button.dataset.action === "almanac-toggle")
-    request("almanac", "enabled", !state.almanac.enabled);
-  else if (button.dataset.action === "almanac-reset") request("almanac", "reset");
-  else if (button.dataset.action === "weather-toggle")
-    request("weather", "enabled", !state.weather.enabled);
-  else if (button.dataset.action === "weather-reset") request("weather", "reset");
-  else if (button.dataset.action === "weather-location-settings") bridge.send("weather", "location-settings");
-  else if (button.dataset.action === "organizer-toggle")
-    request("organizer", "enabled", !state.organizer.enabled);
-  else if (button.dataset.action === "organizer-reset") request("organizer", "reset");
-  else if (button.dataset.action === "icons-toggle") request("icons","enabled",!state.icons.enabled);
-  else if (button.dataset.action === "icons-autoHide") request("icons","autoHide",!state.icons.enableAutoHide);
-  else if (button.dataset.action === "icons-restoreOnInput") request("icons","restoreOnInput",!state.icons.showIconsOnAnyInput);
-  else if (button.dataset.action === "icons-reset") request("icons","reset");
-  else if (button.dataset.action === "taskbar-toggle") request("taskbar","enabled",!state.taskbar.enabled);
-  else if (button.dataset.action === "taskbar-transparent") request("taskbar","transparent",!state.taskbar.transparentTaskbar);
-  else if (button.dataset.action === "taskbar-autoHide") request("taskbar","autoHide",!state.taskbar.autoHideTaskbar);
-  else if (button.dataset.action === "taskbar-reset") request("taskbar","reset");
-  else if (button.dataset.action === "minimize-toggle") request("minimize","enabled",!state.minimize.enabled);
-  else if (["restore","launch","multiMonitor","unhideTaskbar"].some(key=>button.dataset.action===`minimize-${key}`)) {
-    const key=button.dataset.action.slice('minimize-'.length);
-    request("minimize",key,!state.minimize[key]);
-  }
-  else if (button.dataset.action === "minimize-reset") request("minimize","reset");
-  else if (button.dataset.action === "calendar-reset") request("calendar", "reset");
-  else if (button.dataset.action === "calendar-textColor") request("calendar", "textColor");
-  else if (button.dataset.action === "calendar-highlightColor") request("calendar", "highlightColor");
   else if (button.dataset.action === "clear") {
     const input = button.closest("form").querySelector("input");
     input.value = "";
@@ -1054,11 +860,10 @@ content.addEventListener("click", (event) => {
       dispatch({type:"wallpaper-filter",query:""});
       content.querySelector(".SearchInput")?.focus();
     }
-  } else if (button.dataset.action === "reset") {
-    request("clock", "reset");
   } else if (button.dataset.tab) {
     tab = button.dataset.tab;
     render();
+    if(state.view==='dynamicIsland'&&tab==='notifications')sendIslandNotificationCommand({version:1,scope:'island-notifications',action:'snapshot'});
   }
 });
 content.addEventListener("pointerdown", (event) => {
@@ -1100,21 +905,7 @@ content.addEventListener("input", (event) => {
     else previewIslandHoverDelay(event.target,event.target.valueAsNumber);
     return;
   }
-  if(event.target.matches('[data-setting-slider],[data-setting-number]'))return;
-  const range=event.target.closest?.("[data-dock-range],[data-organizer-range]");
-  if(range) {
-    const value=range.valueAsNumber;
-    const output=range.closest("[data-setting-range]")?.querySelector("output");
-    if(Number.isInteger(value)) {
-      const unit=range.dataset.rangeUnit||"";
-      if(output)output.textContent=`${value}${unit}`;
-      range.setAttribute("aria-valuetext",`${value}${unit}`);
-      const min=Number(range.min),max=Number(range.max);
-      if(Number.isFinite(min)&&Number.isFinite(max)&&max>min)
-        range.style.setProperty("--range-progress",`${((value-min)/(max-min))*100}%`);
-    }
-    return;
-  }
+  if(componentCommands.input(event.target))return;
   if (event.target.matches(".SearchInput"))
     event.target.closest("form").querySelector(".SearchClear").hidden =
       !event.target.value;
@@ -1130,37 +921,12 @@ content.addEventListener("change", (event) => {
   if(event.target.matches('[data-island-hover-delay]')){
     const slider=event.target,value=slider.valueAsNumber;
     if(slider.disabled||slider.getAttribute('aria-disabled')==='true'||!validIslandHoverDelay(value)){syncIslandControls(content,state);return;}
-    if(value!==(state.dynamicIsland.hoverDelayMs??320)){
+    if(value!==(state.dynamicIsland.hoverDelayMs??300)){
       slider.dataset.submitted=String(value);request('dynamicIsland','hoverDelayMs',value);
     }
     return;
   }
-  if(event.target.matches('[data-setting-slider],[data-setting-number]'))return;
-  if(event.target.matches("[data-organizer-range]")){
-    const value=event.target.valueAsNumber;
-    if(Number.isInteger(value)&&value>=50&&value<=120)request("organizer","iconScale",value);
-    return;
-  }
-  if(event.target.matches("[data-dock-range]")) {
-    const value=event.target.valueAsNumber;
-    const key={ "dock-icon-scale":"iconScale", "dock-position":"position",
-      "dock-bottom-offset":"bottomOffset", "dock-icon-spacing":"iconSpacing" }[event.target.id];
-    if(key && Number.isInteger(value)) request("dock",key,value);
-    return;
-  }
-  if(['minimize-durationMs','minimize-unhideDurationMs'].includes(event.target.id)) {
-    const key=event.target.id.slice('minimize-'.length),value=event.target.valueAsNumber;
-    const min=key==='durationMs'?50:0,max=key==='durationMs'?2000:5000;
-    if(state.minimizeStatus==='saving' || state.minimizeStatus==='loading')return;
-    if(Number.isInteger(value)&&value>=min&&value<=max)request('minimize',key,value);
-    else {event.target.value=String(state.minimize[key]);showNotice(t(`${key==='durationMs'?'动画时长':'任务栏显示时长'}需要填写 ${min} 到 ${max} 毫秒的整数`,`${key==='durationMs'?'Animation duration':'Taskbar display duration'} must be an integer between ${min} and ${max} milliseconds.`));}
-  }
-  if(event.target.id==='icons-delay') {
-    const value=event.target.valueAsNumber;
-    if(Number.isInteger(value)&&value>=3&&value<=60)request('icons','delay',value);
-    else {event.target.value=String(state.icons.autoHideDelay);showNotice(t('自动隐藏延迟需要填写 3 到 60 秒的整数','Auto-hide delay must be an integer between 3 and 60 seconds.'));}
-  }
-  if (event.target.id === "clock-style") request("clock", "style", event.target.value);
+  if(componentCommands.change(event.target))return;
   if (event.target.id === "wallpaper-kind") {
     dispatch({type:"wallpaper-filter",kind:event.target.value});
   }
@@ -1189,7 +955,9 @@ content.addEventListener(
 );
 document.addEventListener("visibilitychange", updateVisibility);
 const unsubscribe = bridge.subscribe((message) => {
-  if(message.type==='dynamicIsland-preview'){islandPreview.receive(message);return;}
+  interactionMotion.capture();
+  if(message.type==='dynamicIsland-preview')return;
+  if(message.type==='todo-board-state'){todoBoards.receive(message);return;}
   if (DIAGNOSTICS_ENABLED) {
   const previousEvents=new Set(diagnosticsRecorder.list().map(event=>
     `${event.type}|${event.firstAt}|${JSON.stringify(event.details)}`));
@@ -1287,7 +1055,7 @@ const unsubscribe = bridge.subscribe((message) => {
       dispatch({type:"navigate",view:"music"});
       return;
     }
-    tab = message.page==="dynamicIsland" ? "home" : "settings";
+    tab = message.page==="dynamicIsland" ? "home" : message.page==="todayTodo" ? "todo" : message.page==="dock" ? "dock" : "settings";
     if (state.view !== message.page) {
       state = {...state, view:message.page, history:["icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(message.page)?["home","desktopBeauty"]:["home","desktopBeauty","widgets"]};
       state.musicReturn=null;
@@ -1303,7 +1071,11 @@ const unsubscribe = bridge.subscribe((message) => {
   } else dispatch({ type: "host", message });
 });
 window.addEventListener("beforeunload", () => {
-  islandPreview.dispose();
+  clearTimeout(islandNotificationTimeout);unmountIslandNotifications();
+  interactionMotion.dispose();
+  wallpaperPreloader.dispose();rememberedHomeView=null;
+  unmountExpandedWidgets();
+  todoBoards.dispose();
   notices.dispose();
   modal.dispose();
   wallpaperPreviewIntent=null;
@@ -1313,11 +1085,11 @@ window.addEventListener("beforeunload", () => {
   closeMusicPage();
   musicDesktopController?.dispose();
   unmountSelect();
+  unmountChoice();
   unmountRanges();
   radialShortcut.dispose();
   clockTimer.dispose();
   carouselTimer.dispose();
-  resourceTimer.dispose();
   stopWallpaperPreview();
   if(wallpaperStatsId) {
     wallpaperStatsId="";

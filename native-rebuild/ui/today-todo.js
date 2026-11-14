@@ -1,6 +1,7 @@
 import {escapeHTML as h} from './dom.js';
 import {settingsFrame,settingsSelect,syncSettingsSelect} from './settings-frame.js';
 import {t} from './localization.js';
+import {todoBoardMarkup} from './todo-board.js';
 
 const materials=()=>[['solid',t('普通','Standard')],['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')]];
 export function todayTodoStatus(state) {
@@ -26,11 +27,12 @@ export function todayTodoNotice(state,{previousStatus,hasInlineStatus=false}={})
 export function todayTodoPage(state,tab='settings') {
   const description=t('在桌面管理今日待办，支持勾选、编辑和删除。','Manage today’s tasks on your desktop: complete, edit or delete them.');
   const disabled=state.todayTodoStatus==='saving',p=state.todayTodo;
-  const body=tab==='settings'?
+  const body=tab==='todo'?todoBoardMarkup('widget'):tab==='settings'?
     `<div class="setting-row"><label for="todayTodo-material">${t('材质设置','Material')}</label>${settingsSelect('todayTodo-material',t('材质设置','Material'),p.material,materials(),disabled)}</div>`+
     `<div class="reset-row"><button class="reset" data-open="calendar">${t('打开日历设置','Open calendar settings')}</button><button class="reset" data-action="todayTodo-reset" ${disabled?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<div class="settings-details"><h3>${t('功能说明','About this widget')}</h3><p>${h(description)}</p><p>${t('清单仅显示今天的待办，修改与日历同步。点击圆圈勾选完成，右键某条待办可编辑或删除。右键菜单中“新建待办”添加今天的事项，“新建清单”添加另一份独立桌面组件。各清单分别保存位置、大小和材质，关闭一份不影响其他清单。更多内容可用鼠标滚轮直接上下滑动，不显示翻页箭头和滚动条；也可拖拽边框放大，支持锁定位置。重复日程的预览项沿用日历的系列操作。','Only today’s tasks are shown and changes sync with the calendar. Check a circle to complete or right-click a task to edit or delete. New task adds an item for today. New checklist adds an independent desktop widget. Each checklist keeps its own position, size and material; closing one leaves the others open. Use the mouse wheel to scroll directly without paging arrows or a scrollbar. Drag the borders to enlarge, or lock the position. Projected repeating tasks use calendar series actions.')}</p></div>`;
-  return settingsFrame({title:t('待办清单','To-do list'),description,tab,body,status:todayTodoStatus(state),error:state.todayTodoStatus==='error',scope:'todayTodo'});
+  return settingsFrame({title:t('待办清单','To-do list'),description,tab,body,status:todayTodoStatus(state),error:state.todayTodoStatus==='error',scope:'todayTodo',
+    extraPages:[['todo',t('待办','To-dos')]]});
 }
 export function syncTodayTodoControls(root,state) {
   const disabled=state.todayTodoStatus==='saving';

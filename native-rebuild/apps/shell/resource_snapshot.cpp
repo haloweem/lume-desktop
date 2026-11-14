@@ -144,17 +144,17 @@ std::vector<ProcessMeta> ProcessList() {
     return result;
 }
 
-std::optional<std::uint64_t> ProcessCounter(DWORD pid, bool privateBytes) {
-    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (!process) return std::nullopt;
+void ProcessCounters(ProcessSample& sample) {
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, sample.pid);
+    if (!process) return;
     PROCESS_MEMORY_COUNTERS_EX counters{};
     counters.cb = sizeof(counters);
     const bool complete = GetProcessMemoryInfo(
         process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)) != FALSE;
     CloseHandle(process);
-    if (!complete) return std::nullopt;
-    return privateBytes ? std::optional<std::uint64_t>(counters.PrivateUsage)
-                         : std::optional<std::uint64_t>(counters.WorkingSetSize);
+    if (!complete) return;
+    sample.privateBytes=counters.PrivateUsage;
+    sample.workingSetBytes=counters.WorkingSetSize;
 }
 }
 
@@ -179,7 +179,7 @@ ResourceSnapshot Aggregate(const std::vector<ProcessSample>& samples) {
         auto process = original;
         process.role = ClassifyProcess(process.name, process.commandLine);
         snapshot.processes.push_back(process);
-        Add(GroupForRole(snapshot, process.role), process);
+        if(process.role!=ResourceRole::Other)Add(GroupForRole(snapshot, process.role), process);
         if (process.role != ResourceRole::Wallpaper) Add(snapshot.nonWallpaper, process);
         if (process.role == ResourceRole::WebViewGpu || process.gpuDedicatedBytes ||
             process.gpuSharedBytes)
@@ -215,8 +215,7 @@ ResourceSnapshot SampleProcessTree(DWORD rootPid) {
         sample.parentPid = process.parentPid;
         sample.name = process.name;
         sample.role = ClassifyProcess(sample.name, sample.commandLine);
-        sample.workingSetBytes = ProcessCounter(sample.pid, false);
-        sample.privateBytes = ProcessCounter(sample.pid, true);
+        ProcessCounters(sample);
         samples.push_back(std::move(sample));
     }
     return Aggregate(samples);

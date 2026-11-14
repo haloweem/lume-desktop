@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(LumeNativeRebuild VERSION 1.0.9 LANGUAGES CXX)
+project(LumeNativeRebuild VERSION 1.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,12 +30,17 @@ set(lume_acceptance_probe_targets
   lume-application-tray-menu-test
   lume-wallpaper-session-test
   lume-dynamic-island-test lume-desktop-dynamic-island-test
+  lume-island-almanac-test
+  lume-island-shape-mask-test lume-island-animation-updates-test lume-island-content-motion-test
   lume-today-todo-session-test lume-desktop-today-todo-test
   lume-dock-context-menu-test
+  lume-desktop-dock-settings-test
   lume-dock-interaction-test
+  lume-dock-snapshot-cache-test
   lume-dock-reflection-test
   lume-organizer-desktop-test
   lume-organizer-model-test
+  lume-organizer-collapse-test
   lume-dock-application-layer-test
   lume-launchpad-collection-test
   lume-diagnostics-collector-test
@@ -64,15 +69,25 @@ set(lume_acceptance_probe_targets
   lume-music-online_lyrics-test lume-music-online_provider-test lume-music-online_session-test
   lume-music-provider_credential_lease-test lume-music-desktop_controls-test lume-music-desktop_session-test
   lume-reminder-ledger-test lume-local_reminder_runtime-test lume-reminder_presenter-test
-  lume-todo-session-test lume-desktop-reminder-test lume-native-material-test lume-material-shader-test
-  lume-material-capture-compatibility-test
+  lume-todo-session-test lume-todo-board-test lume-desktop-reminder-test lume-native-material-test lume-material-shader-test
+  lume-material-capture-compatibility-test lume-material-capture-retirement-test lume-material-presentation-recovery-test
+  lume-mpv-process-controller-test
+  lume-material-capture-permission-test lume-material-capture-permission-session-test
+  lume-desktop-service-lifecycle-test lume-music-library-coordinator-test
+  lume-island-media-adapter-test lume-diagnostic-job-session-test
+  lume-notes-material-selection-test lume-music-material-menu-test
+  lume-desktop-island-notifications-test
+  lume-island-notification-audio-test
+  lume-external-lyrics-test
   lume-calendar-todo-editor-test lume-calendar-todo-material-test lume-calendar-todo-render-test
+  lume-todo-sheet-native-test lume-control-center-native-test
   lume-native-calendar-window-test lume-native-widget-window-test lume-native-clock-window-test lume-widget-layer-stress-test
-  lume-weather-session-test lume-weather-view-test lume-almanac-session-test lume-performance-session-test lume-spectrum-session-test
+  lume-weather-session-test lume-weather-view-test lume-almanac-session-test lume-performance-session-test lume-spectrum-session-test lume-spectrum-capture-test
   lume-organizer-session-test lume-organizer-icons-test lume-organizer-icon-host-test
   lume-organizer-interaction-test lume-organizer-motion-test lume-organizer-drop-target-test lume-widget-menu-native-test
   lume-desktop-icons-runtime-test lume-desktop-icons-session-test
   lume-taskbar-controller-test lume-taskbar-store-test lume-taskbar-runtime-test lume-taskbar-session-test lume-taskbar-payload-test lume-taskbar-frameworks-test
+  lume-taskbar-visibility-test lume-taskbar-port-test
   lume-diagnostic-report-test
   lume-minimize-animation-test lume-minimize-animation-runtime-test lume-minimize-animation-session-test
   lume-desktop-taskbar-test)

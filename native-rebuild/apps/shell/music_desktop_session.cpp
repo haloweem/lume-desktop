@@ -193,6 +193,26 @@ struct MusicDesktopSession::Impl {
         }
     }
 
+    void SetMaterialSelectionHandler(NativeMaterialSelectionHandler handler) {
+        materialSelection = std::move(handler);
+        if (!materialSelection) { controls.SetMaterialSelectionHandler({}); return; }
+        controls.SetMaterialSelectionHandler([this](bool frosted, HWND source) {
+            if (stopped || applying || !restored) return;
+            const auto request = materialSelection;
+            if (request) request({NativeMaterialTarget::MusicDesktop, frosted, {}, source});
+        });
+    }
+
+    std::optional<std::wstring> HandleMaterialSelection(const NativeMaterialRequest& request) {
+        if (stopped || applying || !restored || request.target != NativeMaterialTarget::MusicDesktop ||
+            !request.id.empty() || !request.source || !IsWindow(request.source) ||
+            controls.Handle() != request.source || !controls.Visible()) return {};
+        auto next = prefs;
+        next.frosted = request.frosted;
+        const bool saved = Apply(next);
+        return State(true, saved);
+    }
+
     std::wstring State(bool applied = false, bool saved = false) const {
         const bool registered = !stopped && controls.SystemMediaControlsEnabled();
         const bool mediaFailed = !stopped && !options.verification && restored &&
@@ -240,6 +260,7 @@ struct MusicDesktopSession::Impl {
     MusicDesktopSessionOptions options;
     CommandHandler commandHandler;
     std::function<void()> openSettings;
+    NativeMaterialSelectionHandler materialSelection;
     platform::windows::LocalSettingsFileStore localFiles;
     widget::PreferencesStore store;
     widget::Preferences prefs = widget::Defaults(MusicDesktopControls::Limits);
@@ -255,6 +276,12 @@ MusicDesktopSession::MusicDesktopSession(HINSTANCE instance, MusicDesktopSession
     : impl_(std::make_unique<Impl>(instance, std::move(options),
         std::move(commandHandler), std::move(openSettings))) {}
 MusicDesktopSession::~MusicDesktopSession() = default;
+void MusicDesktopSession::SetMaterialSelectionHandler(NativeMaterialSelectionHandler handler) { impl_->SetMaterialSelectionHandler(std::move(handler)); }
+std::optional<std::wstring> MusicDesktopSession::HandleMaterialSelection(const NativeMaterialRequest& request) {
+    auto result = impl_->HandleMaterialSelection(request);
+    if (result) impl_->NotifyChanged();
+    return result;
+}
 bool MusicDesktopSession::Restore() {
     const bool ok = impl_->Restore();
     impl_->NotifyChanged();

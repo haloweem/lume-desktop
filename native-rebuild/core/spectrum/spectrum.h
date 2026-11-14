@@ -62,6 +62,8 @@ std::size_t BarCount(float width,int barWidth,int barGap);
 inline constexpr std::size_t FrameSize=8192;
 // Magnitudes of the first FrameSize/2 FFT bins of a Hann-windowed frame.
 std::vector<float> Magnitudes(const std::vector<float>& frame);
+// Reuses output capacity on the audio worker's repeated frames.
+void Magnitudes(const std::vector<float>& frame,std::vector<float>& out);
 // The analysis follows cava's core, the engine of the reference look.
 // FFT bins [first,last] read by band `index`: log-spaced from 50 Hz to
 // 10 kHz, except that every band takes at least one bin of its own, so low

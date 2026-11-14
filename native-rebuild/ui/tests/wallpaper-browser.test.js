@@ -52,7 +52,8 @@ test(`wallpaper browser commands, snapshot updates and preview cleanup${mediaFix
       const isVideo=video && filename.endsWith(".mp4");
       if(!filename.endsWith(".mp4")) {
         imageRequests.push(url.href);
-        if(failPublicImages && url.hostname==="static.lumedesktop.com")return route.abort("failed");
+        if(failPublicImages && url.hostname==="static.lumedesktop.com" && url.pathname.includes('cdn-fallback') &&
+          !url.searchParams.has('lume_retry'))return route.abort("failed");
       }
       return route.fulfill({status:200,contentType:isVideo?"video/mp4":"image/webp",
         body:isVideo ? video : cover});
@@ -194,18 +195,19 @@ test(`wallpaper browser commands, snapshot updates and preview cleanup${mediaFix
     await page.waitForFunction(()=>{
       const image=document.querySelector(".preview.current img");
       return image && !image.hidden && image.naturalWidth>0 &&
-        image.src.startsWith("https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com/");
+        image.src.startsWith("https://static.lumedesktop.com/") && image.src.includes('lume_retry=1');
     });
-    assert.ok(imageRequests.some(url=>url.includes("cos.ap-nanjing.myqcloud.com") && url.includes("cdn-fallback")),
-      "home covers decode the approved origin response after a public CDN failure");
-    assert.equal(assetRequests.filter(url=>url.includes("cdn-fallback")).length,1,
-      "the preferred cover is requested once");
+    assert.ok(!imageRequests.some(url=>url.includes("cos.ap-nanjing.myqcloud.com")),
+      "cover recovery uses the public CDN without direct COS requests");
+    const recoveredRequests=assetRequests.filter(url=>url.includes("cdn-fallback")).length;
+    assert.ok(recoveredRequests>=2&&recoveredRequests<=3,
+      "a failed cover makes one bounded visible retry, alongside at most one preheater request");
     await page.getByRole("button",{name:"下一张",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".HomeHero [data-wallpaper-id]")?.dataset.wallpaperId==="official-2");
     await page.getByRole("button",{name:"上一张",exact:true}).click();
     await page.waitForFunction(()=>document.querySelector(".HomeHero [data-wallpaper-id]")?.dataset.wallpaperId==="official-1");
-    assert.equal(assetRequests.filter(url=>url.includes("cdn-fallback")).length,1,
-      "returning to a carousel cover reuses the session image cache");
+    assert.ok(assetRequests.filter(url=>url.includes("cdn-fallback")).length<=recoveredRequests+2,
+      "returning to a temporarily failing cover uses a bounded CDN retry");
     await page.locator('.HomeHero [data-wallpaper-id="official-1"]').click();
     await page.waitForSelector("[data-wallpaper-detail]");
     assert.deepEqual(await dropFiles(".wallpaper-detail-media"),
@@ -642,12 +644,12 @@ test(`wallpaper browser commands, snapshot updates and preview cleanup${mediaFix
       window.playsAfterFailure=window.previewPlayCount;
       window.emitWallpaper({});
     });
-    await page.waitForFunction(()=>document.querySelector("video").getAttribute("src")==="https://static.lumedesktop.com/forest.mp4");
-    assert.equal(await page.evaluate(()=>window.previewPlayCount),2,
-      "a failed preferred preview source retries once through the approved fallback");
+    await page.waitForFunction(()=>document.querySelector("video").getAttribute("src")===null);
+    assert.equal(await page.evaluate(()=>window.previewPlayCount),1,
+      "a failed CDN video stops when there is no alternate public source");
     await new Promise(resolve=>setTimeout(resolve,100));
-    assert.equal(await page.evaluate(()=>window.previewPlayCount),2,
-      "a successful fallback does not start a preview retry loop");
+    assert.equal(await page.evaluate(()=>window.previewPlayCount),1,
+      "an unchanged snapshot never restarts a failed preview in a retry loop");
     await page.evaluate(()=>{
       const staticItem={id:"official-static",title:"Static Full Image",kind:"image",
         thumbnail:"https://static.lumedesktop.com/static-thumb.jpg",
@@ -662,10 +664,10 @@ test(`wallpaper browser commands, snapshot updates and preview cleanup${mediaFix
     await page.selectOption("#wallpaper-kind","image");
     await page.locator('[data-wallpaper-id="official-static"]').click();
     await page.waitForFunction(()=>window.wallpaperCommands.some(command=>command.action==="preview" && command.id==="official-static"));
-    await page.waitForFunction(()=>document.querySelector(".wallpaper-detail-poster")?.getAttribute("src")==="https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com/static-full.jpg");
+    await page.waitForFunction(()=>document.querySelector(".wallpaper-detail-poster")?.getAttribute("src")==="https://static.lumedesktop.com/static-full.jpg");
     assert.equal(await page.locator("video").count(),0,"static detail does not create a video decoder");
     assert.equal(await page.locator(".wallpaper-detail-poster").getAttribute("src"),
-      "https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com/static-full.jpg");
+      "https://static.lumedesktop.com/static-full.jpg");
     assert.notEqual(await page.locator(".wallpaper-detail-poster").getAttribute("src"),
       "https://static.lumedesktop.com/static-thumb.jpg");
     assert.equal(await page.locator(".wallpaper-preview-button").count(),0);
@@ -676,10 +678,10 @@ test(`wallpaper browser commands, snapshot updates and preview cleanup${mediaFix
     assert.ok(await page.evaluate(()=>window.staticImageBeforeSnapshot===document.querySelector(".wallpaper-detail-poster")));
     await page.evaluate(()=>window.emitHost({version:1,type:"visibility",visible:false}));
     assert.equal(await page.locator(".wallpaper-detail-poster").getAttribute("src"),
-      "https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com/static-thumb.jpg","hidden detail releases full image lease");
+      "https://static.lumedesktop.com/static-thumb.jpg","hidden detail releases full image lease");
     assert.ok(await page.evaluate(()=>window.wallpaperCommands.some(command=>command.action==="endPreview")));
     await page.evaluate(()=>window.emitHost({version:1,type:"visibility",visible:true}));
-    await page.waitForFunction(()=>document.querySelector(".wallpaper-detail-poster")?.getAttribute("src")==="https://lume-12345-1444884137.cos.ap-nanjing.myqcloud.com/static-full.jpg");
+    await page.waitForFunction(()=>document.querySelector(".wallpaper-detail-poster")?.getAttribute("src")==="https://static.lumedesktop.com/static-full.jpg");
     if (process.env.LUME_UI_SCREENSHOT_DIR)
       await page.screenshot({path:path.join(process.env.LUME_UI_SCREENSHOT_DIR,"wallpaper-static-full.png")});
     await page.evaluate(()=>window.emitWallpaper({playerAvailable:false,

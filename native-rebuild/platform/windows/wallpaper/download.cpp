@@ -401,7 +401,7 @@ TransferResult Transfer(std::string urlText, const std::atomic<bool>& cancel, bo
     std::optional<ByteRange> range = std::nullopt) {
     auto url = ParseUrl(urlText, loopback);
     if (!url) return {false, false, 0, 0, "WALLPAPER_DOWNLOAD_URL_INVALID"};
-    Internet session(WinHttpOpen(L"Lume/1.0.9 (Windows wallpaper)",
+    Internet session(WinHttpOpen(L"Lume/1.1.3 (Windows wallpaper)",
         url->local ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
     if (!session.value) return {false, true, 0, 0, "WALLPAPER_HTTP_SESSION"};
@@ -581,7 +581,6 @@ TransferResult ParallelTransfer(const std::string& url, const std::atomic<bool>&
         }
     };
     std::vector<std::thread> workers;
-    for (unsigned i = 0; i < std::min<std::size_t>(kConnections, count); ++i) workers.emplace_back(worker);
     struct Join {
         std::vector<std::thread>& threads; std::atomic<bool>& stop; std::condition_variable& changed; std::mutex& mutex;
         ~Join() {
@@ -590,6 +589,17 @@ TransferResult ParallelTransfer(const std::string& url, const std::atomic<bool>&
             for (auto& thread : threads) if (thread.joinable()) thread.join();
         }
     } join{workers, stop, changed, mutex};
+    // Install cleanup before the first thread: a later construction failure
+    // must cancel and join workers that are already waiting for consumption.
+    workers.reserve(std::min<std::size_t>(kConnections, count));
+    for (unsigned i = 0; i < std::min<std::size_t>(kConnections, count); ++i) workers.emplace_back([&] {
+        try { worker(); }
+        catch (...) {
+            { std::lock_guard<std::mutex> lock(mutex); failed=true; stop=true;
+              failure.ok=false; failure.retry=false; }
+            changed.notify_all();
+        }
+    });
     TransferResult result;
     result.status = 206;
     while (consumed < count) {
@@ -695,12 +705,14 @@ ProtectedWriterFactory MakeProtectedWriterFactory(const std::string& libraryRoot
     } catch (...) { return {}; }
 }
 
-lume::wallpaper::CatalogResult FetchCatalog(const std::atomic<bool>& cancel, const CatalogFetchOptions& options) noexcept {
+lume::wallpaper::CatalogResult FetchCatalog(const std::atomic<bool>& cancel, const CatalogFetchOptions& options,
+    const VideoCatalogReady& videosReady) noexcept {
     try {
         lume::wallpaper::CatalogResult combined;
         std::set<std::string> seen;
         const std::array<std::string, 2> urls{options.videoUrl, options.imageUrl};
         for (std::size_t index = 0; index < urls.size(); ++index) {
+            if (options.videoOnly && index != 0) break;
             if (cancel.load()) { combined.error = "WALLPAPER_CANCELLED"; return combined; }
             std::string text;
             TransferResult transfer;
@@ -755,6 +767,7 @@ lume::wallpaper::CatalogResult FetchCatalog(const std::atomic<bool>& cancel, con
             for (auto& item : parsed.items) combined.items.push_back(std::move(item));
             if (index == 0) combined.videoCatalogLoaded = true;
             else combined.imageCatalogLoaded = true;
+            if (index == 0 && !options.videoOnly && videosReady) videosReady(combined);
         }
         return combined;
     } catch (...) { return {{}, "WALLPAPER_CATALOG_FETCH"}; }
@@ -763,6 +776,12 @@ lume::wallpaper::CatalogResult FetchCatalog(const std::atomic<bool>& cancel, con
 DownloadResult Download(const lume::wallpaper::CatalogItem& item, const std::string& destination,
     const std::atomic<bool>& cancel, const ProgressCallback& progress, const DownloadOptions& options) noexcept {
     fs::path staging;
+    // Declared before the writer's scope so every return/exception closes the
+    // exclusive encrypted file before attempting to remove its staging entry.
+    struct StagingCleanup {
+        fs::path& path;
+        ~StagingCleanup() { try { if(!path.empty()){std::error_code ignored;fs::remove(path,ignored);} } catch(...){} }
+    } stagingCleanup{staging};
     auto cleanup = [&] { if (!staging.empty()) { std::error_code ignored; fs::remove(staging, ignored); } };
     try {
         if (cancel.load()) return {false, true, {}, "WALLPAPER_CANCELLED", 0};
@@ -819,7 +838,7 @@ DownloadResult Download(const lume::wallpaper::CatalogItem& item, const std::str
         // An attempt that moved forward does not count against the budget: only
         // three attempts in a row that gain nothing end the download.
         for (unsigned stalls = 0; attempt <= 64; ++attempt) {
-            if (cancel.load()) { cleanup(); return {false, true, {}, "WALLPAPER_CANCELLED", received}; }
+            if (cancel.load()) { writer.reset(); cleanup(); return {false, true, {}, "WALLPAPER_CANCELLED", received}; }
             const auto before = received;
             if (parallel) {
                 transfer = ParallelTransfer(requestUrl, cancel, options.allowLoopbackForTests, item.sizeBytes, received, feed,

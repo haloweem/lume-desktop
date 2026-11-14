@@ -3,6 +3,7 @@
 #include "platform/windows/material/material_api.h"
 #include "platform/windows/material/widget_material_runtime.h"
 #include "todo_test_support.h"
+#include "material_release_wait.h"
 #include <dwmapi.h>
 #include <algorithm>
 #include <cstring>
@@ -197,7 +198,7 @@ int main(int argc,char**argv) {
         Click(editor.Handle(),108);Pump(100);
         Expect(!editor.IsOpen()&&IsWindowEnabled(owner)&&GetFocus()==owner,"close button restores owner and focus");
         Expect(!FindWindowW(L"LumeTodoCssShadow",nullptr),"closing popup destroys cached shadow");
-        if(stats)Expect(stats(&status)&&status.users==0&&status.devices==0&&status.captures==0,"last editor lease releases device and captures");
+        if(stats)Expect(material_test::Released(stats,status,Pump),"last editor lease releases device and captures");
     }
     int writes=0,closes=0;
     auto noSave=[&](const lume::todo::Command&){++writes;return lume::todo::CommandResult{};};
@@ -234,7 +235,7 @@ int main(int argc,char**argv) {
         Expect(!IsWindow(old)&&!editor.IsOpen()&&IsWindowEnabled(owner),"close leaves no window and re-enables owner");
         Expect(writes==0&&closes==action+1,"closing cancels without writing and notifies exactly once");
         Expect(!FindWindowW(L"LumeTodoCssShadow",nullptr),"close leaves no shadow");
-        if(stats)Expect(stats(&status)&&status.users==0&&status.devices==0&&status.captures==0,
+        if(stats)Expect(material_test::Released(stats,status,Pump),
             "pending and ready close release all material resources");
     }
     if(!fallback) {
@@ -268,7 +269,7 @@ int main(int argc,char**argv) {
             Expect(total>500&&changed<total/100,"panel pixels exclude ancestor foreground from shared scene");
         }
         editor.Close();calendarMaterial.Detach();DestroyWindow(anchor);Pump(100);
-        Expect(stats(&status)&&status.users==0&&status.devices==0&&status.captures==0,
+        Expect(material_test::Released(stats,status,Pump),
             "anchored hierarchy releases all material resources");
     }
     Expect(firstShows>=8,"first-show observer covered editor and picker");

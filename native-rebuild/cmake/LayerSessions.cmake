@@ -41,6 +41,7 @@ add_library(lume-music-accounts STATIC
   platform/windows/music_provider_crypto.cpp
   platform/windows/music_provider_credentials.cpp
   platform/windows/music_providers/netease_account.cpp
+  platform/windows/music_providers/netease_playback.cpp
   platform/windows/music_providers/qq_account.cpp
   platform/windows/music_providers/kugou_account.cpp
 )
@@ -105,7 +106,7 @@ target_compile_definitions(lume-performance-session PRIVATE UNICODE _UNICODE WIN
 target_link_libraries(lume-performance-session PUBLIC lume-performance-view lume-platform-windows)
 lume_enable_native_warnings(lume-performance-session)
 
-add_library(lume-calendar-session STATIC apps/shell/calendar_session.cpp apps/shell/todo_session.cpp)
+add_library(lume-calendar-session STATIC apps/shell/calendar_session.cpp apps/shell/todo_session.cpp apps/shell/todo_board.cpp)
 target_include_directories(lume-calendar-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-calendar-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(lume-calendar-session PUBLIC lume-native-calendar lume-platform-windows PRIVATE lume-widget-ui)
@@ -131,25 +132,73 @@ include(cmake/Dock.cmake)
 
 include(cmake/DynamicIsland.cmake)
 
+add_library(lume-material-permission-session STATIC apps/shell/material_capture_permission_session.cpp)
+target_include_directories(lume-material-permission-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-material-permission-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(lume-material-permission-session PRIVATE lume-platform-windows runtimeobject user32)
+lume_enable_native_warnings(lume-material-permission-session)
+
 add_library(lume-today-todo-session STATIC apps/shell/today_todo_session.cpp platform/windows/today_todo/today_todo_view.cpp)
 target_include_directories(lume-today-todo-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-today-todo-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(lume-today-todo-session PUBLIC lume-native-calendar lume-widget-window lume-platform-windows)
 lume_enable_native_warnings(lume-today-todo-session)
 
-add_library(lume-desktop-application STATIC apps/shell/desktop_application.cpp apps/shell/diagnostic_operations.cpp apps/shell/diagnostic_report.cpp apps/shell/self_check.cpp apps/shell/island_adapter.cpp apps/shell/music_session.cpp apps/shell/music_background_session.cpp apps/shell/resource_snapshot.cpp platform/windows/application_tray.cpp
+add_library(lume-desktop-application STATIC apps/shell/desktop_application.cpp apps/shell/diagnostic_operations.cpp apps/shell/island_adapter.cpp apps/shell/music_session.cpp apps/shell/music_background_session.cpp platform/windows/application_tray.cpp
   platform/windows/shell_activation.cpp platform/windows/music_system_fonts.cpp apps/shell/music_font_asset_session.cpp)
+
+add_library(lume-desktop-service-lifecycle STATIC apps/shell/desktop_service_lifecycle.cpp)
+target_include_directories(lume-desktop-service-lifecycle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(lume-desktop-service-lifecycle PUBLIC cxx_std_17)
+lume_enable_native_warnings(lume-desktop-service-lifecycle)
+
+add_library(lume-music-library-coordinator STATIC apps/shell/music_library_coordinator.cpp)
+target_include_directories(lume-music-library-coordinator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(lume-music-library-coordinator PUBLIC cxx_std_17)
+lume_enable_native_warnings(lume-music-library-coordinator)
+
+add_library(lume-wallpaper-diagnostics STATIC
+  apps/shell/wallpaper_resource_monitor.cpp apps/shell/wallpaper_resource_history.cpp
+  platform/windows/wallpaper_resource_sampler.cpp)
+target_include_directories(lume-wallpaper-diagnostics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-wallpaper-diagnostics PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+target_link_libraries(lume-wallpaper-diagnostics PRIVATE pdh psapi)
+lume_enable_native_warnings(lume-wallpaper-diagnostics)
+
+add_library(lume-diagnostic-report STATIC
+  apps/shell/diagnostic_report.cpp apps/shell/self_check.cpp apps/shell/resource_snapshot.cpp)
+target_include_directories(lume-diagnostic-report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-diagnostic-report PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+target_link_libraries(lume-diagnostic-report PRIVATE lume-taskbar-windows lume-platform-windows lume-wallpaper-diagnostics
+  psapi dxgi d3d11 bcrypt shcore wevtapi version shell32 ole32)
+lume_enable_native_warnings(lume-diagnostic-report)
+
+add_library(lume-diagnostic-job-session STATIC apps/shell/diagnostic_job_session.cpp)
+target_include_directories(lume-diagnostic-job-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-diagnostic-job-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(lume-diagnostic-job-session PRIVATE lume-diagnostic-report user32)
+lume_enable_native_warnings(lume-diagnostic-job-session)
+
+add_library(lume-island-media-adapter STATIC apps/shell/island_media_adapter.cpp)
+target_include_directories(lume-island-media-adapter PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-island-media-adapter PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_features(lume-island-media-adapter PUBLIC cxx_std_17)
+lume_enable_native_warnings(lume-island-media-adapter)
 
 add_library(lume-wallpaper-session STATIC apps/shell/wallpaper_session.cpp platform/windows/wallpaper/download.cpp)
 target_include_directories(lume-wallpaper-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-wallpaper-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-wallpaper-session PUBLIC lume-platform-windows PRIVATE ole32 shell32 wtsapi32 dwmapi winhttp bcrypt crypt32)
+target_link_libraries(lume-wallpaper-session PUBLIC lume-platform-windows lume-wallpaper-diagnostics PRIVATE ole32 shell32 wtsapi32 dwmapi winhttp bcrypt crypt32)
 lume_enable_native_warnings(lume-wallpaper-session)
 target_include_directories(lume-desktop-application PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-desktop-application PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(lume-desktop-application PUBLIC lume-calendar-session lume-today-todo-session lume-performance-session lume-spectrum-session lume-almanac-session lume-weather-session lume-organizer-session lume-desktop-icons-session lume-taskbar-session lume-minimize-animation-session lume-wallpaper-session lume-native-clock lume-page-window lume-native-reminder lume-application-settings-session lume-account-session lume-update-notification-session lume-music-host-client lume-music-local lume-music-preferences lume-music-accounts lume-music-score-source PRIVATE shell32 ole32 psapi dxgi d3d11 bcrypt shcore wevtapi version)
+target_link_libraries(lume-desktop-application PUBLIC lume-calendar-session lume-today-todo-session lume-performance-session lume-spectrum-session lume-almanac-session lume-weather-session lume-organizer-session lume-desktop-icons-session lume-taskbar-session lume-minimize-animation-session lume-wallpaper-session lume-native-clock lume-page-window lume-native-reminder lume-application-settings-session lume-account-session lume-update-notification-session lume-music-host-client lume-music-local lume-music-preferences lume-music-accounts lume-music-score-source PRIVATE shell32 ole32 bcrypt)
 lume_enable_native_warnings(lume-desktop-application)
 target_link_libraries(lume-desktop-application PUBLIC lume-music-online)
 target_link_libraries(lume-desktop-application PUBLIC lume-radial-session lume-dock-session)
 target_link_libraries(lume-desktop-application PUBLIC lume-dynamic-island)
+target_link_libraries(lume-desktop-application PRIVATE lume-material-permission-session)
+target_link_libraries(lume-desktop-application PRIVATE lume-diagnostic-job-session lume-island-media-adapter)
+target_link_libraries(lume-desktop-application PRIVATE lume-desktop-service-lifecycle)
+target_link_libraries(lume-desktop-application PRIVATE lume-music-library-coordinator)
 target_link_libraries(lume-desktop-application PUBLIC lume-music-library lume-music-desktop-session lume-notes-session)

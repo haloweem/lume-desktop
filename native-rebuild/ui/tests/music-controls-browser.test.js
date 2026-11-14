@@ -52,7 +52,7 @@ test('music home controls preserve editors, select collections and expose full-r
               action==='playlist'&&fields.id==='owned'?tracks.slice(0,10):tracks;
             const message={version:1,type:'music-online-state',request:fields.request,provider:fields.provider,
               action,status:action==='like'?'error':'ready',error:action==='like'?'unsupported':'',
-              data:{tracks:selected,playlists,recommendations,more:false}};
+              data:{tracks:selected,playlists,recommendations,more:false,...(action==='likes'?{likedIds:[]}: {})}};
             if(!validMusicOnlineMessage(message))throw new Error('Invalid online fixture');
             online.receive(message);
             return true;
@@ -115,6 +115,7 @@ test('music home controls preserve editors, select collections and expose full-r
       await page.locator('[data-music-action="back-home"]').click();
       const before=await page.evaluate(()=>commands.length);
       if(width>=768) {
+        assert.equal(await first.locator('[data-music-action="like"]').isEnabled(),true,'confirmed empty likes allow the row action');
         const like=await first.locator('[data-music-action="like"]').boundingBox();
         await page.mouse.click(like.x+like.width/2,like.y+like.height/2);
         assert.equal(await page.evaluate(()=>commands.length),before,'unavailable row actions do not click through to playback');

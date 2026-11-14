@@ -1,4 +1,5 @@
 #include "platform/windows/dynamic_island/system_media_session.h"
+#include "platform/windows/dynamic_island/media_timeline.h"
 #include <windows.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -130,11 +131,14 @@ struct SystemMediaSession::Impl {
         if (key != artworkKey || artwork.empty()) { artworkKey = key; artwork = Thumbnail(properties); }
         media.artwork = artwork;
         media.playing = status == Status::Playing;
-        media.duration = std::chrono::duration<double>(timeline.EndTime() - timeline.StartTime()).count();
-        double position = std::chrono::duration<double>(timeline.Position() - timeline.StartTime()).count();
-        // Players report the position only on changes; advance it while playing.
-        if (media.playing) position += std::chrono::duration<double>(winrt::clock::now() - timeline.LastUpdatedTime()).count();
-        media.position = media.duration > 0 ? std::clamp(position, 0.0, media.duration) : std::max(0.0, position);
+        const auto reading = ReadMediaTimeline(
+            std::chrono::duration<double>(timeline.EndTime() - timeline.StartTime()).count(),
+            std::chrono::duration<double>(timeline.Position() - timeline.StartTime()).count(),
+            std::chrono::duration<double>(winrt::clock::now() - timeline.LastUpdatedTime()).count(),
+            timeline.LastUpdatedTime().time_since_epoch().count() > 0, media.playing);
+        media.duration = reading.duration;
+        media.position = reading.position;
+        media.positionKnown = reading.known;
         return media;
     }
 
@@ -176,22 +180,29 @@ std::optional<dynamic_island::Media> SystemMediaSession::Snapshot() {
     impl_->requested = GetTickCount64();
     auto media = impl_->latest;
     // Read up to a second ago: carry a playing position forward to now.
-    if (media && media->playing && media->duration > 0)
-        media->position = std::min(media->duration, media->position + static_cast<double>(impl_->requested - impl_->latestAt) / 1000);
+    if (media && media->playing && media->positionKnown)
+        media->position = std::min(media->duration > 0 ? media->duration : 604800.0,
+            media->position + static_cast<double>(impl_->requested - impl_->latestAt) / 1000);
     // QQ Music and the like publish no timeline: read it from their window.
-    if (media && media->duration <= 0)
+    if (media && !media->positionKnown)
         if (const auto reading = position_.Read(media->app, media->title, media->playing)) {
             media->position = reading->position;
             media->duration = reading->duration;
+            media->positionKnown = true;
         }
     return media;
 }
 void SystemMediaSession::Control(dynamic_island::Action action) {
-    { std::lock_guard lock(impl_->mutex); impl_->controls.push_back({action, -1}); }
+    { std::lock_guard lock(impl_->mutex);
+      if(impl_->stop||impl_->controls.size()>=32)return;
+      impl_->controls.push_back({action, -1}); }
     impl_->wake.notify_all();
 }
 void SystemMediaSession::SetPlaying(bool playing) {
-    { std::lock_guard lock(impl_->mutex); impl_->controls.push_back({dynamic_island::Action::Toggle, playing ? 1 : 0}); }
+    { std::lock_guard lock(impl_->mutex);
+      if(impl_->stop)return;
+      if(!impl_->controls.empty()&&impl_->controls.back().play!=-1)impl_->controls.back().play=playing?1:0;
+      else if(impl_->controls.size()<32)impl_->controls.push_back({dynamic_island::Action::Toggle, playing ? 1 : 0}); }
     impl_->wake.notify_all();
 }
 }

@@ -32,6 +32,7 @@ add_library(lume-core STATIC
   core/todo/todo_repository.cpp
   core/calendar/calendar_date.cpp
   core/calendar/lunar_calendar.cpp
+  core/todo/todo_sheet.cpp
   core/calendar/calendar_model.cpp
   core/calendar/calendar_settings.cpp
   core/calendar/calendar_controller.cpp

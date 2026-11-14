@@ -195,7 +195,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     </div>
     <div class="application-settings__panel application-settings__about" data-settings-panel="about" hidden>
     <div class="application-settings__brand"><div class="application-settings__logo">${LUME_LOGO}</div><div class="application-settings__brand-name">LumeDesktop</div>
-    <div class="application-settings__version"><span data-settings-text="version"></span> 1.0.9</div>
+    <div class="application-settings__version"><span data-settings-text="version"></span> 1.1.3</div>
     <div class="application-settings__update-actions">${['checkUpdate','downloadUpdate','installUpdate'].map(action=>`<button type="button" data-settings-action="${action}">${action==='checkUpdate'?REFRESH_ICON:`<span class="application-settings__glyph" aria-hidden="true">${action==='downloadUpdate'?'&#xE896;':'&#xE74E;'}</span>`}<span data-settings-text="${action}"></span></button>`).join('')}</div>
     <div data-update-status role="status" aria-live="polite"></div><progress data-update-progress max="100" hidden></progress></div>
     <div class="application-settings__copyright">Copyright 2026 LumeDesktop · <button type="button" class="application-settings__legal" data-settings-legal data-settings-text="agreement"></button></div><div class="application-settings__legal-text" data-settings-legal-text hidden></div></div></div>

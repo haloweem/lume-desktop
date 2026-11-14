@@ -1,4 +1,7 @@
 import {enterMusic, leaveMusic} from "./music-navigation.js";
+import {initialIslandState,reduceIslandState,unavailableIslandState} from './island-state.js';
+import {initialSystemFeatureState,reduceSystemFeatureState,unavailableSystemFeatureState} from './system-feature-state.js';
+export {taskbarDisplayedPreferences} from './system-feature-state.js';
 
 const emptyWallpaperEngagement = (revision = -1) => ({
   revision,id:"",status:"idle",likes:null,downloads:null,liked:false,canLike:false,busy:false,error:"",
@@ -51,25 +54,12 @@ export const initialState = () => ({
   organizerError:"",
   organizerLoadStatus:"fresh",
   organizerMaterialStatus:"inactive",
-  icons:{enabled:false,running:false,enableAutoHide:false,autoHideDelay:5,showIconsOnAnyInput:true,
-    manuallyHidden:false,desktops:0,autoHidden:0,pendingRestores:0},
-  iconsStatus:"loading",iconsError:"",iconsLoadStatus:"fresh",
-  taskbar:{enabled:false,running:false,transparentTaskbar:true,autoHideTaskbar:false,hideBehavior:'auto-hide',
-    applying:false,pendingRecovery:false,taskbars:0,mode:"unavailable"},
-  taskbarStatus:"loading",taskbarError:"",taskbarLoadStatus:"fresh",taskbarRevision:0,taskbarRequestRevision:null,taskbarPending:null,
-  minimize:{enabled:false,running:false,durationMs:450,restore:true,launch:true,multiMonitor:false,
-    unhideTaskbar:true,unhideDurationMs:450,engine:"modern",x64:false,x86:false,hosts:0,hooks:0,workers:0,systemError:0},
-  minimizeStatus:"loading",minimizeError:"",minimizeLoadStatus:"fresh",
+  ...initialSystemFeatureState(),
   radial:{enabled:false,running:false,visible:false,material:"liquid-glass",shortcutCode:9},
   radialStatus:"loading",radialError:"",radialLoadStatus:"fresh",radialMaterialStatus:"inactive",
-  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
+  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,showRunning:true,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
   dockStatus:"loading",dockError:"",dockLoadStatus:"fresh",dockMaterialStatus:"inactive",
-  dynamicIsland:{enabled:false,running:false,locked:false,expanded:false,focusing:false,finished:false,remaining:0,
-    hideFullscreen:true,topmost:false,hover:false,hoverDelayMs:320,animationSpeed:'normal',bounce:'normal',autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,screen:1,screens:[1]},
-  dynamicIslandStatus:"loading",dynamicIslandError:"",dynamicIslandLoadStatus:"fresh",
-  dynamicIslandPreview:null,
-  dynamicIslandPreviewMode:'compact',
-  islandCompactSide:'left',
+  ...initialIslandState(),
   wallpaper:{revision:-1,status:"idle",error:"",loadStatus:"fresh",playerAvailable:false,
     catalogStatus:"idle",catalogError:"",catalog:[],library:[],likedIds:[],displays:[],
     download:{id:"",status:"idle",received:0,total:0,error:""},pauseFullscreen:false},
@@ -83,12 +73,6 @@ export const initialState = () => ({
   fullscreen: false,
   visibilityGeneration: 0,
 });
-// A requested switch position is immediate feedback, not confirmation that
-// Windows applied it. Keep the last confirmed host snapshot until settlement.
-export function taskbarDisplayedPreferences(state) {
-  return state.taskbarStatus==='saving' && state.taskbarPending
-    ? {...state.taskbar,...state.taskbarPending} : state.taskbar;
-}
 export function organizerDisplayedEnabled(state) {
   return state.organizerStatus==='saving' && typeof state.organizerPending==='boolean'
     ? state.organizerPending : state.organizer.enabled;
@@ -120,6 +104,8 @@ const views = [
   "unavailable",
 ];
 export function reduce(state, event) {
+  const featureState=reduceIslandState(state,event) ?? reduceSystemFeatureState(state,event);
+  if(featureState!==undefined)return featureState;
   switch (event.type) {
     case "wallpaper-catalog-requested":
       return {...state,wallpaperCatalogRequested:true};
@@ -196,19 +182,9 @@ export function reduce(state, event) {
           }
         : state;
     case "request":
-      if(event.scope==="dynamicIsland")return {...state,dynamicIslandStatus:"saving"};
       if(event.scope==="radial")return {...state,radialStatus:"saving"};
       if(event.scope==="dock")return {...state,dockStatus:"saving"};
       if(event.scope==="wallpaper") return {...state,wallpaperStatus:"saving",wallpaperRequestRevision:state.wallpaper.revision};
-      if(event.scope==="taskbar") {
-        const property={enabled:'enabled',transparent:'transparentTaskbar',autoHide:'autoHideTaskbar'}[event.key];
-        const pending=event.key==='reset'?{transparentTaskbar:true,autoHideTaskbar:false,hideBehavior:'auto-hide'}:
-          event.key==='hideBehavior'&&['auto-hide','fully-hidden'].includes(event.value)?{hideBehavior:event.value}:
-          property&&typeof event.value==='boolean'?{[property]:event.value}:null;
-        return {...state,taskbarStatus:"saving",taskbarRequestRevision:state.taskbarRevision,taskbarPending:pending};
-      }
-      if(event.scope==="minimize")return {...state,minimizeStatus:"saving"};
-      if(event.scope==="icons")return {...state,iconsStatus:"saving"};
       if (event.scope === "weather") return {...state,weatherStatus:"saving"};
       if (event.scope === "organizer") return {...state,organizerStatus:"saving",
         organizerPending:event.key==='enabled'&&typeof event.value==='boolean'?event.value:null};
@@ -219,14 +195,10 @@ export function reduce(state, event) {
       if (event.scope === "calendar") return { ...state, calendarStatus:"saving" };
       return { ...state, status: "saving" };
     case "unavailable":
-      if(event.scope==="dynamicIsland")return {...state,dynamicIslandStatus:"unavailable"};
       if(event.scope==="radial")return {...state,radialStatus:"unavailable"};
       if(event.scope==="dock")return {...state,dockStatus:"unavailable"};
       if(event.scope==="wallpaper")return {...state,wallpaperStatus:"unavailable",wallpaperRequestRevision:null,
         wallpaperEngagement:emptyWallpaperEngagement(state.wallpaperEngagement.revision)};
-      if(event.scope==="taskbar")return {...state,taskbarStatus:"unavailable",taskbarRequestRevision:null,taskbarPending:null};
-      if(event.scope==="minimize")return {...state,minimizeStatus:"unavailable"};
-      if(event.scope==="icons")return {...state,iconsStatus:"unavailable"};
       if (event.scope === "weather") return {...state,weatherStatus:"unavailable"};
       if (event.scope === "organizer") return {...state,organizerStatus:"unavailable",organizerPending:null};
       if (event.scope === "almanac") return {...state,almanacStatus:"unavailable"};
@@ -234,25 +206,16 @@ export function reduce(state, event) {
       if (event.scope === "performance") return {...state,performanceStatus:"unavailable",resourceSnapshot:null};
       if (event.scope === "spectrum") return {...state,spectrumStatus:"unavailable"};
       if (event.scope === "calendar") return { ...state, calendarStatus:"unavailable" };
-      if (event.scope === "all") return { ...state, status:"unavailable",dynamicIslandStatus:"unavailable",radialStatus:"unavailable",dockStatus:"unavailable",calendarStatus:"unavailable",performanceStatus:"unavailable",resourceSnapshot:null,spectrumStatus:"unavailable",almanacStatus:"unavailable",todayTodoStatus:"unavailable",weatherStatus:"unavailable",organizerStatus:"unavailable",iconsStatus:"unavailable",taskbarStatus:"unavailable",taskbarRequestRevision:null,taskbarPending:null,minimizeStatus:"unavailable",wallpaperStatus:"unavailable",wallpaperRequestRevision:null,
+      if (event.scope === "all") return { ...state, status:"unavailable",...unavailableIslandState(),...unavailableSystemFeatureState(),radialStatus:"unavailable",dockStatus:"unavailable",calendarStatus:"unavailable",performanceStatus:"unavailable",resourceSnapshot:null,spectrumStatus:"unavailable",almanacStatus:"unavailable",todayTodoStatus:"unavailable",weatherStatus:"unavailable",organizerStatus:"unavailable",wallpaperStatus:"unavailable",wallpaperRequestRevision:null,
         organizerPending:null,wallpaperEngagement:emptyWallpaperEngagement(state.wallpaperEngagement.revision) };
       return { ...state, status: "unavailable" };
     case "host": {
       const m = event.message;
-      if(m.type==='dynamicIsland-preview')return {...state,dynamicIslandPreview:m};
-      if(m.type==='dynamicIsland-state') {
-        const {enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material}=m;
-        const failed=!!m.error||m.loadStatus==='failed';
-        const pending=state.dynamicIslandStatus==='saving'&&m.result==='snapshot'&&!failed;
-        return {...state,dynamicIsland:{enabled,running,locked,expanded,focusing,finished,remaining,hideFullscreen,topmost,hover,autoHide,size,material,shape:m.shape||'capsule',leftWidget:m.leftWidget??0,rightWidget:m.rightWidget??0,screen:m.screen??1,screens:m.screens??[1],hoverDelayMs:m.hoverDelayMs??320,animationSpeed:m.animationSpeed??'normal',bounce:m.bounce??'normal'},
-          dynamicIslandError:m.error,dynamicIslandLoadStatus:m.loadStatus,
-          dynamicIslandStatus:pending?'saving':failed?'error':m.saved?'saved':m.loadStatus==='recovered'?'recovered':'idle'};
-      }
       if(m.type==="dock-state") {
         const failed=!!m.error||m.loadStatus==="failed";
         const pending=state.dockStatus==="saving"&&m.result==="snapshot"&&!failed;
         const {enabled,running,material,reflection,systemTray,iconScale,position,bottomOffset,iconSpacing,pinned,added}=m;
-        return {...state,dock:{enabled,running,material,reflection,systemTray,iconScale,position,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
+        return {...state,dock:{enabled,running,material,reflection,showRunning:m.showRunning??true,systemTray,iconScale,position,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
           dockError:m.error,dockLoadStatus:m.loadStatus,dockMaterialStatus:m.materialStatus,
           dockStatus:pending?"saving":failed?"error":m.saved?"saved":m.loadStatus==="recovered"?"recovered":"idle"};
       }
@@ -300,40 +263,6 @@ export function reduce(state, event) {
           wallpaperStatus:failed?"error":pending?"saving":"idle",
           wallpaperRequestRevision:pending?state.wallpaperRequestRevision:null,
           wallpaperDisplay:selected?.id || ""};
-      }
-      if(m.type==="taskbar-state") {
-        if(m.revision<state.taskbarRevision)return state;
-        const failed=!!m.error || m.loadStatus==="failed" || m.pendingRecovery || m.enabled!==m.running;
-        const pending=m.applying || (state.taskbarRequestRevision!==null && m.revision<=state.taskbarRequestRevision && !failed);
-        const completed=state.taskbarRequestRevision!==null && m.revision>state.taskbarRequestRevision && !pending && !failed && m.loadStatus==="loaded";
-        const {enabled,running,transparentTaskbar,autoHideTaskbar,hideBehavior,applying,pendingRecovery,taskbars,mode}=m;
-        // Hold the confirmed values only while the page's own request is in
-        // flight. A host-side apply (startup Restore) reports the real
-        // preferences; holding the page placeholder would show an enabled
-        // feature as off until the apply completes.
-        const preferences=m.applying && state.taskbarRequestRevision!==null ? {enabled:state.taskbar.enabled,transparentTaskbar:state.taskbar.transparentTaskbar,autoHideTaskbar:state.taskbar.autoHideTaskbar,hideBehavior:state.taskbar.hideBehavior} : {enabled,transparentTaskbar,autoHideTaskbar,hideBehavior};
-        return {...state,taskbar:{...preferences,running,applying,pendingRecovery,taskbars,mode},
-          taskbarRevision:m.revision,taskbarRequestRevision:pending?state.taskbarRequestRevision:null,
-          taskbarPending:pending?state.taskbarPending:null,
-          taskbarError:m.error,taskbarLoadStatus:m.loadStatus,
-          taskbarStatus:pending?"saving":failed?"error":completed?"applied":"idle"};
-      }
-      if(m.type==="minimize-state") {
-        const failed=!!m.error || m.loadStatus==="failed" || m.enabled!==m.running;
-        const pending=state.minimizeStatus==="saving" && m.result==="snapshot" && !failed;
-        const {enabled,running,durationMs,restore,launch,multiMonitor,unhideTaskbar,unhideDurationMs,engine,
-          x64,x86,hosts,hooks,workers,systemError}=m;
-        return {...state,minimize:{enabled,running,durationMs,restore,launch,multiMonitor,unhideTaskbar,unhideDurationMs,engine,x64,x86,hosts,hooks,workers,systemError},
-          minimizeError:m.error,minimizeLoadStatus:m.loadStatus,
-          minimizeStatus:pending?"saving":failed?"error":m.saved?"saved":m.loadStatus==="recovered"?"recovered":"idle"};
-      }
-      if(m.type==="icons-state") {
-        const failed=!!m.error || m.loadStatus==="failed" || m.enabled!==m.running;
-        const pending=state.iconsStatus==="saving"&&m.result==="snapshot"&&!failed;
-        const {enabled,running,enableAutoHide,autoHideDelay,showIconsOnAnyInput,manuallyHidden,desktops,autoHidden,pendingRestores}=m;
-        return {...state,icons:{enabled,running,enableAutoHide,autoHideDelay,showIconsOnAnyInput,manuallyHidden,desktops,autoHidden,pendingRestores},
-          iconsError:m.error,iconsLoadStatus:m.loadStatus,
-          iconsStatus:pending?"saving":failed?"error":m.saved?"saved":m.loadStatus==="recovered"?"recovered":"idle"};
       }
       if(m.type==="organizer-state") {
         const pending=state.organizerStatus==="saving"&&m.result==="snapshot";

@@ -5,11 +5,14 @@
 #include <string_view>
 #include <vector>
 namespace lume::organizer {
-inline constexpr std::size_t MaxItems=120,MaxCollections=64,MaxStateBytes=1024*1024,MaxTitleLength=80,MaxDismissed=240;
+inline constexpr std::size_t MaxCollections=64,MaxTitleLength=80;
+// Bound serialized input/output resources for damaged data, not item counts.
+inline constexpr std::size_t MaxStateBytes=32*1024*1024;
 inline constexpr const char* DefaultCollectionId="default";
 enum class ItemKind { File,Folder,Shortcut };
 enum class Mode { Expanded,Collapsed };
 enum class Layout { Icons,List };
+enum class Accent { None,Blue,Green,Amber,Rose,Purple };
 enum class Change { Invalid,Unchanged,Changed,Limit };
 enum class DesktopRole { None,Applications,Files };
 struct Bounds { int x=0,y=0,width=420,height=392; };
@@ -26,6 +29,7 @@ struct Collection {
     bool enabled=true,locked=false,frosted=true;
     Mode mode=Mode::Expanded;
     Layout layout=Layout::Icons;
+    Accent accent=Accent::None; // A tab's own marker, independent of its host's appearance.
     int iconScale=70; // New collections default to 70%; saved sizes remain unchanged.
     DesktopRole desktopRole=DesktopRole::None;
     std::vector<Item> items;
@@ -34,7 +38,7 @@ struct Collection {
     // Desktop sync does not add them again while they stay on the desktop.
     std::vector<std::string> dismissed;
     // Tab grouping. A host (empty parent) owns geometry, icon size and material;
-    // a tab names its host and only contributes title and items.
+    // a tab names its host and contributes its own title, accent and items.
     // Tabs are ordered by their position in State::collections. A host's
     // active is empty or the id of the visible tab (itself or a child).
     std::string parent,active;

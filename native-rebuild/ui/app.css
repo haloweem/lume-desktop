@@ -1,4 +1,5 @@
 :root {
+  --lume-page-background: #121212;
   /* Original DesktopWidgetDetails Root / Panel navigation insets. */
   --widget-page-top: clamp(50px, 5.2vh, 64px);
   --widget-page-inline: clamp(24px, 4vw, 72px);
@@ -27,7 +28,7 @@ body,
   position: relative;
   /* Apply the corner coverage once after compositing every page layer. */
   clip-path: inset(0 round 34px);
-  background: #000;
+  background: var(--lume-page-background);
   isolation: isolate;
 }
 #app.fullscreen {
@@ -74,7 +75,7 @@ svg {
   padding: clamp(50px, 5.2vh, 64px) clamp(24px, 4vw, 72px)
     clamp(4px, 0.8vh, 10px);
   color: #fff;
-  background: #000;
+  background: var(--lume-page-background);
   overflow: hidden;
 }
 @media (max-height: 760px) {
@@ -325,7 +326,7 @@ svg {
   overflow: auto;
   padding: 20px var(--settings-inline) 28px;
   padding-top: calc(var(--widget-page-top) - 8px);
-  background: #000;
+  background: var(--lume-page-background);
 }
 :where(
   .CardGrid,
@@ -517,29 +518,6 @@ svg {
 .settings-details {line-height:1.7;margin-inline:0;text-align:left;}
 .settings-details h3 {font-size:18px;margin:0 0 .5em;font-weight:500;}
 .settings-details p {margin:0 0 1em;}
-.resource-overview {margin:0 0 28px;padding:16px;border:1px solid rgba(255,255,255,.12);background:#151515;}
-.resource-overview-heading {display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px;}
-.resource-overview-heading h3 {margin:0;font-size:18px;font-weight:600;}
-.resource-coverage {color:rgba(255,255,255,.45);font-size:12px;}
-.resource-lume-group {border:1px solid rgba(255,255,255,.12);background:#151515;}
-.resource-lume-summary {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;cursor:pointer;list-style-position:inside;}
-.resource-lume-summary::marker {color:rgba(255,255,255,.5);}
-.resource-lume-title {font-size:16px;font-weight:600;color:rgba(255,255,255,.92);}
-.resource-lume-total {display:flex;align-items:baseline;gap:10px;text-align:right;}
-.resource-lume-total strong {font-variant-numeric:tabular-nums;color:rgba(255,255,255,.95);white-space:nowrap;}
-.resource-lume-total span {color:rgba(255,255,255,.42);font-size:12px;white-space:nowrap;}
-.resource-lume-children {border-top:1px solid rgba(255,255,255,.1);}
-.resource-grid {display:grid;grid-template-columns:minmax(0,1fr);gap:1px;background:rgba(255,255,255,.08);}
-.resource-row {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:10px;background:#151515;min-width:0;}
-.resource-label {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(255,255,255,.72);}
-.resource-row strong {font-variant-numeric:tabular-nums;color:rgba(255,255,255,.95);white-space:nowrap;}
-.resource-process-count {grid-column:1 / -1;color:rgba(255,255,255,.4);font-size:12px;}
-.resource-processes {margin:0;border-top:1px solid rgba(255,255,255,.1);padding:10px 12px 12px;}
-.resource-processes summary {cursor:pointer;color:rgba(255,255,255,.68);font-size:13px;}
-.resource-process-list {display:grid;gap:6px;margin-top:10px;font-size:12px;color:rgba(255,255,255,.62);}
-.resource-process {display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;}
-.resource-process span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.resource-wallpaper-row {margin-top:8px;border:1px solid rgba(255,255,255,.1);}
 .settings-card > .status {margin:0 24px 24px;min-height:24px;text-align:start;}
 .setting-select {position:relative;width:240px;max-width:100%;font-size:14px;}
 .setting-select-trigger {display:flex;align-items:center;justify-content:space-between;width:100%;height:32px;padding:0 11px;color:rgba(255,255,255,.85);background:#141414;border:1px solid #434343;border-radius:2px;text-align:left;}

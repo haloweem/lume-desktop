@@ -1,4 +1,5 @@
 #pragma once
+#include "apps/shell/material_selection_request.h"
 #include "core/settings/file_store.h"
 #include "core/ui/page_bridge.h"
 #include "core/widget/widget_preferences.h"
@@ -17,6 +18,9 @@ public:
                    settings::IFileStore* files=nullptr);
     ~TodayTodoSession();
     bool Restore();
+    void SetMaterialSelectionHandler(MaterialSelectionHandler);
+    // Native menus target one checklist; page commands continue to target all.
+    std::optional<std::wstring> HandleMaterialSelection(ui::PageCommand, HWND source);
     std::optional<std::wstring> HandlePage(ui::PageCommand);
     std::wstring State()const;
     void Shutdown();

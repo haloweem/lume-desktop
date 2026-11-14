@@ -1,4 +1,5 @@
 #include "platform/windows/weather/weather_backend.h"
+#include "platform/windows/silent_privacy.h"
 #include "platform/windows/weather/weather_http.h"
 #include "platform/windows/weather/weather_timezone.h"
 #include "core/weather/weather_location.h"
@@ -34,7 +35,8 @@ template<class T> T LoadProc(HMODULE module, const char* name) {
 #pragma warning(push)
 #pragma warning(disable : 4995)
 #endif
-std::optional<Location> LegacyLocation() {
+std::optional<Location> LegacyLocation(const Cancellation& cancel) {
+    if (cancel.Cancelled()) return {};
     using Initialize = HRESULT(WINAPI*)(LPVOID, DWORD);
     using Uninitialize = void(WINAPI*)();
     using Create = HRESULT(WINAPI*)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
@@ -70,10 +72,14 @@ std::optional<Location> LegacyLocation() {
     Microsoft::WRL::ComPtr<ILocation> location;
     if (FAILED(create(locationClass, nullptr, CLSCTX_INPROC_SERVER, locationInterface,
         reinterpret_cast<void**>(location.GetAddressOf())))) return {};
+    if (cancel.Cancelled()) return {};
+    LOCATION_REPORT_STATUS status{};
+    if (FAILED(location->GetReportStatus(latLongInterface, &status)) || status != REPORT_RUNNING || cancel.Cancelled()) return {};
     ILocationReport* base = nullptr;
     if (FAILED(location->GetReport(latLongInterface, &base)) || !base) return {};
     Microsoft::WRL::ComPtr<ILocationReport> report;
     report.Attach(base);
+    if (cancel.Cancelled()) return {};
     Microsoft::WRL::ComPtr<ILatLongReport> latLong;
     if (FAILED(report->QueryInterface(latLongInterface, reinterpret_cast<void**>(latLong.GetAddressOf()))))
         return {};
@@ -89,7 +95,8 @@ std::optional<Location> LegacyLocation() {
 // or proxy cannot move it. Requires the system location service and "let
 // desktop apps access your location". combase is loaded on demand, as ole32
 // is above. Waits at most about 12 seconds on the weather worker.
-std::optional<Location> GeolocatorLocation() {
+std::optional<Location> GeolocatorLocation(const Cancellation& cancel) {
+    if (cancel.Cancelled()) return {};
     namespace geo = ABI::Windows::Devices::Geolocation;
     namespace foundation = ABI::Windows::Foundation;
     using Initialize = HRESULT(WINAPI*)(RO_INIT_TYPE);
@@ -132,10 +139,11 @@ std::optional<Location> GeolocatorLocation() {
     if (FAILED(operation.As(&info))) return {};
     auto state = foundation::AsyncStatus::Started;
     for (const auto deadline = GetTickCount64() + 12000; GetTickCount64() < deadline;) {
+        if (cancel.Cancelled()) { info->Cancel(); return {}; }
         if (FAILED(info->get_Status(&state)) || state != foundation::AsyncStatus::Started) break;
         Sleep(50);
     }
-    if (state != foundation::AsyncStatus::Completed) { info->Cancel(); return {}; }
+    if (cancel.Cancelled() || state != foundation::AsyncStatus::Completed) { info->Cancel(); return {}; }
     Microsoft::WRL::ComPtr<geo::IGeoposition> position;
     Microsoft::WRL::ComPtr<geo::IGeocoordinate> coordinate;
     Microsoft::WRL::ComPtr<geo::IGeocoordinateWithPoint> withPoint;
@@ -148,9 +156,11 @@ std::optional<Location> GeolocatorLocation() {
     if (FAILED(point->get_Position(&basic))) return {};
     return Location{basic.Latitude, basic.Longitude, {}, {}};
 }
-std::optional<Location> SystemLocation() {
-    if (auto location = GeolocatorLocation()) return location;
-    return LegacyLocation();
+std::optional<Location> SystemLocation(const Cancellation& cancel) {
+    if (cancel.Cancelled() || !HasExistingCapabilityAccess(L"location")) return {};
+    if (auto location = GeolocatorLocation(cancel)) return location;
+    if (cancel.Cancelled()) return {};
+    return LegacyLocation(cancel);
 }
 // The computer's own countries: Windows region and the user's locale.
 std::vector<std::string> SystemCountries() {
@@ -226,7 +236,7 @@ public:
           transport_(options.transport ? std::move(options.transport) :
               HttpTransport{[this](const auto& request, const auto& cancel) { return http_.Get(request, cancel); }}),
           location_(transport_, clock_, local_, SimplifyWeatherPlaceName,
-              options.systemLocation ? DeviceLocation{[](Millis) { return SystemLocation(); }} : DeviceLocation{},
+              options.systemLocation ? DeviceLocation{[](Millis, const Cancellation& cancel) { return SystemLocation(cancel); }} : DeviceLocation{},
               options.environment ? *options.environment : LocationEnvironment{SystemCountries(), SystemLocalTime},
               LocationStore{[this] { return Read(WeatherCacheKind::Location); },
                             [this](std::string_view text) { return Write(WeatherCacheKind::Location, text); }}),

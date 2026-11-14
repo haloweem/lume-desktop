@@ -44,7 +44,7 @@ struct Fixture {
     }
     void Tomorrow() { now.localDay = 20261001; now.utcMillis += 86400000; }
 };
-ManifestResult Newer() { return {{"incompatible", "1.0.9", 0}, "update-incompatible"}; }
+ManifestResult Newer() { return {{"incompatible", "1.2.0", 0}, "update-incompatible"}; }
 void Pump() {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -194,7 +194,7 @@ void InAppDelivery() {
     int attempts = 0;
     options.showInApp = [&](const Notice& notice) {
         ++attempts;
-        Check(notice.kind == NoticeKind::Incompatible && notice.version == "1.0.9",
+        Check(notice.kind == NoticeKind::Incompatible && notice.version == "1.2.0",
               "in-app presenter receives classified metadata");
         return ready;
     };

@@ -483,6 +483,9 @@ LRESULT CALLBACK Procedure(HWND hwnd,UINT message,WPARAM w,LPARAM l){
     }
     const auto result=s.Native(message,w,l);
     if(!s.alive)return result;
+    // EDIT has no hover visual. Selection dragging is handled above; ordinary
+    // pointer traffic must not rebuild and rasterize the entire text layout.
+    if(s.kind==Kind::Edit&&(message==WM_MOUSEMOVE||message==WM_MOUSELEAVE))return result;
     if(ChangesDisplay(message)){
         if(s.kind==Kind::Edit){
             if(message==WM_SETFOCUS)s.caretHeight=0;

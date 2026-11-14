@@ -27,7 +27,7 @@ struct Startup final : application_settings::IStartupRegistration {
 struct Transport final : application_settings::IUpdateTransport {
     std::atomic<int> calls{0};
     application_settings::ManifestResponse Fetch(const application_settings::Cancellation&) override {
-        ++calls; return {R"({"version":"1.0.9"})", {}};
+        ++calls; return {R"({"version":"1.2.0"})", {}};
     }
 };
 shell::DesktopApplication* active = nullptr;

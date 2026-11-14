@@ -96,6 +96,10 @@ struct AlmanacSession::Impl {
     }
     void Native(WidgetAction action,const widget::Preferences& bounds){
         if(stopped||applying)return;
+        const auto request=materialSelection;
+        if(request&&(action==WidgetAction::Liquid||action==WidgetAction::Frosted)){
+            request(action==WidgetAction::Liquid?ui::PageCommand::AlmanacLiquidGlass:ui::PageCommand::AlmanacFrostedGlass,window.Handle());return;
+        }
         if(action==WidgetAction::Settings){if(openSettings)openSettings();return;}
         const auto next=widget_session::ActionPreferences(action,prefs,bounds,Limits,false);
         if(!next)return;
@@ -140,7 +144,7 @@ struct AlmanacSession::Impl {
         return {};
     }
     void Shutdown(){if(stopped)return;stopped=true;StopRuntime();}
-    std::string path;Notify notify;std::function<void()> openSettings;Now now;
+    std::string path;Notify notify;std::function<void()> openSettings;Now now;MaterialSelectionHandler materialSelection;
     LocalSettingsFileStore localFiles;widget::PreferencesStore store;widget::LoadedPreferences loaded;widget::Preferences prefs;
     AlmanacView view;bool stopped=false,applying=false,timer=false;int focused=-1;std::wstring error;
     NativeWidgetWindow window;
@@ -149,6 +153,7 @@ AlmanacSession::AlmanacSession(HINSTANCE instance,std::string path,Notify notify
     impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),files,std::move(now))){}
 AlmanacSession::~AlmanacSession()=default;
 bool AlmanacSession::Restore(){return impl_->Restore();}
+void AlmanacSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 std::optional<std::wstring> AlmanacSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
 std::wstring AlmanacSession::State()const{return impl_->State();}
 void AlmanacSession::Shutdown(){impl_->Shutdown();}

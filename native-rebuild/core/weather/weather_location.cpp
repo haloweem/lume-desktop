@@ -112,7 +112,7 @@ std::string Upper(std::string text) {
 Json Request(const HttpTransport& transport, std::string url, const Cancellation& cancel, bool direct = false) {
     Check(cancel);
     HttpRequest request{std::move(url),
-        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.0.9 (desktop weather)"}},
+        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.1.3 (desktop weather)"}},
         12000, LocationMaxBytes};
     request.direct = direct;
     auto reply = transport(request, cancel);
@@ -229,7 +229,9 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
         // The system fix uses nearby Wi-Fi, which a VPN cannot move: accept it at once.
         if (device_) {
             try {
-                if (const auto location = device_(now)) {
+                const auto location = device_(now, cancel);
+                Check(cancel);
+                if (location) {
                     if (const auto resolved = finish(*location)) {
                         Check(cancel);
                         Accept(*resolved, Origin::Device, clock_());

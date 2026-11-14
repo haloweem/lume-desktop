@@ -341,7 +341,7 @@ test("wallpaper commands are structured objects with only the defined action fie
   const sent=[],bridge=createBridge({postMessage:value=>sent.push(value)});
   assert.equal(typeof bridge.wallpaper,"function");
   const commands=[
-    ["snapshot"],["refresh"],["import"],["stopAll"],["download",{id:"official-1"}],["cancel"],
+    ["snapshot"],["refresh"],["refreshVideos"],["import"],["stopAll"],["download",{id:"official-1"}],["cancel"],
     ["remove",{id:"library-1"}],["apply",{id:"library-1",display:"18446744073709551615"}],
     ["pause",{display:"1"}],["resume",{display:"1"}],["stop",{display:"1"}],
     ["fit",{display:"1",value:"cover"}],["fit",{display:"1",value:"contain"}],
@@ -359,7 +359,7 @@ test("wallpaper commands reject paths, URLs, extra fields and non-uint64 display
   assert.equal(typeof bridge.wallpaper,"function");
   const invalid=[
     ["download",{id:"../outside"}],["download",{id:"x".repeat(97)}],["download",{id:""}],
-    ["download",{id:"x",url:officialUrl}],["import",{path:"C:\\private.mp4"}],
+    ["download",{id:"x",url:officialUrl}],["import",{path:"C:\\private.mp4"}],["refreshVideos",{url:officialUrl}],
     ["apply",{id:"x",display:1}],["apply",{id:"x",display:"18446744073709551616"}],
     ["apply",{id:"x",display:"01"}],["apply",{id:"x",display:"0"}],["apply",{id:"x",display:"-1"}],
     ["pause",{display:"1",args:"--script=x"}],["cancel",{id:"x"}],
@@ -1092,6 +1092,7 @@ test("preview controller attaches only on request and hiding or navigating relea
   assert.deepEqual(events,[]);
   assert.equal(await controller.play(local(),visible),true);
   assert.equal(video.src,localUrl);
+  assert.equal(video.loop,true);
   assert.equal(events.filter(value=>value==="play").length,1);
   controller.update({...visible,nativeVisible:false});
   assert.equal(video.src,"");

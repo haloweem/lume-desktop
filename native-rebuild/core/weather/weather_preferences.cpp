@@ -34,11 +34,11 @@ LoadedPreferences PreferencesStore::Load(const std::string& path)const{
     if(path.empty()){loaded.state=widget::LoadState::Failed;return loaded;}
     std::string text;
     if(files_.Exists(path)){
-        if(files_.Read(path,text)&&DecodePreferences(text,loaded.value)){loaded.state=widget::LoadState::Loaded;return loaded;}
+        if(files_.ReadBounded(path,8192,text)&&DecodePreferences(text,loaded.value)){loaded.state=widget::LoadState::Loaded;return loaded;}
         loaded.state=widget::LoadState::Failed;
     }
     if(files_.Exists(path+".bak"))
-        loaded.state=files_.Read(path+".bak",text)&&DecodePreferences(text,loaded.value)?
+        loaded.state=files_.ReadBounded(path+".bak",8192,text)&&DecodePreferences(text,loaded.value)?
             widget::LoadState::Recovered:widget::LoadState::Failed;
     return loaded;
 }
@@ -47,7 +47,7 @@ bool PreferencesStore::Save(const std::string& path,const Preferences& p){
     std::string original;bool validOriginal=false;
     if(files_.Exists(path)){
         Preferences previous;
-        if(!files_.Read(path,original))return false;
+        if(!files_.ReadBounded(path,8192,original))return false;
         validOriginal=DecodePreferences(original,previous);
         if(!validOriginal){
             bool isolated=false;

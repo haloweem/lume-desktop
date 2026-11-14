@@ -7,7 +7,7 @@
   grid-template-columns: 220px minmax(0, 1fr);
   overflow: hidden;
   color: #f4f6fa;
-  background: var(--lume-wallpaper-background, #000);
+  background: var(--lume-wallpaper-background, var(--lume-page-background, #121212));
   letter-spacing: 0;
 }
 .application-settings *, .application-account * { box-sizing: border-box; }
@@ -18,7 +18,7 @@
   overflow-y: auto;
   padding: calc(clamp(50px, 5.2vh, 64px) + 8px - var(--lume-titlebar-inset, 0px)) 14px 28px;
   border-right: 1px solid rgba(255, 255, 255, .07);
-  background: var(--lume-wallpaper-background, #000);
+  background: var(--lume-wallpaper-background, var(--lume-page-background, #121212));
 }
 .application-settings__title-row {
   height: 48px;
@@ -79,7 +79,7 @@
   display: grid;
   grid-template-rows: auto 1px minmax(0, 1fr) auto;
   padding: calc(clamp(50px, 5.2vh, 64px) + 8px - var(--lume-titlebar-inset, 0px)) 40px 0;
-  background: var(--lume-wallpaper-background, #000);
+  background: var(--lume-wallpaper-background, var(--lume-page-background, #121212));
 }
 .application-settings__content > h2 {
   min-height: 48px;

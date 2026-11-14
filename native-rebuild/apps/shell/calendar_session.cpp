@@ -31,6 +31,7 @@ CalendarSession::CalendarSession(HINSTANCE instance,std::string path,Notify noti
           runtime_.SetMaterialChanged([this]{if(!stopped_&&notify_)notify_(State(),false);});}
 CalendarSession::~CalendarSession() { Shutdown(); }
 bool CalendarSession::Restore() { return !stopped_ && controller_.Restore(); }
+void CalendarSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler) { materialSelection_=std::move(handler); }
 bool CalendarSession::Apply(calendar::Action action) { return !stopped_ && controller_.Handle(action); }
 std::wstring CalendarSession::State(ui::CalendarPageResult result) const {
     auto state=ui::CalendarPageState(controller_,loaded_.status,result);
@@ -58,6 +59,13 @@ void CalendarSession::HandleNative(calendar::Action action) {
     // Do not save, clear an existing error, or acknowledge that pending page command.
     // Recovery likewise stays read-only until an explicit user action saves it.
     if(stopped_ || editing_ || (action.type==calendar::ActionType::Bounds && action.automatic && loaded_.status!=calendar::LoadStatus::Loaded)) return;
+    const auto request=materialSelection_;
+    if(request&&action.type==calendar::ActionType::Material) {
+        const auto command=action.value==static_cast<int>(calendar::Material::LiquidGlass)?ui::PageCommand::CalendarLiquidGlass:
+            action.value==static_cast<int>(calendar::Material::FrostedGlass)?ui::PageCommand::CalendarFrostedGlass:
+            action.value==static_cast<int>(calendar::Material::Solid)?ui::PageCommand::CalendarSolid:ui::PageCommand::Invalid;
+        if(command!=ui::PageCommand::Invalid){request(command,runtime_.Handle());return;}
+    }
     const bool ok=Apply(action);
     const auto notify=notify_;
     if(notify) notify(State(ui::CalendarPageResult::Applied),!ok);

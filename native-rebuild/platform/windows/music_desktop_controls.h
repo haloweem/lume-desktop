@@ -44,6 +44,7 @@ class MusicDesktopControls final {
 public:
     using CommandHandler = std::function<void(const ui::MusicPageCommand&)>;
     using WidgetHandler = std::function<void(WidgetAction, const widget::Preferences&)>;
+    using MaterialHandler = std::function<void(bool frosted, HWND source)>;
     using WakeHandler = std::function<void()>;
     static constexpr widget::Limits Limits{320, 152, 320, 152, 720, 720};
 
@@ -58,6 +59,9 @@ public:
 
     void Update(const music::MusicSnapshot&);
     bool Configure(const widget::Preferences&);
+    // Explicit native material choices are intents before local application.
+    // Clearing the handler restores standalone/isolated controls behavior.
+    void SetMaterialSelectionHandler(MaterialHandler);
     bool Show();
     void Hide(); // Releases widget/material/decoded cover, not playback or SMTC.
     bool Visible() const;

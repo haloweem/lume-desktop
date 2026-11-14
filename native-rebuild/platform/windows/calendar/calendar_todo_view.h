@@ -13,18 +13,33 @@ struct CalendarTodoPort {
     std::function<todo::Millis()> now;
     std::function<void()> refreshTime;
 };
+struct CalendarTimeBlock {
+    std::size_t task=0;float start=0,end=0;int lane=0,lanes=1;
+    std::optional<todo::LocalDateTime> localStart,localEnd;
+};
 class CalendarTodoView {
 public:
-    // With a time port, open repeating schedules are also listed on their later
-    // days (two years ahead) as projected copies appended after stored tasks.
-    void Update(todo::RepositorySnapshot snapshot,const todo::ILocalTimePort* time=nullptr,todo::Millis now=0,std::optional<todo::Millis> projectionUntil={});
+    void Update(todo::RepositorySnapshot snapshot,const todo::ILocalTimePort* time=nullptr);
+    // Call once before taking row references. Only the active view's dates are
+    // projected; an unchanged date set reuses the existing rows and indexes.
+    void PrepareDays(std::vector<calendar::Date> days) const;
     // The stored task a row stands for: projected copies map to their series.
     std::size_t Stored(std::size_t index) const;
     const todo::RepositorySnapshot& Snapshot() const {return snapshot_;}
     const std::vector<std::size_t>& ForDay(calendar::Date) const;
+    const std::vector<std::size_t>& SortedForDay(calendar::Date) const;
+    const std::vector<CalendarTimeBlock>& TimeBlocksForDay(calendar::Date,const todo::ILocalTimePort&) const;
 private:
-    todo::RepositorySnapshot snapshot_;
-    std::map<int,std::vector<std::size_t>> groups_;
+    void Group() const;
+    mutable todo::RepositorySnapshot snapshot_;
+    mutable std::map<int,std::vector<std::size_t>> groups_;
+    mutable std::vector<calendar::Date> days_;
+    mutable std::vector<std::size_t> storedRows_;
+    mutable std::map<int,std::vector<std::size_t>> sortedGroups_;
+    mutable std::map<int,std::vector<CalendarTimeBlock>> timeBlocks_;
+    mutable const todo::ILocalTimePort* blockTime_=nullptr;
+    std::size_t storedCount_=0;
+    const todo::ILocalTimePort* time_=nullptr;
 };
 struct CalendarAgendaRow {
     std::size_t task=0;

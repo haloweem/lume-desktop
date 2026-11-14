@@ -4,6 +4,7 @@
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include <windows.h>
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 
 namespace lume::platform::windows {
@@ -17,6 +18,9 @@ public:
     LayeredSurface& operator=(const LayeredSurface&) = delete;
     ~LayeredSurface() { Release(); }
     bool Upload(const WidgetBitmap& bitmap) {
+        return Upload(bitmap,bitmap.width,bitmap.height);
+    }
+    bool Upload(const WidgetBitmap& bitmap,unsigned liveWidth,unsigned liveHeight) {
         if (!dc_ || width_ != bitmap.width || height_ != bitmap.height) {
             Release();
             BITMAPINFO info{};
@@ -32,7 +36,18 @@ public:
             width_ = bitmap.width;
             height_ = bitmap.height;
         }
-        std::memcpy(pixels_, bitmap.pixels.data(), bitmap.pixels.size() * 4);
+        liveWidth=std::min(liveWidth,bitmap.width);liveHeight=std::min(liveHeight,bitmap.height);
+        if (liveWidth==bitmap.width&&liveHeight==bitmap.height) {
+            std::memcpy(pixels_, bitmap.pixels.data(), bitmap.pixels.size() * 4);
+        } else {
+            auto* destination=static_cast<std::byte*>(pixels_);
+            const auto* source=reinterpret_cast<const std::byte*>(bitmap.pixels.data());
+            const auto rowBytes=static_cast<std::size_t>(liveWidth)*4;
+            const auto stride=static_cast<std::size_t>(bitmap.width)*4;
+            for(unsigned row=0;row<liveHeight;++row)
+                std::memcpy(destination+static_cast<std::size_t>(row)*stride,
+                            source+static_cast<std::size_t>(row)*stride,rowBytes);
+        }
         return true;
     }
     bool Compose(HWND window, POINT position, SIZE size, POINT source = {}, BYTE opacity = 255) {

@@ -3,7 +3,7 @@
 #include <vector>
 namespace lume::weather {
 using PlaceNormalizer = std::function<std::string(std::string_view)>;
-using DeviceLocation = std::function<std::optional<Location>(Millis)>;
+using DeviceLocation = std::function<std::optional<Location>(Millis,const Cancellation&)>;
 struct LocationResult {
     std::optional<Location> location;
     ProviderError error = ProviderError::Unavailable;

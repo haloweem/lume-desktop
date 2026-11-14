@@ -29,6 +29,7 @@ std::optional<WallpaperPageCommand> ParseWallpaperPageJson(std::wstring_view inp
         bool hasId=false,hasDisplay=false,hasValue=false;
         if(name=="snapshot")command.action=WallpaperAction::Snapshot;
         else if(name=="refresh")command.action=WallpaperAction::Refresh;
+        else if(name=="refreshVideos")command.action=WallpaperAction::RefreshVideos;
         else if(name=="import")command.action=WallpaperAction::Import;
         else if(name=="stopAll")command.action=WallpaperAction::StopAll;
         else if(name=="cancel")command.action=WallpaperAction::Cancel;

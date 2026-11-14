@@ -61,9 +61,10 @@ std::wstring Rate(double number) {
 void CompactData::Refresh() {
     GetLocalTime(&time);const auto now=GetTickCount64();
     if(refreshed&&now-refreshed<1000)return;refreshed=now;
-    SYSTEM_POWER_STATUS power{};battery.reset();hasBattery=false;plugged=false;
+    SYSTEM_POWER_STATUS power{};battery.reset();hasBattery=false;plugged=false;charging=false;
     if(GetSystemPowerStatus(&power)) {
         hasBattery=power.BatteryFlag!=255&&!(power.BatteryFlag&128);plugged=power.ACLineStatus==1;
+        charging=hasBattery&&(power.BatteryFlag&8)!=0;
         if(hasBattery&&power.BatteryLifePercent<=100)battery=power.BatteryLifePercent;
     }
     if(!diskAt||now-diskAt>=15000) {

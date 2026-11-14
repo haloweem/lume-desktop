@@ -60,7 +60,7 @@ export const widgets = [
   {
     id: "weather",
     title: "天气",
-    description: "在桌面显示当前天气，支持自动定位或选择城市。",
+    description: "在桌面显示当前天气。",
   },
   {id:"todayTodo",title:"待办清单",description:"在桌面管理今日待办，支持勾选、编辑和删除。"},
   { id: "almanac", title: "黄历", description: "在桌面显示农历与每日宜忌。" },
@@ -104,7 +104,7 @@ const englishItems = {
   notes: ["Notes", "Show a sticky note on your desktop; open it to write and manage Markdown notes."],
   clock: ["Clock", "Display the time on your desktop in three styles: Style 1, Style 2 and Style 3."],
   calendar: ["Calendar", "Display a monthly calendar on your desktop with today highlighted."],
-  weather: ["Weather", "Display current weather on your desktop using automatic location or a selected city."],
+  weather: ["Weather", "Display current weather on your desktop."],
   almanac: ["Almanac", "Display the lunar calendar and daily auspicious and inauspicious activities."],
   performance: ["Performance", "View CPU, GPU, memory and network status on your desktop."],
   music: ["Music", "Display the current Lume Music track and progress, with playback and track controls."],

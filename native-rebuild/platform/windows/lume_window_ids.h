@@ -26,9 +26,13 @@ inline constexpr wchar_t DesktopCompanionOwnerProp[] = L"LumeDesktopCompanionOwn
 inline constexpr wchar_t GlassOwnerProp[] = L"LumeGlassOwner";
 // On a glass surface window: the HWND it renders glass for.
 inline constexpr wchar_t GlassSurfaceOwnerProp[] = L"LumeGlassSurfaceOwner";
+// Coalesces UI requests while the material's own thread is busy rendering.
+inline constexpr wchar_t GlassRestackPendingProp[] = L"LumeGlassRestackPending";
 // Runtime-only display policy; never changes the persisted enabled preference.
 inline constexpr wchar_t LayerSuppressedProp[] = L"LumeLayerSuppressed";
 inline constexpr wchar_t LayerRoleProp[] = L"LumeLayerRole";
+// Fully covered desktop content; independent of layer suppression/visibility.
+inline constexpr wchar_t ContentOccludedProp[] = L"LumeContentOccluded";
 
 // Class names.
 // Every native desktop surface (Dock, clock, calendar, widgets) starts with this.
@@ -49,6 +53,8 @@ inline constexpr wchar_t GlassSurfaceClass[] = L"LumeSharedMaterialSurfaceV1";
 inline constexpr UINT TrayOpenMessage = WM_APP + 42;
 // Posted to the shell's UI thread (no window): drain queued music work.
 inline constexpr UINT ShellWakeMessage = WM_APP + 43;
+// Ask a material worker to recheck its current owner and desktop companions.
+inline constexpr UINT GlassRestackMessage = WM_APP + 1;
 // Also cross-window, defined beside their protocols and checked below:
 // widget_snap::Message/CancelMessage (WM_APP+0x6a4/0x6a5, sent between
 // desktop widgets) and LumeMaterialStatusChangedMessage (WM_APP+0x5a0, posted

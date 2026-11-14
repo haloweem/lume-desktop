@@ -284,6 +284,82 @@ void CancellationAndErrors() {
     Require(result["error"] == "service" && result.dump().find("synthetic-secret") == std::string::npos,
         "raw exception redacted");
 }
+void PlaybackRecoveryAndLyricsCache() {
+    Fixture fixture;
+    MusicOnlineSession session(fixture.Options());
+    const auto track = Known(session);
+    std::atomic<int> calls{0};
+    fixture.answer = [&](std::string_view action, const Json&, const Cancelled&) -> Json {
+        Require(action == "resolve", "retry keeps the requested operation");
+        if (++calls == 1) throw std::runtime_error("network");
+        return {{"url", "https://fixture.invalid/recovered.mp3"}};
+    };
+    Require(!session.ResolveSource(track, {}).empty() && calls == 2, "temporary network failure recovers at the same quality");
+    for (const auto* failure : {"netease-code--460", "rate-limited", "preview-only", "expired", "invalid-response"}) {
+        calls = 0;
+        fixture.answer = [&](std::string_view, const Json&, const Cancelled&) -> Json { ++calls; throw std::runtime_error(failure); };
+        Reject([&] { session.ResolveSource(track, {}); }, "provider refusal is returned");
+        Require(calls == 1, "provider refusal is never automatically retried");
+    }
+    calls = 0;
+    std::atomic<bool> entered{false}, release{false};
+    fixture.answer = [&](std::string_view action, const Json&, const Cancelled& stop) -> Json {
+        Require(action == "lyrics", "shared read is lyrics only");
+        ++calls; entered = true;
+        Require(Await([&] { return release || stop(); }), "shared lyrics released");
+        return {{"lrc", {{"lyric", "[00:01.00]shared"}}}};
+    };
+    auto page = std::async(std::launch::async, [&] { return session.LoadLyrics(track, {}); });
+    Require(Await([&] { return entered.load(); }), "page lyric read entered");
+    auto island = std::async(std::launch::async, [&] { return session.LoadLyrics(track, {}); });
+    release = true;
+    Require(page.get().lines.size() == 1 && island.get().lines.size() == 1 && calls == 1,
+        "page and island share one successful provider read");
+    Require(session.LoadLyrics(track, {}).lines.size() == 1 && calls == 1, "reopening same lyrics uses bounded cache");
+    ++fixture.generation;
+    session.AccountsChanged();
+    Require(!session.LoadLyrics(track, {}).error.empty(), "account replacement cannot reuse cached lyrics");
+    session.Shutdown();
+}
+void LyricsRetryAndCancellation() {
+    Fixture fixture;
+    MusicOnlineSession session(fixture.Options());
+    const auto track = Known(session);
+    std::atomic<int> calls{0};
+    fixture.answer = [&](std::string_view, const Json&, const Cancelled&) -> Json {
+        if (++calls == 1) throw std::runtime_error("network");
+        return {{"lrc", {{"lyric", "[00:01.00]recovered"}}}};
+    };
+    Require(session.LoadLyrics(track, {}).lines.size() == 1 && calls == 2, "lyrics retry once after reachability failure");
+    std::atomic<bool> stop{false}; calls = 0;
+    fixture.answer = [&](std::string_view, const Json&, const Cancelled&) -> Json {
+        ++calls; stop = true; throw std::runtime_error("network");
+    };
+    Reject([&] { session.ResolveSource(track, [&] { return stop.load(); }); }, "cancel interrupts retry");
+    Require(calls == 1, "cancel does not start another request");
+}
+void SharedLyricsOwnerCancellation() {
+    Fixture fixture;
+    MusicOnlineSession session(fixture.Options());
+    const auto track = Known(session);
+    std::atomic<int> calls{0};
+    std::atomic<bool> entered{false}, stopPage{false};
+    fixture.answer = [&](std::string_view, const Json&, const Cancelled& stop) -> Json {
+        if (++calls == 1) {
+            entered = true;
+            Require(Await(stop), "cancelled owner releases its request");
+            CheckCancelled(stop);
+        }
+        return {{"lrc", {{"lyric", "[00:01.00]island"}}}};
+    };
+    auto page = std::async(std::launch::async, [&] { return session.LoadLyrics(track, [&] { return stopPage.load(); }); });
+    Require(Await([&] { return entered.load(); }), "shared owner started");
+    auto island = std::async(std::launch::async, [&] { return session.LoadLyrics(track, {}); });
+    stopPage = true;
+    Require(!page.get().error.empty() && island.get().lines.size() == 1 && calls == 2,
+        "closing page cannot cancel the island's independent lyric subscription");
+    Require(session.LoadLyrics(track, {}).lines.size() == 1 && calls == 2, "successful follower result is cached");
+}
 void Parser() {
     Require(ParseMusicOnlineCommand(LR"({"version":1,"scope":"music-online","action":"search","provider":"netease","request":1,"query":"fixture"})").has_value(),
         "valid parser fixture");
@@ -633,6 +709,7 @@ int main(int argc, char** argv) {
     }
     if (test.empty() || test == "shutdown") ShutdownResolution();
     if (test.empty() || test == "cancel") CancellationAndErrors();
+    if (test.empty() || test == "recovery") { PlaybackRecoveryAndLyricsCache(); LyricsRetryAndCancellation(); SharedLyricsOwnerCancellation(); }
     if (test.empty() || test == "parser") Parser();
     if (test.empty() || test == "acquire") AccountChangeDuringAcquire();
     if (test.empty() || test == "projection") PublicDataValidation();

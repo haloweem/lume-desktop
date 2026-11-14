@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const version = '1.0.9';
-const numericVersion = '1,0,9,0';
+const version = '1.1.3';
+const numericVersion = '1,1,3,0';
 const read = relative => fs.readFileSync(new URL(`../../${relative}`, import.meta.url), 'utf8');
 
-test('build and update policy identify the 1.0.9 release', () => {
+test('build and update policy identify the 1.1.3 release', () => {
   assert.equal(read('CMakeLists.txt').match(/project\(LumeNativeRebuild VERSION ([\d.]+)/)?.[1], version);
   assert.equal(read('core/application_settings/application_settings.h').match(/CurrentVersion\[\] = "([\d.]+)"/)?.[1], version);
 });

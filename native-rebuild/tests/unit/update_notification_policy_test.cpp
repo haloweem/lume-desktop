@@ -20,7 +20,7 @@ struct File final : IPreferencesFile {
     }
 };
 constexpr ClockSample Today{1790726400000LL, 20260930}, Tomorrow{1790812800000LL, 20261001};
-ManifestResult Newer() { return {{"incompatible", "1.0.10", 0}, "update-incompatible"}; }
+ManifestResult Newer() { return {{"incompatible", "1.2.0", 0}, "update-incompatible"}; }
 void Daily() {
     File file; Policy policy(file); int shown = 0;
     Check(policy.Load() && policy.AutomaticDue(Today), "fresh install checks automatically");
@@ -40,14 +40,14 @@ void Daily() {
 void NewReleaseSameDay() {
     File file;Policy policy(file);Check(policy.Load(), "load release reminder fixture");int shown = 0;
     const auto show = [&](const Notice& notice) {Check(notice.kind == NoticeKind::Available, "compatible notice supports direct download");++shown;return true;};
-    Check(policy.Complete(false, {{"available","1.0.10",0},{}}, Today, show) && shown == 1, "new release is announced");
-    Check(policy.Complete(false, {{"available","1.0.10",0},{}}, Today, show) && shown == 1, "polling the same release stays silent");
-    Check(policy.Complete(false, {{"available","1.0.11",0},{}}, Today, show) && shown == 2, "another release on the same day gets a notice");
+    Check(policy.Complete(false, {{"available","1.2.0",0},{}}, Today, show) && shown == 1, "new release is announced");
+    Check(policy.Complete(false, {{"available","1.2.0",0},{}}, Today, show) && shown == 1, "polling the same release stays silent");
+    Check(policy.Complete(false, {{"available","1.2.1",0},{}}, Today, show) && shown == 2, "another release on the same day gets a notice");
     Policy reopened(file);Check(reopened.Load(), "reload reminder ledger");
-    Check(reopened.Complete(false, {{"available","1.0.11",0},{}}, Today, show) && shown == 2, "same-day restart does not repeat");
-    Check(reopened.Complete(false, {{"available","1.0.11",0},{}}, Tomorrow, show) && shown == 3, "not updated reminds on the next day");
-    Policy installed(file,"1.0.10");Check(installed.Load(), "load updated installation");
-    Check(installed.Complete(false, {{"available","1.0.10",0},{}}, Tomorrow, show) && shown == 3, "installed release stops reminders");
+    Check(reopened.Complete(false, {{"available","1.2.1",0},{}}, Today, show) && shown == 2, "same-day restart does not repeat");
+    Check(reopened.Complete(false, {{"available","1.2.1",0},{}}, Tomorrow, show) && shown == 3, "not updated reminds on the next day");
+    Policy installed(file,"1.2.0");Check(installed.Load(), "load updated installation");
+    Check(installed.Complete(false, {{"available","1.2.0",0},{}}, Tomorrow, show) && shown == 3, "installed release stops reminders");
 }
 void OldAndInstalled() {
     File file; Policy policy(file); int shown = 0;
@@ -56,7 +56,7 @@ void OldAndInstalled() {
     Check(policy.Complete(false, old, Today, [&](const Notice&) { ++shown; return true; }) && shown == 0,
           "official older Electron manifest stays silent automatically");
     Check(!policy.AutomaticDue(Today), "successful current check is persisted");
-    Policy upgraded(file, "1.0.10");
+    Policy upgraded(file, "1.2.0");
     Check(upgraded.Load() && upgraded.AutomaticDue(Today), "installed version change invalidates previous check date");
     Check(upgraded.Complete(false, Newer(), Today, [&](const Notice&) { ++shown; return true; }) && shown == 0,
           "installing the notified version stops reminders even for a stale result");
@@ -104,10 +104,10 @@ void Validation() {
     File file; Policy policy(file); Check(policy.Load(), "load validation fixture");
     Check(!policy.AutomaticDue({0, 0}) && !policy.AutomaticDue({1, 20260230}), "invalid civil dates are rejected");
     int shown = 0;
-    Check(policy.Complete(false, {{"error", "1.0.10", 0}, "update-manifest"}, Today,
+    Check(policy.Complete(false, {{"error", "1.2.0", 0}, "update-manifest"}, Today,
         [&](const Notice&) { ++shown; return true; }) && shown == 0 && policy.AutomaticDue(Today),
         "malformed newer metadata is not promoted into an automatic release notice");
-    Check(policy.Complete(false, {{"incompatible", "1.0.10", 0}, "update-disabled"}, Today,
+    Check(policy.Complete(false, {{"incompatible", "1.2.0", 0}, "update-disabled"}, Today,
         [&](const Notice& n) { ++shown; return n.kind == NoticeKind::Disabled; }) && shown == 1,
         "native metadata still cannot enable an installer");
 }

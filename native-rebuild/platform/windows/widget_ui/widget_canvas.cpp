@@ -42,8 +42,17 @@ struct WidgetCanvas::State {
     Com<IWICBitmap> bitmap;
     Com<ID2D1RenderTarget> target;
     Com<ID2D1SolidColorBrush> brush;
-    using Key=std::tuple<float,WidgetTextWeight,WidgetTextAlign,bool>;
+    Com<IDWriteRenderingParams> serifRendering;
+    using Key=std::tuple<float,WidgetTextWeight,WidgetTextAlign,bool,bool>;
+    using MetricKey=std::tuple<std::wstring,float,WidgetTextWeight,WidgetTextAlign,bool>;
     std::map<Key,std::unique_ptr<Com<IDWriteTextFormat>>> formats;
+    std::map<MetricKey,float> metrics;
+    using WrappedKey=std::tuple<std::wstring,float,float,WidgetTextWeight>;
+    struct WrappedLayout {
+        Com<IDWriteTextLayout> layout;
+        float height=0;
+    };
+    std::map<WrappedKey,std::unique_ptr<WrappedLayout>> wrappedLayouts;
     struct ResourceVariant {
         unsigned width=0,height=0;
         std::unique_ptr<Com<ID2D1Bitmap>> bitmap;
@@ -62,17 +71,20 @@ struct WidgetCanvas::State {
     std::vector<Image> frameImages;
     unsigned width=0,height=0,dpi=0;
     bool drawing=false;
+    float scale=1,offsetX=0,offsetY=0;
     unsigned clips=0;
     std::uint64_t generation=0;
     ~State(){if(drawing){while(clips){target->PopAxisAlignedClip();--clips;}target->EndDraw();}}
     void Color(std::uint32_t rgb,float alpha){brush->SetColor(D2D1::ColorF(rgb,std::clamp(alpha,0.f,1.f)));}
-    IDWriteTextFormat* Format(float size,WidgetTextWeight weight,WidgetTextAlign align,std::wstring_view text){
-        const Key key{size,weight,align,ui_font::IsChinese(text)};
+    IDWriteTextFormat* Format(float size,WidgetTextWeight weight,WidgetTextAlign align,std::wstring_view text,bool serif=false){
+        const bool chinese=ui_font::IsChinese(text);
+        const Key key{size,weight,align,chinese,serif};
         auto found=formats.find(key);
         if(found==formats.end()){
             if(formats.size()>=48)formats.clear();
             auto format=std::make_unique<Com<IDWriteTextFormat>>();
-            if(FAILED(factories->write->CreateTextFormat(ui_font::Family(text),nullptr,static_cast<DWRITE_FONT_WEIGHT>(weight),
+            const auto face=serif?(chinese?L"SimSun":L"Georgia"):ui_font::Family(text);
+            if(FAILED(factories->write->CreateTextFormat(face,nullptr,static_cast<DWRITE_FONT_WEIGHT>(weight),
                 DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",format->Put())))return nullptr;
             (*format)->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             (*format)->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -80,6 +92,20 @@ struct WidgetCanvas::State {
             found=formats.emplace(key,std::move(format)).first;
         }
         return found->second->value;
+    }
+    const WrappedLayout* Wrapped(const std::wstring& text,float wrapWidth,float size,WidgetTextWeight weight){
+        const WrappedKey key{text,wrapWidth,size,weight};
+        if(const auto found=wrappedLayouts.find(key);found!=wrappedLayouts.end())return found->second.get();
+        const auto format=Format(size,weight,WidgetTextAlign::Left,text);if(!format)return nullptr;
+        auto value=std::make_unique<WrappedLayout>();DWRITE_TEXT_METRICS textMetrics{};
+        if(FAILED(factories->write->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format,
+                wrapWidth,100000,value->layout.Put()))||
+           FAILED(value->layout->SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK))||
+           FAILED(value->layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR))||
+           FAILED(value->layout->GetMetrics(&textMetrics)))return nullptr;
+        value->height=textMetrics.height;
+        if(wrappedLayouts.size()>=8)wrappedLayouts.clear();
+        return wrappedLayouts.emplace(key,std::move(value)).first->second.get();
     }
 };
 WidgetCanvas::WidgetCanvas():state_(std::make_unique<State>()){}
@@ -102,6 +128,7 @@ bool WidgetCanvas::Begin(float width,float height,unsigned dpi){
         }
         s.width=w;s.height=h;s.dpi=dpi;++s.generation;
     }
+    s.scale=1;s.offsetX=s.offsetY=0;
     s.target->BeginDraw();s.target->SetTransform(D2D1::Matrix3x2F::Identity());s.target->Clear(D2D1::ColorF(0,0,0,0));
     for(auto& image:s.preparedImages)image.used=false;
     for(auto& image:s.frameImages)image.used=false;
@@ -117,7 +144,7 @@ bool WidgetCanvas::Finish(WidgetBitmap& out){
         [](const auto& image){return !image.used;}),s.preparedImages.end());
     s.frameImages.erase(std::remove_if(s.frameImages.begin(),s.frameImages.end(),
         [](const auto& image){return !image.used;}),s.frameImages.end());
-    out.width=s.width;out.height=s.height;out.pixels.resize(static_cast<std::size_t>(s.width)*s.height);
+    out.width=s.width;out.height=s.height;out.pixels.assign(static_cast<std::size_t>(s.width)*s.height,0);
     return SUCCEEDED(s.bitmap->CopyPixels(nullptr,s.width*4,static_cast<UINT>(out.pixels.size()*4),reinterpret_cast<BYTE*>(out.pixels.data())));
 }
 void WidgetCanvas::Text(const std::wstring& text,WidgetRect r,float size,std::uint32_t rgb,float alpha,bool semibold,WidgetTextAlign align){
@@ -132,16 +159,69 @@ void WidgetCanvas::Text(const std::wstring& text,WidgetRect r,float size,std::ui
     s.Color(0,.12f*alpha);auto shadow=r;shadow.y+=1;draw(shadow);
     s.Color(rgb,alpha);draw(r);
 }
+void WidgetCanvas::SerifText(const std::wstring& text,WidgetRect r,float size,std::uint32_t rgb,float alpha,WidgetTextWeight weight,WidgetTextAlign align){
+    auto& s=*state_;if(!s.drawing||text.empty()||r.width<=0||r.height<=0||!std::isfinite(size)||size<=0)return;
+    const auto format=s.Format(size,weight,align,text,true);if(!format)return;
+    // Default small-size serif rendering can change glyph coverage when an
+    // integer-pixel move is represented as fractional DIPs (e.g. 144 DPI).
+    // Keep the print face on one natural symmetric rasterization path, and
+    // restore the caller's parameters so ordinary UI fonts remain unchanged.
+    if(!s.serifRendering.value){
+        Com<IDWriteRenderingParams> defaults;
+        if(SUCCEEDED(s.factories->write->CreateRenderingParams(defaults.Put())))
+            s.factories->write->CreateCustomRenderingParams(defaults->GetGamma(),defaults->GetEnhancedContrast(),0,
+                DWRITE_PIXEL_GEOMETRY_FLAT,DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,s.serifRendering.Put());
+    }
+    Com<IDWriteRenderingParams> previous;
+    s.target->GetTextRenderingParams(previous.Put());
+    if(s.serifRendering.value)s.target->SetTextRenderingParams(s.serifRendering.value);
+    s.Color(rgb,alpha);
+    s.target->DrawText(text.data(),static_cast<UINT32>(text.size()),format,Rect(r),s.brush.value,D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    s.target->SetTextRenderingParams(previous.value);
+}
+void WidgetCanvas::FoldText(const std::wstring& text,WidgetRect bounds,float size,float hingeY,float verticalScale,
+                           std::uint32_t rgb,float alpha,WidgetTextWeight weight,WidgetTextAlign align){
+    auto& s=*state_;
+    if(!s.drawing||!std::isfinite(hingeY)||!std::isfinite(verticalScale)||verticalScale<=.01f)return;
+    D2D1_MATRIX_3X2_F previous;s.target->GetTransform(&previous);
+    s.target->SetTransform(D2D1::Matrix3x2F::Scale(1,std::min(1.f,verticalScale),D2D1::Point2F(0,hingeY))*previous);
+    Text(text,bounds,size,rgb,alpha,weight,align);
+    s.target->SetTransform(previous);
+}
 float WidgetCanvas::MeasureText(const std::wstring& text,float size,bool semibold){
     return MeasureText(text,size,semibold?WidgetTextWeight::Semibold:WidgetTextWeight::Normal);
 }
 float WidgetCanvas::MeasureText(const std::wstring& text,float size,WidgetTextWeight weight){
     auto& s=*state_;if(!s.drawing||text.empty()||!std::isfinite(size)||size<=0)return 0;
+    const auto key=State::MetricKey{text,size,weight,WidgetTextAlign::Left,ui_font::IsChinese(text)};
+    if(const auto found=s.metrics.find(key);found!=s.metrics.end())return found->second;
     const auto format=s.Format(size,weight,WidgetTextAlign::Left,text);if(!format)return 0;
     Com<IDWriteTextLayout> layout;DWRITE_TEXT_METRICS metrics{};
     if(FAILED(s.factories->write->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format,100000,10000,layout.Put()))||
        FAILED(layout->GetMetrics(&metrics)))return 0;
-    return metrics.widthIncludingTrailingWhitespace;
+    const auto value=metrics.widthIncludingTrailingWhitespace;
+    if(s.metrics.size()>=512)s.metrics.clear();
+    s.metrics.emplace(key,value);
+    return value;
+}
+float WidgetCanvas::MeasureWrappedText(const std::wstring& text,float width,float size,WidgetTextWeight weight){
+    auto& s=*state_;
+    if(!s.drawing||text.empty()||!std::isfinite(width)||width<=0||!std::isfinite(size)||size<=0)return 0;
+    const auto layout=s.Wrapped(text,width,size,weight);
+    return layout?layout->height:0;
+}
+void WidgetCanvas::WrappedText(const std::wstring& text,WidgetRect r,float size,std::uint32_t rgb,float alpha,WidgetTextWeight weight){
+    auto& s=*state_;
+    if(!s.drawing||text.empty()||!std::isfinite(r.x)||!std::isfinite(r.y)||
+       !std::isfinite(r.width)||r.width<=0||!std::isfinite(r.height)||r.height<=0||
+       !std::isfinite(size)||size<=0||!std::isfinite(alpha)||alpha<=0)return;
+    const auto layout=s.Wrapped(text,r.width,size,weight);if(!layout)return;
+    s.target->PushAxisAlignedClip(Rect(r),D2D1_ANTIALIAS_MODE_ALIASED);
+    s.Color(0,.12f*alpha);
+    s.target->DrawTextLayout(D2D1::Point2F(r.x,r.y+1),layout->layout.value,s.brush.value,D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    s.Color(rgb,alpha);
+    s.target->DrawTextLayout(D2D1::Point2F(r.x,r.y),layout->layout.value,s.brush.value,D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    s.target->PopAxisAlignedClip();
 }
 void WidgetCanvas::ScrollText(const std::wstring& text,WidgetRect viewport,float size,float offset,std::uint32_t rgb,float alpha){
     auto& s=*state_;if(!s.drawing||viewport.width<=0||viewport.height<=0||!std::isfinite(offset))return;
@@ -159,7 +239,13 @@ bool WidgetCanvas::PushClip(WidgetRect bounds){
 }
 void WidgetCanvas::Offset(float dx,float dy){
     auto& s=*state_;if(!s.drawing||!std::isfinite(dx)||!std::isfinite(dy))return;
-    s.target->SetTransform(D2D1::Matrix3x2F::Translation(dx,dy));
+    s.offsetX=dx;s.offsetY=dy;
+    s.target->SetTransform(D2D1::Matrix3x2F(s.scale,0,0,s.scale,dx*s.scale,dy*s.scale));
+}
+void WidgetCanvas::Scale(float value){
+    auto& s=*state_;if(!s.drawing||!std::isfinite(value)||value<=0)return;
+    s.scale=value;
+    s.target->SetTransform(D2D1::Matrix3x2F(value,0,0,value,s.offsetX*value,s.offsetY*value));
 }
 void WidgetCanvas::PopClip(){
     auto& s=*state_;if(!s.drawing||!s.clips)return;

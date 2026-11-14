@@ -6,6 +6,7 @@
 #include "core/ui/clock_page_state.h"
 #include "platform/windows/clock_runtime.h"
 #include "platform/windows/local_settings_file_store.h"
+#include "platform/windows/lume_window_ids.h"
 #include "platform/windows/widget_ui/resource.h"
 #include <windows.h>
 #include <algorithm>
@@ -53,7 +54,10 @@ std::vector<HWND> NativeMenus(HWND owner) {
         auto& search=*reinterpret_cast<NativeMenuSearch*>(value);DWORD process=0;
         if(GetWindowThreadProcessId(window,&process)!=GetCurrentThreadId()||process!=GetCurrentProcessId())return TRUE;
         wchar_t name[32]{};GetClassNameW(window,name,32);
-        if(std::wcscmp(name,L"#32768")||!IsWindowVisible(window))return TRUE;
+        if(std::wcscmp(name,window_ids::WidgetMenuClass)||!IsWindowVisible(window))return TRUE;
+        auto owner=GetWindow(window,GW_OWNER);
+        while(owner&&owner!=search.owner)owner=GetWindow(owner,GW_OWNER);
+        if(owner!=search.owner)return TRUE;
         search.windows.push_back(window);
         return TRUE;
     },reinterpret_cast<LPARAM>(&search));
@@ -62,6 +66,10 @@ std::vector<HWND> NativeMenus(HWND owner) {
 void PostMenuKey(HWND owner,UINT key) {
     const LPARAM scan=static_cast<LPARAM>(MapVirtualKeyW(key,MAPVK_VK_TO_VSC))<<16;
     PostMessageW(owner,WM_KEYDOWN,key,scan|1);PostMessageW(owner,WM_KEYUP,key,scan|0xc0000001u);
+}
+void CloseMenus(HWND owner){
+    // These are Lume popup windows with their own modal loop, not HMENUs.
+    for(const auto window:NativeMenus(owner))PostMessageW(window,WM_CLOSE,0,0);
 }
 struct PopupDriver {
     int rootRow;
@@ -74,6 +82,7 @@ struct PopupDriver {
     ColorInput colorInput=ColorInput::Hex;
     int stage=0;
     HWND root=nullptr;
+    HWND child=nullptr;
     ULONGLONG deadline=GetTickCount64()+5000;
     bool completed=false;
     bool timedOut=false;
@@ -96,38 +105,40 @@ UINT PopupCommand(const PopupDriver& popup) {
     return 0;
 }
 UINT RootIndex(const PopupDriver& popup) {
-    switch(popup.rootRow){case 0:return 1;case 1:return 2;case 2:return 3;case 4:return 4;case 5:return 5;case 6:return 6;case 8:return 7;default:return 99;}
+    // HOME selects the first action; DOWN skips separators in the real menu.
+    switch(popup.rootRow){case 0:return 0;case 1:return 1;case 2:return 2;case 4:return 3;case 5:return 4;case 6:return 5;case 8:return 6;default:return 99;}
 }
 UINT ChildIndex(const PopupDriver& popup) {
     if(popup.rootRow==2)return popup.childRow==3?2:static_cast<UINT>(popup.childRow);
     return popup.scrollSizeToEnd?25:static_cast<UINT>(popup.childRow);
 }
 void CALLBACK DrivePopup(HWND,UINT,UINT_PTR timer,DWORD) {
+    if(!activePopup)return;
     auto& p=*activePopup;
     if(GetTickCount64()>p.deadline) {
-        p.timedOut=true;KillTimer(nullptr,timer);EndMenu();
+        p.timedOut=true;KillTimer(nullptr,timer);CloseMenus(Clock());
         for(const auto* name:{L"LumeWidgetColorPickerWindow",L"LumeWidgetPositionEditorWindow"}) {
             if(HWND window=OwnWindow(name)) PostMessageW(window,WM_CLOSE,0,0);
         }
         return;
     }
     if(p.stage==0) {
-        const auto menus=NativeMenus(Clock());if(menus.empty())return;p.root=menus.front();p.stage=1;
-        if(p.cancelMenu){PostMenuKey(Clock(),VK_ESCAPE);p.selectionPosted=true;p.stage=4;return;}
+        p.root=OwnWindow(window_ids::WidgetMenuClass,Clock());if(!p.root||!IsWindowVisible(p.root))return;p.stage=1;
+        if(p.cancelMenu){PostMenuKey(p.root,VK_ESCAPE);p.selectionPosted=true;p.stage=4;return;}
         p.command=PopupCommand(p);if(!p.command||RootIndex(p)==99){
-            p.timedOut=true;KillTimer(nullptr,timer);EndMenu();return;}
+            p.timedOut=true;KillTimer(nullptr,timer);CloseMenus(Clock());return;}
         p.rootMovesRemaining=RootIndex(p);p.submenuPending=p.rootRow==0||p.rootRow==1||p.rootRow==2;
-        PostMenuKey(Clock(),VK_HOME);p.selectionPosted=true;return;
+        PostMenuKey(p.root,VK_HOME);p.selectionPosted=true;return;
     } else if(p.stage==1) {
-        if(p.rootMovesRemaining){PostMenuKey(Clock(),VK_DOWN);--p.rootMovesRemaining;return;}
-        if(p.submenuPending){PostMenuKey(Clock(),VK_RIGHT);p.stage=2;return;}
-        PostMenuKey(Clock(),VK_RETURN);p.stage=(p.color||p.position)?3:4;return;
+        if(p.rootMovesRemaining){PostMenuKey(p.root,VK_DOWN);--p.rootMovesRemaining;return;}
+        if(p.submenuPending){PostMenuKey(p.root,VK_RIGHT);p.stage=2;return;}
+        PostMenuKey(p.root,VK_RETURN);p.stage=(p.color||p.position)?3:4;return;
     } else if(p.stage==2 && p.submenuPending) {
-        const auto menus=NativeMenus(Clock());if(menus.size()<2)return;
-        p.childMovesRemaining=ChildIndex(p);PostMenuKey(Clock(),VK_HOME);p.stage=5;return;
+        p.child=OwnWindow(window_ids::WidgetMenuClass,p.root);if(!p.child||!IsWindowVisible(p.child))return;
+        p.childMovesRemaining=ChildIndex(p);PostMenuKey(p.child,VK_HOME);p.stage=5;return;
     } else if(p.stage==5 && p.submenuPending) {
-        if(p.childMovesRemaining){PostMenuKey(Clock(),VK_DOWN);--p.childMovesRemaining;return;}
-        PostMenuKey(Clock(),VK_RETURN);p.submenuPending=false;p.stage=(p.color||p.position)?3:4;return;
+        if(p.childMovesRemaining){PostMenuKey(p.child,VK_DOWN);--p.childMovesRemaining;return;}
+        PostMenuKey(p.child,VK_RETURN);p.submenuPending=false;p.stage=(p.color||p.position)?3:4;return;
     } else if(p.stage==3 && (p.color || p.position)) {
         HWND editor=OwnWindow(p.color?L"LumeWidgetColorPickerWindow":L"LumeWidgetPositionEditorWindow",Clock());
         if(!editor)return;
@@ -178,7 +189,7 @@ void Menu(PopupDriver action) {
     while(!action.completed&&!action.timedOut&&GetTickCount64()<deadline){MSG message{};
         if(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){if(message.message==WM_QUIT){PostQuitMessage(static_cast<int>(message.wParam));break;}
             TranslateMessage(&message);DispatchMessageW(&message);}else Sleep(1);}
-    if(!action.completed&&!action.timedOut){action.timedOut=true;EndMenu();}
+    if(!action.completed&&!action.timedOut){action.timedOut=true;CloseMenus(Clock());}
     KillTimer(nullptr,timer);activePopup=nullptr;
     Check(!action.timedOut && action.completed,"real menu/editor sequence completed before deadline");
     Check(NativeMenus(Clock()).empty()&&!OwnWindow(L"LumeWidgetColorPickerWindow")&&

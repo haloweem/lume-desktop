@@ -7,6 +7,7 @@
 #include "vendor/nlohmann/json.hpp"
 #include <windows.h>
 #include <winioctl.h>
+#include <wtsapi32.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -25,6 +26,24 @@ using Json=nlohmann::json;
 using Session=lume::shell::WallpaperSession;
 using Action=lume::ui::WallpaperAction;
 void Expect(bool b,const char* why){if(!b)throw std::runtime_error(why);}
+void DesktopCoverage(const fs::path&) {
+    using lume::shell::detail::WallpaperCoverageWindow;
+    using lume::shell::detail::WallpaperDisplayCovered;
+    const RECT first{0,0,1920,1080},second{1920,0,3840,1080},desktop{0,0,3840,1080};
+    Expect(WallpaperDisplayCovered(first,{{first,false},{desktop,true}}),"foreground fullscreen app pauses its own display");
+    Expect(!WallpaperDisplayCovered(second,{{first,false},{desktop,true}}),"fullscreen on another display leaves this desktop moving");
+    Expect(!WallpaperDisplayCovered(first,{{desktop,true},{first,false}}),"Show Desktop above a visible background game resumes wallpaper");
+    Expect(!WallpaperDisplayCovered(first,{{first,false},{desktop,true}},true),"an explicitly foreground desktop ignores a background game");
+    Expect(WallpaperDisplayCovered(second,{{first,true},{second,false},{desktop,true}}),"desktop on one screen does not dismiss an app covering another");
+    Expect(!WallpaperDisplayCovered(first,{{RECT{20,20,800,600},false},{desktop,true}}),"ordinary partial window does not pause fullscreen policy");
+    Expect(!WallpaperDisplayCovered(first,std::vector<WallpaperCoverageWindow>{}),"empty desktop is not covered");
+    Expect(!WallpaperDisplayCovered(first,{{desktop,false,true},{desktop,true}}),
+        "monitor-spanning taskbar preview does not pause the wallpaper behind it");
+    Expect(WallpaperDisplayCovered(first,{{desktop,false,true},{first,false},{desktop,true}}),
+        "a shell overlay does not exempt a real fullscreen application underneath it");
+    Expect(!WallpaperDisplayCovered(second,{{desktop,false,true},{first,false},{desktop,true}}),
+        "shell preview keeps fullscreen protection local to the actual game's display");
+}
 void Pump(unsigned millis) {
     const auto until=GetTickCount64()+millis;
     do {MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(5);}
@@ -125,13 +144,20 @@ struct ImportFixture {
     void Idle() {
         Expect(Wait([&]{return !session.HasWork();}),"import completes without retained worker ownership");
     }
-    void Drop(std::vector<std::wstring> paths) {
+    void Drop(std::vector<std::wstring> paths,unsigned deadlineMs=10000) {
         const auto revision=State(session).value("revision",std::uint64_t{0});
         const auto before=GetTickCount64();
         session.HandleDroppedFiles(std::move(paths));
         Expect(GetTickCount64()-before<100,"drop dispatch does not wait for filesystem I/O");
-        Expect(Wait([&]{return State(session).value("revision",std::uint64_t{0})>revision&&
-            !session.HasWork();},10000),"nonempty drop publishes its terminal result");
+        const bool completed=Wait([&]{return State(session).value("revision",std::uint64_t{0})>revision&&
+            !session.HasWork();},deadlineMs);
+        if(!completed||deadlineMs!=10000){
+            const auto state=State(session);
+            std::cout<<"import observation elapsedMs="<<GetTickCount64()-before<<" completed="<<completed
+                <<" busy="<<session.HasWork()<<" library="<<state.value("library",Json::array()).size()
+                <<" error="<<state.value("error",std::string{})<<'\n';
+        }
+        Expect(completed,"nonempty drop publishes its terminal result");
     }
     std::vector<lume::wallpaper::LibraryEntry> Persisted()const {
         lume::wallpaper::Library library(root.u8string());
@@ -210,7 +236,7 @@ void InvalidFiles(const fs::path& base) {
     Expect(State(fixture.session)["error"]=="WALLPAPER_IMPORT_PATH"&&fixture.Persisted().size()==3,
         "invalid UTF-16, NUL, empty and oversized paths cannot suppress a later valid file");
 }
-void ImportLimit(const fs::path& base) {
+void ImportLimit(const fs::path& base,unsigned deadlineMs=10000) {
     for(unsigned variant=0;variant<3;++variant) {
         ImportFixture fixture(base/std::to_string(variant));
         std::vector<std::wstring> paths;
@@ -220,7 +246,7 @@ void ImportLimit(const fs::path& base) {
         paths.insert(paths.begin()+1,paths.front());
         paths.push_back(paths.front());
         if(variant==2)paths.insert(paths.begin(),fixture.Source("invalid.txt").wstring());
-        fixture.Drop(paths);
+        fixture.Drop(paths,deadlineMs);
         const char* expected=variant==0?"":variant==1?"WALLPAPER_IMPORT_LIMIT":"WALLPAPER_IMPORT_FORMAT";
         Expect(fixture.Persisted().size()==32,"import limit counts successful unique files, not invalid or duplicate paths");
         Expect(State(fixture.session)["error"]==expected,
@@ -557,6 +583,66 @@ void BalancedPlayback(const fs::path& base) {
         "session reports a failed MPV transaction without changing its mode");
     Expect(SetBalanced(*fixture.session,true)&&fixture.Filtered(),"failed session mode can be retried");
 }
+void EarlyResumePlayback(const fs::path& base) {
+    PlaybackFixture fixture(base,false);
+    const auto restoredAt=GetTickCount64();
+    Expect(fixture.session->Restore(),"restore the early-resume playback gate");
+    fixture.Ready();
+    HWND notification=nullptr;
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM context)->BOOL {
+        wchar_t name[128]{};GetClassNameW(window,name,128);
+        if(wcscmp(name,L"LumeNativeWallpaperSession")==0) {
+            *reinterpret_cast<HWND*>(context)=window;return FALSE;
+        }
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&notification));
+    Expect(notification!=nullptr,"target only this fixture's own session notification window");
+    const auto players=[&] {
+        std::vector<DWORD> result;
+        EnumChildWindows(fixture.parent,[](HWND child,LPARAM context)->BOOL {
+            DWORD pid=0;GetWindowThreadProcessId(child,&pid);
+            auto& values=*reinterpret_cast<std::vector<DWORD>*>(context);
+            if(pid!=GetCurrentProcessId()&&std::find(values.begin(),values.end(),pid)==values.end())values.push_back(pid);
+            return TRUE;
+        },reinterpret_cast<LPARAM>(&result));
+        return result;
+    };
+    const auto paused=[&] {
+        const auto state=fixture.Player();
+        return state.is_object()&&state.value("running",false)&&state.value("pause",false);
+    };
+    Expect(Wait([&]{return players().size()==1&&paused();}),
+        "one owned child restores the actual manual pause");
+    const auto preferences=Read(fixture.root/"preferences.json");
+    struct DisplayPower {GUID setting;DWORD length;DWORD value;};
+    DisplayPower power{GUID_CONSOLE_DISPLAY_STATE,sizeof(DWORD),0};
+    auto freshAt=restoredAt;
+    for(unsigned cycle=0;cycle<2;++cycle) {
+        const auto before=players();
+        power.value=0;
+        SendMessageW(notification,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+        Expect(GetTickCount64()-freshAt<3000,"new display-off cycle invalidates a recently started child");
+        const auto revision=State(*fixture.session).value("revision",std::uint64_t{0});
+        power.value=1;
+        SendMessageW(notification,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+        Expect(Wait([&] {
+            const auto current=players();
+            return current.size()==1&&current!=before&&
+                State(*fixture.session).value("revision",std::uint64_t{0})>revision&&paused();
+        },5000),"each independent early display return refreshes the child and retains manual pause");
+        const auto after=players();freshAt=GetTickCount64();
+        SendMessageW(notification,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+        SendMessageW(notification,WM_POWERBROADCAST,PBT_APMRESUMESUSPEND,0);
+        SendMessageW(notification,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+        Pump(250);
+        Expect(players()==after,"same-burst resume notifications do not repeatedly restart the fresh child");
+        Expect(Wait([&]{return players()==after&&paused();})&&Read(fixture.root/"preferences.json")==preferences,
+            "resume events preserve actual manual pause and the saved preference bytes");
+    }
+    fixture.session->Shutdown();
+    Expect(Wait([&]{return players().empty()&&GetWindow(fixture.parent,GW_CHILD)==nullptr;}),
+        "early-resume gate releases every owned embedded child and container");
+}
 void FailedStaticSwitchKeepsSessionPlaying(const fs::path& base) {
     PlaybackFixture fixture(base,true,".webp");
     const auto sourceVideo=base/"next.mp4";
@@ -586,6 +672,7 @@ void FailedStaticSwitchKeepsSessionPlaying(const fs::path& base) {
     const auto screen=Screen(state,displays.front().id);
     Expect(screen["wallpaperId"]==previous["wallpaperId"]&&screen["state"]=="paused",
         "failed video switch keeps the previous static wallpaper and pause state");
+    Expect(screen["error"]=="","candidate playback rejection does not replace the retained display's healthy status");
     Expect(Read(fixture.root/"preferences.json")==preferences,
         "failed video switch does not persist an unconfirmed wallpaper");
     Expect(Wait([&] {
@@ -857,11 +944,18 @@ int main(int argc,char** argv) {
     if(argc==2&&std::string_view(argv[1])=="--download-admission-only") {
         run("download-admission",DownloadAdmission);fs::remove_all(base);return failures?1:0;
     }
+    if(argc==2&&std::string_view(argv[1])=="--import-limit-observation") {
+        // Diagnostic only: the ordinary suite still requires its 10s deadline.
+        // This records whether the same durable import eventually completes.
+        run("import-limit-observation",[](const auto& root){ImportLimit(root,45000);});
+        fs::remove_all(base);return failures?1:0;
+    }
     run("session-lifecycle",SessionLifecycle);
+    run("desktop-coverage",DesktopCoverage);
     run("multi-file-import",MultiFileImport);
     run("duplicate-paths",DuplicatePaths);
     run("invalid-files",InvalidFiles);
-    run("import-limit",ImportLimit);
+    run("import-limit",[](const auto& root){ImportLimit(root);});
     run("import-clears-error",ImportClearsError);
     run("cancel-queued-import",CancelQueuedImport);
     run("cancel-at-queue-limit",CancelAtQueueLimit);
@@ -878,6 +972,7 @@ int main(int argc,char** argv) {
     run("balanced-timeout",BalancedTimeout);
     run("balanced-shutdown",BalancedShutdown);
     run("balanced-playback",BalancedPlayback);
+    run("early-resume-playback",EarlyResumePlayback);
     run("failed-static-switch",FailedStaticSwitchKeepsSessionPlaying);
     run("native-static-no-player",[](const auto& root){NativeStaticWithoutPlayer(root,false);});
     run("native-protected-no-player",[](const auto& root){NativeStaticWithoutPlayer(root,true);});

@@ -77,7 +77,7 @@ DesktopSync SyncDesktop(State& state,const DesktopSnapshot& source,const TextKey
     // Entries the user took out stay out. A dismissal ends only when the user
     // puts the entry back into a collection: an entry missing from one desktop
     // scan (a shortcut an update rewrites, a briefly unavailable folder) must
-    // not return on the next. MaxDismissed bounds the list.
+    // not return on the next. Older dismissals are never evicted by item count.
     // Present: in any collection, so an entry the user moved to a custom tab
     // is not added to the desktop tabs a second time.
     std::set<std::string> present,dismissed;
@@ -99,7 +99,7 @@ DesktopSync SyncDesktop(State& state,const DesktopSnapshot& source,const TextKey
     for(const auto& collection:next.collections)if(collection.desktopRole==DesktopRole::None)
         for(const auto& item:collection.items)custom.insert(key(item.path));
     std::vector<DesktopEntry> moving;
-    std::map<std::string,std::string> origins;
+    std::set<std::string> movingKeys;
     std::set<std::string> retained;
     for(auto* collection:roles){
         const auto role=collection->desktopRole;
@@ -117,22 +117,17 @@ DesktopSync SyncDesktop(State& state,const DesktopSnapshot& source,const TextKey
             if(item.kind!=entry.item.kind||item.name!=name){item.kind=entry.item.kind;item.name=name;result.changed=true;}
             // The proper tab was deleted by the user: leave the entry where it is.
             if(role!=expected&&(expected==DesktopRole::Applications?applications:files)){
-                origins[identity]=collection->id;moving.push_back({std::move(item),entry.application});result.changed=true;}
+                movingKeys.insert(identity);moving.push_back({std::move(item),entry.application});result.changed=true;}
             else{retained.insert(identity);keep.push_back(std::move(item));}
         }
         collection->items=std::move(keep);
     }
-    for(const auto& [identity,entry]:live)if(!retained.count(identity)&&!custom.count(identity)&&
-        std::none_of(moving.begin(),moving.end(),[&](const auto& value){return key(value.item.path)==identity;}))moving.push_back(*entry);
+    for(const auto& [identity,entry]:live)if(!retained.count(identity)&&!custom.count(identity)&&movingKeys.insert(identity).second)
+        moving.push_back(*entry);
     for(auto& entry:moving){
         auto* target=entry.application?applications:files;const auto identity=key(entry.item.path);
         if(!target)continue;  // That desktop tab was deleted by the user.
         if(!retained.insert(identity).second)continue;
-        if(target->items.size()>=MaxItems){
-            result.limited=true;const auto origin=origins.find(identity);
-            if(origin!=origins.end())Find(next,origin->second)->items.push_back(entry.item);
-            continue;
-        }
         entry.item.desktop=true;entry.item.name=DisplayName(entry.item.path,entry.item.kind);
         target->items.push_back(std::move(entry.item));result.changed=true;
     }

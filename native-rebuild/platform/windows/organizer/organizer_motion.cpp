@@ -34,6 +34,9 @@ bool OrganizerMotion::Step(Spring& spring,float target,float dt,bool reducedMoti
 const OrganizerMotionFrame& OrganizerMotion::Update(const organizer::Collection& collection,const OrganizerLayout& layout,
     const std::optional<OrganizerPoint>& pointer,const std::vector<std::string>& dragged,
     std::string_view primary,OrganizerPoint offset,float dt,bool reducedMotion,bool external,std::size_t externalCount){
+    // The collapsed title bar has no item surface. Discard expanded springs
+    // and avoid rebuilding the complete item-ID set while it stays folded.
+    if(layout.collapsed){Reset();return frame_;}
     if(collectionId_!=collection.id){Reset();collectionId_=collection.id;}
     dt=std::isfinite(dt)?std::clamp(dt,0.f,.05f):0.f;
     const bool hasPointer=pointer&&std::isfinite(pointer->x)&&std::isfinite(pointer->y)&&

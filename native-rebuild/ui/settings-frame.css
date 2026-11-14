@@ -1,9 +1,9 @@
 /* Shared component sidebar, derived from the Dynamic Island frame. */
 .settings--sidebar {
-  --component-outer: #101114;
-  --component-nav: #1b1c20;
-  --component-card: #101114;
-  --component-panel: #101114;
+  --component-outer: var(--lume-page-background);
+  --component-nav: var(--lume-page-background);
+  --component-card: var(--lume-page-background);
+  --component-panel: var(--lume-page-background);
   --component-control: #1b1922;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);

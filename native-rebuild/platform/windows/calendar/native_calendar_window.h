@@ -2,7 +2,7 @@
 #include "core/calendar/calendar_controller.h"
 #include "platform/windows/calendar/calendar_month_picker.h"
 #include "platform/windows/calendar/calendar_snap.h"
-#include "platform/windows/calendar/calendar_todo_editor.h"
+#include "platform/windows/calendar/todo_sheet_window.h"
 #include "platform/windows/calendar/calendar_day_tooltip.h"
 #include "platform/windows/material/widget_material_runtime.h"
 #include <windows.h>
@@ -31,7 +31,7 @@ public:
     bool OpenTodoById(const std::string& id);
     bool AgendaOpen() const {return view_.agendaOpen;}
     const CalendarAgendaLayout& AgendaLayout() const {return agenda_;}
-    CalendarTodoEditor& TodoEditor() {return todoEditor_;}
+    TodoSheetWindow& TodoEditor() {return todoEditor_;}
     calendar::Profile CurrentBounds() const;
     std::optional<calendar::Profile> ConfirmedBounds() const { return interactionBounds_?interactionBounds_:confirmedBounds_; }
 private:
@@ -52,6 +52,7 @@ private:
     void AgendaAction(int);void ArmAgendaTimer();
     void RevealAgendaFocus();
     bool RefreshTodoClock();
+    void ReadTodos();
     HINSTANCE instance_; HWND window_=nullptr;
     std::function<void(calendar::Action)> handler_;std::function<void()> onOpenSettings_;
     std::function<calendar::Date()> todayProvider_;
@@ -64,7 +65,7 @@ private:
     CalendarMonthPicker picker_; CalendarRenderState view_;CalendarSnapState snap_;
     CalendarDayTooltip dayTooltip_;
     CalendarTodoPort todoPort_;CalendarTodoView todos_;CalendarAgendaLayout agenda_;
-    CalendarTodoEditor todoEditor_;bool todoBusy_=false;
+    TodoSheetWindow todoEditor_;bool todoBusy_=false;
     unsigned dpi_=96;bool dragging_=false,sizing_=false,menuOpen_=false,applying_=false,stopping_=false;
     POINT dragCursor_{};RECT dragOrigin_{};
     RECT dpiSuggested_{};bool dpiPending_=false;

@@ -17,6 +17,7 @@ namespace {
 constexpr ULONGLONG MaxLogBytes = 2ull << 20;
 constexpr std::size_t MaxLineBytes = 2048;
 constexpr std::size_t KeptDumps = 3;
+constexpr std::uintmax_t MaxDumpBytes = 16ull << 20;
 
 std::mutex& Lock() { static std::mutex lock; return lock; }
 std::filesystem::path& Root() { static std::filesystem::path root; return root; }
@@ -36,8 +37,8 @@ void AppendLocked(const std::string& line) {
     const auto file = root / L"lume.log";
     WIN32_FILE_ATTRIBUTE_DATA info{};
     if (GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &info) &&
-        ((static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow) >= MaxLogBytes)
-        MoveFileExW(file.c_str(), (root / L"lume.1.log").c_str(), MOVEFILE_REPLACE_EXISTING);
+        ((static_cast<ULONGLONG>(info.nFileSizeHigh) << 32) | info.nFileSizeLow) + line.size() > MaxLogBytes &&
+        !MoveFileExW(file.c_str(), (root / L"lume.1.log").c_str(), MOVEFILE_REPLACE_EXISTING)) return;
     const auto handle = CreateFileW(file.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                     nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return;
@@ -58,9 +59,13 @@ std::wstring DumpName(const wchar_t* kind) {
 void PruneDumps(const std::filesystem::path& folder) {
     std::error_code error;
     std::vector<std::filesystem::directory_entry> dumps;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error))
-        if (entry.path().extension() == L".dmp") dumps.push_back(entry);
-    if (dumps.size() <= KeptDumps) return;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (!entry.is_regular_file(error) || entry.is_symlink(error) ||
+            entry.path().filename().wstring().rfind(L"LumeShell-", 0) != 0 || entry.path().extension() != L".dmp") continue;
+        const auto bytes = entry.file_size(error);
+        if (!error && bytes > MaxDumpBytes) { std::filesystem::remove(entry.path(), error); continue; }
+        if (!error) dumps.push_back(entry);
+    }
     std::sort(dumps.begin(), dumps.end(), [](const auto& a, const auto& b) {
         std::error_code ignored;
         return a.last_write_time(ignored) > b.last_write_time(ignored);
@@ -92,7 +97,9 @@ void WriteDump(EXCEPTION_POINTERS* exception, const wchar_t* kind) {
         const bool written = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
                                                exception ? &info : nullptr, nullptr, nullptr) != FALSE;
         CloseHandle(file);
-        if (!written) DeleteFileW(path.c_str());
+        std::error_code sizeError;
+        const auto bytes = std::filesystem::file_size(path, sizeError);
+        if (!written || sizeError || bytes > MaxDumpBytes) DeleteFileW(path.c_str());
         else CrashLog("minidump written: " + path.filename().u8string());
     }
     PruneDumps(folder);
@@ -138,6 +145,7 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* exception) {
 void Initialize(const std::filesystem::path& directory) {
     std::error_code error;
     std::filesystem::create_directories(directory, error);
+    try { PruneDumps(directory / L"crashes"); } catch (...) {}
     std::lock_guard<std::mutex> lock(Lock());
     Root() = directory;
     // The material DLL has its own CRT and cannot call the shell logger. Share

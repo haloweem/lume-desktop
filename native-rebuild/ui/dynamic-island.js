@@ -1,7 +1,22 @@
 import {toggle,escapeHTML as h} from './dom.js';
 import {settingsFrame,settingsSelect,syncSettingsControlBusy} from './settings-frame.js';
 import {t} from './localization.js';
-import {compactWidgetPicker,compactSelectionLabel,syncCompactWidgetPicker} from './compact-widgets.js';
+import {expandedWidgetPicker,syncExpandedWidgetPicker,validExpandedLayout,expandedSelectionSummary,decodeExpandedLayout,encodeExpandedLayout} from './expanded-widgets.js';
+import {todoBoardMarkup} from './todo-board.js';
+import {islandNotificationsPage,syncIslandNotifications} from './island-notifications.js';
+import {islandStyles,syncIslandStyles} from './island-styles.js';
+
+// Focus remains hidden; music, the calendar, to-dos, clock and performance
+// are offered. The host keeps any saved layout and projects
+// it the same way, so a hidden-only layout falls back to music.
+const availableExpandedWidgets=[0,1,4,5,3];
+const releasedLayout=code=>{
+  const ids=decodeExpandedLayout(code??1);if(!ids)return 1;
+  const shown=ids.filter(id=>availableExpandedWidgets.includes(id));
+  return ids.length&&!shown.length?1:encodeExpandedLayout(shown);
+};
+const releaseState=state=>({...state,dynamicIsland:{...state.dynamicIsland,
+  expandedLayout:releasedLayout(state.dynamicIsland.expandedLayout)}});
 
 export function validIslandState(m) {
   const keys=['version','type','enabled','running','locked','expanded','focusing','finished','remaining',
@@ -9,11 +24,14 @@ export function validIslandState(m) {
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget');
   const screens=Object.hasOwn(m||{},'screen')&&Array.isArray(m.screens);
   const animation=['hoverDelayMs','animationSpeed','bounce'].some(key=>Object.hasOwn(m||{},key));
-  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0)+(animation?3:0) &&
+  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'expandedLayout')?1:0)+(Object.hasOwn(m,'clockStyle')?1:0)+(Object.hasOwn(m,'calendarStyle')?1:0)+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0)+(animation?3:0) &&
     keys.every(key=>Object.hasOwn(m,key)) && m.version===1 && m.type==='dynamicIsland-state' &&
     ['enabled','running','locked','expanded','focusing','finished','saved','hideFullscreen','topmost','hover','autoHide'].every(key=>typeof m[key]==='boolean') &&
     islandSizes.includes(m.size) && islandMaterials.includes(m.material) &&
     (!Object.hasOwn(m,'shape')||['standard','capsule'].includes(m.shape)) &&
+    (!Object.hasOwn(m,'expandedLayout')||validExpandedLayout(m.expandedLayout)) &&
+    (!Object.hasOwn(m,'clockStyle')||['simple','progress','digital','date','flip','pixel'].includes(m.clockStyle)) &&
+    (!Object.hasOwn(m,'calendarStyle')||['default','chinese-almanac'].includes(m.calendarStyle)) &&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30))&&
     (!screens||(Number.isInteger(m.screen)&&m.screen>=0&&m.screen<=64&&m.screens.length>=1&&m.screens.length<=64&&m.screens.every((id,index)=>id===index+1)))&&
     (!animation||(validIslandHoverDelay(m.hoverDelayMs)&&islandAnimationSpeeds.includes(m.animationSpeed)&&islandBounces.includes(m.bounce)))&&
@@ -39,7 +57,10 @@ export function validIslandPreview(m) {
   const keys=['version','type','mode','shape','material','size','width','height','image','error'];
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget')&&Array.isArray(m.readings);
   const animation=Object.hasOwn(m||{},'animationSpeed')||Object.hasOwn(m||{},'bounce');
-  return !!m&&typeof m==='object'&&!Array.isArray(m)&&Object.keys(m).length===keys.length+(Object.hasOwn(m,'animating')?1:0)+(compact?3:0)+(animation?2:0)&&keys.every(key=>Object.hasOwn(m,key))&&
+  return !!m&&typeof m==='object'&&!Array.isArray(m)&&Object.keys(m).length===keys.length+(Object.hasOwn(m,'expandedLayout')?1:0)+(Object.hasOwn(m,'animating')?1:0)+(Object.hasOwn(m,'clockStyle')?1:0)+(Object.hasOwn(m,'calendarStyle')?1:0)+(compact?3:0)+(animation?2:0)&&keys.every(key=>Object.hasOwn(m,key))&&
+    (!Object.hasOwn(m,'expandedLayout')||validExpandedLayout(m.expandedLayout))&&
+    (!Object.hasOwn(m,'clockStyle')||['simple','progress','digital','date','flip','pixel'].includes(m.clockStyle))&&
+    (!Object.hasOwn(m,'calendarStyle')||['default','chinese-almanac'].includes(m.calendarStyle))&&
     (!animation||(islandAnimationSpeeds.includes(m.animationSpeed)&&islandBounces.includes(m.bounce)))&&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30&&
       m.readings.length<=30&&m.readings.every(row=>row&&typeof row==='object'&&Object.keys(row).length===5&&
@@ -80,10 +101,10 @@ function screenButtons(p,disabled) {
 }
 function islandHome(state) {
   const p=state.dynamicIsland;
-  const expanded=state.dynamicIslandPreviewMode==='expanded';
   return `<div class="island-home" data-island-home>
     <aside class="island-appearance" aria-label="${t('外观','Appearance')}">
       <h1 class="settings-component-title">${t('灵动岛','Dynamic Island')}</h1>
+      <div class="island-appearance__scroll">
       <div class="island-appearance__head"><h2>${t('外观','Appearance')}</h2><button type="button" data-action="dynamicIsland-resetAppearance" ${busy(state)?'disabled':''}>↺ ${t('重置','Reset')}</button></div>
       <div class="island-appearance__body">
         <div class="island-appearance__row island-appearance__row--inline">
@@ -132,8 +153,8 @@ function islandHome(state) {
             <div class="setting-range" data-island-delay-range>
               <label class="island-appearance__label" for="island-hover-delay">${t('悬停延迟','Hover delay')}</label>
               <div class="island-animation__delay">
-                <input id="island-hover-delay" data-island-hover-delay type="range" min="100" max="1000" step="10" value="${p.hoverDelayMs??320}" aria-valuetext="${delayLabel(p.hoverDelayMs??320)}" aria-describedby="island-hover-delay-hint" ${busy(state)?'disabled':''}>
-                <output for="island-hover-delay">${delayLabel(p.hoverDelayMs??320)}</output>
+                <input id="island-hover-delay" data-island-hover-delay type="range" min="100" max="1000" step="50" value="${p.hoverDelayMs??300}" aria-valuetext="${delayLabel(p.hoverDelayMs??300)}" aria-describedby="island-hover-delay-hint" ${busy(state)?'disabled':''}>
+                <output for="island-hover-delay">${delayLabel(p.hoverDelayMs??300)}</output>
               </div>
               <span class="island-animation__hint" id="island-hover-delay-hint">${t('鼠标悬停后自动展开的等待时间，0.1～1 秒','Wait before expanding on hover, from 0.1 to 1 second')}</span>
             </div>
@@ -152,28 +173,24 @@ function islandHome(state) {
           </div>
         </div>
       </section>
+      </div>
     </aside>
     <div class="island-home__main">
-    <section class="island-home__preview-shell" aria-label="${t('灵动岛实时预览','Dynamic Island live preview')}">
-      <div class="island-home__preview-stage ${expanded?'is-expanded':'is-compact'}" data-island-preview-stage data-island-shape="${p.shape||'capsule'}" data-island-size="${p.size}" data-island-material="${p.material}">
-        <img class="island-home__native-preview" data-island-native-preview alt="${t('灵动岛原生渲染预览','Native island preview')}" hidden>
-        <span class="island-home__preview-wait" data-island-preview-wait>${t('正在读取桌面预览…','Loading desktop preview…')}</span>
-        <div class="island-preview-sides" data-island-preview-sides role="group" aria-label="${t('选择组件位置','Choose widget side')}">
-          <button type="button" data-island-compact-side="left" aria-label="${t('编辑左侧组件','Edit left widget')}"></button>
-          <button type="button" data-island-compact-side="right" aria-label="${t('编辑右侧组件','Edit right widget')}"></button>
-        </div>
-        <span class="island-preview-selection" data-island-preview-selection>${compactSelectionLabel(state)}</span>
-        <div class="island-home__preview-stage-modes" role="group" aria-label="${t('预览状态','Preview state')}">
-          <button type="button" data-island-preview-mode="compact" aria-pressed="${!expanded}">${t('收缩','Collapse')}</button>
-          <button type="button" data-island-preview-mode="expanded" aria-pressed="${expanded}">${t('展开','Expand')}</button>
-        </div>
-      </div>
+    <div class="island-home__components-scroll">
+    <section class="island-component-workspace is-expanded" data-island-component-workspace>
+    <div class="island-component-workspace__head">
+      <div class="island-component-workspace__title"><h2 data-island-component-title>${t('展开态组件','Expanded widgets')}</h2><span class="island-component-summary" data-island-component-summary aria-label="${t('已启用组件','Enabled widgets')}">${expandedSelectionSummary(p.expandedLayout??1)}</span></div>
+      <p data-island-component-hint>${t('点击开关启用音乐、日历、待办、时间或性能','Use the switches to enable music, calendar, to-dos, clock or performance.')}</p>
+    </div>
+    <div data-island-expanded-panel>${expandedWidgetPicker(state,availableExpandedWidgets)}</div>
+    ${islandStyles(state)}
     </section>
-    ${compactWidgetPicker(state)}
+    </div>
     </div>
   </div>`;
 }
 export function islandPage(state,tab='settings') {
+  state=releaseState(state);
   const p=state.dynamicIsland,disabled=busy(state);
   const button=(action,label,inactive=false)=>`<button type="button" class="reset" data-action="dynamicIsland-${action}" ${inactive?'disabled':''}>${label}</button>`;
   const preferences=
@@ -184,79 +201,32 @@ export function islandPage(state,tab='settings') {
   const details=
     `<div class="settings-details"><h3>${t('功能说明','About the island')}</h3><p>${t('胶囊固定在顶部中央，点击展开或收起；展开后鼠标离开几秒会自动收起。','The capsule stays centered at the top and expands or collapses when clicked; it collapses a few seconds after the pointer leaves.')}</p><p>${t('默认在全屏程序和游戏前台时完全隐藏，不抢焦点。','By default it hides completely in front of fullscreen apps and games and never takes focus.')}</p><p>${t('展开后点击其他任意位置即收起；右键胶囊可切换材质。','When expanded, clicking anywhere else collapses it; right-click the capsule to change the material.')}</p><p>${t('播放音乐时显示封面、歌曲、歌手、进度和节奏频谱，并提供切歌与播放控制。','When music is playing, it shows the cover, track, artist, progress and beat spectrum with playback controls.')}</p></div>`;
   const labels={home:t('首页','Home'),music:t('音乐','Music'),todo:t('待办','To-do'),'quick-launch':t('快捷启动','Quick launch'),clock:t('时钟','Clock'),notifications:t('通知','Notifications'),settings:t('设置','Settings'),details:t('详情','Details')};
-  const body=tab==='home'?islandHome(state):tab==='settings'?preferences:tab==='details'?details:
+  const body=tab==='home'?islandHome(state):tab==='settings'?preferences:tab==='details'?details:tab==='todo'?todoBoardMarkup('island'):tab==='notifications'?islandNotificationsPage(state):
     `<div class="island-editor"><h2>${labels[tab]||labels.home}</h2><p class="island-editor__empty">${t('此模块的灵动岛参数将在后续接入。','Island options for this module will be added later.')}</p></div>`;
   return settingsFrame({title:t('灵动岛','Dynamic Island'),description:t('音乐播放信息与控制','Music playback information and controls'),
     tab,body,status:islandStatus(state),error:state.dynamicIslandStatus==='error',scope:'dynamicIsland',backLabel:t('返回桌面美化','Back to desktop styles'),variant:'island'});
 }
-const previewImages=new WeakMap();
-function presentPreview(stage,frame,matches) {
-  const image=stage.querySelector('[data-island-native-preview]'),wait=stage.querySelector('[data-island-preview-wait]');
-  if(!image)return;
-  let record=previewImages.get(image);
-  if(!record){record={requested:'',shown:'',pending:null};previewImages.set(image,record);}
-  // Keep the last decoded frame while settings are acknowledged and the new
-  // native image is prepared. Invalidate any in-flight image from an old choice.
-  if(frame&&!matches){record.pending=null;record.requested=record.shown;}
-  if(!frame){
-    record.requested='';record.shown='';record.pending=null;image.removeAttribute('src');image.hidden=true;
-    stage.classList.remove('has-native-preview');
-  }
-  if(matches&&record.requested!==frame.image) {
-    record.requested=frame.image;
-    const next=new Image();record.pending=next;
-    next.onload=()=>{
-      if(!image.isConnected||record.pending!==next)return;
-      image.src=next.src;record.shown=frame.image;record.pending=null;image.hidden=false;
-      stage.classList.add('has-native-preview');if(wait)wait.hidden=true;
-    };
-    next.onerror=()=>{
-      if(record.pending!==next)return;
-      record.pending=null;record.requested='';
-      if(wait&&!record.shown){wait.hidden=false;wait.textContent=t('预览暂不可用','Preview temporarily unavailable');}
-    };
-    next.src=frame.image;
-  }
-  if(wait){wait.hidden=!!record.shown;wait.textContent=frame?.error?t('预览暂不可用','Preview temporarily unavailable'):t('正在读取桌面预览…','Loading desktop preview…');}
-}
 export function syncIslandControls(root,state) {
+  syncIslandNotifications(root,state);
+  state=releaseState(state);
   const p=state.dynamicIsland,disabled=busy(state);
+  const syncBusy=(control,inactive=disabled)=>{
+    syncSettingsControlBusy(control,inactive);
+    control.toggleAttribute('data-island-pending',state.dynamicIslandStatus==='saving'&&inactive);
+  };
   const home=root.querySelector('[data-island-home]');
   if(home) {
-    const expanded=state.dynamicIslandPreviewMode==='expanded';
-    const stage=home.querySelector('[data-island-preview-stage]');
-    if(stage) {
-      stage.classList.toggle('is-expanded',expanded);
-      stage.classList.toggle('is-compact',!expanded);
-      stage.dataset.islandShape=p.shape||'capsule';
-      stage.dataset.islandSize=p.size;
-      stage.dataset.islandMaterial=p.material;
-      const frame=state.dynamicIslandPreview;
-      const matches=frame&&!frame.error&&frame.mode===(expanded?'expanded':'compact')&&frame.shape===(p.shape||'capsule')&&frame.material===p.material&&frame.size===p.size&&
-        (frame.animationSpeed===undefined||frame.animationSpeed===(p.animationSpeed??'normal')&&frame.bounce===(p.bounce??'normal'))&&
-        (frame.leftWidget===undefined||frame.leftWidget===(p.leftWidget??0)&&frame.rightWidget===(p.rightWidget??0));
-      presentPreview(stage,frame,matches);
-      const scale=p.size==='small'?.86:p.size==='large'?1.16:1;
-      const width=(expanded?372:(p.leftWidget||p.rightWidget)?360:236)*scale;
-      const height=(expanded?156:(p.leftWidget||p.rightWidget)?36:34)*scale;
-      const top=(p.shape==='standard'?0:8)*scale;
-      const hit=stage.querySelector('[data-island-preview-sides]');
-      hit.hidden=expanded;hit.style.width=`${width/960*100}%`;
-      hit.style.top=`${top/300*100}%`;hit.style.height=`${height/300*100}%`;
-      const label=stage.querySelector('[data-island-preview-selection]');
-      label.hidden=expanded;label.textContent=compactSelectionLabel(state);
-      label.style.top=`${(top+height+10)/300*100}%`;
+    const summary=home.querySelector('[data-island-component-summary]');
+    if(summary.dataset.layout!==String(p.expandedLayout??1)){
+      summary.dataset.layout=String(p.expandedLayout??1);summary.innerHTML=expandedSelectionSummary(p.expandedLayout??1);
     }
-    home.querySelectorAll('[data-island-preview-mode]').forEach(button=>{
-      button.setAttribute('aria-pressed',String(button.dataset.islandPreviewMode===(expanded?'expanded':'compact')));
-    });
     home.querySelectorAll('button[data-island-shape]').forEach(button=>{
       button.setAttribute('aria-pressed',String(button.dataset.islandShape===(p.shape||'capsule')));
-      syncSettingsControlBusy(button,disabled);
+      syncBusy(button);
     });
     home.querySelectorAll('[data-island-preference]').forEach(button=>{
       button.setAttribute('aria-pressed',String(p[button.dataset.islandPreference]===button.dataset.value));
-      syncSettingsControlBusy(button,disabled);
+      syncBusy(button);
     });
     const screens=home.querySelector('[data-island-screen-options]');
     if(screens){
@@ -264,47 +234,48 @@ export function syncIslandControls(root,state) {
       if(screens.dataset.islandScreenOptions!==ids){screens.dataset.islandScreenOptions=ids;screens.innerHTML=screenButtons(p,disabled);}
       screens.querySelectorAll('[data-island-screen]').forEach(button=>{
         button.setAttribute('aria-pressed',String(Number(button.dataset.islandScreen)===(p.screen??1)));
-        syncSettingsControlBusy(button,disabled);
+        syncBusy(button);
       });
     }
     const unavailable=home.querySelector('[data-island-screen-unavailable]');
     if(unavailable)unavailable.hidden=!(p.screen>0&&!screenIds(p).includes(p.screen));
     home.querySelectorAll('[data-island-expansion]').forEach(button=>{
       button.setAttribute('aria-pressed',String(p.hover===(button.dataset.islandExpansion==='hover')));
-      syncSettingsControlBusy(button,disabled);
+      syncBusy(button);
     });
     const delay=home.querySelector('[data-island-hover-delay]');
     if(delay){
       const submitted=Number(delay.dataset.submitted);
       const pending=state.dynamicIslandStatus==='saving';
-      previewIslandHoverDelay(delay,pending&&validIslandHoverDelay(submitted)?submitted:(p.hoverDelayMs??320));
+      previewIslandHoverDelay(delay,pending&&validIslandHoverDelay(submitted)?submitted:(p.hoverDelayMs??300));
       if(!pending)delete delay.dataset.submitted;
-      syncSettingsControlBusy(delay,disabled);
+      syncBusy(delay);
     }
-    syncCompactWidgetPicker(home,state);
+    syncIslandStyles(home,state);
+    syncExpandedWidgetPicker(home,state);
   }
   for(const [action,value] of [['toggle',p.enabled],...displayToggles().map(([a,key])=>[a,p[key]])]) {
     root.querySelectorAll(`[data-action="dynamicIsland-${action}"]`).forEach(button=>{
       button.classList.toggle('checked',value);button.setAttribute('aria-checked',String(value));
-      syncSettingsControlBusy(button,disabled);
+      syncBusy(button);
     });
   }
   const layer=root.querySelector('#dynamicIsland-layer');
   if(layer){
-    syncSettingsControlBusy(layer,disabled);
+    syncBusy(layer);
     const value=p.topmost?'above':'desktop';
     const options=root.querySelector('#dynamicIsland-layer-options');
     options?.querySelectorAll('[data-select-value]').forEach(option=>{
       const selected=option.dataset.selectValue===value;option.setAttribute('aria-selected',String(selected));
       option.querySelector('span').textContent=selected?'✓':'';
       if(selected)layer.querySelector('span').textContent=option.childNodes[0].textContent;
-      syncSettingsControlBusy(option,disabled);
+      syncBusy(option);
     });
   }
   root.querySelectorAll('[data-action^="dynamicIsland-"]').forEach(button=>{
     const action=button.dataset.action.slice('dynamicIsland-'.length);
     if(['toggle','lock','hideFullscreen','topmost','hover','autoHide'].includes(action))return;
-    syncSettingsControlBusy(button,disabled||(!['reset','resetAppearance'].includes(action)&&!p.enabled));
+    syncBusy(button,disabled||(!['reset','resetAppearance'].includes(action)&&!p.enabled));
     if(['expand','collapse'].includes(action)) {
       button.dataset.action=`dynamicIsland-${p.expanded?'collapse':'expand'}`;
       button.textContent=p.expanded?t('收起','Collapse'):t('展开','Expand');

@@ -4,10 +4,12 @@
 #include "platform/windows/organizer/organizer_icons.h"
 #include "platform/windows/material/material_api.h"
 #include "composed_corners_test.h"
+#include "unique_test_directory.h"
 #include "vendor/nlohmann/json.hpp"
 #include <objbase.h>
 #include <shlobj.h>
 #include <dwmapi.h>
+#include <windowsx.h>
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -400,6 +402,136 @@ int BatchDrop(){
     Expect(!session.Running()&&OrganizerIconCache::ActiveWorkers()==0,"bulk organizer stops its window and extraction worker");
     session.Shutdown();return 0;
 }
+void LargeIconRequests(organizer::Collection collection){
+    using namespace platform::windows;
+    collection.mode=organizer::Mode::Expanded;
+    const auto pixel=std::make_shared<const WidgetBitmap>(WidgetBitmap{1,1,{0xff40a0ffu}});
+    std::atomic_uint loads{0};
+    OrganizerIconCache cache([&](const auto&,const auto&,unsigned){++loads;return pixel;},true);
+    const auto verifyVisible=[&](const OrganizerLayout& layout,const std::vector<std::wstring>& paths){
+        Expect(paths.size()<=MaxIconPaths,"large organizer requests stay within the unchanged 256-icon budget");
+        std::size_t visible=0;
+        for(const auto& cell:layout.cells){
+            if(cell.bounds.y+cell.bounds.height<=layout.viewport.y||
+               cell.bounds.y>=layout.viewport.y+layout.viewport.height)continue;
+            ++visible;
+            const auto path=OrganizerWide(collection.items[cell.index].path);
+            Expect(std::find(paths.begin(),paths.end(),path)!=paths.end(),"every intersecting visible item is requested");
+        }
+        Expect(visible>0&&visible<=MaxIconPaths,"supported organizer viewport fits its icon working set");
+    };
+    auto layout=LayoutOrganizer(420,392,collection);
+    auto paths=shell::detail::OrganizerIconPathsForViewport(collection,layout);
+    verifyVisible(layout,paths);
+    Expect(paths.size()==MaxIconPaths&&paths.front()==OrganizerWide(collection.items.front().path),
+        "1000-item tab prioritizes the first visible row and bounds prefetch");
+    Expect(cache.SetPaths(paths,{}),"bounded first viewport accepted by real cache with fake loader");
+    WaitForIconBatch();
+    OrganizerViewState bottom;bottom.scroll=layout.maxScroll;
+    layout=LayoutOrganizer(420,392,collection,bottom);
+    paths=shell::detail::OrganizerIconPathsForViewport(collection,layout);
+    verifyVisible(layout,paths);
+    const auto tail=OrganizerWide(collection.items.back().path);
+    Expect(std::find(paths.begin(),paths.end(),tail)!=paths.end(),"scrolling requests the last item beyond index 256");
+    Expect(cache.SetPaths(paths,{}),"tail viewport accepted without enlarging cache");WaitForIconBatch();
+    Expect(cache.Find(tail)==pixel&&cache.CachedPaths()<=MaxIconPaths,"last icon is loaded and total recent cache remains bounded");
+    OrganizerViewState search;search.searchOpen=search.filtered=true;
+    search.query="entry-500.txt";search.visible=organizer::Search(collection,search.query,OrganizerSearchKey);
+    layout=LayoutOrganizer(420,392,collection,search);
+    paths=shell::detail::OrganizerIconPathsForViewport(collection,layout);
+    const auto searched=OrganizerWide(collection.items[500].path);
+    Expect(paths==std::vector<std::wstring>{searched},"search prioritizes a middle item absent from the current viewport");
+    Expect(cache.SetPaths(paths,{}),"search working set accepted");WaitForIconBatch();
+    Expect(cache.Find(searched)==pixel&&cache.CachedPaths()<=MaxIconPaths,"searched icon loads without retaining the whole collection");
+    collection.iconScale=50;
+    OrganizerViewState middle;
+    const auto wide=LayoutOrganizer(1200,720,collection);
+    middle.scroll=wide.maxScroll*.5f+17.f;
+    layout=LayoutOrganizer(1200,720,collection,middle);
+    paths=shell::detail::OrganizerIconPathsForViewport(collection,layout);
+    verifyVisible(layout,paths);
+    Expect(cache.SetPaths(paths,{}),"largest window and smallest icons keep a valid bounded working set");WaitForIconBatch();
+    Expect(cache.CachedPaths()<=MaxIconPaths&&loads>0,"large-window scrolling preserves the cache ceiling");
+    cache.Stop();
+    Expect(OrganizerIconCache::ActiveWorkers()==0,"fake-loader viewport test releases its finite worker");
+}
+int LargeCollection(){
+    using namespace platform::windows;
+    const auto directory=UniqueTestDirectory(std::filesystem::temp_directory_path(),"lume-organizer-large-");
+    struct Cleanup{std::filesystem::path directory;~Cleanup(){std::error_code error;std::filesystem::remove_all(directory,error);}}cleanup{directory};
+    std::vector<std::string> paths;std::vector<std::wstring> widePaths;
+    auto seed=organizer::Defaults();auto& collection=seed.collections.front();
+    collection.enabled=true;collection.mode=organizer::Mode::Collapsed;
+    for(unsigned i=0;i<1100;++i){
+        const auto item=directory/("entry-"+std::to_string(i)+".txt");
+        std::ofstream output(item,std::ios::binary);output<<i;Expect(output.good(),"create owned large-collection reference");
+        paths.push_back(item.u8string());widePaths.push_back(item.wstring());
+        if(i<1000)collection.items.push_back({"00000000-0000-4000-8000-"+std::to_string(100000000000ULL+i),
+            item.u8string(),item.filename().u8string(),organizer::ItemKind::File});
+    }
+    LargeIconRequests(collection);
+    Files files;Expect(organizer::Encode(seed,files.data["large.json"]),"persist 1000-item seed without a count limit");
+    std::wstring opened;
+    {
+        shell::OrganizerSession session(GetModuleHandleW(nullptr),"large.json",{},[]{},&files,
+            [&](HWND,const std::wstring& path){opened=path;return true;});
+        Expect(session.Restore()&&session.Running()&&session.Snapshot().collections.front().items.size()==1000,
+            "real session restores and runs a 1000-item collection with bounded icons");
+        DropFiles(session.Handle(),std::vector<std::wstring>(widePaths.begin(),widePaths.begin()+1050));
+        Expect(session.Snapshot().collections.front().items.size()==1050&&
+            nlohmann::json::parse(OrganizerUtf8(session.State())).at("error")=="",
+            "native file drop accepts more than 1024 paths and saves all new references");
+        Expect(session.AddPaths(paths)&&session.Snapshot().collections.front().items.size()==1100,
+            "public add accepts more than 1024 paths without truncation or duplicates");
+        organizer::Store reader(files,OrganizerPathKey);
+        Expect(reader.Load("large.json").value.collections.front().items.size()==1100,
+            "all 1100 references survive persisted reload");
+        const auto saved=files.data.at("large.json");
+        const auto extra=directory/"rollback.txt";{std::ofstream output(extra);output<<"keep";}
+        files.fail=true;
+        Expect(!session.AddPaths({extra.u8string()})&&session.Snapshot().collections.front().items.size()==1100&&
+            files.data.at("large.json")==saved&&session.Running(),"failed save rolls back a large collection and its live runtime");
+        files.fail=false;
+        SendMessageW(session.Handle(),WM_COMMAND,5,0);Pump();
+        const auto hwnd=session.Handle();RECT bounds{};GetClientRect(hwnd,&bounds);
+        const auto dpi=GetDpiForWindow(hwnd);
+        const float width=static_cast<float>(bounds.right)*96/(dpi?dpi:96);
+        const float height=static_cast<float>(bounds.bottom)*96/(dpi?dpi:96);
+        const auto& current=organizer::Find(session.Snapshot(),"default")->items;
+        OrganizerViewState bottom;bottom.scroll=LayoutOrganizer(width,height,*organizer::Find(session.Snapshot(),"default")).maxScroll;
+        const auto layout=LayoutOrganizer(width,height,*organizer::Find(session.Snapshot(),"default"),bottom);
+        // Each message must fit WM_MOUSEWHEEL's signed 16-bit delta. Cover the
+        // actual extent rather than assuming one large wheel event reaches it.
+        constexpr unsigned wheelNotches=200;
+        const auto wheelBatches=static_cast<std::size_t>(bottom.scroll/(90.f*wheelNotches))+1;
+        for(std::size_t i=0;i<wheelBatches;++i)
+            SendMessageW(hwnd,WM_MOUSEWHEEL,MAKEWPARAM(0,static_cast<WORD>(-WHEEL_DELTA*static_cast<int>(wheelNotches))),0);
+        const auto last=std::find_if(layout.cells.begin(),layout.cells.end(),[&](const auto& cell){return cell.index+1==current.size();});
+        Expect(last!=layout.cells.end(),"large layout retains the final index");
+        Click(hwnd,last->bounds);SendMessageW(hwnd,WM_KEYDOWN,VK_SPACE,0);
+        Expect(opened==widePaths.back(),"last item beyond 1000 remains selectable and opens only the injected port");
+        Click(hwnd,layout.search);Pump();
+        const auto editor=Editor(hwnd);Expect(editor!=nullptr,"large collection opens its real search editor");
+        SetWindowTextW(editor,L"entry-1099.txt");Pump();
+        OrganizerViewState search;search.searchOpen=search.filtered=true;
+        search.query="entry-1099.txt";search.visible=organizer::Search(*organizer::Find(session.Snapshot(),"default"),search.query,OrganizerSearchKey);
+        const auto filtered=LayoutOrganizer(width,height,*organizer::Find(session.Snapshot(),"default"),search);
+        Expect(filtered.cells.size()==1&&filtered.cells.front().index==1099,"search finds the final reference without changing its model index");
+        opened.clear();Click(hwnd,filtered.cells.front().bounds);SendMessageW(hwnd,WM_KEYDOWN,VK_SPACE,0);
+        Expect(opened==widePaths.back(),"native filtered hit opens the final reference");
+        SendMessageW(hwnd,WM_KEYDOWN,VK_ESCAPE,0);Pump();
+        session.Shutdown();
+        Expect(OrganizerIconCache::ActiveWorkers()==0,"large-session shutdown releases icon extraction workers");
+    }
+    {
+        shell::OrganizerSession reopened(GetModuleHandleW(nullptr),"large.json",{},[]{},&files);
+        Expect(reopened.Restore()&&reopened.Running()&&reopened.Snapshot().collections.front().items.size()==1100,
+            "a new real session reopens every saved reference beyond the cache budget");
+        reopened.Shutdown();
+    }
+    std::cout<<"PASS organizer 1000-item restore, 1050-path native drop, 1100 references, bounded viewport icons, tail/search and rollback\n";
+    return 0;
+}
 int SelectionDismiss(){
     using ui::PageCommand;using namespace platform::windows;
     Files files;unsigned opened=0;
@@ -501,7 +633,8 @@ int main(int argc,char** argv){
     }
     if(argc==2&&std::string(argv[1])=="--grouped-close"){const auto result=GroupedClose();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--batch-drop"){const auto result=BatchDrop();CoUninitialize();return result;}
-    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop|--selection-dismiss]");
+    if(argc==2&&std::string(argv[1])=="--large-collection"){const auto result=LargeCollection();CoUninitialize();return result;}
+    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop|--large-collection|--selection-dismiss]");
     Expect(OrganizerPathKey(u8"C:\\ÉCOLE.TXT")==OrganizerPathKey(u8"c:\\école.txt"),"Unicode path identity");
     Expect(OrganizerSearchKey(u8"ＡＢＣ　报告")=="abc "+std::string(u8"报告"),"NFKC search matching");
     {
@@ -519,7 +652,7 @@ int main(int argc,char** argv){
         glassPanels[1].radius==glassPanels[1].height/2,
         "expanded organizer search uses the launchpad's pill glass panel");
     searchCollection.mode=organizer::Mode::Collapsed;
-    searchLayout=LayoutOrganizer(180,216,searchCollection,searchView);
+    searchLayout=LayoutOrganizer(OrganizerCollapsedWidth,OrganizerCollapsedHeight,searchCollection,searchView);
     Expect(OrganizerSearchPanels(searchLayout,searchView).size()==1,
         "collapsed organizer never adds an offscreen search input panel");
     }
@@ -867,13 +1000,17 @@ int main(int argc,char** argv){
         SendMessageW(root,WM_COMMAND,4,0);
         RECT rectangle{};GetWindowRect(root,&rectangle);
         const auto dpi=static_cast<int>(GetDpiForWindow(root));
-        Expect(collection().mode==organizer::Mode::Expanded&&
-            MulDiv(rectangle.right-rectangle.left,96,dpi)==420,"retired collapse command leaves the organizer expanded");
+        Expect(collection().mode==organizer::Mode::Collapsed&&
+            MulDiv(rectangle.right-rectangle.left,96,dpi)==OrganizerCollapsedWidth&&
+            MulDiv(rectangle.bottom-rectangle.top,96,dpi)==OrganizerCollapsedHeight,"collapse command displays only the compact header");
         MINMAXINFO limits{};SendMessageW(root,WM_GETMINMAXINFO,0,reinterpret_cast<LPARAM>(&limits));
-        Expect(limits.ptMinTrackSize.x==MulDiv(120,dpi,96)&&limits.ptMaxTrackSize.x>limits.ptMinTrackSize.x,"organizer remains freely resizable to 120 DIP");
+        Expect(limits.ptMinTrackSize.x==MulDiv(OrganizerCollapsedWidth,dpi,96)&&limits.ptMinTrackSize.y==MulDiv(OrganizerCollapsedHeight,dpi,96)&&
+            limits.ptMaxTrackSize.x==limits.ptMinTrackSize.x,"collapsed header has a fixed compact size");
+        const auto savedScale=collection().iconScale;
         SendMessageW(root,WM_COMMAND,160,0);
-        Expect(collection().iconScale==60,"right click icon size command is scoped to this organizer");
+        Expect(collection().iconScale==savedScale,"removed right click icon size command no longer changes settings");
         SendMessageW(root,WM_COMMAND,200,0);
+        SendMessageW(root,WM_COMMAND,5,0);
         layout=LayoutOrganizer(420,392,collection());
         Click(root,layout.search);
         Expect(collection().mode==organizer::Mode::Expanded&&Editor(root),"search works in the expanded organizer");
@@ -959,12 +1096,25 @@ int main(int argc,char** argv){
         layout=LayoutOrganizer(500,480,*organizer::ActiveTab(session.Snapshot(),"default"),[&]{
             OrganizerViewState v;v.tabs={OrganizerWide(rootDefault),L"新建收纳"};v.activeTab=0;return v;}());
         const auto tabPoint=Point(root,layout.tabs[1]);
+        POINT tabScreen{GET_X_LPARAM(tabPoint),GET_Y_LPARAM(tabPoint)};
+        Expect(ClientToScreen(root,&tabScreen)&&SetCursorPos(tabScreen.x,tabScreen.y),"place long-press fixture cursor on its actual tab");
+        Pump();POINT actualCursor{};
+        Expect(GetCursorPos(&actualCursor)&&actualCursor.x==tabScreen.x&&actualCursor.y==tabScreen.y,
+            "long-press fixture begins without an unrelated real mouse-move offset");
         SendMessageW(root,WM_LBUTTONDOWN,MK_LBUTTON,tabPoint);
         // Pump through the 400 ms long-press timer instead of one fixed sleep.
         for(const auto until=GetTickCount64()+700;GetTickCount64()<until;){Pump();Sleep(10);}
-        SetCursorPos(rootRect.right+MulDiv(300,dpi,96),rootRect.top+MulDiv(200,dpi,96));
-        SendMessageW(root,WM_MOUSEMOVE,MK_LBUTTON,tabPoint);
-        SendMessageW(root,WM_LBUTTONUP,0,tabPoint);Pump();
+        Expect(GetWindowRect(root,&rootRect)!=FALSE,"refresh the real detach source bounds");
+        MONITORINFO monitor{sizeof(monitor)};
+        Expect(GetMonitorInfoW(MonitorFromWindow(root,MONITOR_DEFAULTTONEAREST),&monitor)!=FALSE,"detach fixture monitor");
+        POINT outside{monitor.rcWork.right-12,monitor.rcWork.bottom-12};
+        if(PtInRect(&rootRect,outside))outside={monitor.rcWork.left+12,monitor.rcWork.top+12};
+        Expect(!PtInRect(&rootRect,outside)&&SetCursorPos(outside.x,outside.y)&&GetCursorPos(&actualCursor)&&
+            actualCursor.x==outside.x&&actualCursor.y==outside.y,"detach fixture releases at a reachable point outside the source");
+        POINT outsideClient=outside;Expect(ScreenToClient(root,&outsideClient)!=FALSE,"convert detach point to client coordinates");
+        const auto releasePoint=MAKELPARAM(outsideClient.x,outsideClient.y);
+        SendMessageW(root,WM_MOUSEMOVE,MK_LBUTTON,releasePoint);
+        SendMessageW(root,WM_LBUTTONUP,0,releasePoint);Pump();
         Expect(organizer::Tabs(session.Snapshot(),"default").size()==1&&session.Handle(otherId)&&
             organizer::Find(session.Snapshot(),otherId)->items.size()==1,"long-press and release outside detaches the tab with its icons");
         // A short press never detaches.

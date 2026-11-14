@@ -54,11 +54,14 @@ test('desktop entry uses the bundled static forest independently of home posters
       harness.receive({version:1,type:'wallpaper-state',revision:1,status:'idle',error:'',loadStatus:'loaded',
         playerAvailable:true,catalogStatus:'ready',catalogError:'',catalog,library:[],likedIds:[],displays:[],
         download:{id:'',status:'idle',received:0,total:0,error:''},pauseFullscreen:false});
-      const {initialMusicState}=await import('./music.js'),{query,nav,lyrics,...native}=initialMusicState();
+      const {initialMusicState}=await import('./music.js'),{query,nav,lyrics,score,...native}=initialMusicState();
+      const {validHostMessage}=await import('./bridge.js');
       const track={id:'fixture',title:'Desktop fixture',artist:'Lume',album:'',artwork:'',source:'C:/fixture.wav',duration:60};
-      harness.receive({...native,version:1,type:'music-state',session:1,revision:1,pageOpen:true,pageVisible:true,
+      const snapshot={...native,version:1,type:'music-state',session:1,revision:1,pageOpen:true,pageVisible:true,
         status:'paused',current:track,queue:[track],timeline:{position:3,duration:60},
-        capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}});
+        capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}};
+      if(!validHostMessage(snapshot))throw new Error('Home background fixture must use the native music-state schema');
+      harness.receive(snapshot);
     });
     const firstHero=await page.locator('.HomeHero img').getAttribute('src');
     assert.match(firstHero,/forest-2\.webp$/);

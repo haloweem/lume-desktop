@@ -41,11 +41,15 @@ constexpr int ExpandedMinWidth=120;
 constexpr int ExpandedMinHeight=216;
 constexpr int ExpandedMaxWidth=1200;
 constexpr int ExpandedMaxHeight=720;
-constexpr widget::Limits Limits{420,392,ExpandedMinWidth,ExpandedMinHeight,ExpandedMaxWidth,ExpandedMaxHeight,true};
+constexpr int DefaultWidth=420,DefaultHeight=392;
+constexpr int NewCollectionWidth=260,NewCollectionHeight=680;
+constexpr widget::Limits Limits{DefaultWidth,DefaultHeight,ExpandedMinWidth,OrganizerCollapsedHeight,ExpandedMaxWidth,ExpandedMaxHeight,true};
 constexpr UINT SearchEditor=43101,TitleEditor=43102,CheckFocus=43103;
 constexpr UINT PresentEditorMessage=WM_APP+0x6b1;
 constexpr UINT_PTR EditorCaretTimer=43104;
 constexpr UINT_PTR MotionTimer=43105;
+constexpr UINT_PTR DropHoverTimer=43107;
+constexpr UINT DropHoverMilliseconds=450;
 // Long-press a tab to lift it out of its group; release on the strip reorders
 // it, outside the window detaches it, over another collection's header moves
 // it into that group. While the press is held, small hand movement (TabPressSlop
@@ -94,7 +98,46 @@ std::string CreateUuid(){
 }
 // The organizer holds desktop icons: it stays above every other widget (and
 // below the Dock), so a clicked clock or player never covers its icons.
-WidgetWindowPorts Shelf(WidgetWindowPorts ports){ports.shelf=true;return ports;}
+WidgetWindowPorts Shelf(WidgetWindowPorts ports,std::function<float(float,float)> radius){
+    ports.shelf=true;ports.cornerRadius=std::move(radius);return ports;
+}
+}
+std::vector<std::wstring> detail::OrganizerIconPathsForViewport(const organizer::Collection& collection,
+    const OrganizerLayout& layout){
+    std::vector<std::wstring> paths;paths.reserve(std::min(collection.items.size(),MaxIconPaths));
+    std::set<std::string> queued;
+    const auto append=[&](std::size_t at){
+        if(paths.size()>=MaxIconPaths||at>=layout.cells.size())return;
+        const auto index=layout.cells[at].index;if(index>=collection.items.size())return;
+        const auto& path=collection.items[index].path;
+        if(queued.insert(path).second)paths.push_back(OrganizerWide(path));
+    };
+    std::size_t first=layout.cells.size(),last=0,nearest=0;
+    float nearestDistance=0;bool haveNearest=false;
+    for(std::size_t i=0;i<layout.cells.size();++i){
+        const auto& cell=layout.cells[i];
+        if(cell.index>=collection.items.size())continue;
+        const float distance=cell.bounds.y+cell.bounds.height<layout.viewport.y?
+            layout.viewport.y-cell.bounds.y-cell.bounds.height:
+            std::max(0.f,cell.bounds.y-layout.viewport.y-layout.viewport.height);
+        if(!haveNearest||distance<nearestDistance){haveNearest=true;nearest=i;nearestDistance=distance;}
+        if(cell.bounds.y+cell.bounds.height<=layout.viewport.y||
+           cell.bounds.y>=layout.viewport.y+layout.viewport.height)continue;
+        if(first==layout.cells.size())first=i;
+        last=i;append(i);
+    }
+    if(first==layout.cells.size()){
+        if(!haveNearest)return paths;
+        first=last=nearest;append(nearest);
+    }
+    // Prefetch around this viewport, not always from the start of a large tab.
+    // Search and collapsed layouts only include their actual displayed cells.
+    auto before=first,after=last+1;
+    while(paths.size()<MaxIconPaths&&(before>0||after<layout.cells.size())){
+        if(after<layout.cells.size())append(after++);
+        if(before>0)append(--before);
+    }
+    return paths;
 }
 struct OrganizerSession::Impl {
     struct Entry {
@@ -124,7 +167,9 @@ struct OrganizerSession::Impl {
                 const auto* c=Collection();if(!c)return false;
                 if(Collapsed())return true;
                 return HitOrganizer(static_cast<float>(window.Bounds().width),static_cast<float>(window.Bounds().height),*c,x,y,view).kind!=OrganizerHit::Kind::None;
-            },false,true,false,[this](float,float){return Collapsed()?36u:0u;}
+            },false,true,false,{}
+        },[this](float width,float height){
+            return Collapsed()?10.f:std::max(22.f,std::min(width*.064705882353f,height*.061111111111f));
         })){}
         ~Entry(){Stop();}
         // id names the host collection that owns this window; Collection() is
@@ -149,9 +194,10 @@ struct OrganizerSession::Impl {
         void SyncTabs(){
             const auto tabs=organizer::Tabs(owner.state,id);
             const auto* active=Collection();
-            view.tabs.clear();view.activeTab=0;
+            view.tabs.clear();view.tabAccents.clear();view.activeTab=0;
             if(tabs.size()>1)for(std::size_t i=0;i<tabs.size();++i){
                 view.tabs.push_back(Wide(tabs[i]->title));
+                view.tabAccents.push_back(tabs[i]->accent);
                 if(tabs[i]==active)view.activeTab=i;
             }
             if(view.liftedTab&&*view.liftedTab>=view.tabs.size())view.liftedTab.reset();
@@ -203,7 +249,7 @@ struct OrganizerSession::Impl {
         std::vector<std::size_t> VisibleIndices()const{
             const auto* c=Collection();if(!c)return {};
             auto visible=organizer::Search(*c,view.query,OrganizerSearchKey);
-            if(Collapsed()&&visible.size()>4)visible.resize(4);
+            if(Collapsed())visible.clear();
             return visible;
         }
         std::vector<std::string> ItemIds(bool visibleOnly=false)const{
@@ -318,9 +364,26 @@ struct OrganizerSession::Impl {
             if(stopping||owner.stopped)return;
             externalDrop=feedback.phase!=OrganizerDropFeedback::Phase::Leave&&feedback.supported;
             externalCount=externalDrop?feedback.count:0;
+            view.dropTarget=externalDrop;
             const auto dpi=GetDpiForWindow(window.Handle());const float scale=96.f/(dpi?dpi:96);
-            if(externalDrop)pointer=OrganizerPoint{feedback.point.x*scale,feedback.point.y*scale};
-            else pointer.reset();
+            if(externalDrop){
+                pointer=OrganizerPoint{feedback.point.x*scale,feedback.point.y*scale};
+                const auto b=window.Bounds();const auto* c=Collection();
+                const auto hit=c?HitOrganizer(static_cast<float>(b.width),static_cast<float>(b.height),*c,pointer->x,pointer->y,view):OrganizerHit{};
+                view.dropTab=hit.kind==OrganizerHit::Kind::Tab?std::optional<std::size_t>(hit.index):std::nullopt;
+                const auto target=view.dropTab?TabId(*view.dropTab):ContentId();
+                if(Collapsed()||target!=ContentId()){
+                    if(!dropHoverPending||dropHoverTarget!=target){
+                        dropHoverTarget=target;dropHoverPending=true;
+                        dropHoverDue=GetTickCount64()+DropHoverMilliseconds;
+                        SetTimer(window.Handle(),DropHoverTimer,DropHoverMilliseconds,nullptr);
+                    }
+                }else{KillTimer(window.Handle(),DropHoverTimer);dropHoverPending=false;dropHoverTarget.clear();}
+            }else{
+                KillTimer(window.Handle(),DropHoverTimer);dropHoverPending=false;dropHoverTarget.clear();
+                pointer.reset();view.dropTab.reset();
+                if(dropExpanded){dropExpanded=false;CollapseTemporary();}
+            }
             window.Paint();
         }
         void MarqueeSelection(OrganizerPoint point){
@@ -342,6 +405,7 @@ struct OrganizerSession::Impl {
         }
         void RevealSelection(){
             if(!view.selected||Collapsed())return;
+            const auto previousScroll=view.scroll;
             const auto layout=Layout();
             const auto selected=std::find_if(layout.cells.begin(),layout.cells.end(),
                 [&](const auto& cell){return cell.index==*view.selected;});
@@ -350,6 +414,7 @@ struct OrganizerSession::Impl {
             else if(selected->bounds.y+selected->bounds.height>layout.viewport.y+layout.viewport.height)
                 view.scroll+=selected->bounds.y+selected->bounds.height-layout.viewport.y-layout.viewport.height;
             view.scroll=std::clamp(view.scroll,0.f,layout.maxScroll);
+            if(view.scroll!=previousScroll)RefreshIcons();
         }
         void Filter(){
             const auto* c=Collection();if(!c)return;
@@ -358,7 +423,7 @@ struct OrganizerSession::Impl {
             if(view.selected&&(*view.selected>=c->items.size()||
                 (view.filtered&&std::find(view.visible.begin(),view.visible.end(),*view.selected)==view.visible.end())))view.selected.reset();
             interaction.Reconcile(ItemIds(true));SyncSelection();
-            view.scroll=std::clamp(view.scroll,0.f,Layout().maxScroll);
+            if(!Collapsed())view.scroll=std::clamp(view.scroll,0.f,Layout().maxScroll);
         }
         bool Configure(){
             auto* c=Collection();if(!c)return false;
@@ -368,14 +433,14 @@ struct OrganizerSession::Impl {
                 if(interaction.Dragging()||marquee)CancelDrag();
                 if(!shownId.empty()){FinishTitle(false);CloseSearch();}
                 interaction.Clear();view.selected.reset();view.selection.clear();view.order.clear();
-                view.scroll=0;hover.reset();shownId=c->id;
+                if(!shownId.empty())tabScrollPositions[shownId]=view.scroll;
+                view.scroll=tabScrollPositions[c->id];hover.reset();shownId=c->id;
             }
             if(interaction.Dragging()&&ItemIds()!=dragOriginal)CancelDrag();
             const auto* host=organizer::Find(owner.state,id);if(!host)return false;
             widget::Preferences p=widget::Defaults(Limits);p.enabled=true;p.locked=host->locked;p.frosted=host->frosted;
             if(host->bounds){p.placed=true;p.x=host->bounds->x;p.y=host->bounds->y;p.width=host->bounds->width;p.height=host->bounds->height;}
-            if(Collapsed()){p.width=180;p.height=216;}
-            else if(view.temporaryExpanded){p.width=420;p.height=392;}
+            if(Collapsed()){p.width=OrganizerCollapsedWidth;p.height=OrganizerCollapsedHeight;}
             else{p.width=std::clamp(p.width,ExpandedMinWidth,ExpandedMaxWidth);
                 p.height=std::clamp(p.height,ExpandedMinHeight,ExpandedMaxHeight);}
             if(!window.Configure(p)||!window.Start())return false;
@@ -384,7 +449,13 @@ struct OrganizerSession::Impl {
             if(dropWindow!=window.Handle()){
                 // Retry registration on the next Configure if OLE refused it.
                 if(dropTarget.Attach(window.Handle(),[this](const auto& feedback){DropFeedback(feedback);},
-                    [this](const auto& paths,POINT){const bool ok=owner.AddPaths(ContentId(),paths);owner.Publish(!ok);return ok;}))
+                    [this](const auto& paths,POINT point){
+                        const auto dpi=GetDpiForWindow(window.Handle());const float scale=96.f/(dpi?dpi:96);
+                        const auto b=window.Bounds();const auto* c=Collection();
+                        const auto hit=c?HitOrganizer(static_cast<float>(b.width),static_cast<float>(b.height),*c,point.x*scale,point.y*scale,view):OrganizerHit{};
+                        const auto target=hit.kind==OrganizerHit::Kind::Tab?TabId(hit.index):ContentId();
+                        const bool ok=owner.AddPaths(target,paths);owner.Publish(!ok);return ok;
+                    }))
                     dropWindow=window.Handle();
             }
             PositionEditor();
@@ -394,18 +465,8 @@ struct OrganizerSession::Impl {
             return window.Paint();
         }
         bool RefreshIcons(unsigned dpi=0){
-            const auto* c=Collection();if(!c||!window.Handle())return false;
-            std::vector<std::wstring> paths;paths.reserve(c->items.size());
-            // Visible rows first, then the rest of this tab. Shell extraction
-            // stays off-thread even when the collection has many items.
-            const auto layout=Layout();std::set<std::string> queued;
-            for(const auto& cell:layout.cells){
-                if(cell.index>=c->items.size()||cell.bounds.y+cell.bounds.height<=layout.viewport.y||
-                    cell.bounds.y>=layout.viewport.y+layout.viewport.height)continue;
-                const auto& targetPath=c->items[cell.index].path;
-                if(queued.insert(targetPath).second)paths.push_back(Wide(targetPath));
-            }
-            for(const auto& item:c->items)if(queued.insert(item.path).second)paths.push_back(Wide(item.path));
+            const auto* c=Collection();if(!c||!window.Handle()||stopping)return false;
+            const auto paths=detail::OrganizerIconPathsForViewport(*c,Layout());
             const auto receiver=window.Handle();
             return icons.SetPaths(paths,[this,receiver]{
                 if(!iconUpdatePosted.exchange(true)&&
@@ -414,10 +475,11 @@ struct OrganizerSession::Impl {
         }
         void Stop(){
             stopping=true;dropTarget.Detach();dropWindow=nullptr;HideTabGhost();HideRemoveGhost();
-            if(window.Handle()){KillTimer(window.Handle(),MotionTimer);KillTimer(window.Handle(),TabPressTimer);}
+            if(window.Handle()){KillTimer(window.Handle(),MotionTimer);KillTimer(window.Handle(),TabPressTimer);KillTimer(window.Handle(),DropHoverTimer);}
             shownId.clear();
             motionTimer=false;motion.Reset();interaction.Clear();interaction.EndDrag();pointer.reset();marquee.reset();
             externalDrop=false;externalCount=0;lastMotionTick=0;dragPrimary.clear();
+            dropHoverPending=false;dropHoverTarget.clear();dropExpanded=false;view.dropTarget=false;view.dropTab.reset();
             DestroyEditor();icons.Stop();window.Stop();iconUpdatePosted=false;
             view={};hover.reset();pressed.reset();lastClick=0;stopping=false;
         }
@@ -566,7 +628,7 @@ struct OrganizerSession::Impl {
             if(e->editor==hwnd&&e->editorKind==SearchEditor&&
                 (message==WM_CHAR||message==WM_SETTEXT||message==WM_PASTE||message==WM_CUT||
                  message==WM_CLEAR||message==WM_UNDO||message==EM_REPLACESEL||message==WM_IME_COMPOSITION||message==WM_IME_ENDCOMPOSITION)){
-                e->view.query=OrganizerUtf8(WindowText(hwnd));e->view.scroll=0;e->pressed.reset();e->Filter();e->window.Paint();
+                e->view.query=OrganizerUtf8(WindowText(hwnd));e->view.scroll=0;e->pressed.reset();e->Filter();e->RefreshIcons();e->window.Paint();
             }
             if(e->editor==hwnd){
                 switch(message){
@@ -598,23 +660,37 @@ struct OrganizerSession::Impl {
             window.Paint();
         }
         void CloseSearch(){
+            if(!view.searchOpen&&!(editor&&editorKind==SearchEditor))return;
             if(editorKind==SearchEditor)DestroyEditor();
-            view.searchOpen=false;view.query.clear();view.filtered=false;view.visible.clear();view.scroll=0;
-            pressed.reset();window.Paint();
+            view.searchOpen=false;view.query.clear();view.filtered=false;view.visible.clear();view.scroll=searchRestoreScroll;
+            pressed.reset();RefreshIcons();window.Paint();
         }
         void ToggleSearch(){
             if(view.searchOpen){CloseSearch();SetFocus(window.Handle());return;}
-            FinishTitle(true);view.searchOpen=true;
+            FinishTitle(true);searchRestoreScroll=view.scroll;view.searchOpen=true;
             if(Collapsed()){view.temporaryExpanded=true;view.scroll=0;if(!Configure()){view.temporaryExpanded=false;owner.error="runtime";return;}}
-            BeginEditor(SearchEditor);window.Paint();
+            BeginEditor(SearchEditor);RefreshIcons();window.Paint();
+        }
+        void ExpandTemporarily(bool focus=true){
+            if(!Collapsed())return;
+            view.temporaryExpanded=true;
+            if(!Configure()){
+                view.temporaryExpanded=false;Configure();owner.error="runtime";owner.Publish(true);return;
+            }
+            if(focus)SetFocus(window.Handle());
+            window.Paint();
+        }
+        void CollapseTemporary(){
+            if(!view.temporaryExpanded)return;
+            CloseSearch();FinishTitle(true);view.temporaryExpanded=false;Configure();
         }
         void CheckLostFocus(){
-            if(stopping||owner.applying||menu)return;
+            if(stopping||owner.applying||menu||externalDrop)return;
             const auto focus=GetFocus();
             if(focus==window.Handle()||(editor&&(focus==editor||IsChild(editor,focus))))return;
             ClearSelection();pointer.reset();
             if(view.temporaryExpanded){
-                CloseSearch();FinishTitle(true);view.temporaryExpanded=false;view.scroll=0;Configure();
+                CollapseTemporary();
             }else if(view.searchOpen)CloseSearch();  // clicked elsewhere, e.g. the desktop
             window.Paint();
         }
@@ -785,8 +861,18 @@ struct OrganizerSession::Impl {
             if(command==8||command==9){owner.Native(*this,command==8?WidgetAction::Liquid:WidgetAction::Frosted,window.Bounds());return;}
             if(command==10){owner.Native(*this,WidgetAction::Reset,window.Bounds());return;}
             if(command==12){owner.Native(*this,WidgetAction::Lock,window.Bounds());return;}
-            if(command>=150&&command<=220){
-                const bool ok=owner.Apply([&](auto& state){organizer::Find(state,id)->iconScale=static_cast<int>(command)-100;});
+            if(command>=230&&command<=235){
+                const auto content=ContentId();
+                const bool ok=owner.Apply([&](auto& state){organizer::Find(state,content)->accent=static_cast<organizer::Accent>(command-230);});
+                owner.Publish(!ok);return;
+            }
+            if(command==4||command==5){
+                FinishTitle(false);CloseSearch();
+                const bool temporary=view.temporaryExpanded;view.temporaryExpanded=false;
+                const bool ok=owner.Apply([&](auto& state){
+                    organizer::Find(state,id)->mode=command==4?organizer::Mode::Collapsed:organizer::Mode::Expanded;
+                });
+                if(!ok&&temporary){view.temporaryExpanded=true;Configure();}
                 owner.Publish(!ok);return;
             }
             if(command!=6&&command!=7)return;
@@ -821,7 +907,7 @@ struct OrganizerSession::Impl {
             if(Gdiplus::GdiplusStartup(&token,&input,nullptr)!=Gdiplus::Ok)return;
             menu=true;
             const auto command=LumeWidgetMenu::ShowOrganizer(window.Handle(),point,
-                c->layout==organizer::Layout::List,c->frosted,c->locked,c->iconScale,item);
+                c->mode==organizer::Mode::Collapsed,c->layout==organizer::Layout::List,c->frosted,c->locked,item,static_cast<int>(c->accent));
             menu=false;Gdiplus::GdiplusShutdown(token);
             Command(command);
         }
@@ -849,15 +935,27 @@ struct OrganizerSession::Impl {
                         if(pointer->y<r.y+30)speed=-420*std::clamp((r.y+30-pointer->y)/30,0.f,1.f);
                         else if(pointer->y>r.y+r.height-30)speed=420*std::clamp((pointer->y-r.y-r.height+30)/30,0.f,1.f);
                         const auto old=view.scroll;view.scroll=std::clamp(view.scroll+speed*elapsed,0.f,layout.maxScroll);
-                        if(old!=view.scroll){if(interaction.Dragging())PreviewDrag(*pointer);if(marquee)MarqueeSelection(*pointer);}
+                        if(old!=view.scroll){RefreshIcons();if(interaction.Dragging())PreviewDrag(*pointer);if(marquee)MarqueeSelection(*pointer);}
                     }
                 }
                 window.Paint();return 0;
             }
             if(message==WM_CONTEXTMENU){Menu(l);return 0;}
+            if(message==WM_TIMER&&w==DropHoverTimer){
+                if(!dropHoverPending)return 0;
+                if(GetTickCount64()<dropHoverDue)return 0;
+                KillTimer(hwnd,DropHoverTimer);dropHoverPending=false;
+                if(!externalDrop||dropHoverTarget.empty())return 0;
+                if(dropHoverTarget!=ContentId()){
+                    const auto tabs=organizer::Tabs(owner.state,id);
+                    for(std::size_t i=0;i<tabs.size();++i)if(tabs[i]->id==dropHoverTarget){Activate(i);break;}
+                }
+                if(Collapsed()){ExpandTemporarily(false);dropExpanded=view.temporaryExpanded;}
+                return 0;
+            }
             if(message==WM_COMMAND){
                 const auto command=LOWORD(w);
-                if(command==CheckFocus||command==MergeCommand||(command>=1&&command<=RemoveCommand)||(command>=150&&command<=220)){Command(command);return 0;}
+                if(command==CheckFocus||command==MergeCommand||(command>=1&&command<=RemoveCommand)||(command>=230&&command<=235)){Command(command);return 0;}
             }
             if(message==WM_CTLCOLOREDIT&&editor&&reinterpret_cast<HWND>(l)==editor){
                 const auto dc=reinterpret_cast<HDC>(w);SetTextColor(dc,RGB(255,255,255));
@@ -868,10 +966,10 @@ struct OrganizerSession::Impl {
             }
             if(message==WM_GETMINMAXINFO){
                 auto* limits=reinterpret_cast<MINMAXINFO*>(l);const auto dpi=static_cast<int>(GetDpiForWindow(hwnd));
-                limits->ptMinTrackSize={MulDiv(Collapsed()?180:ExpandedMinWidth,dpi?dpi:96,96),
-                    MulDiv(Collapsed()?216:ExpandedMinHeight,dpi?dpi:96,96)};
-                limits->ptMaxTrackSize={MulDiv(Collapsed()?180:ExpandedMaxWidth,dpi?dpi:96,96),
-                    MulDiv(Collapsed()?216:ExpandedMaxHeight,dpi?dpi:96,96)};
+                limits->ptMinTrackSize={MulDiv(Collapsed()?OrganizerCollapsedWidth:ExpandedMinWidth,dpi?dpi:96,96),
+                    MulDiv(Collapsed()?OrganizerCollapsedHeight:ExpandedMinHeight,dpi?dpi:96,96)};
+                limits->ptMaxTrackSize={MulDiv(Collapsed()?OrganizerCollapsedWidth:ExpandedMaxWidth,dpi?dpi:96,96),
+                    MulDiv(Collapsed()?OrganizerCollapsedHeight:ExpandedMaxHeight,dpi?dpi:96,96)};
                 return 0;
             }
             if(message==WM_TIMER&&w==TabPressTimer){
@@ -887,6 +985,7 @@ struct OrganizerSession::Impl {
             if(message==WM_SIZE||message==WM_MOVE||message==WM_DPICHANGED){
                 PositionEditor();
                 if(message==WM_DPICHANGED)RefreshIcons(HIWORD(w));
+                else if(message==WM_SIZE)RefreshIcons();
                 return {};
             }
             if(message==WM_KILLFOCUS){
@@ -894,7 +993,6 @@ struct OrganizerSession::Impl {
                 pointer.reset();PostMessageW(hwnd,WM_COMMAND,CheckFocus,0);window.Paint();return {};
             }
             if(message==WM_MOUSEWHEEL){
-                if(Collapsed())return 0;
                 if(!view.tabs.empty()){
                     POINT screen{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(hwnd,&screen);
                     const auto p=ClientPoint(hwnd,MAKELPARAM(screen.x,screen.y));const auto layout=Layout();
@@ -904,6 +1002,7 @@ struct OrganizerSession::Impl {
                         window.Paint();return 0;
                     }
                 }
+                if(Collapsed())return 0;
                 view.scroll=std::clamp(view.scroll-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w))/WHEEL_DELTA*90.f,0.f,Layout().maxScroll);
                 RefreshIcons();
                 if(pointer&&interaction.Dragging())PreviewDrag(*pointer);
@@ -1057,6 +1156,10 @@ struct OrganizerSession::Impl {
                     return 0;
                 }
                 if(!SameHit(hit,down)){lastClick=0;return 0;}
+                if(Collapsed()&&(hit.kind==OrganizerHit::Kind::Title||hit.kind==OrganizerHit::Kind::Header||hit.kind==OrganizerHit::Kind::Tab)){
+                    if(hit.kind==OrganizerHit::Kind::Tab&&TabId(hit.index)!=ContentId())Activate(hit.index);
+                    lastClick=0;ExpandTemporarily();return 0;
+                }
                 if(hit.kind==OrganizerHit::Kind::Item&&clickCollapse){SelectFocus(hit.index);window.Paint();}
                 if(hit.kind==OrganizerHit::Kind::Item&&(w&(MK_CONTROL|MK_SHIFT))){lastClick=0;return 0;}
                 if(hit.kind==OrganizerHit::Kind::Search){lastClick=0;ToggleSearch();return 0;}
@@ -1082,6 +1185,8 @@ struct OrganizerSession::Impl {
                 if(w==VK_ESCAPE&&(interaction.Dragging()||marquee||pressed)){CancelDrag();return 0;}
                 if(interaction.Dragging()||marquee)return 0;
                 if(w==VK_ESCAPE&&view.searchOpen){CloseSearch();return 0;}
+                if(w==VK_ESCAPE&&view.temporaryExpanded){CollapseTemporary();return 0;}
+                if(Collapsed()&&(w==VK_RETURN||w==VK_SPACE)){ExpandTemporarily();return 0;}
                 if(w=='A'&&(GetKeyState(VK_CONTROL)&0x8000)){
                     interaction.SelectAll(ItemIds(true));SyncSelection();if(!view.selection.empty())view.selected=view.selection.front();
                     window.Paint();return 0;
@@ -1134,14 +1239,18 @@ struct OrganizerSession::Impl {
                 const auto drop=reinterpret_cast<HDROP>(w);
                 struct FinishDrop {HDROP handle;~FinishDrop(){DragFinish(handle);}} finish{drop};
                 const UINT count=DragQueryFileW(drop,0xffffffff,nullptr,0);
-                bool valid=count<=1024;std::vector<std::string> paths;if(valid)paths.reserve(count);
+                bool valid=true;std::size_t pathBytes=0;std::vector<std::string> paths;
+                paths.reserve(std::min<std::size_t>(count,256));
                 for(UINT i=0;valid&&i<count;++i){
                     const UINT length=DragQueryFileW(drop,i,nullptr,0);
                     if(!length||length>32767){valid=false;break;}
                     std::wstring value(length+1,L'\0');
                     if(DragQueryFileW(drop,i,value.data(),length+1)!=length){valid=false;break;}
                     value.resize(length);const auto text=OrganizerUtf8(value);
-                    if(text.empty()){valid=false;break;}paths.push_back(text);
+                    constexpr auto overhead=1+2*sizeof(std::string);
+                    const auto remaining=organizer::MaxStateBytes-pathBytes;
+                    if(text.empty()||remaining<overhead||text.size()>remaining-overhead){valid=false;break;}
+                    pathBytes+=text.size()+overhead;paths.push_back(text);
                 }
                 const bool ok=valid&&owner.AddPaths(ContentId(),paths);if(!valid)owner.error="invalid";
                 owner.Publish(!ok);return 0;
@@ -1159,6 +1268,9 @@ struct OrganizerSession::Impl {
         std::optional<OrganizerPoint> pointer;OrganizerPoint dragOffset{};std::string dragPrimary;
         std::optional<WidgetRect> marquee;std::vector<std::string> marqueeBase,dragOriginal;float marqueeStartScroll=0;
         bool reducedMotion=false,motionTimer=false,externalDrop=false;std::size_t externalCount=0;
+        bool dropExpanded=false,dropHoverPending=false;std::string dropHoverTarget;
+        ULONGLONG dropHoverDue=0;
+        float searchRestoreScroll=0;std::map<std::string,float> tabScrollPositions;
         ULONGLONG lastMotionTick=0,lastScrollTick=0;
         HWND editor=nullptr;UINT editorKind=0;WNDPROC editorProcedure=nullptr;HFONT font=nullptr;
         unsigned editorDpi=0;UINT editorCaretInterval=0;COLORREF editorMatte=0;
@@ -1177,8 +1289,6 @@ struct OrganizerSession::Impl {
         else organizer::PruneClosedEmpty(state);
         if(automaticDesktop&&loaded.state==organizer::LoadState::Fresh)
             for(auto& collection:state.collections)if(collection.desktopRole==organizer::DesktopRole::Files)collection.enabled=true;
-        // Retire the old fixed-size compact mode without discarding saved bounds.
-        for(auto& collection:state.collections)collection.mode=organizer::Mode::Expanded;
         if(!this->open)this->open=[](HWND hwnd,const std::wstring& target){
             (void)hwnd;
             return OpenOrganizerTarget(target);
@@ -1212,8 +1322,8 @@ struct OrganizerSession::Impl {
         const bool collapsed=host&&host->mode==organizer::Mode::Collapsed;
         // Report the size the window actually uses, never a raw stored value
         // the page would reject (the bridge requires the clamped ranges).
-        const int width=collapsed?180:std::clamp(host&&host->bounds?host->bounds->width:420,ExpandedMinWidth,ExpandedMaxWidth);
-        const int height=collapsed?216:std::clamp(host&&host->bounds?host->bounds->height:392,
+        const int width=collapsed?OrganizerCollapsedWidth:std::clamp(host&&host->bounds?host->bounds->width:DefaultWidth,ExpandedMinWidth,ExpandedMaxWidth);
+        const int height=collapsed?OrganizerCollapsedHeight:std::clamp(host&&host->bounds?host->bounds->height:DefaultHeight,
             ExpandedMinHeight,ExpandedMaxHeight);
         const auto material=MaterialState();
         const char* status=material==WidgetMaterialState::Ready?"native-ready":material==WidgetMaterialState::Starting?"native-starting":
@@ -1303,7 +1413,7 @@ struct OrganizerSession::Impl {
     // expanded; a collapsed or temporarily expanded window updates position.
     static organizer::Bounds Stored(const organizer::Collection& c,const Entry& entry,const widget::Preferences& live){
         const bool fixed=c.mode==organizer::Mode::Collapsed||entry.view.temporaryExpanded;
-        const auto previous=c.bounds.value_or(organizer::Bounds{});
+        const auto previous=c.bounds.value_or(organizer::Bounds{0,0,DefaultWidth,DefaultHeight});
         // Collapsed and temporary-search windows keep the user's expanded
         // geometry. Normalize legacy heights below the new one-column
         // envelope before persisting so a restart cannot restore an unusable
@@ -1341,8 +1451,16 @@ struct OrganizerSession::Impl {
     }
     bool AddPaths(std::string_view collectionId,const std::vector<std::string>& paths){
         auto* collection=organizer::Find(state,collectionId);
-        if(stopped||applying||!collection||paths.size()>1024)return false;
-        std::vector<organizer::Item> items;items.reserve(std::min<std::size_t>(paths.size(),organizer::MaxItems));
+        if(stopped||applying||!collection)return false;
+        std::size_t pathBytes=0;
+        for(const auto& input:paths){
+            constexpr auto overhead=1+2*sizeof(organizer::Item);
+            const auto remaining=organizer::MaxStateBytes-pathBytes;
+            if(remaining<overhead||input.size()>remaining-overhead){error="invalid";return false;}
+            pathBytes+=input.size()+overhead;
+        }
+        // This reserve is only an initial allocation; accepted items may grow.
+        std::vector<organizer::Item> items;items.reserve(std::min<std::size_t>(paths.size(),256));
         // One unusable path no longer rejects the batch: add the rest and
         // report the first problem.
         std::string failure;
@@ -1351,7 +1469,6 @@ struct OrganizerSession::Impl {
             const auto normalized=organizer::NormalizeLocalPath(input);
             if(!normalized){if(failure.empty())failure="invalid";continue;}
             if(!keys.insert(PathKey(*normalized)).second)continue;
-            if(collection->items.size()+items.size()>=organizer::MaxItems){if(failure.empty())failure="limit";break;}
             const auto wide=Wide(*normalized);const auto attributes=GetFileAttributesW(wide.c_str());
             if(attributes==INVALID_FILE_ATTRIBUTES){if(failure.empty())failure="target";continue;}
             auto kind=(attributes&FILE_ATTRIBUTE_DIRECTORY)?organizer::ItemKind::Folder:organizer::ItemKind::File;
@@ -1375,7 +1492,7 @@ struct OrganizerSession::Impl {
         const bool frosted=collection&&collection->frosted;
         const bool ok=Apply([&](auto& value){
             const auto change=organizer::CreateCollection(value,id,u8"新建收纳",
-                organizer::Bounds{bounds.x+32,bounds.y+32,420,392});
+                organizer::Bounds{bounds.x+32,bounds.y+32,NewCollectionWidth,NewCollectionHeight});
             if(change==organizer::Change::Changed)organizer::Find(value,id)->frosted=frosted;
         });
         if(ok&&!organizer::Find(state,id)){error="limit";Publish(true);}else Publish(!ok);
@@ -1410,8 +1527,13 @@ struct OrganizerSession::Impl {
         if(stopped||applying)return;
         if(action==WidgetAction::Settings){if(openSettings)openSettings();return;}
         if(!entry.Collection()||action==WidgetAction::Refresh)return;
+        const auto request=materialSelection;
+        if(request&&(action==WidgetAction::Liquid||action==WidgetAction::Frosted)){
+            request(action==WidgetAction::Liquid?ui::PageCommand::OrganizerLiquidGlass:ui::PageCommand::OrganizerFrostedGlass,entry.window.Handle());return;
+        }
         if(action==WidgetAction::Close){Close(entry);return;}
         if(action==WidgetAction::Reset){entry.CancelDrag();entry.FinishTitle(false);entry.CloseSearch();entry.view.temporaryExpanded=false;}
+        const auto content=entry.ContentId();
         const bool ok=Apply([&](auto& s){
             // Window actions belong to the host, whichever tab is visible.
             auto* c=organizer::Find(s,entry.id);
@@ -1421,7 +1543,12 @@ struct OrganizerSession::Impl {
                 case WidgetAction::Liquid:for(auto& other:s.collections)other.frosted=false;break;
                 case WidgetAction::Frosted:for(auto& other:s.collections)other.frosted=true;break;
                 case WidgetAction::Bounds:c->bounds=Stored(*c,entry,bounds);break;
-                case WidgetAction::Reset:organizer::Reset(*c);break;
+                case WidgetAction::Reset:{
+                    const auto hostAccent=c->accent;
+                    organizer::Reset(*c);
+                    if(content!=c->id)c->accent=hostAccent;
+                    if(auto* current=organizer::Find(s,content))current->accent=organizer::Accent::None;
+                    break;}
                 case WidgetAction::Settings:case WidgetAction::Refresh:break;
             }
         });
@@ -1518,7 +1645,7 @@ struct OrganizerSession::Impl {
         Publish(!ok);
     }
     void Shutdown(){if(stopped)return;stopped=true;desktopSource.Stop();pendingMerge.reset();for(auto& pair:entries)pair.second->Stop();entries.clear();retired.clear();}
-    HINSTANCE instance;std::string path,error;Notify notify;std::function<void()> openSettings;OpenTarget open;DragTargets drag;
+    HINSTANCE instance;std::string path,error;Notify notify;std::function<void()> openSettings;OpenTarget open;DragTargets drag;MaterialSelectionHandler materialSelection;
     LocalSettingsFileStore localFiles;organizer::Store store;organizer::LoadedState loaded;organizer::State state;
     std::map<std::string,std::unique_ptr<Entry>> entries;bool stopped=false,applying=false;
     std::vector<std::unique_ptr<Entry>> retired;
@@ -1537,6 +1664,7 @@ OrganizerSession::OrganizerSession(HINSTANCE instance,std::string path,Notify no
     impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),files,std::move(open),std::move(drag),automaticDesktop,std::move(desktopRoots))){}
 OrganizerSession::~OrganizerSession()=default;
 bool OrganizerSession::Restore(){return impl_->Restore();}
+void OrganizerSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 std::optional<std::wstring> OrganizerSession::HandlePage(ui::PageCommand c){return impl_->HandlePage(c);}
 std::wstring OrganizerSession::State()const{return impl_->State();}
 void OrganizerSession::Shutdown(){impl_->Shutdown();}
@@ -1547,6 +1675,11 @@ bool OrganizerSession::AddPaths(const std::vector<std::string>& paths){return Ad
 bool OrganizerSession::AddPaths(std::string_view id,const std::vector<std::string>& paths){return impl_->AddPaths(id,paths);}
 const organizer::State& OrganizerSession::Snapshot()const{return impl_->state;}
 void OrganizerSession::SynchronizeDesktop(organizer::DesktopSnapshot snapshot){impl_->SynchronizeDesktop(std::move(snapshot));}
+void OrganizerSession::DropHoverForTest(std::string_view id,POINT client,bool active){
+    const auto found=impl_->entries.find(std::string(id));if(found==impl_->entries.end())return;
+    found->second->DropFeedback({active?OrganizerDropFeedback::Phase::Over:OrganizerDropFeedback::Phase::Leave,
+        client,active?1u:0u,active});
+}
 bool OrganizerSession::MergeAtCursorForTest(std::string_view id){
     const auto found=impl_->entries.find(std::string(id));if(found==impl_->entries.end())return false;
     POINT cursor{};GetCursorPos(&cursor);

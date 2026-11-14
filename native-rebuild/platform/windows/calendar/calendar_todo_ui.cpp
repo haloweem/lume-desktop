@@ -11,6 +11,7 @@
 #include <objidl.h>
 #include <gdiplus.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <imm.h>
 #include <algorithm>
 #include <climits>
@@ -110,6 +111,7 @@ struct Surface::MaterialLayer {
     void Attach(HWND owner) {
         window=owner;
         if(!SetWindowSubclass(window,Proc,kMaterialSubclass,reinterpret_cast<DWORD_PTR>(this))){failed=true;return;}
+        if(surface.opaque_)return;
         LumeMaterialParameters p{};p.size=sizeof(p);p.owner=window;
         for(HWND ancestor=GetWindow(window,GW_OWNER);ancestor;ancestor=GetWindow(ancestor,GW_OWNER))
             if(GetPropW(ancestor,lume::window_ids::GlassOwnerProp))p.sceneAnchor=ancestor;
@@ -133,6 +135,7 @@ struct Surface::MaterialLayer {
     }
     void Show(HWND focus) {
         initialFocus=focus;showRequested=true;
+        if(surface.opaque_){Refresh();return;}
         // Initialization can publish several non-ready statuses. None is a
         // reason to expose the legacy opaque panel before the glass first frame.
         if(!SetTimer(window,kFirstFrameTimer,3000,nullptr)){failed=true;runtime.Detach();}
@@ -171,12 +174,13 @@ struct Surface::MaterialLayer {
             ConfigureRoundedWindow(window,8.f*surface.dpi/96.f);
             RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
         }
+        if(surface.opaque_){const MARGINS margins{};DwmExtendFrameIntoClientArea(window,&margins);}
     }
     void Print(HWND current,HDC dc) {
         RECT client{};GetClientRect(current,&client);
         const int state=SaveDC(dc);
         wchar_t kind[16]{};GetClassNameW(current,kind,16);
-        if(lstrcmpiW(kind,L"EDIT")==0) {
+        if(lstrcmpiW(kind,L"EDIT")==0&&!surface.opaque_) {
             RECT outer{};GetWindowRect(current,&outer);
             POINT origin{};ClientToScreen(current,&origin);
             RECT frame{0,0,outer.right-outer.left,outer.bottom-outer.top};
@@ -220,6 +224,28 @@ struct Surface::MaterialLayer {
             if(!IntersectRect(&rect,&rect,&clip))return;
         }
         auto brush=CreateSolidBrush(surface.foreground);FillRect(dc,&rect,brush);DeleteObject(brush);
+    }
+    bool PresentOpaque() {
+        RECT rect{};GetClientRect(window,&rect);
+        const int width=rect.right,height=rect.bottom;if(width<=0||height<=0)return false;
+        Dib image(width,height);if(!image.pixels)return false;
+        surface.capturing_=true;Print(window,image.dc);DrawCaret(image.dc);
+        surface.capturing_=false;GdiFlush();
+        const float radius=std::min({surface.opaqueRadius_*surface.dpi/96.f,width*.5f,height*.5f});
+        for(int y=0;y<height;++y)for(int x=0;x<width;++x){
+            const float dx=std::max({radius-(x+.5f),x+.5f-(width-radius),0.f});
+            const float dy=std::max({radius-(y+.5f),y+.5f-(height-radius),0.f});
+            const auto alpha=static_cast<unsigned>(std::lround(255.f*std::clamp(radius+.5f-std::hypot(dx,dy),0.f,1.f)));
+            auto& pixel=image.pixels[static_cast<std::size_t>(y)*width+x];
+            const auto red=(((pixel>>16)&255u)*alpha+127)/255;
+            const auto green=(((pixel>>8)&255u)*alpha+127)/255;
+            const auto blue=((pixel&255u)*alpha+127)/255;
+            pixel=(alpha<<24)|(red<<16)|(green<<8)|blue;
+        }
+        const auto style=GetWindowLongPtrW(window,GWL_EXSTYLE);
+        if(!(style&WS_EX_LAYERED))SetWindowLongPtrW(window,GWL_EXSTYLE,style|WS_EX_LAYERED);
+        POINT origin{};SIZE size{width,height};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+        return UpdateLayeredWindow(window,nullptr,nullptr,&size,image.dc,&origin,0,&blend,ULW_ALPHA)!=FALSE;
     }
     bool Present() {
         RECT rect{};GetClientRect(window,&rect);
@@ -300,6 +326,11 @@ struct Surface::MaterialLayer {
         pending=false;
         if(!window)return;
         if(failed){Fallback();Reveal();return;}
+        if(surface.opaque_){
+            glass=true;Caret();
+            if(!PresentOpaque()){failed=true;Fallback();}
+            Reveal();return;
+        }
         if(runtime.State()!=WidgetMaterialState::Ready) {
             if(runtime.Status().failed){failed=true;runtime.Detach();Fallback();Reveal();}
             return;
@@ -387,10 +418,11 @@ Surface::Surface(unsigned d,const calendar::Preferences &p):dpi(d),foreground(Rg
 }
 Surface::~Surface(){material_.reset();if(font)DeleteObject(font);if(background)DeleteObject(background);if(editBackground)DeleteObject(editBackground);if(graphicsToken_)Gdiplus::GdiplusShutdown(graphicsToken_);}
 void Surface::Attach(HWND window,bool popoverShadow){popoverShadow_=popoverShadow;material_=std::make_unique<MaterialLayer>(*this);material_->Attach(window);}
+void Surface::AttachOpaque(HWND window,float radius){opaque_=true;opaqueRadius_=std::max(0.f,radius);material_=std::make_unique<MaterialLayer>(*this);material_->Attach(window);}
 void Surface::Show(HWND initialFocus){if(material_)material_->Show(initialFocus);}
 void Surface::Refresh(){if(material_)material_->Request();}
 void Surface::Clear(HDC dc,RECT rect) const {
-    FillRect(dc,&rect,capturing_?static_cast<HBRUSH>(GetStockObject(matte_?WHITE_BRUSH:BLACK_BRUSH)):background);
+    FillRect(dc,&rect,capturing_&&!opaque_?static_cast<HBRUSH>(GetStockObject(matte_?WHITE_BRUSH:BLACK_BRUSH)):background);
 }
 HWND Surface::Add(HWND parent,HWND target,const wchar_t *kind,const wchar_t *text,int id,DWORD style){
     HWND w=CreateWindowExW(0,kind,text,WS_CHILD|WS_VISIBLE|WS_TABSTOP|style,0,0,1,1,parent,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),GetModuleHandleW(nullptr),nullptr);
@@ -476,7 +508,7 @@ void Surface::Button(const DRAWITEMSTRUCT &item,bool selected,COLORREF swatch,Ap
 }
 LRESULT Surface::Color(HDC dc,HWND control) const{
     SetTextColor(dc,foreground);
-    if(!capturing_){SetBkColor(dc,RGB(28,30,34));return reinterpret_cast<LRESULT>(editBackground);}
+    if(!capturing_||opaque_){LOGBRUSH brush{};GetObjectW(editBackground,sizeof(brush),&brush);SetBkColor(dc,brush.lbColor);return reinterpret_cast<LRESULT>(editBackground);}
     const auto style=InputStyle(control);
     const auto channel=[&](BYTE fill,BYTE matte){return (fill*style.alpha+matte*(255-style.alpha)+127)/255;};
     const COLORREF color=RGB(channel(GetRValue(style.fill),GetRValue(matte_)),

@@ -86,6 +86,14 @@ int main() {
     Check(std::all_of(silent.pitch.begin(), silent.pitch.end(), [](std::uint16_t value) { return value == 0; }) &&
         silent.beats.empty() && silent.start == silent.end, "silence has no melody, no beats and no audible span");
     Check(AnalyzeMelody(song, kRate, [] { return true; }).pitch.empty(), "cancelled analysis is empty");
+    std::size_t checkpoints=0;
+    const auto observed=AnalyzeMelody(song,kRate,[&]{++checkpoints;return false;});
+    Check(observed.pitch==result.pitch&&observed.beats==result.beats&&observed.tempo==result.tempo,"cancellation checkpoints preserve melody and beat output");
+    Check(checkpoints>100,"tracking phases cooperate with cancellation after spectral analysis");
+    for(const auto budget:{checkpoints/3,checkpoints*4/5}){
+        std::size_t calls=0;const auto cancelled=AnalyzeMelody(song,kRate,[&]{return ++calls>=budget;});
+        Check(calls==budget&&cancelled.pitch.empty()&&cancelled.beats.empty()&&cancelled.tempo==0,"mid-analysis cancellation stops immediately without returning partial pitch or beat tracks");
+    }
     Check(AnalyzeMelody(std::vector<float>(100, 0.1f), kRate).pitch.empty() &&
         AnalyzeMelody(song, 100).pitch.empty(), "unusable input is rejected");
     if (passed) std::cout << "melody analysis passed\n";

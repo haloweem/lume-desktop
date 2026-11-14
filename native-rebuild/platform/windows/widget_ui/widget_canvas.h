@@ -24,8 +24,21 @@ public:
               float alpha=1,bool semibold=false,WidgetTextAlign align=WidgetTextAlign::Left);
     void Text(const std::wstring&,WidgetRect,float size,std::uint32_t rgb,
               float alpha,WidgetTextWeight,WidgetTextAlign align=WidgetTextAlign::Left);
+    // An explicit print face for paper-style widgets; ordinary UI text keeps
+    // the existing font policy and format/measurement caches.
+    void SerifText(const std::wstring&,WidgetRect,float size,std::uint32_t rgb,
+                   float alpha=1,WidgetTextWeight=WidgetTextWeight::Normal,
+                   WidgetTextAlign align=WidgetTextAlign::Center);
     float MeasureText(const std::wstring&,float size,bool semibold=false);
     float MeasureText(const std::wstring&,float size,WidgetTextWeight);
+    // Folds a text face around a horizontal hinge; restores the caller's transform.
+    void FoldText(const std::wstring&,WidgetRect,float size,float hingeY,float verticalScale,
+                  std::uint32_t rgb,float alpha,WidgetTextWeight,WidgetTextAlign align=WidgetTextAlign::Center);
+    // Wrapped layouts are bounded and retained independently of the drawing surface.
+    float MeasureWrappedText(const std::wstring&,float width,float size,
+                             WidgetTextWeight weight=WidgetTextWeight::Normal);
+    void WrappedText(const std::wstring&,WidgetRect,float size,std::uint32_t rgb=0xffffff,
+                     float alpha=1,WidgetTextWeight weight=WidgetTextWeight::Normal);
     void ScrollText(const std::wstring&,WidgetRect viewport,float size,float offset,
                     std::uint32_t rgb=0xffffff,float alpha=1);
     // Direct2D clip stack only; no extra surface, buffer or worker.
@@ -33,6 +46,9 @@ public:
     void PopClip();
     // Shifts later drawing by (dx, dy) DIPs until the next Offset or Begin.
     void Offset(float dx,float dy);
+    // Uniform local-coordinate scaling, combined with Offset. Reset to 1 after
+    // the scoped group; no extra raster surface is created.
+    void Scale(float value);
     void Rounded(WidgetRect,float radius,std::uint32_t rgb,float alpha=1);
     // The ellipse inscribed in the rect.
     void Ellipse(WidgetRect,std::uint32_t rgb,float alpha=1);

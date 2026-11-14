@@ -98,6 +98,27 @@ int main(int argc,char** argv) {
           chrome.webview.postMessage({scope:'scale-probe',action,...fields});
         });
         const settle=()=>new Promise(resolve=>setTimeout(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve)),90));
+        let baselineDpr=0;
+        const scaleTimeouts=[];
+        const waitForScale=async percent=>{
+          const started=performance.now(),deadline=started+2500;
+          let matchingFrames=0;
+          while(performance.now()<deadline){
+            const frame=await new Promise(resolve=>{
+              let complete=false;
+              const timer=setTimeout(()=>{
+                if(complete)return;complete=true;cancelAnimationFrame(request);resolve(false);
+              },Math.max(0,deadline-performance.now()));
+              const request=requestAnimationFrame(()=>{
+                if(complete)return;complete=true;clearTimeout(timer);resolve(true);
+              });
+            });
+            if(!frame)break;
+            matchingFrames=Math.abs(devicePixelRatio/baselineDpr-percent/75)<0.004?matchingFrames+1:0;
+            if(matchingFrames>=2)return {ready:true,elapsedMs:performance.now()-started};
+          }
+          return {ready:false,elapsedMs:performance.now()-started,expectedDpr:baselineDpr*percent/75,actualDpr:devicePixelRatio};
+        };
         await document.fonts.ready;
         const routes=['home','wallpaperLocal','wallpaperOfficial','desktopBeauty','widgets',
           'clock','calendar','performance','spectrum','almanac','todayTodo','weather','organizer','icons','taskbar','minimize','music','dock','dynamicIsland',
@@ -117,11 +138,17 @@ int main(int argc,char** argv) {
               ...(page==='applicationSettings'||section!=='general'?{section}:{})}});
           }
           for(const percent of [75,50,62,75]){
-            await send('scale',{value:percent});await settle();
+            await send('scale',{value:percent});
+            // The native ACK confirms window resizing, not the renderer's
+            // asynchronous zoom update. Capture the first 75% baseline once,
+            // then require the requested DPR for two real rendering frames.
+            if(!baselineDpr){await settle();baselineDpr=devicePixelRatio;}
+            const scaleWait=await waitForScale(percent);
+            if(!scaleWait.ready)scaleTimeouts.push({page,percent,...scaleWait});
             const nodes=[...document.querySelectorAll('header,main,h1,h2,h3,label,button,input,select,.ModuleToolbar,.setting-row,.component-card')]
               .filter(node=>{const r=node.getBoundingClientRect();return r.width&&r.height&&getComputedStyle(node).visibility!=='hidden';})
               .slice(0,48).map(node=>{const r=node.getBoundingClientRect();return {tag:node.tagName,x:r.x,y:r.y,w:r.width,h:r.height,font:parseFloat(getComputedStyle(node).fontSize)||0};});
-            await send('sample',{page,percent,sample:{dpr:devicePixelRatio,nodes,overflow:document.documentElement.scrollWidth-innerWidth}});
+            await send('sample',{page,percent,scaleWait,sample:{dpr:devicePixelRatio,nodes,overflow:document.documentElement.scrollWidth-innerWidth}});
           }
         }
         const fullscreen=expanded=>new Promise(resolve=>{
@@ -133,6 +160,7 @@ int main(int argc,char** argv) {
         // Fullscreen restoration separately fits changed/virtual work areas;
         // it may move a verification canvas that exceeds the physical screen.
         await fullscreen(false);await send('scale',{value:75,fullscreen:true});
+        if(scaleTimeouts.length)throw Error('WebView scale render deadline: '+JSON.stringify(scaleTimeouts));
         chrome.webview.postMessage({scope:'scale-probe',action:'done'});
       })().catch(error=>chrome.webview.postMessage({scope:'scale-probe',action:'error',detail:String(error)}));
     )JS",dpi);

@@ -2,6 +2,7 @@
 
 #include "core/settings/file_store.h"
 #include "core/ui/music_page_protocol.h"
+#include "apps/shell/native_material_request.h"
 
 #include <windows.h>
 
@@ -44,6 +45,8 @@ public:
     // independently of desktop widget visibility or the manager window lifetime.
     // False reports load/runtime/SMTC failure; State describes partial success.
     bool Restore();
+    void SetMaterialSelectionHandler(NativeMaterialSelectionHandler);
+    std::optional<std::wstring> HandleMaterialSelection(const NativeMaterialRequest&);
     void Update(const music::MusicSnapshot&);
     // Strict version 1, scope "music-desktop", snapshot or setEnabled + bool value.
     // Invalid/unrelated messages return nullopt without side effects.

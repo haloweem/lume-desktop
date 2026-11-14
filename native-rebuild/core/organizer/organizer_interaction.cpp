@@ -1,6 +1,8 @@
 #include "core/organizer/organizer_interaction.h"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace lume::organizer {
 namespace {
@@ -21,7 +23,8 @@ void Interaction::Select(const std::vector<std::string>& visible,std::string_vie
         const auto end=anchor==visible.end()?found:std::max(anchor,found);
         std::vector<std::string> range(begin,end+1);
         if(control){
-            for(const auto& value:range)if(!Contains(selected_,value))selected_.push_back(value);
+            std::unordered_set<std::string> included(selected_.begin(),selected_.end());
+            for(const auto& value:range)if(included.insert(value).second)selected_.push_back(value);
         }else selected_=std::move(range);
     }else if(control){
         if(IsSelected(id))selected_.erase(std::remove(selected_.begin(),selected_.end(),id),selected_.end());
@@ -30,21 +33,26 @@ void Interaction::Select(const std::vector<std::string>& visible,std::string_vie
         // Keep a multi-selection intact while the pointer moves into a drag.
     }else selected_={std::string(id)};
     if(!shift||!Contains(visible,anchor_))anchor_=std::string(id);
+    std::unordered_map<std::string_view,std::size_t> positions;positions.reserve(visible.size());
+    for(std::size_t i=0;i<visible.size();++i)positions.emplace(visible[i],i);
+    const auto position=[&](const auto& id){const auto found=positions.find(id);return found==positions.end()?visible.size():found->second;};
     std::stable_sort(selected_.begin(),selected_.end(),[&](const auto& left,const auto& right){
-        return std::find(visible.begin(),visible.end(),left)<std::find(visible.begin(),visible.end(),right);
+        return position(left)<position(right);
     });
 }
 
 void Interaction::SelectAll(const std::vector<std::string>& visible){
     selected_.clear();
-    for(const auto& id:visible)if(!Contains(selected_,id))selected_.push_back(id);
+    std::unordered_set<std::string_view> included;included.reserve(visible.size());selected_.reserve(visible.size());
+    for(const auto& id:visible)if(included.insert(id).second)selected_.push_back(id);
     anchor_=selected_.empty()?std::string{}:selected_.front();
 }
 void Interaction::Clear(){selected_.clear();anchor_.clear();}
 
 void Interaction::Reconcile(const std::vector<std::string>& visible){
     std::vector<std::string> reconciled;
-    for(const auto& id:visible)if(IsSelected(id)&&!Contains(reconciled,id))reconciled.push_back(id);
+    std::unordered_set<std::string_view> remaining(selected_.begin(),selected_.end());
+    for(const auto& id:visible)if(remaining.erase(id))reconciled.push_back(id);
     selected_=std::move(reconciled);
     if(!Contains(visible,anchor_))anchor_.clear();
     if(dragging_&&visible!=dragOrigin_)EndDrag();
@@ -52,7 +60,8 @@ void Interaction::Reconcile(const std::vector<std::string>& visible){
 
 std::vector<std::string> Interaction::OrderedSelection(const std::vector<std::string>& order) const{
     std::vector<std::string> result;
-    for(const auto& id:order)if(IsSelected(id))result.push_back(id);
+    std::unordered_set<std::string_view> selected(selected_.begin(),selected_.end());
+    for(const auto& id:order)if(selected.count(id))result.push_back(id);
     return result;
 }
 
@@ -66,10 +75,11 @@ bool Interaction::BeginDrag(const std::vector<std::string>& order,std::string_vi
 
 void Interaction::MoveBefore(std::optional<std::string> before){
     if(!dragging_)return;
-    if(before&&Contains(dragged_,*before))return;
+    std::unordered_set<std::string_view> dragged(dragged_.begin(),dragged_.end());
+    if(before&&dragged.count(*before))return;
     std::vector<std::string> remaining;
     remaining.reserve(preview_.size());
-    for(const auto& id:preview_)if(!Contains(dragged_,id))remaining.push_back(id);
+    for(const auto& id:preview_)if(!dragged.count(id))remaining.push_back(id);
     const auto at=before?std::find(remaining.begin(),remaining.end(),*before):remaining.end();
     if(before&&at==remaining.end())return;
     const auto position=at==remaining.end()?remaining.end():at;

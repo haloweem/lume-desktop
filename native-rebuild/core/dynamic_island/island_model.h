@@ -26,9 +26,12 @@ struct Media {
     // when position is not the true playback position. The island picks the
     // line itself from position, carried forward while playing.
     LyricCues lyrics;
+    // An external player's position is measured, even if its total is unknown.
+    // A missing timeline must never be replaced by a clock started by Lume.
+    bool positionKnown = false;
 };
 enum class Action { Toggle, Previous, Next, Focus, CancelFocus, Settings, Close, Tick, ExpansionChanged,
-                    MaterialNone, MaterialLiquid, MaterialFrosted, Reset, WeatherSettings, PerformanceSettings, ToggleMessages };
+                    MaterialNone, MaterialLiquid, MaterialFrosted, Reset, WeatherSettings, PerformanceSettings };
 
 // Current weather as the island needs it: a bounded projection of the weather
 // component's reading. The island never fetches, locates or stores weather.

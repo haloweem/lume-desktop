@@ -1,5 +1,6 @@
 #include "core/calendar/calendar_preferences_store.h"
 #include <cstdlib>
+#include <algorithm>
 #include <iostream>
 #include <map>
 #include <set>
@@ -12,6 +13,11 @@ void Expect(bool value, const char* message) {
 }
 class Files final : public lume::settings::IFileStore {
 public:
+    bool ReadBounded(const std::string& path,std::size_t limit,std::string& out) const override {
+        Expect(limit==8192,"calendar settings bound is applied before reading");
+        const auto found=files.find(path);if(found!=files.end()&&found->second.size()>limit)return false;
+        return Read(path,out);
+    }
     bool Read(const std::string& path, std::string& out) const override {
         operations.push_back("read:" + path);
         if (fail.count("read:" + path)) return false;
@@ -151,4 +157,9 @@ void MissingOrBadMainNeverDestroysBackup() {
     }
 }
 }
-int main() { FreshAndSuccess(); RecoveryAndIsolation(); FailurePointsPreserveMain(); UnreadableAndIsolationFailures(); MissingOrBadMainNeverDestroysBackup(); }
+int main() { FreshAndSuccess(); RecoveryAndIsolation(); FailurePointsPreserveMain(); UnreadableAndIsolationFailures(); MissingOrBadMainNeverDestroysBackup();
+    Files files;CalendarPreferencesStore store(files);files.files["p"]=std::string(100000,'x');files.files["p.bak"]=Encoded(true,41);
+    Expect(store.Load("p").value.profiles[0].x==41,"oversized main recovers bounded backup");
+    Expect(std::find(files.operations.begin(),files.operations.end(),"read:p")==files.operations.end(),"oversized primary rejected before payload allocation");
+    files.operations.clear();Expect(!store.Save("p",{})&&files.operations.empty(),"oversized existing settings remain intact on save");
+}

@@ -1,11 +1,16 @@
 #pragma once
 #include "core/music/music_provider_account.h"
+#include <utility>
 
 namespace lume::music::auth {
 bool ValidHttpRequest(const HttpRequest&) noexcept;
 HttpResponse SendHttp(const HttpRequest&, const Cancelled&);
 std::string UrlEncode(std::string_view);
 std::string Base64(std::string_view);
+std::string Unbase64(std::string_view);
+std::string HmacSha256(std::string_view key, std::string_view input);
+std::pair<std::string, std::string> X25519(std::string_view peerPublicKey);
+std::string AesGcm(std::string_view input, std::string_view key, std::string_view iv);
 std::string RandomHex(std::size_t bytes);
 std::string HashHex(std::string_view input, std::string_view algorithm = "MD5");
 // Raw byte strings in and out, PKCS7 padding unless raw RSA is requested.

@@ -97,11 +97,11 @@ LoadedPreferences PreferencesStore::Load(const std::string& path)const{
     if(path.empty()){loaded.state=widget::LoadState::Failed;return loaded;}
     std::string text;
     if(files_.Exists(path)){
-        if(files_.Read(path,text)&&DecodePreferences(text,loaded.value)){loaded.state=widget::LoadState::Loaded;return loaded;}
+        if(files_.ReadBounded(path,8192,text)&&DecodePreferences(text,loaded.value)){loaded.state=widget::LoadState::Loaded;return loaded;}
         loaded.state=widget::LoadState::Failed;
     }
     if(files_.Exists(path+".bak"))
-        loaded.state=files_.Read(path+".bak",text)&&DecodePreferences(text,loaded.value)?
+        loaded.state=files_.ReadBounded(path+".bak",8192,text)&&DecodePreferences(text,loaded.value)?
             widget::LoadState::Recovered:widget::LoadState::Failed;
     return loaded;
 }
@@ -110,7 +110,7 @@ bool PreferencesStore::Save(const std::string& path,const Preferences& p){
     std::string original;bool validOriginal=false;
     if(files_.Exists(path)){
         Preferences previous;
-        if(!files_.Read(path,original))return false;
+        if(!files_.ReadBounded(path,8192,original))return false;
         validOriginal=DecodePreferences(original,previous);
         if(!validOriginal){
             bool isolated=false;
@@ -135,37 +135,47 @@ std::size_t BarCount(float width,int barWidth,int barGap){
     return usable<pitch?0:std::min<std::size_t>(512,static_cast<std::size_t>(usable/pitch));
 }
 
-std::vector<float> Magnitudes(const std::vector<float>& frame){
-    const std::size_t n=FrameSize;
-    std::vector<std::complex<float>> data(n);
-    constexpr float pi=3.14159265358979f;
-    for(std::size_t i=0;i<n&&i<frame.size();++i){
-        const float hann=.5f-.5f*std::cos(2*pi*static_cast<float>(i)/static_cast<float>(n-1));
-        data[i]={frame[i]*hann,0};
-    }
-    // Iterative radix-2 FFT.
-    for(std::size_t i=1,j=0;i<n;++i){
-        std::size_t bit=n>>1;
-        for(;j&bit;bit>>=1)j^=bit;
-        j^=bit;
-        if(i<j)std::swap(data[i],data[j]);
-    }
-    for(std::size_t length=2;length<=n;length<<=1){
-        const float angle=-2*pi/static_cast<float>(length);
-        const std::complex<float> step(std::cos(angle),std::sin(angle));
-        for(std::size_t i=0;i<n;i+=length){
+namespace {
+struct FftPlan {
+    std::array<float,FrameSize> window{};
+    std::array<std::size_t,FrameSize> reversed{};
+    std::array<std::complex<float>,FrameSize> twiddles{};
+    FftPlan(){
+        constexpr auto n=FrameSize;
+        constexpr float pi=3.14159265358979f;
+        for(std::size_t i=0;i<n;++i)window[i]=.5f-.5f*std::cos(2*pi*static_cast<float>(i)/static_cast<float>(n-1));
+        for(std::size_t i=1,j=0;i<n;++i){std::size_t bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;reversed[i]=j;}
+        for(std::size_t length=2;length<=n;length<<=1){
+            const float angle=-2*pi/static_cast<float>(length);
+            const std::complex<float> step(std::cos(angle),std::sin(angle));
             std::complex<float> w(1,0);
+            for(std::size_t k=0;k<length/2;++k){twiddles[length/2+k]=w;w*=step;}
+        }
+    }
+};
+}
+void Magnitudes(const std::vector<float>& frame,std::vector<float>& out){
+    constexpr auto n=FrameSize;
+    static const FftPlan plan;
+    thread_local std::array<std::complex<float>,FrameSize> data;
+    const auto count=std::min(n,frame.size());
+    for(std::size_t i=0;i<count;++i)data[i]={frame[i]*plan.window[i],0};
+    std::fill(data.begin()+count,data.end(),std::complex<float>{});
+    // Iterative radix-2 FFT.
+    for(std::size_t i=1;i<n;++i)if(i<plan.reversed[i])std::swap(data[i],data[plan.reversed[i]]);
+    for(std::size_t length=2;length<=n;length<<=1){
+        for(std::size_t i=0;i<n;i+=length){
             for(std::size_t k=0;k<length/2;++k){
-                const auto u=data[i+k],v=data[i+k+length/2]*w;
-                data[i+k]=u+v;data[i+k+length/2]=u-v;w*=step;
+                const auto u=data[i+k],v=data[i+k+length/2]*plan.twiddles[length/2+k];
+                data[i+k]=u+v;data[i+k+length/2]=u-v;
             }
         }
     }
-    std::vector<float> out(n/2);
+    out.resize(n/2);
     // Normalise so a full-scale sine reads about 1.
     for(std::size_t i=0;i<out.size();++i)out[i]=std::abs(data[i])*4/static_cast<float>(n);
-    return out;
 }
+std::vector<float> Magnitudes(const std::vector<float>& frame){std::vector<float> out;Magnitudes(frame,out);return out;}
 
 namespace {
 constexpr float LowCut=50,HighCut=10000;
@@ -174,9 +184,15 @@ constexpr float LowCut=50,HighCut=10000;
 // bass bars sit lower than the mids beside them; the level stays linear.
 constexpr float BassTilt=.6f;
 // First bin of each band plus one past the last band (count+1 entries).
-std::vector<std::size_t> BandEdges(std::size_t count,unsigned sampleRate,std::size_t bins){
-    std::vector<std::size_t> edges(count+1,0);
-    if(!count||!bins||!sampleRate)return edges;
+struct BandPlan {std::size_t count=0,bins=0;unsigned sampleRate=0;std::vector<std::size_t> edges;std::vector<float> weights;};
+const BandPlan& PlanBands(std::size_t count,unsigned sampleRate,std::size_t bins){
+    // Two bounded entries cover both halves of an odd stereo bar count.
+    thread_local std::array<BandPlan,2> cache;
+    thread_local unsigned slot=0;
+    for(const auto& plan:cache)if(!plan.edges.empty()&&plan.count==count&&plan.sampleRate==sampleRate&&plan.bins==bins)return plan;
+    auto& plan=cache[slot++%cache.size()];plan.count=count;plan.sampleRate=sampleRate;plan.bins=bins;
+    auto& edges=plan.edges;edges.assign(count+1,0);plan.weights.assign(count,0);
+    if(!count||!bins||!sampleRate)return plan;
     const float high=std::min(HighCut,static_cast<float>(sampleRate)*.5f);
     const float binHz=static_cast<float>(sampleRate)/static_cast<float>(FrameSize);
     for(std::size_t n=0;n<=count;++n){
@@ -185,11 +201,15 @@ std::vector<std::size_t> BandEdges(std::size_t count,unsigned sampleRate,std::si
         if(n&&bin<=edges[n-1])bin=edges[n-1]+1;
         edges[n]=std::min(bin,bins);
     }
-    return edges;
+    for(std::size_t n=0;n<count;++n){
+        const float khz=static_cast<float>(std::min(edges[n],bins-1))*binHz/1000;
+        plan.weights[n]=khz>=1?khz:std::pow(khz,BassTilt);
+    }
+    return plan;
 }
 }
 std::pair<std::size_t,std::size_t> BandBins(std::size_t index,std::size_t count,unsigned sampleRate,std::size_t bins){
-    const auto edges=BandEdges(count,sampleRate,bins);
+    const auto& edges=PlanBands(count,sampleRate,bins).edges;
     if(index>=count||!bins)return {0,0};
     const auto first=std::min(edges[index],bins-1);
     return {first,std::clamp(edges[index+1]?edges[index+1]-1:0,first,bins-1)};
@@ -198,8 +218,7 @@ std::pair<std::size_t,std::size_t> BandBins(std::size_t index,std::size_t count,
 std::vector<float> Bands(const std::vector<float>& magnitudes,unsigned sampleRate,std::size_t count){
     std::vector<float> out(count,0.f);
     if(!count||magnitudes.empty()||!sampleRate)return out;
-    const auto edges=BandEdges(count,sampleRate,magnitudes.size());
-    const float binHz=static_cast<float>(sampleRate)/static_cast<float>(FrameSize);
+    const auto& plan=PlanBands(count,sampleRate,magnitudes.size());const auto& edges=plan.edges;
     for(std::size_t b=0;b<count;++b){
         const auto first=std::min(edges[b],magnitudes.size()-1);
         const auto last=std::clamp(edges[b+1]?edges[b+1]-1:0,first,magnitudes.size()-1);
@@ -207,8 +226,7 @@ std::vector<float> Bands(const std::vector<float>& magnitudes,unsigned sampleRat
         for(std::size_t i=first;i<=last;++i)sum+=magnitudes[i];
         // Music is quieter the higher it goes; weighting by frequency evens
         // the bars out across the width (1 kHz reads as is).
-        const float khz=static_cast<float>(first)*binHz/1000,weight=khz>=1?khz:std::pow(khz,BassTilt);
-        out[b]=sum/static_cast<float>(last-first+1)*weight;
+        out[b]=sum/static_cast<float>(last-first+1)*plan.weights[b];
     }
     return out;
 }

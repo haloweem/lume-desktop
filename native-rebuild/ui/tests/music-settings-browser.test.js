@@ -43,7 +43,7 @@ test('music settings preview real lyrics without rebuilding the stage and restor
       await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
       await page.evaluate(async()=>{
         const {initialMusicState}=await import('./music.js');
-        const {query,nav,lyrics,...native}=initialMusicState();
+        const {query,nav,lyrics,score,...native}=initialMusicState();
         const track={id:'settings-fixture',title:'Settings fixture',artist:'Lume',album:'',source:'C:/fixture.wav',artwork:'',duration:60};
         harness.receive({...native,version:1,type:'music-state',session:1,revision:1,pageOpen:true,pageVisible:true,
           status:'paused',current:track,queue:[track],timeline:{position:3,duration:60},capabilities:{canToggle:true,canPrevious:true,canNext:true,canSeek:true}});

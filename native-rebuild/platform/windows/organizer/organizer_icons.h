@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 namespace lume::platform::windows {
-// The cache is shared by the Dock and the launchpad. It must be larger than
-// organizer::MaxItems: the launchpad can contribute MaxItems paths and the
-// Dock adds its own pinned/running entries on top.
+// Per-owner icon working-set budget, shared as an implementation by the Dock,
+// launchpad and organizer. Large organizers request a viewport-sized subset;
+// this is a bitmap/queue budget, never a collection item limit.
 inline constexpr std::size_t MaxIconPaths = 256;
 unsigned OrganizerIconPixelsForDpi(unsigned dpi);
 std::shared_ptr<const WidgetBitmap> ReadOrganizerIcon(const std::wstring&,const std::atomic_bool& cancelled,unsigned pixelSize=64);

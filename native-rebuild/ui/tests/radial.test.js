@@ -292,5 +292,12 @@ test('radial page reuses settings controls, shows ten fixed slots, localized con
     assert.doesNotMatch(english,/轮盘|截图|翻译|材质|快捷键|恢复默认/);
   } finally {setLanguage('zh-CN');}
   const app=readFileSync(new URL('../app.js',import.meta.url),'utf8');
-  assert.match(app,/case "radial"/);assert.match(app,/syncRadialControls/);assert.match(app,/mountRadialShortcut/);
+  const {createComponentSettingsController}=await import('../component-settings.js');
+  const controller=createComponentSettingsController({
+    root:{querySelector:()=>null,querySelectorAll:()=>[]},showNotice:()=>{},
+  });
+  assert.equal(controller.render('radial',state,'settings'),radialPage(state),
+    'the component registry exposes the same radial page through the parent router');
+  assert.equal(controller.receive({type:'host',message:{type:'radial-state'}},state,state),true);
+  assert.match(app,/componentSettings\.render/);assert.match(app,/mountRadialShortcut/);
 });

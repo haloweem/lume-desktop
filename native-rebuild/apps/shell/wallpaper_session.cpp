@@ -1,5 +1,7 @@
 #include "apps/shell/wallpaper_session.h"
+#include "apps/shell/wallpaper_resource_monitor.h"
 #include "platform/windows/text_util.h"
+#include "platform/windows/shell_surface.h"
 #include "core/wallpaper/library.h"
 #include "core/wallpaper/playback_preferences.h"
 #include "platform/windows/local_settings_file_store.h"
@@ -28,6 +30,20 @@
 #include <set>
 #include <thread>
 namespace lume::shell {
+bool detail::WallpaperDisplayCovered(const RECT& display,const std::vector<WallpaperCoverageWindow>& windows,
+                                     bool desktopForeground) {
+    if(desktopForeground)return false;
+    for(const auto& window:windows) {
+        if(window.shellOverlay)continue;
+        const auto& bounds=window.bounds;
+        if(bounds.left>display.left+2||bounds.top>display.top+2||
+            bounds.right<display.right-2||bounds.bottom<display.bottom-2)continue;
+        // A game may remain visible and unminimized behind Show Desktop. Once
+        // the desktop above it is reached in Z order it cannot cover this screen.
+        return !window.desktop;
+    }
+    return false;
+}
 namespace {
 using Json=nlohmann::json;
 using namespace platform::windows;
@@ -66,32 +82,56 @@ std::string ChooseMedia(HWND owner) {
     }
     dialog->Release();return result;
 }
-bool Fullscreen(const MpvDisplay& display) {
-    struct Context {RECT bounds;bool covered=false;};Context context{display.bounds,false};
+}
+bool detail::WallpaperDisplayCoveredNative(const RECT& display) {
+    const auto shell=GetShellWindow();
+    DWORD shellPid=0;if(shell)GetWindowThreadProcessId(shell,&shellPid);
+    struct Context {DWORD shellPid;RECT display;std::vector<detail::WallpaperCoverageWindow> windows;};
+    Context context{shellPid,display,{}};
     EnumWindows([](HWND window,LPARAM data)->BOOL {
         auto& context=*reinterpret_cast<Context*>(data);
-        if(!IsWindowVisible(window)||IsIconic(window)||GetWindow(window,GW_OWNER))return TRUE;
+        if(!IsWindowVisible(window)||IsIconic(window))return TRUE;
         DWORD pid=0;GetWindowThreadProcessId(window,&pid);
         if(pid==GetCurrentProcessId())return TRUE;
         wchar_t name[128]{};GetClassNameW(window,name,128);
-        if(wcscmp(name,L"Progman")==0||wcscmp(name,L"WorkerW")==0||wcscmp(name,L"Shell_TrayWnd")==0||
-            wcscmp(name,L"Shell_SecondaryTrayWnd")==0)return TRUE;
+        const bool desktop=pid==context.shellPid&&(wcscmp(name,L"Progman")==0||wcscmp(name,L"WorkerW")==0);
+        if(wcscmp(name,L"Shell_TrayWnd")==0||wcscmp(name,L"Shell_SecondaryTrayWnd")==0)return TRUE;
         const auto style=GetWindowLongPtrW(window,GWL_EXSTYLE);
-        if(style&(WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT))return TRUE;
+        if(!desktop&&((style&(WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT))||
+            (GetWindow(window,GW_OWNER)&&!(style&WS_EX_APPWINDOW))))return TRUE;
         DWORD cloaked=0;DwmGetWindowAttribute(window,DWMWA_CLOAKED,&cloaked,sizeof(cloaked));if(cloaked)return TRUE;
         RECT bounds{};if(!GetWindowRect(window,&bounds))return TRUE;
-        if(bounds.left<=context.bounds.left+2&&bounds.top<=context.bounds.top+2&&
-            bounds.right>=context.bounds.right-2&&bounds.bottom>=context.bounds.bottom-2){context.covered=true;return FALSE;}
+        // Query process identity only for windows that can cover this display.
+        // Taskbar thumbnails, Start and search are transparent shell surfaces,
+        // so they must not pause/recreate a video playing behind them.
+        const auto& screen=context.display;
+        const bool covers=bounds.left<=screen.left+2&&bounds.top<=screen.top+2&&
+            bounds.right>=screen.right-2&&bounds.bottom>=screen.bottom-2;
+        const bool overlay=!desktop&&covers&&platform::windows::shell_surface::ShellSurface(window);
+        context.windows.push_back({bounds,desktop,overlay});
         return TRUE;
     },reinterpret_cast<LPARAM>(&context));
-    return context.covered;
-}
+    // The Explorer desktop in front means the user has explicitly returned to
+    // it, even when a borderless game leaves its WS_VISIBLE flag set behind it.
+    bool desktopForeground=false;
+    const auto foreground=GetAncestor(GetForegroundWindow(),GA_ROOT);
+    if(foreground) {
+        DWORD pid=0;GetWindowThreadProcessId(foreground,&pid);
+        wchar_t name[128]{};GetClassNameW(foreground,name,128);
+        RECT bounds{};
+        desktopForeground=pid==shellPid&&(wcscmp(name,L"Progman")==0||wcscmp(name,L"WorkerW")==0)&&
+            GetWindowRect(foreground,&bounds)&&bounds.left<=display.left+2&&bounds.top<=display.top+2&&
+            bounds.right>=display.right-2&&bounds.bottom>=display.bottom-2;
+    }
+    return WallpaperDisplayCovered(display,context.windows,desktopForeground);
 }
 struct WallpaperSession::Impl {
     HINSTANCE instance;WallpaperSessionOptions options;Notify notify;
     HWND window=nullptr;HANDLE wake=nullptr,actorFinished=nullptr;HPOWERNOTIFY power=nullptr;
     std::thread actor,network;
-    std::atomic<bool> stopping{false},cancel{false},work{false},locked{false},sleeping{false},rejected{false};
+    std::atomic<bool> stopping{false},cancel{false},work{false},locked{false},suspended{false},displayOff{false},rejected{false};
+    std::atomic<std::uint64_t> resumeGeneration{0};
+    std::atomic<std::uint64_t> gpuRefreshGeneration{0};
     std::atomic<bool> initializing{false};
     std::atomic<unsigned> pendingCommands{0};
     std::atomic<std::uint64_t> importCancellation{0};
@@ -131,17 +171,46 @@ struct WallpaperSession::Impl {
     std::map<std::uint64_t,std::string> errors;
     std::map<std::uint64_t,unsigned> retries;
     std::map<std::uint64_t,ULONGLONG> retryAfter;
+    std::map<std::uint64_t,ULONGLONG> healthySince;
+    std::map<std::uint64_t,ULONGLONG> systemPausedSince;
+    std::map<std::uint64_t,ULONGLONG> lastPlayerRebuildAt;
+    std::map<std::uint64_t,std::uint64_t> lastPlayerGpuGeneration;
+    std::set<std::uint64_t> pendingGpuRefresh;
+    std::set<std::uint64_t> parked;
+    std::uint64_t observedResumeGeneration=0;
     // Right after sign-in Lume can start before Explorer has a desktop to
     // attach to. Until this tick that case is retried every DesktopRetryMs and
     // does not count as one of the three retries for a failing player.
     ULONGLONG desktopWaitUntil=0;
     static constexpr ULONGLONG DesktopRetryMs=500,DesktopWaitMs=60000;
+    static constexpr ULONGLONG RecoveryRetryMs=5000,RecoveryCooldownMs=30000,RecoveryHealthyMs=60000,ParkAfterMs=30000,
+        ResumeCoalesceMs=3000;
     static constexpr std::uint64_t MpvSoftMemoryLimit=1024ull<<20,MpvHardMemoryLimit=2048ull<<20;
     static constexpr ULONGLONG HeartbeatMs=10*60*1000;
     ULONGLONG lastHeartbeat=0;
+    std::unique_ptr<WallpaperResourceMonitor> resourceMonitor;
     Json frames;
     bool framesLoaded=false;
     std::map<std::uint64_t,std::uint64_t> lastPrivate;
+    bool Inactive()const{return locked.load()||suspended.load()||displayOff.load();}
+    ULONGLONG Interval(ULONGLONG normal)const{
+        if(options.verification&&options.verificationParent&&options.verificationRecoveryMilliseconds)
+            return std::max<ULONGLONG>(1,normal*std::max(100u,options.verificationRecoveryMilliseconds)/RecoveryCooldownMs);
+        return normal;
+    }
+    bool Covered(const MpvDisplay& display)const{
+        if(options.verification)return options.verificationParent&&options.verificationFullscreen?
+            options.verificationFullscreen(display.id):false;
+        return detail::WallpaperDisplayCoveredNative(display.bounds);
+    }
+    void ResetRecovery(std::uint64_t id,ULONGLONG now){
+        retries[id]=0;retryAfter[id]=now;healthySince.erase(id);
+    }
+    void RecoveryAttempt(std::uint64_t id,ULONGLONG now){
+        auto& count=retries[id];if(count<3)++count;
+        retryAfter[id]=now+Interval(count>=3?RecoveryCooldownMs:RecoveryRetryMs);
+        healthySince.erase(id);
+    }
     bool WaitingForDesktop()const{
         if(GetTickCount64()>=desktopWaitUntil)return false;
         for(const auto& [id,failure]:errors)if(failure=="MPV_DESKTOP_NOT_READY")return true;
@@ -211,20 +280,32 @@ struct WallpaperSession::Impl {
         }
         if(message==WM_WTSSESSION_CHANGE) {
             if(w==WTS_SESSION_LOCK)self->locked=true;
-            if(w==WTS_SESSION_UNLOCK)self->locked=false;
+            if(w==WTS_SESSION_UNLOCK){
+                const bool wasInactive=self->Inactive();
+                self->locked=false;self->suspended=false;self->displayOff=false;
+                if(wasInactive)++self->gpuRefreshGeneration;
+                ++self->resumeGeneration;
+            }
             SetEvent(self->wake);return 0;
         }
         if(message==WM_POWERBROADCAST) {
-            if(w==PBT_APMSUSPEND)self->sleeping=true;
-            if(w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND)self->sleeping=false;
+            if(w==PBT_APMSUSPEND)self->suspended=true;
+            if(w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND){
+                const bool wasSuspended=self->suspended.exchange(false);
+                const bool wasDisplayOff=w==PBT_APMRESUMESUSPEND&&self->displayOff.exchange(false);
+                if(wasSuspended||wasDisplayOff)++self->gpuRefreshGeneration;
+                ++self->resumeGeneration;
+            }
             if(w==PBT_POWERSETTINGCHANGE&&l) {
                 const auto setting=reinterpret_cast<POWERBROADCAST_SETTING*>(l);
-                if(setting->DataLength==sizeof(DWORD)&&IsEqualGUID(setting->PowerSetting,GUID_CONSOLE_DISPLAY_STATE))
-                    self->sleeping=(*reinterpret_cast<const DWORD*>(setting->Data)==0);
+                if(setting->DataLength==sizeof(DWORD)&&IsEqualGUID(setting->PowerSetting,GUID_CONSOLE_DISPLAY_STATE)){
+                    const bool off=*reinterpret_cast<const DWORD*>(setting->Data)==0;
+                    if(self->displayOff.exchange(off)&&!off){++self->gpuRefreshGeneration;++self->resumeGeneration;}
+                }
             }
             SetEvent(self->wake);return TRUE;
         }
-        if(message==WM_DISPLAYCHANGE){SetEvent(self->wake);return 0;}
+        if(message==WM_DISPLAYCHANGE){++self->gpuRefreshGeneration;++self->resumeGeneration;SetEvent(self->wake);return 0;}
         return DefWindowProcW(window,message,w,l);
     }
     bool Enqueue(std::function<void()> job) {
@@ -391,10 +472,14 @@ struct WallpaperSession::Impl {
         }
     }
     void Publish(bool complete=false) {
+        UpdateResourceMonitor();
         if(complete){catalogDirty=true;libraryDirty=true;}
         Json items=Json::array(),local=Json::array(),screens=Json::array();
+        std::map<std::string,const lume::wallpaper::LibraryEntry*> storedById;
+        if(catalogDirty)for(const auto& entry:library.Items())storedById.emplace(entry.item.id,&entry);
         if(catalogDirty)for(const auto& item:catalog) {
-            const auto stored=library.Find(item.id);
+            const auto found=storedById.find(item.id);
+            const auto* stored=found==storedById.end()?nullptr:found->second;
             // A video not downloaded yet previews from its short clip when the
             // catalog has one; the page only shows this URL, never downloads it.
             const auto& remote=item.previewUrl.empty()?item.mediaUrl:item.previewUrl;
@@ -417,19 +502,18 @@ struct WallpaperSession::Impl {
         }
         for(const auto& display:displays) {
             const auto pref=std::find_if(preferences.displays.begin(),preferences.displays.end(),[&](const auto& p){return p.display==display.id;});
-            const bool has=pref!=preferences.displays.end(),running=controller&&controller->IsRunning(display.id);
+            const bool has=pref!=preferences.displays.end(),running=parked.count(display.id)||(controller&&controller->IsRunning(display.id));
             const bool paused=has&&(pref->paused||automaticPause.count(display.id));
             screens.push_back({{"id",std::to_string(display.id)},{"name",Utf8(display.name)},
                 {"width",display.bounds.right-display.bounds.left},{"height",display.bounds.bottom-display.bounds.top},
                 {"primary",display.primary},{"wallpaperId",has?pref->wallpaperId:""},
-                {"state",running?(paused?"paused":"playing"):errors[display.id].empty()?"stopped":"failed"},
+                {"state",!errors[display.id].empty()?"failed":running?(paused?"paused":"playing"):"stopped"},
                 {"autoPaused",automaticPause.count(display.id)!=0},{"fit",!has||pref->cover?"cover":"contain"},
                 {"volume",has?pref->volume:0},{"error",errors[display.id]}});
         }
-        const bool recoveryPending=std::any_of(preferences.displays.begin(),preferences.displays.end(),[&](const auto& pref){
-            return retries[pref.display]<3&&
-                std::any_of(displays.begin(),displays.end(),[&](const auto& display){return display.id==pref.display;});
-        });
+        // A parked, temporarily disconnected or cooling-down display still
+        // needs the actor to resume it later, even when no player process exists.
+        const bool recoveryPending=!preferences.displays.empty();
         work=networkBusy||recoveryPending||(controller&&!controller->ActiveDisplays().empty());
         Json update={{"version",1},{"type","wallpaper-state"},{"revision",++revision},
             {"status",networkBusy?"busy":"idle"},{"error",error},{"loadStatus",loadStatus},
@@ -475,8 +559,10 @@ struct WallpaperSession::Impl {
             }
         }
         const auto monitor=std::find_if(displays.begin(),displays.end(),[&](const auto& d){return d.id==pref.display;});
-        const bool autoPause=locked||sleeping||(!options.verification&&(balancedMode||preferences.pauseFullscreen)&&
-            monitor!=displays.end()&&Fullscreen(*monitor));
+        const bool autoPause=Inactive()||((balancedMode||preferences.pauseFullscreen)&&
+            monitor!=displays.end()&&Covered(*monitor));
+        const auto previousPlayer=controller->PlayerIdentity(pref.display);
+        const auto refreshGeneration=gpuRefreshGeneration.load();
         if(!controller->Start(pref.display,resolved.path)) {
             // Start either restores the previous media or stops its owned player.
             errors[pref.display]=controller->LastError();return false;
@@ -488,6 +574,16 @@ struct WallpaperSession::Impl {
             errors[pref.display]=controller->LastError();controller->Stop(pref.display);return false;
         }
         errors[pref.display].clear();
+        parked.erase(pref.display);
+        const auto currentPlayer=controller->PlayerIdentity(pref.display);
+        // Switching media may reuse the same mpv process. Only a newly created
+        // player establishes that its GPU resources belong to this return.
+        if(currentPlayer&&(!previousPlayer||currentPlayer->pid!=previousPlayer->pid||
+            currentPlayer->createdFileTime!=previousPlayer->createdFileTime)){
+            lastPlayerRebuildAt[pref.display]=GetTickCount64();
+            lastPlayerGpuGeneration[pref.display]=refreshGeneration;
+            pendingGpuRefresh.erase(pref.display);
+        }else if(entry->item.kind!=lume::wallpaper::MediaKind::Video)pendingGpuRefresh.erase(pref.display);
         if(autoPause&&!pref.paused)automaticPause.insert(pref.display);else automaticPause.erase(pref.display);
         return true;
     }
@@ -503,7 +599,7 @@ struct WallpaperSession::Impl {
         if(command.action==Action::StopAll) {
             pendingApplyTargets.clear();
             auto next=preferences;next.displays.clear();
-            if(Save(next)){for(auto id:controller->ActiveDisplays())controller->Stop(id);errors.clear();automaticPause.clear();ReleaseMedia();RestoreSystemWallpaper();}
+            if(Save(next)){for(auto id:controller->ActiveDisplays())controller->Stop(id);errors.clear();automaticPause.clear();parked.clear();healthySince.clear();ReleaseMedia();RestoreSystemWallpaper();}
             Publish();return;
         }
         const auto display=std::find_if(displays.begin(),displays.end(),[&](const auto& d){return d.id==command.display;});
@@ -516,9 +612,18 @@ struct WallpaperSession::Impl {
         auto pref=std::find_if(next.displays.begin(),next.displays.end(),[&](const auto& p){return p.display==command.display;});
         if(command.action==Action::Apply) {
             if(!library.Find(command.id)){error="WALLPAPER_LIBRARY_NOT_FOUND";Publish();return;}
+            const bool hadPrevious=pref!=next.displays.end();
+            const auto previousFailure=errors[command.display];
             if(pref==next.displays.end()){next.displays.push_back({command.display,command.id,false,0,true});pref=next.displays.end()-1;}
             else {pref->wallpaperId=command.id;pref->paused=false;}
-            if(!StartPlayback(*pref)){error=errors[command.display];ReleaseMedia();Publish();return;}
+            if(!StartPlayback(*pref)){
+                error=errors[command.display];
+                // A rejected candidate can leave the previous media restored
+                // and verified by Start. Report that application failure at
+                // page level without labelling the retained wallpaper failed.
+                if(hadPrevious&&controller->IsRunning(command.display))errors[command.display]=previousFailure;
+                ReleaseMedia();Publish();return;
+            }
             if(!Save(next)) {
                 controller->Stop(command.display);
                 for(const auto& previous:preferences.displays)if(previous.display==command.display)StartPlayback(previous);
@@ -526,22 +631,23 @@ struct WallpaperSession::Impl {
         } else if(pref==next.displays.end()){error="WALLPAPER_NOT_PLAYING";}
         else if(command.action==Action::Stop) {
             next.displays.erase(pref);
-            if(Save(next)){controller->Stop(command.display);errors.erase(command.display);automaticPause.erase(command.display);RestoreSystemWallpaper(command.display);}
+            if(Save(next)){controller->Stop(command.display);errors.erase(command.display);automaticPause.erase(command.display);parked.erase(command.display);healthySince.erase(command.display);RestoreSystemWallpaper(command.display);}
         } else {
             const auto original=*pref;bool applied=false;
-            if(command.action==Action::Pause){pref->paused=true;applied=controller->Command(command.display,lume::wallpaper::MpvCommand::Pause);}
-            else if(command.action==Action::Resume){pref->paused=false;applied=controller->Command(command.display,lume::wallpaper::MpvCommand::Resume);}
-            else if(command.action==Action::Fit){pref->cover=command.flag;applied=controller->SetFit(command.display,command.flag);}
-            else if(command.action==Action::Volume){pref->volume=command.volume;applied=controller->SetVolume(command.display,command.volume);}
+            const bool idle=parked.count(command.display)!=0;
+            if(command.action==Action::Pause){pref->paused=true;applied=idle||controller->Command(command.display,lume::wallpaper::MpvCommand::Pause);}
+            else if(command.action==Action::Resume){pref->paused=false;applied=idle||controller->Command(command.display,lume::wallpaper::MpvCommand::Resume);}
+            else if(command.action==Action::Fit){pref->cover=command.flag;applied=idle||controller->SetFit(command.display,command.flag);}
+            else if(command.action==Action::Volume){pref->volume=command.volume;applied=idle||controller->SetVolume(command.display,command.volume);}
             if(!applied)error=controller->LastError();
             else if(!Save(next)) {
                 controller->SetFit(original.display,original.cover);controller->SetVolume(original.display,original.volume);
                 controller->Command(original.display,(original.paused||automaticPause.count(original.display))?
                     lume::wallpaper::MpvCommand::Pause:lume::wallpaper::MpvCommand::Resume);
             }else if(command.action==Action::Pause||command.action==Action::Resume)automaticPause.erase(command.display);
-            else if(command.action==Action::Fit)ApplySignInStill(*pref);
+            else if(command.action==Action::Fit&&!idle)ApplySignInStill(*pref);
         }
-        retries[command.display]=0;retryAfter[command.display]=GetTickCount64()+5000;
+        ResetRecovery(command.display,GetTickCount64());
         ReleaseMedia();Publish();
     }
     void ApplyOnDisplays(const std::string& id,const std::vector<std::uint64_t>& targets,bool cancelDownload=false) {
@@ -569,50 +675,61 @@ struct WallpaperSession::Impl {
             ApplyOnDisplays(command.id,targets);
         }else Download(command.id,std::move(targets));
     }
-    void Refresh() {
+    void AcceptCatalog(lume::wallpaper::CatalogResult result,bool loading=false) {
+        catalogError=result.error;
+        if(result.imageCatalogLoaded||result.videoCatalogLoaded) {
+            auto merged=std::move(result.items);
+            for(const auto& previous:catalog) {
+                const bool replaced=previous.kind==lume::wallpaper::MediaKind::Image?
+                    result.imageCatalogLoaded:result.videoCatalogLoaded;
+                if(!replaced)merged.push_back(previous);
+            }
+            std::set<std::string> names;
+            bool valid=merged.size()<=lume::wallpaper::kMaxLibraryItems;
+            for(const auto& item:merged) {
+                auto id=item.id;
+                std::transform(id.begin(),id.end(),id.begin(),[](unsigned char c){
+                    return static_cast<char>(std::tolower(c));
+                });
+                if(!names.insert(id).second){valid=false;break;}
+            }
+            if(!valid) {
+                catalogError="WALLPAPER_CATALOG_CONFLICT";
+                catalogStatus=loading?"loading":(imageCatalogKnown||videoCatalogKnown)?"ready":"failed";Publish();return;
+            }
+            catalog=std::move(merged);
+            imageCatalogKnown=imageCatalogKnown||result.imageCatalogLoaded;
+            videoCatalogKnown=videoCatalogKnown||result.videoCatalogLoaded;
+            // Persist the latest complete in-memory collections. A failed
+            // collection or disk write must not roll back the other collection.
+            lume::wallpaper::CatalogResult cacheValue{catalog,{},imageCatalogKnown,videoCatalogKnown};
+            const auto saved=catalogCache.Save(cacheValue);
+            if(!saved.ok)catalogError="WALLPAPER_CATALOG_CACHE_SAVE:"+saved.error;
+            catalogDirty=true;catalogStatus=loading?"loading":"ready";
+        }else {
+            catalogStatus=(imageCatalogKnown||videoCatalogKnown)?"ready":"failed";
+            if(imageCatalogKnown||videoCatalogKnown)catalogError="WALLPAPER_CATALOG_OFFLINE:"+result.error;
+        }
+        Publish();
+    }
+    void Refresh(bool videoOnly=false) {
         if(networkBusy){error="WALLPAPER_BUSY";Publish();return;}
         if(network.joinable())network.join();
+        // A previous first-run image fetch may have been interrupted. Preserve
+        // the lightweight path only when that collection is already complete.
+        videoOnly=videoOnly&&imageCatalogKnown;
         networkBusy=true;cancel=false;catalogStatus="loading";catalogError.clear();Publish();
-        network=std::thread([this] {
-            auto result=net::FetchCatalog(cancel);
+        network=std::thread([this,videoOnly] {
+            net::CatalogFetchOptions fetchOptions;
+            fetchOptions.videoOnly=videoOnly;
+            auto result=net::FetchCatalog(cancel,fetchOptions,[this](const auto& videos) {
+                // New installs can preview videos while image metadata is
+                // still loading. Do not join the network worker at this point.
+                Complete([this,videos]{AcceptCatalog(videos,true);});
+            });
             Complete([this,result=std::move(result)]()mutable {
                 if(network.joinable())network.join();
-                networkBusy=false;catalogError=result.error;
-                if(result.imageCatalogLoaded||result.videoCatalogLoaded) {
-                    auto merged=std::move(result.items);
-                    for(const auto& previous:catalog) {
-                        const bool replaced=previous.kind==lume::wallpaper::MediaKind::Image?
-                            result.imageCatalogLoaded:result.videoCatalogLoaded;
-                        if(!replaced)merged.push_back(previous);
-                    }
-                    std::set<std::string> names;
-                    bool valid=merged.size()<=lume::wallpaper::kMaxLibraryItems;
-                    for(const auto& item:merged) {
-                        auto id=item.id;
-                        std::transform(id.begin(),id.end(),id.begin(),[](unsigned char c){
-                            return static_cast<char>(std::tolower(c));
-                        });
-                        if(!names.insert(id).second){valid=false;break;}
-                    }
-                    if(!valid) {
-                        catalogError="WALLPAPER_CATALOG_CONFLICT";
-                        catalogStatus=(imageCatalogKnown||videoCatalogKnown)?"ready":"failed";Publish();return;
-                    }
-                    catalog=std::move(merged);
-                    imageCatalogKnown=imageCatalogKnown||result.imageCatalogLoaded;
-                    videoCatalogKnown=videoCatalogKnown||result.videoCatalogLoaded;
-                    // Persist the latest complete in-memory snapshot. A
-                    // previous write failure must not roll a failed collection
-                    // back to an older disk copy during the next refresh.
-                    lume::wallpaper::CatalogResult cacheValue{catalog,{},imageCatalogKnown,videoCatalogKnown};
-                    const auto saved=catalogCache.Save(cacheValue);
-                    if(!saved.ok)catalogError="WALLPAPER_CATALOG_CACHE_SAVE:"+saved.error;
-                    catalogDirty=true;catalogStatus="ready";
-                }else {
-                    catalogStatus=(imageCatalogKnown||videoCatalogKnown)?"ready":"failed";
-                    if(imageCatalogKnown||videoCatalogKnown)catalogError="WALLPAPER_CATALOG_OFFLINE:"+result.error;
-                }
-                Publish();
+                networkBusy=false;AcceptCatalog(std::move(result));
             });
         });
     }
@@ -737,6 +854,7 @@ struct WallpaperSession::Impl {
         switch(command.action) {
         case Action::Snapshot:Publish(true);break;
         case Action::Refresh:Refresh();break;
+        case Action::RefreshVideos:Refresh(true);break;
         case Action::Download:Download(command.id);break;
         case Action::Apply:case Action::ApplyAll:RequestApply(command);break;
         case Action::Like: {
@@ -774,10 +892,20 @@ struct WallpaperSession::Impl {
         }
     }
     void Poll() {
+        const auto now=GetTickCount64();
+        const bool inactive=Inactive();
+        const auto generation=resumeGeneration.load();
+        const bool resumed=generation!=observedResumeGeneration;
+        observedResumeGeneration=generation;
         auto current=EnumerateMpvDisplays();bool changed=current.size()!=displays.size();
         if(!changed)for(std::size_t i=0;i<current.size();++i)
             if(current[i].id!=displays[i].id||!EqualRect(&current[i].bounds,&displays[i].bounds)){changed=true;break;}
         displays=std::move(current);
+        if(changed)++gpuRefreshGeneration;
+        if(resumed||changed){
+            desktopWaitUntil=now+DesktopWaitMs;
+            for(const auto& pref:preferences.displays){ResetRecovery(pref.display,now);pendingGpuRefresh.insert(pref.display);}
+        }
         for(const auto id:controller->ActiveDisplays()) {
             if(std::none_of(displays.begin(),displays.end(),[&](const auto& d){return d.id==id;})){
                 controller->Stop(id);automaticPause.erase(id);changed=true;
@@ -786,6 +914,49 @@ struct WallpaperSession::Impl {
         for(const auto& pref:preferences.displays) {
             const auto display=std::find_if(displays.begin(),displays.end(),[&](const auto& d){return d.id==pref.display;});
             if(display==displays.end())continue;
+            const bool shouldPause=inactive||((balancedMode||preferences.pauseFullscreen)&&Covered(*display));
+            auto& pausedSince=systemPausedSince[pref.display];
+            if(shouldPause){if(!pausedSince)pausedSince=now;}else pausedSince=0;
+            const auto entry=library.Find(pref.wallpaperId);
+            if(shouldPause&&pausedSince&&now-pausedSince>=Interval(ParkAfterMs)&&entry&&
+                entry->item.kind==lume::wallpaper::MediaKind::Video){
+                // The Windows sign-in still remains in place. Reclaim the GPU,
+                // decoder and process during long display-off/locked periods;
+                // the saved preference is deliberately left untouched.
+                if(parked.insert(pref.display).second){
+                    controller->Stop(pref.display);healthySince.erase(pref.display);errors[pref.display].clear();changed=true;
+                    diag::Log("wallpaper","display "+std::to_string(pref.display)+" player parked while desktop covered or inactive");
+                }
+                if(!pref.paused)automaticPause.insert(pref.display);else automaticPause.erase(pref.display);
+                continue;
+            }
+            if(parked.count(pref.display)){
+                if(shouldPause)continue;
+                parked.erase(pref.display);ResetRecovery(pref.display,now);changed=true;
+                RecoveryAttempt(pref.display,now);StartPlayback(pref);continue;
+            }
+            // A normal fullscreen/desktop transition only changes pause. Keep
+            // the healthy player and its last frame attached; rebuilding here
+            // exposes the static wallpaper on every return or taskbar switch.
+            // Power/display notifications still request fresh GPU resources,
+            // and EnsurePlayback below recovers a stalled or failed player.
+            if(pendingGpuRefresh.count(pref.display)&&!shouldPause&&entry&&
+                entry->item.kind==lume::wallpaper::MediaKind::Video&&controller->IsRunning(pref.display)){
+                const auto previous=lastPlayerRebuildAt.find(pref.display);
+                const auto builtGeneration=lastPlayerGpuGeneration.find(pref.display);
+                if(previous!=lastPlayerRebuildAt.end()&&now-previous->second<ResumeCoalesceMs&&
+                    builtGeneration!=lastPlayerGpuGeneration.end()&&builtGeneration->second==gpuRefreshGeneration.load()){
+                    // Resume, unlock and display-on normally arrive together.
+                    // A recent start from before a new return is not fresh:
+                    // coalesce only a player built for this resource generation.
+                    pendingGpuRefresh.erase(pref.display);
+                }else{
+                    RecoveryAttempt(pref.display,now);
+                    controller->Stop(pref.display);
+                    diag::Log("wallpaper","display "+std::to_string(pref.display)+" rebuilding GPU resources after desktop resume");
+                    StartPlayback(pref);changed=true;continue;
+                }
+            }
             if(!controller->IsRunning(pref.display)) {
                 if(errors[pref.display].empty()){
                     errors[pref.display]="WALLPAPER_PLAYER_EXITED";changed=true;
@@ -794,23 +965,35 @@ struct WallpaperSession::Impl {
                         (code?diag::ExitCodeText(*code):std::string("unknown"))+", last private "+std::to_string(lastPrivate[pref.display]>>20)+" MB");
                 }
                 const bool desktop=errors[pref.display]=="MPV_DESKTOP_NOT_READY"&&GetTickCount64()<desktopWaitUntil;
-                if((desktop||retries[pref.display]<3)&&GetTickCount64()>=retryAfter[pref.display]) {
-                    if(!desktop)++retries[pref.display];
-                    retryAfter[pref.display]=GetTickCount64()+(desktop?DesktopRetryMs:5000);
+                if(GetTickCount64()>=retryAfter[pref.display]) {
+                    if(desktop)retryAfter[pref.display]=GetTickCount64()+DesktopRetryMs;
+                    else RecoveryAttempt(pref.display,GetTickCount64());
                     StartPlayback(pref);changed=true;
                 }
                 continue;
             }
-            if(!controller->EnsureAttached(pref.display)) {
+            if(!controller->EnsurePlayback(pref.display,pref.paused||shouldPause)) {
                 errors[pref.display]=controller->LastError();changed=true;
-                if(retries[pref.display]<3&&GetTickCount64()>=retryAfter[pref.display]) {
-                    ++retries[pref.display];retryAfter[pref.display]=GetTickCount64()+5000;
+                healthySince.erase(pref.display);
+                if(GetTickCount64()>=retryAfter[pref.display]) {
+                    RecoveryAttempt(pref.display,GetTickCount64());
+                    diag::Log("wallpaper","display "+std::to_string(pref.display)+" playback recovery: "+errors[pref.display]);
                     controller->Stop(pref.display);StartPlayback(pref);
                 }
                 continue;
             }
             if(!errors[pref.display].empty()){errors[pref.display].clear();changed=true;}
-            const bool shouldPause=locked||sleeping||(!options.verification&&(balancedMode||preferences.pauseFullscreen)&&Fullscreen(*display));
+            // Reconcile the actual player on every poll, even if a previous
+            // pause write succeeded but its acknowledgement was lost. Intent
+            // comes from the current manual/system policy, never an old edge.
+            const bool wasAutomatic=automaticPause.count(pref.display)!=0;
+            if(!pref.paused&&shouldPause)automaticPause.insert(pref.display);else automaticPause.erase(pref.display);
+            changed=changed||(wasAutomatic!=(automaticPause.count(pref.display)!=0));
+            auto& healthy=healthySince[pref.display];
+            if(!healthy)healthy=now;
+            if(retries[pref.display]&&now-healthy>=Interval(RecoveryHealthyMs)){
+                retries[pref.display]=0;retryAfter[pref.display]=0;
+            }
             // Some GPU drivers make mpv grow without bound over hours of looping
             // (users saw 15 GB overnight). Restart the player once it is clearly
             // past normal use: while hidden past the soft limit, at once past the
@@ -819,24 +1002,26 @@ struct WallpaperSession::Impl {
                 options.verificationPrivateBytes(pref.display):controller->PrivateBytes(pref.display);
             if(bytes){
                 lastPrivate[pref.display]=bytes;
-                const bool hidden=locked||sleeping||pref.paused||automaticPause.count(pref.display);
+                const bool hidden=inactive||pref.paused||automaticPause.count(pref.display);
                 if(bytes>=(hidden?MpvSoftMemoryLimit:MpvHardMemoryLimit)){
                     diag::Log("wallpaper","display "+std::to_string(pref.display)+" player at "+std::to_string(bytes>>20)+
                         " MB private, restarting ("+(hidden?"hidden":"visible")+")");
                 }
-                if(bytes>=(hidden?MpvSoftMemoryLimit:MpvHardMemoryLimit)&&controller->Recover(pref.display)){
+                if(bytes>=(hidden?MpvSoftMemoryLimit:MpvHardMemoryLimit)&&GetTickCount64()>=retryAfter[pref.display]){
+                    RecoveryAttempt(pref.display,GetTickCount64());
                     // Recover preserves the player's pause state. Keep its automatic
                     // ownership too, so the next poll can resume it even when the
                     // covering app, lock or display-off condition ended mid-restart.
+                    const auto refreshGeneration=gpuRefreshGeneration.load();
+                    if(controller->Recover(pref.display)){
+                        lastPlayerRebuildAt[pref.display]=GetTickCount64();
+                        lastPlayerGpuGeneration[pref.display]=refreshGeneration;pendingGpuRefresh.erase(pref.display);
+                    }else errors[pref.display]=controller->LastError();
                     changed=true;continue;
                 }
             }
-            if(!pref.paused&&shouldPause&&!automaticPause.count(pref.display)) {
-                if(controller->Command(pref.display,lume::wallpaper::MpvCommand::Pause)){automaticPause.insert(pref.display);changed=true;}
-            }else if(!pref.paused&&!shouldPause&&automaticPause.count(pref.display)) {
-                if(controller->Command(pref.display,lume::wallpaper::MpvCommand::Resume)){automaticPause.erase(pref.display);changed=true;}
-            }
         }
+        UpdateResourceMonitor();
         Heartbeat();
         ReleaseMedia();if(changed)Publish();
     }
@@ -914,7 +1099,31 @@ struct WallpaperSession::Impl {
         }
         if(changed)SaveFrames();
     }
-    // One line every ten minutes: a slow leak shows up as a rising series.
+    void UpdateResourceMonitor() {
+        if(!resourceMonitor||!controller)return;
+        Json context=Json::array();
+        for(const auto& pref:preferences.displays){
+            const auto identity=controller->PlayerIdentity(pref.display);
+            const auto pausedAt=systemPausedSince.find(pref.display);
+            const bool systemPaused=Inactive()||(pausedAt!=systemPausedSince.end()&&pausedAt->second!=0);
+            // A stable opaque grouping key, without local names or media URLs.
+            std::uint64_t wallpaperKey=14695981039346656037ull;
+            for(const unsigned char byte:pref.wallpaperId){wallpaperKey^=byte;wallpaperKey*=1099511628211ull;}
+            const auto failure=errors.find(pref.display);
+            const auto code=failure==errors.end()?std::string{}:failure->second;
+            const bool running=controller->IsRunning(pref.display);
+            context.push_back({{"displayId",std::to_string(pref.display)},
+                {"wallpaperId",std::to_string(wallpaperKey)},
+                {"pid",identity?identity->pid:DWORD{0}},
+                {"createdFileTime",identity?std::to_string(identity->createdFileTime):"0"},
+                {"state",!code.empty()?"failed":parked.count(pref.display)?"parked":running?
+                    (pref.paused||systemPaused?"paused":"playing"):"stopped"},
+                {"manualPaused",pref.paused},{"systemPaused",systemPaused},
+                {"parked",parked.count(pref.display)!=0},{"error",code}});
+        }
+        resourceMonitor->Update(std::move(context));
+    }
+    // One line every ten minutes, alongside the separate bounded minute history.
     void Heartbeat() {
         const auto now=GetTickCount64();
         if(lastHeartbeat&&now-lastHeartbeat<HeartbeatMs)return;
@@ -922,12 +1131,18 @@ struct WallpaperSession::Impl {
         std::string line;
         for(const auto& pref:preferences.displays){
             line+=" display "+std::to_string(pref.display)+"="+pref.wallpaperId+" "+
-                (controller->IsRunning(pref.display)?std::to_string(controller->PrivateBytes(pref.display)>>20)+"MB":std::string("stopped"))+
+                (parked.count(pref.display)?std::string("parked"):controller->IsRunning(pref.display)?
+                    std::to_string(controller->PrivateBytes(pref.display)>>20)+"MB "+controller->PlaybackDiagnostics(pref.display):std::string("stopped"))+
                 (pref.paused||automaticPause.count(pref.display)?" paused":"");
         }
-        if(!line.empty())diag::Log("wallpaper","heartbeat"+line+(locked?" locked":"")+(sleeping?" display-off":""));
+        if(!line.empty())diag::Log("wallpaper","heartbeat"+line+(locked?" locked":"")+
+            (suspended?" suspended":"")+(displayOff?" display-off":""));
     }
     void RunActor() {
+        const auto historyDirectory=!options.verification?diag::Directory():
+            options.verificationParent?fs::u8path(options.verificationResourceHistoryDirectory):fs::path{};
+        if(!historyDirectory.empty())try{resourceMonitor=std::make_unique<WallpaperResourceMonitor>(historyDirectory,
+            options.verification?options.verificationResourceHistoryIntervalMilliseconds:60000);}catch(...){}
         controller=std::make_unique<MpvProcessController>(options.executable,options.verificationParent);
         controller->SetCancellation(&stopping);
         if(controller->SetBalancedMode(options.balancedMode)) {
@@ -984,6 +1199,7 @@ struct WallpaperSession::Impl {
         }
         cancel=true;if(network.joinable())network.join();
         for(auto id:controller->ActiveDisplays())controller->Stop(id);
+        UpdateResourceMonitor();resourceMonitor.reset();
         media.Stop();mediaUrls.clear();controller.reset();work=false;pendingCommands=0;initializing=false;
     }
     bool Restore() {
@@ -1020,6 +1236,7 @@ struct WallpaperSession::Impl {
                 cancel=true;if(network.joinable())network.join();
                 error="WALLPAPER_RUNTIME_FAILED";work=false;pendingCommands=0;initializing=false;
                 if(controller){for(auto id:controller->ActiveDisplays())controller->Stop(id);}
+                resourceMonitor.reset();
                 media.Stop();mediaUrls.clear();
                 try{Publish();}catch(...){}
                 controller.reset();

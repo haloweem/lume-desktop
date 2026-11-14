@@ -12,6 +12,7 @@ struct TaskRecord {
     // Untyped properties retained at the JSON-value level, including nested metadata.
     std::string preservedJson = "{}";
     bool resetSubtasks = false;
+    bool subtasksChanged = false;
     // Set once edited, so an unrecognized stored rule survives untouched otherwise.
     bool recurrenceChanged = false;
 };

@@ -22,6 +22,10 @@ struct MpvDisplay {
     RECT bounds{};
     bool primary = false;
 };
+struct MpvPlayerIdentity {
+    DWORD pid = 0;
+    std::uint64_t createdFileTime = 0;
+};
 
 std::vector<MpvDisplay> EnumerateMpvDisplays();
 
@@ -42,6 +46,8 @@ public:
     bool IsRunning(std::uint64_t displayId) const;
     // Private (commit) bytes of the display's mpv process; 0 when none runs.
     std::uint64_t PrivateBytes(std::uint64_t displayId) const;
+    // Actor-only identity from the owned handle; no name-based process scan.
+    std::optional<MpvPlayerIdentity> PlayerIdentity(std::uint64_t displayId) const;
     // Exit code of the display's mpv process once it has exited.
     std::optional<unsigned long> ExitCode(std::uint64_t displayId) const;
     // Writes what the display shows now as a JPEG: the fitted static image, or
@@ -64,6 +70,11 @@ public:
     bool AllowStaticImageSource(const std::string& url, wallpaper::StaticImageSource source);
     std::vector<std::uint64_t> ActiveDisplays() const;
     bool EnsureAttached(std::uint64_t displayId);
+    // Reconcile the actual player pause state with the session's current policy.
+    // An alive video whose timeline stops advancing is a recoverable failure.
+    bool EnsurePlayback(std::uint64_t displayId, bool paused);
+    // Actor-only, bounded diagnostic readback; contains no media path or token.
+    std::string PlaybackDiagnostics(std::uint64_t displayId);
     // The atomic must outlive this controller; only its value may change across
     // threads. Set this pointer on the controller's actor before starting work.
     void SetCancellation(const std::atomic<bool>* cancellation);

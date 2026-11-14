@@ -7,6 +7,21 @@
 #include <vector>
 
 namespace lume::shell {
+namespace detail {
+// Top-to-bottom visible window candidates after filtering hidden/cloaked and
+// non-application windows. Kept separate so desktop visibility is testable
+// without moving windows on the user's desktop.
+struct WallpaperCoverageWindow {
+    RECT bounds{};
+    bool desktop=false;
+    bool shellOverlay=false;
+};
+bool WallpaperDisplayCovered(const RECT& display,const std::vector<WallpaperCoverageWindow>& windows,
+                             bool desktopForeground=false);
+// Read-only native window enumeration shared by production and explicit
+// fullscreen fixtures; does not move windows or alter input/desktop state.
+bool WallpaperDisplayCoveredNative(const RECT& display);
+}
 struct WallpaperSessionOptions {
     // Required library root; verification callers must supply an isolated fixture root.
     std::string root;
@@ -22,6 +37,13 @@ struct WallpaperSessionOptions {
     // Actor-thread memory probe for isolated watchdog tests only. Ignored unless
     // verification and an owned verificationParent are both supplied.
     std::function<std::uint64_t(std::uint64_t display)> verificationPrivateBytes;
+    // Isolated playback tests only; ignored outside an owned verification parent.
+    std::function<bool(std::uint64_t display)> verificationFullscreen;
+    // Scales only recovery/parking intervals in isolated tests, never player IPC.
+    unsigned verificationRecoveryMilliseconds=0;
+    // Explicit isolated diagnostics fixture, ignored without an owned parent.
+    std::string verificationResourceHistoryDirectory;
+    unsigned verificationResourceHistoryIntervalMilliseconds=60000;
 };
 class WallpaperSession final {
 public:

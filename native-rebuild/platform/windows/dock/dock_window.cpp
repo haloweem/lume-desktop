@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 #include <utility>
 
 namespace lume::platform::windows {
@@ -29,6 +30,7 @@ constexpr wchar_t GhostClass[] = L"LumeNativeDockDragIcon", PreviewClass[] = L"L
 constexpr UINT_PTR PreviewTimer = 0x7c3;
 constexpr UINT_PTR PreviewLeaveTimer = 0x7c4;
 constexpr UINT FrameMessage = WM_APP + 0x7c1;
+constexpr UINT PaintMessage = WM_APP + 0x7c3;
 constexpr double MinFrameInterval = 1.0 / 90.0;
 constexpr float DragThreshold = 5, DragLift = 12, DragScale = 1.12f;
 // A dragged icon this far (DIPs) beyond the glass is removed when released.
@@ -38,12 +40,10 @@ constexpr float RemoveDistance = 36;
 constexpr float ThumbnailHeight = .82f, BadgeSize = .44f;
 float ItemWidth(const dock::Item& item) {
     if (item.kind == dock::Kind::Separator) return 1.f;
-    if (item.kind == dock::Kind::SystemTray) return DockWindow::SystemTrayWidth;
     return DockWindow::IconSize;
 }
 float ItemWidth(const dock::Item& item, float scale) {
     if (item.kind == dock::Kind::Separator) return 1.f;
-    if (item.kind == dock::Kind::SystemTray) return DockWindow::SystemTrayWidth;
     return DockWindow::IconSize * scale;
 }
 using dock::Movable;
@@ -56,6 +56,16 @@ void LaunchpadGlyph(WidgetCanvas& canvas, WidgetRect r) {
             canvas.Rounded({r.x + gap + column * (cell + gap), r.y + gap + row * (cell + gap), cell, cell},
                            cell * .3f, 0xffffff, .92f);
 }
+// Control center, drawn like the launchpad glyph: two white sliders whose
+// knobs sit at opposite ends, on the Dock itself without a tile.
+void ControlCenterGlyph(WidgetCanvas& canvas, WidgetRect r) {
+    const float w = r.width * .74f, track = r.width * .23f, x = r.x + (r.width - w) / 2, knob = track * .72f, inset = (track - knob) / 2;
+    const float top = r.y + r.height * .2f, bottom = r.y + r.height * .57f;
+    canvas.Rounded({x, top, w, track}, track / 2, 0xffffff, .92f);
+    canvas.Ellipse({x + inset, top + inset, knob, knob}, 0x1b1c20, .85f);
+    canvas.Rounded({x, bottom, w, track}, track / 2, 0xffffff, .92f);
+    canvas.Ellipse({x + w - track + inset, bottom + inset, knob, knob}, 0x1b1c20, .85f);
+}
 }  // namespace
 
 float DockWindow::Width(const std::vector<dock::Item>& items, float spacing) {
@@ -66,8 +76,6 @@ float DockWindow::Width(const std::vector<dock::Item>& items, float spacing) {
 WidgetRect DockWindow::Slot(const std::vector<dock::Item>& items, std::size_t index, float spacing) {
     float x = Padding;
     for (std::size_t i = 0; i < index && i < items.size(); ++i) x += ItemWidth(items[i]) + spacing;
-    if (index < items.size() && items[index].kind == dock::Kind::SystemTray)
-        return {x, 22.f, ItemWidth(items[index]), BarHeight - 44.f};
     return {x, BarHeight - IconBottom - IconSize, index < items.size() ? ItemWidth(items[index]) : 0.f, IconSize};
 }
 std::size_t DockWindow::Hit(const std::vector<dock::Item>& items, float x, float y) {
@@ -75,7 +83,6 @@ std::size_t DockWindow::Hit(const std::vector<dock::Item>& items, float x, float
     for (std::size_t i = 0; i < items.size(); ++i) {
         if (items[i].kind == dock::Kind::Separator) continue;
         const auto slot = Slot(items, i);
-        if (items[i].kind == dock::Kind::SystemTray && (y < slot.y || y >= slot.y + slot.height)) continue;
         if (x >= slot.x - Gap / 2 && x < slot.x + slot.width + Gap / 2) return i;
     }
     return None;
@@ -105,6 +112,7 @@ struct DockWindow::Impl {
     HWND icons = nullptr, bar = nullptr;
     unsigned dpi = 96;
     bool frosted = false, visible = false, hovering = false, reducedMotion = false;
+    bool paintPending=false;
     DockAppearance look;
     unsigned monitorDpi = 96;  // dpi is this times the icon scale
     // Reflections cached per icon bitmap (keyed by identity, dropped with it).
@@ -422,6 +430,7 @@ struct DockWindow::Impl {
             for (std::size_t i = 0; i < items.size(); ++i) screen[Key(items[i])] = barLeft + oldOrigin + Visual(i);
         const float oldLeft = barLeft + oldOrigin;
         items = std::move(next);
+        PruneSnapshots();
         runningOrder.erase(std::remove_if(runningOrder.begin(), runningOrder.end(), [&](const auto& key) {
             return std::none_of(items.begin(), items.end(), [&](const auto& item) { return Key(item) == key; });
         }), runningOrder.end());
@@ -492,8 +501,7 @@ struct DockWindow::Impl {
             const auto slot = Slot(rest, n, Spacing());
             float target = 1;
             if (i == dragged) target = removing ? 0.f : DragScale;
-            else if (hovering && dragged == None && gapSlot == None && items[i].kind != dock::Kind::Separator &&
-                     items[i].kind != dock::Kind::SystemTray)
+            else if (hovering && dragged == None && gapSlot == None && items[i].kind != dock::Kind::Separator)
                 target = Magnification(std::abs(pointerRest - (slot.x + slot.width / 2)), Spacing());
             moving |= m.scale.Step(target, dt, MagnifyOmega, MagnifyZeta, .0005f, reducedMotion);
             moving |= m.offset.Step(0, dt, SlideOmega, SlideZeta, .05f, reducedMotion);
@@ -564,28 +572,11 @@ struct DockWindow::Impl {
     void DrawItem(std::size_t i) {
         const auto& item = items[i];
         auto& m = motion[Key(item)];
-        if (item.kind == dock::Kind::SystemTray) {
-            const float left = barLeft + Visual(i), top = Headroom + 22, height = BarHeight - 44;
-            iconCanvas->Rounded({left, top, SystemTrayWidth, height}, height / 2, 0x17191d, frosted ? .62f : .7f);
-            const auto status = ports.systemTray ? ports.systemTray() : DockSystemTrayStatus{};
-            const std::wstring labels[] = {status.date, L"电量", L"网络", L"音量", L"输入法", L"蓝牙"};
-            const std::wstring values[] = {status.time, status.battery, status.network, status.volume,
-                                           status.input, status.bluetooth};
-            const float section = SystemTrayWidth / 6.f;
-            for (std::size_t n = 0; n < std::size(values); ++n) {
-                if (n) iconCanvas->Line(left + section * n, top + 9, left + section * n, top + height - 9, 0xffffff, .17f, 1);
-                const float x = left + section * n + 3;
-                iconCanvas->Text(labels[n], {x, top + 6, section - 6, 16}, 9, 0xffffff, .68f, false, WidgetTextAlign::Center);
-                iconCanvas->Text(values[n], {x, top + 25, section - 6, 22}, static_cast<float>(n == 4 ? 10 : 11),
-                                 0xffffff, .96f, true, WidgetTextAlign::Center);
-            }
-            return;
-        }
         const float bottom = Headroom + BarHeight - IconBottom;
         if (item.kind == dock::Kind::Separator) {
             const float x = barLeft + Visual(i);
             // Nearly the height of the glass, as on macOS.
-            iconCanvas->Line(x + .5f, Headroom + 12, x + .5f, Headroom + BarHeight - 12, 0xffffff, .3f, 1);
+            iconCanvas->Line(x + .5f, Headroom + 12, x + .5f, Headroom + BarHeight - 12, 0xffffff, .7f, 2);
             return;
         }
         const float size = IconSize * m.scale.value;
@@ -597,7 +588,7 @@ struct DockWindow::Impl {
             // shows its cover here instead. The program's badge goes on top.
             const auto cover = ports.cover ? ports.cover(item) : nullptr;
             const auto found = thumbnails.find(item.window);
-            const auto snapshot = cover ? nullptr : Snapshot(item.window);
+            const auto snapshot = cover ? nullptr : Snapshot(item.window, item.path);
             const auto box = WindowBox(i, snapshot ? SIZE{static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)}
                                                    : cover || found == thumbnails.end() ? SIZE{1, 1} : found->second.source);
             if (cover) iconCanvas->ImageBitmap(cover, box);
@@ -608,6 +599,7 @@ struct DockWindow::Impl {
             return;
         }
         if (item.kind == dock::Kind::Launchpad) LaunchpadGlyph(*iconCanvas, r);
+        else if (item.kind == dock::Kind::SystemTray) ControlCenterGlyph(*iconCanvas, r);
         else if (item.kind == dock::Kind::Collection) {
             const bool target = i == collectTarget || i == discardTarget || item.path == dropCollection;
             iconCanvas->Rounded(r, size * .22f, 0xffffff, target ? .28f : frosted ? .16f : .10f);
@@ -696,6 +688,7 @@ struct DockWindow::Impl {
     void ShowPreview(std::size_t index) {
         if (index >= items.size() || layoutX.size() != items.size()) return;
         HidePreview();
+        PruneSnapshots();
         const auto& item = items[index];
         if (item.kind == dock::Kind::Window)
             previewWindows.push_back({item.path, item.name, item.window, true});
@@ -756,7 +749,7 @@ struct DockWindow::Impl {
             const WidgetRect card{margin + static_cast<float>(n % columns) * (cardWidth + cardGap),
                 margin + header + static_cast<float>(n / columns) * (cardHeight + cardGap), cardWidth, cardHeight};
             PreviewCard entry{window, pixels(card)};
-            const auto snapshot = Snapshot(window.handle);
+            const auto snapshot = Snapshot(window.handle, window.executable);
             SIZE size{};
             if (snapshot) size = {static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)};
             else if (SUCCEEDED(DwmRegisterThumbnail(preview, reinterpret_cast<HWND>(window.handle), &entry.thumbnail)))
@@ -826,7 +819,7 @@ struct DockWindow::Impl {
             }
             const bool cover = ports.cover && ports.cover(item);
             // A snapshot from just before minimizing replaces DWM's image (grey for some apps).
-            const auto snapshot = Snapshot(item.window);
+            const auto snapshot = Snapshot(item.window, item.path);
             const auto box = WindowBox(i, snapshot ? SIZE{static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)} : t.source);
             const LONG dx = overlayOrigin.x - barOrigin.x, dy = overlayOrigin.y - barOrigin.y;
             const RECT shown{static_cast<LONG>(std::lround(Px(box.x))) + dx, static_cast<LONG>(std::lround(Px(box.y))) + dy,
@@ -849,16 +842,50 @@ struct DockWindow::Impl {
         }
     }
     // Snapshots published by the minimize animation, re-read when their serial changes.
-    struct CachedSnapshot { LONG serial = -1; std::shared_ptr<const WidgetBitmap> image; ULONGLONG checked = 0; };
+    struct CachedSnapshot {
+        LONG serial = -1;
+        std::shared_ptr<const WidgetBitmap> image;
+        ULONGLONG checked = 0;
+        std::string programKey;
+    };
     std::map<std::uint64_t, CachedSnapshot> snapshots;
-    std::shared_ptr<const WidgetBitmap> Snapshot(std::uint64_t window) {
-        if (!window) return nullptr;
+    void PruneSnapshots() {
+        if (snapshots.empty()) return;
+        std::set<std::uint64_t> windows;
+        std::set<std::string> programs;
+        for (const auto& item : items) {
+            if (item.kind == dock::Kind::Window) windows.insert(item.window);
+            else if (item.kind == dock::Kind::Running || item.kind == dock::Kind::Pinned) {
+                programs.insert(dock_sources::PathKey(item.target.empty() ? item.path : item.target));
+                if (!item.runningProgram.empty()) programs.insert(dock_sources::PathKey(item.runningProgram));
+            }
+        }
+        // Keep a live minimized window's last image: DWM may no longer have
+        // usable pixels for it. Historical windows and removed programs do
+        // not need that protection, and must not accumulate for a Dock session.
+        for (auto it = snapshots.begin(); it != snapshots.end();) {
+            if (!IsWindow(reinterpret_cast<HWND>(it->first)) ||
+                (!windows.count(it->first) && !programs.count(it->second.programKey)))
+                it = snapshots.erase(it);
+            else ++it;
+        }
+    }
+    std::shared_ptr<const WidgetBitmap> Snapshot(std::uint64_t window, const std::string& program) {
+        if (!window || !IsWindow(reinterpret_cast<HWND>(window))) {
+            snapshots.erase(window);
+            return nullptr;
+        }
+        const auto programKey = dock_sources::PathKey(program);
         auto& cached = snapshots[window];
+        if (cached.programKey != programKey) {
+            cached = {};
+            cached.programKey = programKey;
+        }
         const auto now = GetTickCount64();
         if (cached.checked && now - cached.checked < 250) return cached.image;
         cached.checked = now;
         HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, dock_slots::SnapshotName(window).c_str());
-        if (!mapping) { cached = {-1, nullptr, now}; return nullptr; }
+        if (!mapping) { cached.serial = -1; cached.image.reset(); return nullptr; }
         const auto* view = static_cast<const unsigned char*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, dock_slots::SnapshotBytes));
         if (view) {
             const auto& header = *reinterpret_cast<const dock_slots::SnapshotHeader*>(view);
@@ -951,8 +978,7 @@ struct DockWindow::Impl {
             if (items[i].kind == dock::Kind::Separator) continue;
             const float left = barLeft + Visual(i);
             const float width = ItemWidth(items[i], motion[Key(items[i])].scale.value);
-            const float top = items[i].kind == dock::Kind::SystemTray ? Headroom + 22 : Headroom - IconSize * (MaxScale - 1);
-            const float bottom = items[i].kind == dock::Kind::SystemTray ? Headroom + BarHeight - 22 : Headroom + BarHeight;
+            const float top = Headroom - IconSize * (MaxScale - 1), bottom = Headroom + BarHeight;
             if (y >= top && y <= bottom && x >= left - Spacing() / 2 && x < left + width + Spacing() / 2) return i;
         }
         return None;
@@ -1163,6 +1189,7 @@ struct DockWindow::Impl {
     }
     void Stop() {
         visible = false;
+        paintPending=false;
         desktopLayer.Stop();
         dragged = pressed = hover = gapSlot = None;
         collectTarget = discardTarget = None; dropCollection.clear();
@@ -1284,9 +1311,12 @@ struct DockWindow::Impl {
             // restarts the clock when the slot changes. Keeping it running
             // repainted the whole Dock at the display rate for as long as a
             // launchpad item hovered, on the thread that also moves that item.
-            if (!moving && self->dragged == None) self->clock.Pause();
+            // Pointer messages restart the clock when a dragged icon moves.
+            // Holding it still needs no software bitmap or vblank polling.
+            if (!moving) self->clock.Pause();
             return 0;
         }
+        case PaintMessage:self->paintPending=false;if(self->visible)self->Paint();return 0;
         case WM_MOUSEMOVE: {
             const float x = self->Dip(l, false), y = self->Dip(l, true);
             if (self->pressed != None && Movable(self->items[self->pressed]) && (w & MK_LBUTTON)) {
@@ -1376,6 +1406,9 @@ bool DockWindow::Show(std::vector<dock::Item> items, bool frosted) {
 bool DockWindow::Show(std::vector<dock::Item> items, const DockAppearance& look) { return impl_->Show(std::move(items), look); }
 void DockWindow::Stop() { impl_->Stop(); }
 bool DockWindow::Paint() { return impl_->Paint(); }
+void DockWindow::RequestPaint() {
+    if(impl_->icons&&!impl_->paintPending)impl_->paintPending=PostMessageW(impl_->icons,PaintMessage,0,0)!=FALSE;
+}
 HWND DockWindow::Handle() const { return impl_->icons; }
 HWND DockWindow::BarHandle() const { return impl_->bar; }
 bool DockWindow::Visible() const { return impl_->visible; }
@@ -1406,17 +1439,16 @@ bool DockWindow::HasThumbnail(std::size_t index) const {
     const auto found = impl_->thumbnails.find(impl_->items[index].window);
     // A live DWM thumbnail, or the snapshot taken just before minimizing.
     return (found != impl_->thumbnails.end() && found->second.handle && found->second.visible) ||
-           impl_->Snapshot(impl_->items[index].window) != nullptr;
+           impl_->Snapshot(impl_->items[index].window, impl_->items[index].path) != nullptr;
+}
+std::size_t DockWindow::CachedSnapshotCount() const { return impl_->snapshots.size(); }
+bool DockWindow::HasCachedSnapshot(std::uint64_t window) const {
+    const auto found = impl_->snapshots.find(window);
+    return found != impl_->snapshots.end() && found->second.image != nullptr;
 }
 RECT DockWindow::IconBounds(std::size_t index) const {
     auto& s = *impl_;
     if (index >= s.items.size() || s.layoutX.size() != s.items.size()) return {};
-    if (s.items[index].kind == dock::Kind::SystemTray) {
-        const float left = s.barLeft + s.Visual(index), top = Headroom + 22, bottom = Headroom + BarHeight - 22;
-        return {s.overlayOrigin.x + static_cast<LONG>(s.Px(left)), s.overlayOrigin.y + static_cast<LONG>(s.Px(top)),
-                s.overlayOrigin.x + static_cast<LONG>(s.Px(left + SystemTrayWidth)),
-                s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom))};
-    }
     const float size = IconSize * s.motion[Key(s.items[index])].scale.value;
     const float left = s.barLeft + s.Visual(index), bottom = Headroom + BarHeight - IconBottom;
     return {s.overlayOrigin.x + static_cast<LONG>(s.Px(left)), s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom - size)),

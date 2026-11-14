@@ -24,7 +24,7 @@ const char* MaterialStatus(WidgetMaterialState state){
 }
 }
 struct RadialSession::Impl {
-    RadialSessionOptions options;Notify notify;std::function<void(bool)> settings;
+    RadialSessionOptions options;Notify notify;std::function<void(bool)> settings;MaterialSelectionHandler materialSelection;
     LocalSettingsFileStore local;settings::IFileStore& files;radial::Preferences prefs;
     std::string load="fresh",error;bool stopped=false,applying=false,ready=false,capturing=false;
     ULONGLONG screenshotDeadline=0;
@@ -129,6 +129,10 @@ struct RadialSession::Impl {
             if(!ok){error="runtime";Changed();}return;
         }
         if(command==11||command==13){Hide();if(settings)settings(command==13);return;}
+        const auto request=materialSelection;
+        if(request&&(command==8||command==9)){
+            request(command==8?ui::PageCommand::RadialLiquidGlass:ui::PageCommand::RadialFrostedGlass,window.Handle());return;
+        }
         auto next=prefs;
         if(command==1)next.enabled=false;
         else if(command==8)next.frosted=false;
@@ -164,6 +168,7 @@ RadialSession::RadialSession(HINSTANCE instance,RadialSessionOptions options,Not
     impl_(std::make_unique<Impl>(instance,std::move(options),std::move(notify),std::move(settings),files)){}
 RadialSession::~RadialSession()=default;
 bool RadialSession::Restore(){return impl_->Restore();}
+void RadialSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 std::optional<std::wstring> RadialSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
 std::wstring RadialSession::State()const{return impl_->State();}
 bool RadialSession::Running()const{return impl_->Running();}

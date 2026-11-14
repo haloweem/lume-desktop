@@ -25,10 +25,11 @@ void NativeCalendarWindow::OpenRequestedTodo(){
     const auto& tasks=todos_.Snapshot().tasks;
     const auto it=std::find_if(tasks.begin(),tasks.end(),[&](const auto& task){return task.id==id&&!task.deletedAt;});
     if(it==tasks.end())return;
+    const auto storedIndex=static_cast<std::size_t>(it-tasks.begin());
     if(it->day){model_.SetMonth(it->day->year,it->day->month);model_.SelectDate(*it->day);}
     view_.agendaOpen=AgendaPane();view_.agendaScroll=0;view_.agendaFocus=-1;
     Paint();ArmAgendaTimer();SetForegroundWindow(window_);
-    OpenTodo(static_cast<std::size_t>(it-tasks.begin()));
+    OpenTodo(storedIndex);
 }
 bool NativeCalendarWindow::RefreshTodoClock(){
     const auto alive=alive_;const auto nowProvider=todoPort_.now;
@@ -37,12 +38,16 @@ bool NativeCalendarWindow::RefreshTodoClock(){
     view_.now=now;return true;
 }
 void NativeCalendarWindow::RefreshTodos(){
+    if(!window_||stopping_)return;
+    ReadTodos();
+}
+void NativeCalendarWindow::ReadTodos(){
     const auto alive=alive_;const auto read=todoPort_.read;
     auto snapshot=read?read():todo::RepositorySnapshot{};
     if(!*alive)return;
     if(!RefreshTodoClock())return;
     const auto previous=todos_.Snapshot().scope;
-    todos_.Update(std::move(snapshot),todoPort_.time,view_.now);
+    todos_.Update(std::move(snapshot),todoPort_.time);
     const auto current=todos_.Snapshot().scope;
     if(previous.accountKey!=current.accountKey||previous.generation!=current.generation)CancelTodoEditor();
     view_.todoAvailable=todoPort_.time&&todoPort_.dispatch&&todoPort_.read&&todoPort_.now;
@@ -94,7 +99,7 @@ todo::CommandResult NativeCalendarWindow::SubmitTodo(const todo::Command& comman
     todoBusy_=false;
     if(!window_||stopping_)return result;
     if(result.ok){
-        todos_.Update(result.snapshot,todoPort_.time,view_.now);view_.todoStatus=TodoResultText(result.error,result.warning);
+        todos_.Update(result.snapshot,todoPort_.time);view_.todoStatus=TodoResultText(result.error,result.warning);
         if(command.type==todo::CommandType::Add||command.type==todo::CommandType::Update){
             std::optional<calendar::Date> selected;
             if(command.patch.schedule&&todoPort_.time){auto local=todoPort_.time->ToLocal(command.patch.schedule->startAt);if(local)selected=local->date;}

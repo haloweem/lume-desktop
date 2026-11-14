@@ -1,4 +1,5 @@
 #include "core/ui/page_bridge.h"
+#include "core/dynamic_island/expanded_widgets.h"
 
 namespace lume::ui {
 namespace {
@@ -27,7 +28,7 @@ PageCommand ParsePageJson(std::wstring_view json) noexcept {
 
 PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     // The longest supported v1 message bounds work before any character access.
-    constexpr std::wstring_view longestMessage = L"v1|dynamicIsland|material|frosted-glass";
+    constexpr std::wstring_view longestMessage = L"v1|dynamicIsland|calendarStyle|chinese-almanac";
     if (message.empty() || message.size() > longestMessage.size()) {
         return PageCommand::Invalid;
     }
@@ -37,6 +38,7 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dynamicIsland|rightWidget|",0,30,PageCommand::IslandRightWidgetFirst},
         {L"v1|dynamicIsland|screen|",0,64,PageCommand::IslandScreenFirst},
         {L"v1|dynamicIsland|hoverDelayMs|",100,1000,PageCommand::IslandHoverDelayFirst},
+        {L"v1|dynamicIsland|expandedLayout|",0,dynamic_island::ExpandedLayoutMaximum,PageCommand::IslandExpandedLayoutFirst},
         {L"v1|minimize|durationMs|",50,2000,PageCommand::MinimizeDurationFirst},
         {L"v1|minimize|unhideDurationMs|",0,5000,PageCommand::MinimizeUnhideDurationFirst},
         {L"v1|radial|shortcut|",1,4095,PageCommand::RadialShortcutFirst},
@@ -66,6 +68,10 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         }
         if(value<command.minimum||value>command.maximum)return PageCommand::Invalid;
         if(command.first==PageCommand::RadialShortcutFirst&&!ValidRadialShortcut(value))return PageCommand::Invalid;
+        if(command.first==PageCommand::IslandExpandedLayoutFirst){
+            std::vector<dynamic_island::ExpandedWidget> layout;
+            if(!dynamic_island::DecodeExpandedLayout(static_cast<unsigned>(value),layout))return PageCommand::Invalid;
+        }
         return static_cast<PageCommand>(static_cast<int>(command.first)+value-command.minimum);
     }
     constexpr std::wstring_view delayPrefix = L"v1|icons|delay|";
@@ -111,6 +117,14 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dynamicIsland|material|frosted-glass",PageCommand::IslandMaterialFrosted},
         {L"v1|dynamicIsland|shape|standard",PageCommand::IslandShapeStandard},
         {L"v1|dynamicIsland|shape|capsule",PageCommand::IslandShapeCapsule},
+        {L"v1|dynamicIsland|clockStyle|simple",PageCommand::IslandClockSimple},
+        {L"v1|dynamicIsland|clockStyle|progress",PageCommand::IslandClockProgress},
+        {L"v1|dynamicIsland|clockStyle|digital",PageCommand::IslandClockDigital},
+        {L"v1|dynamicIsland|clockStyle|date",PageCommand::IslandClockDate},
+        {L"v1|dynamicIsland|clockStyle|flip",PageCommand::IslandClockFlip},
+        {L"v1|dynamicIsland|clockStyle|pixel",PageCommand::IslandClockPixel},
+        {L"v1|dynamicIsland|calendarStyle|default",PageCommand::IslandCalendarDefault},
+        {L"v1|dynamicIsland|calendarStyle|chinese-almanac",PageCommand::IslandCalendarChineseAlmanac},
         {L"v1|dynamicIsland|resetAppearance",PageCommand::IslandResetAppearance},
         {L"v1|dynamicIsland|animationSpeed|slow",PageCommand::IslandAnimationSlow},
         {L"v1|dynamicIsland|animationSpeed|normal",PageCommand::IslandAnimationNormal},
@@ -236,6 +250,8 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dock|material|none", PageCommand::DockNoMaterial},
         {L"v1|dock|reflection|true", PageCommand::DockReflectionOn},
         {L"v1|dock|reflection|false", PageCommand::DockReflectionOff},
+        {L"v1|dock|showRunning|true", PageCommand::DockShowRunningOn},
+        {L"v1|dock|showRunning|false", PageCommand::DockShowRunningOff},
         {L"v1|dock|systemTray|true", PageCommand::DockSystemTrayOn},
         {L"v1|dock|systemTray|false", PageCommand::DockSystemTrayOff},
     };

@@ -15,6 +15,8 @@ public:
     SpectrumCapture(const SpectrumCapture&)=delete;
     SpectrumCapture& operator=(const SpectrumCapture&)=delete;
     bool Start();
+    // Pauses loopback/FFT while hidden; resume starts with fresh samples.
+    void SetActive(bool active);
     void Stop();
     bool Running()const;
     struct Frame { std::vector<float> left,right; unsigned sampleRate=0; };

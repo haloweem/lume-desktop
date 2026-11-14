@@ -78,6 +78,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
       assert.equal(await page.evaluate(()=>providerCommands().length),0,'no auth storage restoration before music opens');
       await page.locator('[data-titlebar-music]').click();
+      await page.waitForFunction(()=>providerCommands().some(command=>command.action==='snapshot'));
       assert.equal(await page.evaluate(()=>providerCommands().filter(value=>value.action==='snapshot').length),1);
       await page.evaluate(()=>reply('netease',{}));
       const networkStart=requests.length;
@@ -186,7 +187,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       await page.evaluate(()=>replyOnline());
       await page.evaluate(async()=>{
         const {initialMusicState}=await import('./music.js');
-        const {query,nav,lyrics,...native}=initialMusicState();
+        const {query,nav,lyrics,score,...native}=initialMusicState();
         const track={id:'qr-local-fixture',title:'Local fixture',artist:'Fixture',album:'',
           artwork:'',source:'C:/fixture.mp3',duration:180};
         window.musicFixture={...native,version:1,type:'music-state',session:4,revision:1,pageOpen:true,pageVisible:true,
@@ -316,6 +317,7 @@ test(`QQ audio quality ${width}x${height}: four official VIP options, session co
     await page.goto(url);
     await page.waitForFunction(()=>harness.commands.includes('v1|ready'));
     await page.locator('[data-titlebar-music]').click();
+    await page.locator('[data-music-root]').waitFor();
     await page.evaluate(async profile=>{
       const accounts=['netease','qq','kugou'].map(provider=>({provider,request:0,
         status:provider==='qq'?'signed-in':'signed-out',phase:'',userId:provider==='qq'?'10001':'',
@@ -323,7 +325,7 @@ test(`QQ audio quality ${width}x${height}: four official VIP options, session co
         ...(provider==='qq'?profile:{})}));
       harness.receive({version:1,type:'music-provider-account-state',revision:1,accounts});
       const {initialMusicState}=await import('./music.js');
-      const {query,nav,lyrics,...initial}=initialMusicState();
+      const {query,nav,lyrics,score,...initial}=initialMusicState();
       const current={id:'qq:quality-fixture',title:'QQ quality fixture',artist:'Fixture',album:'',
         artwork:'',duration:180,vipRequired:true,membershipBadge:'qq-green-vip'};
       window.qualityFixture={...initial,version:1,type:'music-state',session:12,revision:1,pageOpen:true,pageVisible:true,

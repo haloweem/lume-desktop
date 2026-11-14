@@ -4,7 +4,7 @@
 #include "platform/windows/local_settings_file_store.h"
 #include "platform/windows/today_todo/today_todo_view.h"
 #include "platform/windows/widget_ui/native_widget_window.h"
-#include "platform/windows/calendar/calendar_todo_editor.h"
+#include "platform/windows/calendar/todo_sheet_window.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <array>
@@ -146,8 +146,29 @@ struct TodayTodoSession::Impl {
         if(!saved){for(auto i=changed.rbegin();i!=changed.rend();++i)if(!i->first->Apply(i->second))error=L"rollback";if(error.empty())error=L"save";}
         return State(true,saved);
     }
+    std::optional<std::wstring> HandleMaterialSelection(ui::PageCommand command,HWND source){
+        if(root!=this)return root->HandleMaterialSelection(command,source);
+        if(stopped||applying||!source)return {};
+        auto* target=window.Handle()==source?this:nullptr;
+        if(!target)for(auto& child:children)if(child&&child->window.Handle()==source){target=child.get();break;}
+        if(!target||target->stopped||target->applying)return {};
+        auto next=target->prefs;
+        switch(command){
+            case ui::PageCommand::TodayTodoLiquidGlass:next.frosted=false;next.solid=false;break;
+            case ui::PageCommand::TodayTodoFrostedGlass:next.frosted=true;next.solid=false;break;
+            case ui::PageCommand::TodayTodoSolid:next.solid=true;break;
+            default:return {};
+        }
+        const bool saved=target->Apply(next);return State(true,saved);
+    }
     void Native(WidgetAction action,const widget::Preferences& bounds){
         if(stopped||applying)return;
+        // Children read the root's port, including those created after it was set.
+        const auto request=root->materialSelection;
+        if(request&&(action==WidgetAction::Liquid||action==WidgetAction::Frosted||action==WidgetAction::Solid)){
+            request(action==WidgetAction::Liquid?ui::PageCommand::TodayTodoLiquidGlass:
+                action==WidgetAction::Frosted?ui::PageCommand::TodayTodoFrostedGlass:ui::PageCommand::TodayTodoSolid,window.Handle());return;
+        }
         if(action==WidgetAction::Settings){if(openSettings)openSettings();return;}
         const auto next=widget_session::ActionPreferences(action,prefs,bounds,Limits,true);
         if(!next)return;
@@ -306,8 +327,8 @@ struct TodayTodoSession::Impl {
     }
     void Shutdown(){if(stopped)return;stopped=true;*alive=false;for(auto& child:children)if(child)child->Shutdown();StopRuntime();}
     Impl* root;settings::IFileStore* externalFiles;bool childrenLoaded=false,menuOpen=false;
-    HINSTANCE instance;std::string path;Notify notify;std::function<void()> openSettings;CalendarTodoPort todos;
-    CalendarTodoEditor editor;std::shared_ptr<bool> alive=std::make_shared<bool>(true);
+    HINSTANCE instance;std::string path;Notify notify;std::function<void()> openSettings;CalendarTodoPort todos;MaterialSelectionHandler materialSelection;
+    TodoSheetWindow editor;std::shared_ptr<bool> alive=std::make_shared<bool>(true);
     LocalSettingsFileStore localFiles;widget::PreferencesStore store;widget::LoadedPreferences loaded;widget::Preferences prefs;
     TodayTodoView view;bool stopped=false,applying=false,timer=false,refreshing=false;
     std::optional<todo::TaskView> pressed;int pressedHit=-1;TodayTodoAction pressedAction=TodayTodoAction::None;todo::Scope pressedScope;calendar::Date pressedDate{};std::wstring error;
@@ -318,6 +339,8 @@ TodayTodoSession::TodayTodoSession(HINSTANCE instance,std::string path,Notify no
     impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),std::move(todos),files)){}
 TodayTodoSession::~TodayTodoSession()=default;
 bool TodayTodoSession::Restore(){return impl_->Restore();}
+void TodayTodoSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->root->materialSelection=std::move(handler);}
+std::optional<std::wstring> TodayTodoSession::HandleMaterialSelection(ui::PageCommand command,HWND source){return impl_->HandleMaterialSelection(command,source);}
 std::optional<std::wstring> TodayTodoSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
 std::wstring TodayTodoSession::State()const{return impl_->State();}
 void TodayTodoSession::Shutdown(){impl_->Shutdown();}

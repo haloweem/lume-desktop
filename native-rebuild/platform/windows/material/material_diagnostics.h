@@ -16,18 +16,23 @@ inline void Write(std::string_view stage,HRESULT result,std::string_view details
         if(!length||length>=32768)return;
         static std::mutex mutex;
         static ULONGLONG interval=0;
-        static unsigned events=0,failures=0;
+        static unsigned events=0,failures=0,lifecycleEvents=0;
         std::lock_guard<std::mutex> lock(mutex);
         const auto now=GetTickCount64();
-        if(now-interval>=60000){interval=now;events=failures=0;}
+        if(now-interval>=60000){interval=now;events=failures=lifecycleEvents=0;}
         // Successful startup stages cannot exhaust the error budget.
-        if(FAILED(result)){if(failures++>=48)return;}
+        // Capture retirement must retain its begin/end evidence even when
+        // repeated component starts have already spent the startup budget.
+        if(stage=="CaptureCloseBegin"||stage=="CaptureCloseEnd"){
+            if(lifecycleEvents++>=64)return;
+        }
+        else if(FAILED(result)){if(failures++>=48)return;}
         else if(events++>=48)return;
         std::error_code ignored;
         const std::filesystem::path file(path);
         if(std::filesystem::file_size(file,ignored)>1024*1024&&!ignored) {
             const auto previous=file.parent_path()/L"material.1.log";
-            DeleteFileW(previous.c_str());MoveFileW(file.c_str(),previous.c_str());
+            if(!MoveFileExW(file.c_str(),previous.c_str(),MOVEFILE_REPLACE_EXISTING))return;
         }
         SYSTEMTIME time{};GetLocalTime(&time);
         char line[768]{};

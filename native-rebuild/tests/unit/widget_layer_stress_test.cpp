@@ -4,11 +4,13 @@
 #include "platform/windows/clock/native_clock_window.h"
 #include "platform/windows/weather/weather_tooltip.h"
 #include <objbase.h>
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace lume::platform::windows;
 
@@ -203,6 +205,51 @@ void CheckLayer(const std::array<HWND, 3>& owners, HWND manager, const char* sta
     for (const auto owner : owners) {
         const auto glass = Surface(owner);
         if (!Below(owner, ceiling) || !glass || !Below(glass, ceiling) || !Below(glass, owner)) {
+            // Capture one ordered enumeration before further diagnostics. A
+            // worker can move a different glass while the legacy GW_HWNDPREV
+            // walk is following it; retain the original assertion below, but
+            // report all comparisons against this same fixed HWND list too.
+            std::vector<HWND> fixedOrder;
+            EnumWindows([](HWND window, LPARAM data) -> BOOL {
+                reinterpret_cast<std::vector<HWND>*>(data)->push_back(window);
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&fixedOrder));
+            const auto fixedRank = [&](HWND window) {
+                const auto found = std::find(fixedOrder.begin(), fixedOrder.end(), window);
+                return found == fixedOrder.end() ? -1 : static_cast<int>(found - fixedOrder.begin());
+            };
+            const auto fixedBelow = [&](HWND window, HWND above) {
+                const int lowerRank = fixedRank(window), upperRank = fixedRank(above);
+                return lowerRank >= 0 && upperRank >= 0 && lowerRank > upperRank;
+            };
+            std::cerr << "fixed snapshot: tick=" << GetTickCount64() << " windows=" << fixedOrder.size()
+                      << " manager=" << manager << " managerRank=" << fixedRank(manager)
+                      << " managerGlass=" << managerGlass << " managerGlassRank=" << fixedRank(managerGlass)
+                      << " ceilingRank=" << fixedRank(ceiling) << '\n';
+            for (const auto actual : owners) {
+                HWND actualGlass = nullptr;
+                for (const auto candidate : fixedOrder) {
+                    if (GetPropW(candidate, L"LumeGlassSurfaceOwner") == actual) { actualGlass = candidate; break; }
+                }
+                std::cerr << "fixed pair: owner=" << actual << " ownerRank=" << fixedRank(actual)
+                          << " glass=" << actualGlass << " glassRank=" << fixedRank(actualGlass)
+                          << " fixedOwnerBelowManager=" << fixedBelow(actual, manager)
+                          << " fixedGlassBelowManager=" << fixedBelow(actualGlass, manager)
+                          << " fixedOwnerBelowManagerGlass=" << fixedBelow(actual, managerGlass)
+                          << " fixedGlassBelowManagerGlass=" << fixedBelow(actualGlass, managerGlass)
+                          << " fixedGlassBelowOwner=" << fixedBelow(actualGlass, actual) << '\n';
+            }
+            unsigned listed = 0, omitted = 0;
+            for (const auto actual : fixedOrder) {
+                DWORD process = 0; GetWindowThreadProcessId(actual, &process);
+                if (process != GetCurrentProcessId() || !IsWindowVisible(actual)) continue;
+                if (listed >= 20) { ++omitted; continue; }
+                wchar_t name[96]{}; GetClassNameW(actual, name, 96); ++listed;
+                std::wcerr << L"fixed z: rank=" << fixedRank(actual) << L" hwnd=" << actual << L" class=" << name
+                           << L" owner=" << GetWindow(actual, GW_OWNER)
+                           << L" materialOwner=" << GetPropW(actual, L"LumeGlassSurfaceOwner") << L'\n';
+            }
+            if (omitted) std::cerr << "fixed z: omitted visible own windows=" << omitted << '\n';
             std::cerr << "layer violation at " << stage << ": widget=" << owner
                       << " glass=" << glass << " manager=" << manager
                       << " managerGlass=" << managerGlass

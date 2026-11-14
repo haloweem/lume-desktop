@@ -23,8 +23,30 @@ $destination = [IO.Path]::GetFullPath($Destination)
 if ($destination.TrimEnd('\') -eq $repoRoot.TrimEnd('\') -or $destination.StartsWith($repoRoot.TrimEnd('\') + '\')) {
     throw 'The destination must be outside this repository'
 }
+if ($destination.TrimEnd('\') -eq [IO.Path]::GetPathRoot($destination).TrimEnd('\')) {
+    throw 'The destination cannot be a drive root'
+}
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
-Get-ChildItem -LiteralPath $destination -Force | Where-Object { $_.Name -ne '.git' } | Remove-Item -Recurse -Force
+if ((Get-Item -LiteralPath $destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'The destination cannot be a junction or symbolic link'
+}
+if (Test-Path -LiteralPath (Join-Path $destination '.git')) {
+    $publicRoot = (& git -C $destination rev-parse --show-toplevel).Trim()
+    if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($publicRoot).TrimEnd('\') -ine $destination.TrimEnd('\')) {
+        throw 'The destination must be the public repository root'
+    }
+    $publicChanges = & git -C $destination status --porcelain --untracked-files=normal
+    if ($LASTEXITCODE -ne 0 -or $publicChanges) { throw 'Commit or preserve changes in the public repository before exporting' }
+}
+$entries = @(Get-ChildItem -LiteralPath $destination -Force | Where-Object { $_.Name -ne '.git' })
+foreach ($entry in $entries) {
+    $target = [IO.Path]::GetFullPath($entry.FullName)
+    if (-not $target.StartsWith($destination.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Refusing to replace an entry outside the export directory or a linked entry'
+    }
+}
+foreach ($entry in $entries) { Remove-Item -LiteralPath $entry.FullName -Recurse -Force }
 
 # Committed files only, with the same line endings as a checkout.
 $archive = Join-Path ([IO.Path]::GetTempPath()) ("lume-open-source-$([guid]::NewGuid()).zip")
@@ -50,7 +72,7 @@ foreach ($name in @('README.md', 'BUILDING.md', 'THIRD-PARTY.md')) {
 $cmake = Get-Content -LiteralPath (Join-Path $destination 'native-rebuild\CMakeLists.txt') -Raw
 $version = if ($cmake -match 'project\(\w+ VERSION ([0-9.]+)') { $Matches[1] } else { 'unknown' }
 @"
-版本：$version（对应安装包 LumeSetup-$version.exe）
+版本：$version（客户端源码，安装包发布单独进行）
 源码提交：$commit
 导出时间：$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz'))
 "@ | Set-Content -LiteralPath (Join-Path $destination 'SOURCE-REVISION.txt') -Encoding utf8

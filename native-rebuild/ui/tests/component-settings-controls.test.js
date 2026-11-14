@@ -19,7 +19,7 @@ import {installStartupBrowserApis} from './startup-dom.mjs';
 const components=[
   ['clock',clockPage,['clock-style']],
   ['calendar',calendarPage,['calendar-theme','calendar-material','calendar-textColor','calendar-highlightColor']],
-  ['weather',weatherPage,['weather-material','weather-city']],
+  ['weather',weatherPage,['weather-material']],
   ['almanac',almanacPage,['almanac-material']],
   ['performance',performancePage,['performance-material']],
   ['organizer',organizerPage,['organizer-material']],
@@ -78,7 +78,7 @@ function hostMessage(scope,enabled,{error='',revision=0,applied=false}={}) {
   if(scope==='organizer')preferences.collections=preferences.collections.map(item=>({
     ...item,enabled,running:preferences.running,
   }));
-  const weather=scope==='weather'?{loading:false,weatherError:'',cacheWriteFailed:false,hasWeather:false}:{};
+  const weather=scope==='weather'?{loading:false,weatherError:'',cacheWriteFailed:false,hasWeather:false,systemLocation:'unknown'}:{};
   return {...common,type:`${scope}-state`,...preferences,materialStatus:'inactive',...weather};
 }
 
@@ -172,7 +172,7 @@ test('taskbar hiding behavior follows the switch, sends exact commands and prese
 });
 
 for(const [scope,,controls] of components) {
-  test(`${scope}：外部卡片经应用事件链启停、失败重试并返回详情`,{skip:!jsdomPath},async()=>{
+  test(`${scope}：${scope==='minimize'?'目录隐藏但深链接设置和详情保留':'外部卡片经应用事件链启停、失败重试并返回详情'}`,{skip:!jsdomPath},async()=>{
     await withApp(scope,'card',async({dom,receive,commands,find,click,cardToggle})=>{
       const checkSettings=busy=>{
         assert.ok(find(`[data-settings-scope="${scope}"]`));
@@ -188,6 +188,15 @@ for(const [scope,,controls] of components) {
       click('[data-tab="settings"]');
       checkSettings(false);
       click('[data-action="back"]');
+      if(scope==='minimize'){
+        assert.equal(dom.window.document.querySelector('.Card [data-action="minimize-toggle"]'),null,'隐藏模块没有卡片开关');
+        assert.equal(dom.window.document.querySelector('[data-open="minimize"]'),null,'隐藏模块没有目录入口');
+        assert.deepEqual(commands.filter(command=>typeof command==='string'&&command.startsWith('v1|minimize|')),[]);
+        receive({version:1,type:'navigate',page:scope});checkSettings(false);
+        click('[data-action="minimize-restore"]');
+        assert.equal(commands.at(-1),'v1|minimize|restore|false','既有深链接设置仍可提交参数');
+        return;
+      }
       assert.equal(cardToggle().getAttribute('aria-checked'),'false');
       assert.equal(cardToggle().disabled,false);
       cardToggle().click();
@@ -249,30 +258,45 @@ const fixtureCases=[
   ['minimize','desktop_minimize_test.cpp',[['enabled',true],['durationMs',600],['engine','classic'],['restore',false]]],
   ['almanac','desktop_almanac_test.cpp',[['enabled',true],['material','liquid-glass']]],
   ['performance','desktop_performance_test.cpp',[['enabled',true],['material','liquid-glass']]],
-  ['organizer','desktop_organizer_test.cpp',[['enabled',true],['material','liquid-glass']]],
-  ['weather','desktop_weather_test.cpp',[['city','shanghai'],['enabled',true],['material','liquid-glass']]],
+  ['organizer','desktop_organizer_test.cpp',[['enabled',true],['iconScale',73],['material','liquid-glass']]],
+  ['weather','desktop_weather_test.cpp',[['enabled',true],['material','liquid-glass']]],
 ];
 const flushMutations=async()=>{
   for(let index=0;index<20;index++)await Promise.resolve();
 };
 for(const [scope,file,requests] of fixtureCases) {
-  test(`${scope}：原生夹具脚本在应用 DOM 中仍走卡片和详情，保持命令及重开顺序`,{skip:!jsdomPath},async()=>{
+  test(`${scope}：${scope==='minimize'?'旧原生卡片夹具不会启用隐藏模块，深链接设置保留':'原生夹具脚本在应用 DOM 中仍走卡片和详情，保持命令及重开顺序'}`,{skip:!jsdomPath},async()=>{
     const source=readFileSync(new URL(`../../tests/unit/${file}`,import.meta.url),'utf8');
     const script=source.match(/options\.readyScript=LR"JS\(([\s\S]*?)\)JS";/)?.[1];
     assert.ok(script,`${file} 保留 WebView 操作脚本`);
     const startScript=dom=>new Function('document','window','MutationObserver','Event',script)(
       dom.window.document,dom.window,dom.window.MutationObserver,dom.window.Event);
-    let preferences={},enabled=false;
+    if(scope==='minimize'){
+      await withApp(scope,'fixture-hidden',async({dom,receive,commands,find})=>{
+        receive(hostMessage(scope,false));receive({version:1,type:'navigate',page:scope});
+        assert.equal(find('#minimize-durationMs').disabled,false);
+        startScript(dom);await flushMutations();
+        assert.equal(dom.window.document.querySelector('.Card [data-action="minimize-toggle"]'),null);
+        assert.deepEqual(commands.filter(command=>typeof command==='string'&&command.startsWith('v1|minimize|')),[],
+          '旧卡片脚本不能误发隐藏模块的启用或设置命令');
+        receive({version:1,type:'navigate',page:scope});
+        assert.equal(find('#minimize-durationMs').disabled,false,'深链接参数仍可操作');
+        assert.equal(find('[data-action="minimize-restore"]').disabled,false);
+      });
+      return;
+    }
+    let preferences=scope==='weather'?{city:'shanghai'}:{},enabled=false;
     const reply=(applied,revision)=>({...hostMessage(scope,enabled,{applied,revision}),...preferences});
     await withApp(scope,'fixture-enable',async({dom,receive,commands,find})=>{
       receive(reply(false,0));
       receive({version:1,type:'navigate',page:scope});
-      const before=commands.length;
+      const writes=()=>commands;
+      const before=writes().length;
       startScript(dom);
       for(const [index,[key,value]] of requests.entries()) {
         await flushMutations();
-        assert.equal(commands.length,before+index+1,'夹具应逐项等待宿主确认，不能停在已移除的主开关');
-        assert.equal(commands.at(-1),`v1|${scope}|${key}|${value}`,`${file} 第 ${index+1} 条命令`);
+        assert.equal(writes().length,before+index+1,'夹具应逐项等待宿主确认，不能停在已移除的主开关');
+        assert.equal(writes().at(-1),`v1|${scope}|${key}|${value}`,`${file} 第 ${index+1} 条命令`);
         if(key==='enabled') {
           assert.ok(find(`.Card [data-action="${action(scope)}"]`),'只能通过外部卡片启用');
           enabled=value;
@@ -283,28 +307,29 @@ for(const [scope,file,requests] of fixtureCases) {
           preferences[property]=value;
         }
         await flushMutations();
-        assert.equal(commands.length,before+index+1,'忙碌时不跳过当前确认');
+        assert.equal(writes().length,before+index+1,'忙碌时不跳过当前确认');
         receive(reply(true,index+1));
       }
       await flushMutations();
-      assert.equal(commands.length,before+requests.length,'确认结束后不得重复提交');
+      assert.equal(writes().length,before+requests.length,'确认结束后不得重复提交');
       assert.ok(find(`[data-settings-scope="${scope}"]`),'启用后回到详情页');
     });
     await withApp(scope,'fixture-reopen',async({dom,receive,commands,find})=>{
       receive(reply(false,requests.length));
       receive({version:1,type:'navigate',page:scope});
-      const before=commands.length;
+      const writes=()=>commands;
+      const before=writes().length;
       startScript(dom);
       await flushMutations();
       if(['icons','taskbar','minimize'].includes(scope)) {
-        assert.equal(commands.length,before+1);
-        assert.equal(commands.at(-1),`v1|${scope}|enabled|false`,'重开管理页仍从卡片关闭服务');
+        assert.equal(writes().length,before+1);
+        assert.equal(writes().at(-1),`v1|${scope}|enabled|false`,'重开管理页仍从卡片关闭服务');
         assert.ok(find(`.Card [data-action="${action(scope)}"]`));
         enabled=false;
         receive(reply(true,requests.length+1));
         await flushMutations();
-        assert.equal(commands.length,before+1,'关闭确认后不重复提交');
-      } else assert.equal(commands.length,before,'重开组件页保留已经启用和保存的参数');
+        assert.equal(writes().length,before+1,'关闭确认后不重复提交');
+      } else assert.equal(writes().length,before,'重开组件页保留已经启用和保存的参数');
       assert.ok(find(`[data-settings-scope="${scope}"]`),'重开操作结束后仍回到详情页');
     });
   });

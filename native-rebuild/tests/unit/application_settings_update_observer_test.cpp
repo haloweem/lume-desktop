@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -23,6 +24,9 @@ struct Startup final : IStartupRegistration {
     bool Write(const StartupEntry&) override { Check(false, "observer must never change startup"); return false; }
 };
 struct Transport final : IUpdateTransport {
+    // stoull reads the numeric major prefix; the next major stays newer even
+    // when the compiled release has a fourth version segment.
+    const std::string futureVersion = std::to_string(std::stoull(CurrentVersion) + 1) + ".0.0";
     std::atomic<int> calls{0};
     std::atomic<bool> release{false}, current{false}, offline{false}, throws{false};
     ManifestResponse Fetch(const Cancellation& cancellation) override {
@@ -31,7 +35,8 @@ struct Transport final : IUpdateTransport {
         if (cancellation.cancelled) return {{}, "update-cancelled"};
         if (throws) throw std::runtime_error("transport exception");
         if (offline) return {{}, "update-offline"};
-        return {current ? R"({"version":"1.0.1"})" : R"({"version":"1.0.9"})", {}};
+        const std::string version = current ? std::string(CurrentVersion) : futureVersion;
+        return {"{\"version\":\"" + version + "\"}", {}};
     }
 };
 template<class Predicate> bool Pump(Predicate done) {
@@ -55,6 +60,8 @@ template<class Session> void Verify() {
         Check(false, "update completion needs a UI-thread result observer and truthful queue acceptance");
     } else {
         auto transport = std::make_shared<Transport>();
+        Check(CompareVersions(transport->futureVersion, CurrentVersion) == 1,
+              "future manifest fixture is newer than the compiled project version");
         ApplicationSettingsOptions options;
         options.verification = true;
         options.testPorts = {std::make_shared<File>(), std::make_shared<Startup>(), transport, L"C:\\Lume\\LumeShell.exe"};
@@ -77,7 +84,7 @@ template<class Session> void Verify() {
               session.State() == busy, "duplicate requests rejected without duplicate work or false busy errors");
         transport->release = true;
         Check(Pump([&] { return !session.HasWork(); }) && observed.size() == 1, "one result per completed fetch");
-        Check(observed[0].first && observed[0].second.update.version == "1.0.9" &&
+        Check(observed[0].first && observed[0].second.update.version == transport->futureVersion &&
               observed[0].second.error == "update-incompatible", "manual source and raw manifest result survive unrelated runtime error");
         Check(session.State().find(L"balanced-runtime") != std::wstring::npos, "update observation does not clear runtime failure");
         transport->current = true;

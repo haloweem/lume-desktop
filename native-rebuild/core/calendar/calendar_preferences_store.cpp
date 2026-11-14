@@ -9,7 +9,7 @@ PreferencesLoadResult CalendarPreferencesStore::Load(const std::string& path) co
     }
     if (files_.Exists(path)) {
         std::string text;
-        if (!files_.Read(path,text)) result.error = LoadError::MainRead;
+        if (!files_.ReadBounded(path,8192,text)) result.error = LoadError::MainRead;
         else if (codec_.Decode(text,result.value)) {
             result.source = PreferencesSource::Main;
             result.status = LoadStatus::Loaded;
@@ -22,7 +22,7 @@ PreferencesLoadResult CalendarPreferencesStore::Load(const std::string& path) co
     if (files_.Exists(backup)) {
         std::string text;
         LoadError backupError = LoadError::None;
-        if (!files_.Read(backup,text)) backupError = LoadError::BackupRead;
+        if (!files_.ReadBounded(backup,8192,text)) backupError = LoadError::BackupRead;
         else if (!codec_.Decode(text,result.value)) backupError = LoadError::BackupInvalid;
         else {
             result.source = PreferencesSource::Backup;
@@ -40,7 +40,7 @@ bool CalendarPreferencesStore::Save(const std::string& path, const Preferences& 
     std::string original;
     bool validOriginal = false;
     if (files_.Exists(path)) {
-        if (!files_.Read(path,original)) return false;
+        if (!files_.ReadBounded(path,8192,original)) return false;
         Preferences previous;
         validOriginal = codec_.Decode(original,previous);
         if (!validOriginal && !Isolate(path)) return false;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/dynamic_island/expanded_widgets.h"
 #include <string_view>
 
 namespace lume::ui {
@@ -92,6 +93,7 @@ enum class PageCommand {
     IslandSizeSmall, IslandSizeStandard, IslandSizeLarge,
     IslandMaterialNone, IslandMaterialLiquid, IslandMaterialFrosted,
     IslandShapeStandard, IslandShapeCapsule, IslandResetAppearance,
+    IslandClockSimple, IslandClockProgress, IslandClockDigital, IslandClockDate, IslandClockFlip, IslandClockPixel,
     IslandAnimationSlow, IslandAnimationNormal, IslandAnimationFast,
     IslandBounceSubtle, IslandBounceNormal, IslandBounceBouncy,
     IslandPreviewCompact, IslandPreviewExpanded, IslandPreviewStop,
@@ -103,6 +105,8 @@ enum class PageCommand {
     IslandScreenLast=IslandScreenFirst+64,
     IslandHoverDelayFirst,
     IslandHoverDelayLast=IslandHoverDelayFirst+900,
+    IslandExpandedLayoutFirst,
+    IslandExpandedLayoutLast=IslandExpandedLayoutFirst+dynamic_island::ExpandedLayoutMaximum,
     SpectrumEnable, SpectrumDisable, SpectrumReset, SpectrumStylePulse, SpectrumStyleBlocks, SpectrumStyleWaves,
     SpectrumSizeFirst,
     SpectrumSizeLast = SpectrumSizeFirst + 250,
@@ -119,6 +123,9 @@ enum class PageCommand {
     SpectrumWavesBarWidthLast = SpectrumWavesBarWidthFirst + 22,
     SpectrumWavesBarGapFirst,
     SpectrumWavesBarGapLast = SpectrumWavesBarGapFirst + 12,
+    // Append new commands so existing numeric ranges keep their values.
+    DockShowRunningOn, DockShowRunningOff,
+    IslandCalendarDefault, IslandCalendarChineseAlmanac,
 };
 
 // Only the exact, versioned page protocol is accepted; no normalization.

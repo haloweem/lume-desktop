@@ -1,0 +1,16 @@
+{
+  "sourceProject": "lunar-javascript",
+  "sourceVersion": "1.7.7",
+  "license": "MIT",
+  "upstream": "https://raw.githubusercontent.com/6tail/lunar-javascript/v1.7.7/lunar.js",
+  "sourceSha256": "9750324bfe1aa63c146f8c72b1143df924466c11c8a5277d7d9225c541a18aaa",
+  "methods": [
+    "getDayPositionCaiDesc",
+    "getDayPositionXiDesc",
+    "getDayPositionFuDesc(2)",
+    "getDayPositionYangGuiDesc"
+  ],
+  "policy": "Ten day-stem lookup rows; dates and activities continue to use the existing offline almanac data.",
+  "generatedSourceSha256": "d4050e3381e218b1a5999a5d68702d40355c9c440aa5de794088226159e39a00",
+  "rows": 10
+}

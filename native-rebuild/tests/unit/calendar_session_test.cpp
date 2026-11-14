@@ -11,6 +11,33 @@ using namespace lume::shell;
 using P = ui::PageCommand;
 bool passed = true;
 void Check(bool ok, const char* message) { if (!ok) { passed=false; std::cerr<<"FAIL: "<<message<<'\n'; } }
+struct IsolatedDataRoot {
+    HKEY user=nullptr,isolated=nullptr;
+    bool created=false,overridden=false,environmentChanged=false;
+    std::wstring key,original;
+    bool Initialize(const std::filesystem::path& local) {
+        wchar_t prior[32768]{};const auto length=GetEnvironmentVariableW(L"LOCALAPPDATA",prior,32768);
+        if(length>=32768)return false;
+        if(length)original.assign(prior,length);
+        key=L"Software\\LumeCalendarTest-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64());
+        if(RegOpenCurrentUser(KEY_ALL_ACCESS,&user)!=ERROR_SUCCESS)return false;
+        DWORD disposition=0;
+        if(RegCreateKeyExW(user,key.c_str(),0,nullptr,REG_OPTION_VOLATILE,KEY_ALL_ACCESS,nullptr,&isolated,&disposition)!=ERROR_SUCCESS)return false;
+        created=disposition==REG_CREATED_NEW_KEY;
+        if(!created)return false;
+        if(RegOverridePredefKey(HKEY_CURRENT_USER,isolated)!=ERROR_SUCCESS)return false;
+        overridden=true;
+        environmentChanged=SetEnvironmentVariableW(L"LOCALAPPDATA",local.c_str())!=FALSE;
+        return environmentChanged;
+    }
+    ~IsolatedDataRoot(){
+        if(environmentChanged)SetEnvironmentVariableW(L"LOCALAPPDATA",original.empty()?nullptr:original.c_str());
+        if(overridden)RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);
+        if(isolated)RegCloseKey(isolated);
+        if(created)RegDeleteTreeW(user,key.c_str());
+        if(user)RegCloseKey(user);
+    }
+};
 bool Has(const std::optional<std::wstring>& text, const wchar_t* part) { return text && text->find(part)!=std::wstring::npos; }
 void Pump() { MSG m{}; while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)) { if(m.message!=WM_QUIT){TranslateMessage(&m);DispatchMessageW(&m);} } }
 HWND OwnPicker(HWND owner) {
@@ -49,6 +76,9 @@ int main() {
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
     const auto root=std::filesystem::path(exe).parent_path()/L"calendar-session-artifacts"/std::to_wstring(GetCurrentProcessId());
     std::filesystem::create_directories(root);
+    const auto local=root/L"local-app-data";std::filesystem::create_directories(local);
+    IsolatedDataRoot isolated;
+    if(!isolated.Initialize(local)){Check(false,"isolate user data and registry before any production path is cached");return 1;}
     const auto path=(root/L"calendar-preferences.json").u8string();
     platform::windows::LocalSettingsFileStore files;
     const auto instance=GetModuleHandleW(nullptr);
@@ -60,6 +90,18 @@ int main() {
         Check(Has(session.HandlePage(P::Ready,nullptr),L"\"result\":\"snapshot\""),"ready snapshot");
         Check(!session.HandlePage(P::ClockEnable,nullptr),"clock command is outside calendar boundary");
         Check(Has(session.HandlePage(P::CalendarEnable,nullptr),L"\"saved\":true") && session.Running(),"enable actual native calendar and persist");Pump();
+        {
+            const auto material=session.Snapshot().material;
+            unsigned requests=0;P selected=P::Invalid;HWND source=nullptr;
+            session.SetMaterialSelectionHandler([&](P command,HWND owner){++requests;selected=command;source=owner;});
+            session.HandleNative({calendar::ActionType::Material,static_cast<int>(calendar::Material::Solid)});
+            Check(requests==1&&selected==P::CalendarSolid&&source==session.Handle(),"native material intent reaches the host with its source window");
+            Check(session.Snapshot().material==material,"native material intent does not apply before host consent coordination");
+            Check(Has(session.HandlePage(selected,source),L"\"saved\":true")&&session.Snapshot().material==calendar::Material::Solid&&requests==1,"host replay applies the material without requesting it recursively");
+            session.SetMaterialSelectionHandler({});
+            session.HandleNative({calendar::ActionType::Material,static_cast<int>(material)});
+            Check(session.Snapshot().material==material,"isolated sessions retain native material handling without a host port");
+        }
         Check(session.LoadStatus()==calendar::LoadStatus::Loaded,"only explicit successful save clears load status");
         Check(Has(session.HandlePage(P::CalendarSplit,nullptr),L"\"theme\":\"split\""),"switch split");Pump();
         Check(Has(session.HandlePage(P::CalendarSpacious,nullptr),L"\"theme\":\"spacious\""),"switch spacious");Pump();
@@ -132,12 +174,8 @@ int main() {
         session.HandleNative({calendar::ActionType::Bounds,30,40,600,400});
         Check(session.LoadStatus()==calendar::LoadStatus::Loaded&&files.Exists(automaticPath),"user bounds after ignored startup placement saves recovery");
     }
-    const auto local=root/L"local-app-data";std::filesystem::create_directories(local);
-    wchar_t original[32768]{};const DWORD length=GetEnvironmentVariableW(L"LOCALAPPDATA",original,32768);
-    SetEnvironmentVariableW(L"LOCALAPPDATA",local.c_str());
     Check(platform::windows::GetCalendarPreferencesPath()==(local/L"Lume"/L"calendar-preferences.json").u8string(),"calendar path isolated from unchanged clock path");
     Check(platform::windows::GetUiPreferencesPath()==(local/L"Lume"/L"ui-preferences.json").u8string(),"clock filename unchanged");
-    SetEnvironmentVariableW(L"LOCALAPPDATA",length?original:nullptr);
     std::cout<<"calendar_session_test artifacts="<<root.u8string()<<" result="<<(passed?"passed":"failed")<<'\n';
     return passed?0:1;
 }

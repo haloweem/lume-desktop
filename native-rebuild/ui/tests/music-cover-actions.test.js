@@ -145,10 +145,16 @@ for(const boundary of ['focus','select','copy','restore']) {
       input.focus();input.setSelectionRange(2,4,'backward');
       selection.setBaseAndExtent(newText,6,newText,2);
     };
-    document.addEventListener('focusin',event=>{
-      if(boundary==='focus' && event.target.tagName==='TEXTAREA')cancel();
-      if(boundary==='restore' && event.target===old)cancel();
-    });
+    // Inject cancellation at the focus API boundary. jsdom continues its own
+    // selection bookkeeping after a reentrant focusin handler, unlike Edge;
+    // that emulator behavior must not replace the user's newer selection.
+    const textareaFocus=dom.window.HTMLTextAreaElement.prototype.focus;
+    dom.window.HTMLTextAreaElement.prototype.focus=function(...args){
+      textareaFocus.apply(this,args);
+      if(boundary==='focus')cancel();
+    };
+    const oldFocus=old.focus.bind(old);
+    old.focus=(...args)=>{oldFocus(...args);if(boundary==='restore')cancel();};
     const select=dom.window.HTMLTextAreaElement.prototype.select;
     dom.window.HTMLTextAreaElement.prototype.select=function(){
       selects++;

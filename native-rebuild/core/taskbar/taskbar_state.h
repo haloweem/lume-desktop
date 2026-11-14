@@ -20,10 +20,12 @@ enum class Error {
     None, Load, Save, Busy, Unsupported, MissingPayload, PayloadIntegrity, Conflict,
     Discover, ReadAppearance, ApplyAppearance, ReadAutoHide, ApplyAutoHide,
     CoreStart, CoreExited, CoreStop, Cancelled, Recovery, Watch, SystemEffectsDisabled,
-    ReadVisibility, ApplyVisibility, FrameworkInstall, CoreAccessDenied
+    ReadVisibility, ApplyVisibility, FrameworkInstall, CoreAccessDenied,
+    CoreRestartRequired, CoreAttachTimeout, CoreEffectUnconfirmed
 };
 inline bool RequiresExplicitRetry(Error error) {
-    return error == Error::FrameworkInstall || error == Error::CoreAccessDenied;
+    return error == Error::FrameworkInstall || error == Error::CoreAccessDenied ||
+           error == Error::CoreRestartRequired;
 }
 const char* ErrorName(Error);
 const char* ModeName(Mode);
@@ -54,6 +56,15 @@ struct Record {
 inline bool HasRecovery(const Record& record) {
     return record.ownsAutoHide || record.ownsCore || !record.appearances.empty() || !record.hiddenTaskbars.empty();
 }
+// A live core is not evidence that Explorer's XAML background was found or
+// changed. This evidence comes from the verified, current core's status channel.
+struct TransparencyStatus {
+    std::string effectStatus = "inactive";
+    std::string taskbarType = "unknown";
+    std::string stage;
+    std::int32_t hresult = 0;
+    std::uint32_t registeredTaskbars = 0, backgrounds = 0, appliedTaskbars = 0;
+};
 struct Status {
     Preferences preferences;
     Mode mode = Mode::Unknown;
@@ -63,5 +74,7 @@ struct Status {
     std::size_t taskbars = 0;
     // True while user preferences or an auto-hide demand need the worker.
     bool active = false;
+    // Hiding is applied independently of transparency, including Dock demand.
+    bool hideApplied = false, effectiveAutoHide = false, fullyHidden = false, autoHideDemand = false;
 };
 }  // namespace lume::taskbar

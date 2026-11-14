@@ -56,20 +56,24 @@ void Drag(LaunchpadWindow& pad,WidgetRect from,WidgetRect to,bool release=true){
 void SaveFrame(LaunchpadWindow& pad,const wchar_t* name){
     wchar_t directory[32768]{};
     if(!GetEnvironmentVariableW(L"LUME_COLLECTION_PREVIEW",directory,32768))return;
-    RECT r{};GetWindowRect(pad.Handle(),&r);const int width=r.right-r.left,height=r.bottom-r.top;
-    HDC screen=GetDC(nullptr),memory=CreateCompatibleDC(screen);
-    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;
-    info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
-    void* pixels=nullptr;const HBITMAP bitmap=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
-    const auto old=SelectObject(memory,bitmap);BitBlt(memory,0,0,width,height,screen,r.left,r.top,SRCCOPY|CAPTUREBLT);
-    BITMAPFILEHEADER header{};header.bfType=0x4d42;header.bfOffBits=sizeof(header)+sizeof(BITMAPINFOHEADER);
-    header.bfSize=header.bfOffBits+width*height*4;
+    // Retained production foreground, with premultiplied BGRA and alpha intact.
+    // This is an offscreen content image, not a capture of desktop glass.
+    const auto frame=pad.ContentSnapshot();
+    Check(frame.width&&frame.height&&frame.pixels.size()==static_cast<std::size_t>(frame.width)*frame.height,
+          "preview has a complete retained foreground bitmap");
+    BITMAPV4HEADER info{};info.bV4Size=sizeof(info);info.bV4Width=static_cast<LONG>(frame.width);
+    info.bV4Height=-static_cast<LONG>(frame.height);info.bV4Planes=1;info.bV4BitCount=32;
+    info.bV4V4Compression=BI_BITFIELDS;info.bV4SizeImage=static_cast<DWORD>(frame.pixels.size()*sizeof(std::uint32_t));
+    info.bV4RedMask=0x00ff0000;info.bV4GreenMask=0x0000ff00;info.bV4BlueMask=0x000000ff;info.bV4AlphaMask=0xff000000;
+    info.bV4CSType=LCS_sRGB;
+    BITMAPFILEHEADER header{};header.bfType=0x4d42;header.bfOffBits=sizeof(header)+sizeof(info);
+    header.bfSize=header.bfOffBits+info.bV4SizeImage;
     std::filesystem::create_directories(directory);
     std::ofstream file(std::filesystem::path(directory)/name,std::ios::binary);
     file.write(reinterpret_cast<const char*>(&header),sizeof(header));
-    file.write(reinterpret_cast<const char*>(&info.bmiHeader),sizeof(info.bmiHeader));
-    file.write(static_cast<const char*>(pixels),static_cast<std::streamsize>(width)*height*4);
-    SelectObject(memory,old);DeleteObject(bitmap);DeleteDC(memory);ReleaseDC(nullptr,screen);
+    file.write(reinterpret_cast<const char*>(&info),sizeof(info));
+    file.write(reinterpret_cast<const char*>(frame.pixels.data()),static_cast<std::streamsize>(frame.pixels.size()*sizeof(std::uint32_t)));
+    Check(static_cast<bool>(file),"retained foreground preview is written completely");
 }
 }
 int main(){
@@ -78,6 +82,7 @@ int main(){
     std::vector<Entry> flat{{"collection:c1","收纳",true,true,"c1"}},members;
     for(int i=0;i<27;++i)flat.push_back({"C:\\Fixture\\app"+std::to_string(i)+".exe","App "+std::to_string(i),false});
     for(int i=0;i<12;++i)members.push_back({"C:\\Fixture\\member"+std::to_string(i)+".exe","Member "+std::to_string(i),false});
+    members.back().name+=" 中文工具";
     bool inCollection=false,failMove=false,failRemove=false,collectionOnPageTwo=false;
     int visibility=0,moves=0,removed=0,opens=0,renames=0;std::string opened;
     LaunchpadWindow* window=nullptr;
@@ -134,15 +139,7 @@ int main(){
     Check(pad.Show({},true),"launchpad opens");
     original=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(pad.Handle(),GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(Procedure)));
     pad.Settle();auto layout=Layout(pad);
-    HWND background=nullptr;
-    if(GetEnvironmentVariableW(L"LUME_COLLECTION_PREVIEW",nullptr,0)){
-        RECT r{};GetWindowRect(pad.Handle(),&r);
-        background=CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,L"STATIC",L"",WS_POPUP|SS_BLACKRECT,
-            r.left-64,r.top-64,r.right-r.left+128,r.bottom-r.top+128,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-        SetWindowPos(background,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
-        SetWindowPos(pad.Handle(),HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
-        Pump(80);SaveFrame(pad,L"flat.bmp");
-    }
+    SaveFrame(pad,L"flat.bmp");
     for(std::size_t i=0;i<4;++i)Check(requestedIcons.count(members[i].path)!=0,"flat tile requests actual member thumbnail");
     pad.BeginRename("c1",flat[0].name);
     const HWND edit=pad.SearchHandle();RECT editRect{},padRect{};GetWindowRect(edit,&editRect);GetWindowRect(pad.Handle(),&padRect);
@@ -201,15 +198,66 @@ int main(){
     BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
     const auto initialBounds=pad.CollectionBounds();Pump(55);const auto middle=pad.CollectionBounds();
     Check(!animations||middle.width>initialBounds.width,"collection expansion advances in real frame messages");
-    pad.Settle();Check(pad.PageEntries().size()==9&&pad.Pages()==2,"collection keeps three by three paging");
+    const auto collectionSearchDeadline=GetTickCount64()+2000;
+    while(GetTickCount64()<collectionSearchDeadline&&
+          (pad.Animating()||!IsWindowVisible(edit)||GetFocus()!=edit))Pump(10);
+    Check(!pad.Animating()&&IsWindowVisible(edit)&&GetFocus()==edit,
+          "real collection frame delivery reveals and focuses native search without Settle");
+    Check(pad.PageEntries().size()==9&&pad.Pages()==2,"collection keeps three by three paging");
     Pump(100);SaveFrame(pad,L"expanded.bmp");
-    Check(!IsWindowVisible(pad.SearchHandle()),"native search does not reappear above open collection");
+    const auto expandedFrame=pad.ContentSnapshot();
+    Check(expandedFrame.width>1&&expandedFrame.height>1&&
+          expandedFrame.pixels.size()==static_cast<std::size_t>(expandedFrame.width)*expandedFrame.height,
+          "expanded collection retains its rendered foreground");
+    const auto alphaAt=[&](unsigned x,unsigned y){
+        return expandedFrame.pixels[static_cast<std::size_t>(y)*expandedFrame.width+x]>>24;
+    };
+    Check(alphaAt(0,0)==0&&alphaAt(expandedFrame.width-1,0)==0&&
+          alphaAt(0,expandedFrame.height-1)==0&&alphaAt(expandedFrame.width-1,expandedFrame.height-1)==0,
+          "expanded collection keeps all four foreground corners transparent");
+    Check(alphaAt(expandedFrame.width/2,0)>0,"expanded collection preserves foreground at the top center");
+    Check(pad.SearchHandle()==edit&&IsWindowVisible(edit),"expanded collection exposes the retained native search input");
+    GetWindowRect(edit,&editRect);GetWindowRect(pad.Handle(),&padRect);
+    Check(editRect.top>=padRect.top&&editRect.bottom<padRect.top+(padRect.bottom-padRect.top)/3,
+          "collection search input is at the top of the launchpad");
+    const auto collectionSearch=Layout(pad,true).search;
+    Click(pad,{collectionSearch.x+1,collectionSearch.y+collectionSearch.height/2-1,2,2});Pump(20);
+    Check(inCollection&&pad.Visible()&&IsWindowVisible(edit)&&GetFocus()==edit,
+          "clicking the collection search background edge focuses input without returning to the main grid");
+    const auto searchableMember=members[11].path;
+    for(const auto character:std::wstring(L"Member 11"))SendMessageW(edit,WM_CHAR,character,0);
+    Pump(30);
+    Check(inCollection&&pad.Page()==0&&pad.Pages()==1&&pad.PageEntries().size()==1&&
+          pad.PageEntries().front().path==searchableMember,"English typing searches the current collection");
+    SaveFrame(pad,L"expanded-search.bmp");
+    SetWindowTextW(edit,L"");
+    for(const auto character:std::wstring(L"中文"))SendMessageW(edit,WM_CHAR,character,0);
+    Pump(30);
+    Check(pad.PageEntries().size()==1&&pad.PageEntries().front().path==searchableMember,
+          "native Unicode typing searches collection member names");
+    SaveFrame(pad,L"expanded-search-chinese.bmp");
+    Check(std::any_of(flat.begin(),flat.end(),[](const auto& entry){return entry.name=="App 0";}),
+          "scope fixture retains the matching application outside the collection");
+    SetWindowTextW(edit,L"App 0");
+    Check(inCollection&&pad.PageEntries().empty(),"collection search does not include matching entries from the main grid");
+    SetWindowTextW(edit,L"no-such-member");Pump(30);
+    Check(inCollection&&pad.Page()==0&&pad.Pages()==1&&pad.PageEntries().empty(),
+          "unmatched collection query shows an empty result without leaving the collection");
+    SaveFrame(pad,L"expanded-search-empty.bmp");
+    SetWindowTextW(edit,L"");
+    Check(pad.Page()==0&&pad.PageEntries().size()==9&&pad.Pages()==2,
+          "clearing collection search restores the unfiltered member pages");
+    SetWindowTextW(edit,L"Member");
     pad.Turn(1);pad.Settle();const auto secondPageMembers=pad.PageEntries().size();
     pad.BeginRename("c1",flat[0].name);SetWindowTextW(pad.SearchHandle(),L"收纳里的重命名");
     SendMessageW(pad.SearchHandle(),WM_KEYDOWN,VK_RETURN,0);SendMessageW(pad.SearchHandle(),WM_CHAR,L'\r',0);Pump(20);
-    Check(renames==4&&inCollection&&pad.Page()==1&&pad.PageEntries().size()==secondPageMembers&&!IsWindowVisible(pad.SearchHandle()),
-          "open collection rename survives callback resetting its view without searching members");
-    pad.Turn(-1);pad.Settle();
+    wchar_t collectionQuery[32]{};GetWindowTextW(edit,collectionQuery,32);
+    Check(renames==4&&inCollection&&pad.Page()==1&&pad.PageEntries().size()==secondPageMembers&&
+          IsWindowVisible(edit)&&std::wstring(collectionQuery)==L"Member",
+          "open collection rename restores the current search query and page after its callback");
+    GetWindowRect(edit,&editRect);
+    Check(editRect.bottom<padRect.top+(padRect.bottom-padRect.top)/3,"rename restores the search input to the top");
+    SetWindowTextW(edit,L"");pad.Settle();
     const auto folder=Layout(pad,true);const auto path=members[0].path;
     Drag(pad,LaunchpadWindow::Cell(folder,0),LaunchpadWindow::Cell(folder,2));pad.Settle();
     Check(members[2].path==path&&pad.PageEntries()[2].path==path,"members use native reorder motion and persisted order");
@@ -224,13 +272,33 @@ int main(){
     pad.Settle();pad.Turn(-9);pad.Settle();
     Click(pad,LaunchpadWindow::Cell(layout,0));pad.Settle();
     Check(inCollection,"collection reopens with a single click");
-    SendMessageW(pad.Handle(),WM_KEYDOWN,VK_ESCAPE,0);pad.Settle();
+    SetWindowTextW(edit,L"Member 11");SendMessageW(edit,WM_KEYDOWN,VK_ESCAPE,0);pad.Settle();
+    Check(inCollection&&pad.Visible()&&GetWindowTextLengthW(edit)==0&&pad.PageEntries().size()==9&&pad.Pages()==2,
+          "first Escape clears the collection query and keeps the collection open");
+    SendMessageW(edit,WM_KEYDOWN,VK_ESCAPE,0);pad.Settle();
     Check(!inCollection&&pad.Visible()&&visibility==1&&pad.CollectionPresence()==0,"Escape reverses expansion and keeps the launchpad open");
     SaveFrame(pad,L"returned.bmp");Pump(100);SaveFrame(pad,L"returned-stable.bmp");
     Click(pad,LaunchpadWindow::Cell(layout,0));pad.Settle();
     const WidgetRect blank{folder.width-18,folder.height/2,2,2};
     Click(pad,blank);pad.Settle();
     Check(!inCollection&&pad.Visible()&&pad.CollectionPresence()==0,"blank click returns from collection to launchpad");
+    SetWindowTextW(edit,L"收纳");pad.Settle();
+    Check(pad.PageEntries().size()==1&&pad.PageEntries().front().collection,"main search selects the collection");
+    Click(pad,LaunchpadWindow::Cell(layout,0));pad.Settle();
+    Check(inCollection&&GetWindowTextLengthW(edit)==0,"entering a collection starts with its own empty search");
+    SetWindowTextW(edit,L"Member 11");Click(pad,folder.back);pad.Settle();
+    GetWindowTextW(edit,restoredQuery,32);
+    Check(!inCollection&&pad.Page()==0&&std::wstring(restoredQuery)==L"收纳"&&
+          pad.PageEntries().size()==1&&pad.PageEntries().front().collection,
+          "Back restores the main grid query instead of retaining the collection query");
+    SetWindowTextW(edit,L"");collectionOnPageTwo=true;pad.Refresh();pad.Turn(1);pad.Settle();
+    const auto mainPageEntry=pad.PageEntries().front().path;
+    Check(pad.Page()==1&&pad.PageEntries().front().collection,"return-page fixture opens the collection from page two");
+    Click(pad,LaunchpadWindow::Cell(layout,0));pad.Settle();
+    SetWindowTextW(edit,L"中文");Click(pad,folder.back);pad.Settle();
+    Check(!inCollection&&pad.Page()==1&&GetWindowTextLengthW(edit)==0&&
+          pad.PageEntries().front().path==mainPageEntry,"Back restores the main grid page after collection search");
+    collectionOnPageTwo=false;pad.Refresh();pad.Turn(-9);pad.Settle();
     Click(pad,LaunchpadWindow::Cell(layout,0));pad.Settle();
     const auto expected=members.front().path;Click(pad,LaunchpadWindow::Cell(folder,0));
     Check(opens==1&&opened==expected&&!pad.Visible()&&visibility==2,"member click uses ordinary application launch and close behavior");
@@ -246,6 +314,10 @@ int main(){
     Pump(80);SaveFrame(pad,L"opening-motion.bmp");
     Drag(pad,LaunchpadWindow::Cell(layout,1),LaunchpadWindow::Cell(layout,2),false);
     Pump(850);
+    if(!IsWindowVisible(retainedEdit)||GetCapture()!=pad.Handle())
+        std::cerr<<"search handoff: launchpadVisible="<<pad.Visible()<<" editVisible="<<IsWindowVisible(retainedEdit)
+                 <<" capture="<<GetCapture()<<" launchpad="<<pad.Handle()<<" focus="<<GetFocus()
+                 <<" animating="<<pad.Animating()<<" presence="<<pad.Presence()<<'\n';
     Check(IsWindowVisible(retainedEdit)&&GetCapture()==pad.Handle(),
           "search takes over when the panel settles even while an ongoing drag keeps the frame clock active");
     SendMessageW(pad.Handle(),WM_LBUTTONUP,0,At(pad,layout.grid.x+layout.grid.width/2,layout.grid.y+layout.grid.height/2));
@@ -276,5 +348,5 @@ int main(){
                  <<" p95="<<frameCosts[(frameCosts.size()-1)*95/100]<<" max="<<frameCosts.back()
                  <<" samples="<<frameCosts.size()<<" collection open ms="<<collectionCost<<'\n';
     }
-    pad.Stop();if(background)DestroyWindow(background);CoUninitialize();std::cout<<"launchpad collection interactions passed\n";
+    pad.Stop();CoUninitialize();std::cout<<"launchpad collection interactions passed\n";
 }

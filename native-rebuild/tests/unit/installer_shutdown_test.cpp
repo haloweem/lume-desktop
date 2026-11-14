@@ -190,7 +190,13 @@ int main() {
     if (values.size() == 3 && values[1] == L"--worker") {
         int exitCode = 0;
         if (std::ifstream(fs::path(values[2]) / L"worker.exit-code") >> exitCode) return exitCode;
-        std::ofstream(fs::path(values[2]) / L"worker.ready") << GetCurrentProcessId();
+        // Existence is the fixture's readiness signal. Publish only after the
+        // PID has been written and closed, so the supervisor cannot read an
+        // empty file between creation and the stream's destructor.
+        const auto marker = fs::path(values[2]) / L"worker.ready";
+        const auto pending = fs::path(marker.wstring() + L".pending");
+        { std::ofstream output(pending); output << GetCurrentProcessId(); }
+        fs::rename(pending, marker);
         Sleep(INFINITE);
         return 3;
     }

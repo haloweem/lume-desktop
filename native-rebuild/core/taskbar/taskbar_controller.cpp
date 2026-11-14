@@ -50,9 +50,15 @@ bool Controller::Save(Record next) {
 }
 bool Controller::Apply(Preferences preferences) {
     if (loaded_ == LoadState::Failed) return Fail(Error::Load);
-    if (preferences.enabled && preferences.transparentTaskbar) port_.ResetCoreFailure();
+    const auto previous = record_.preferences;
+    if (preferences.enabled && preferences.transparentTaskbar &&
+        (!previous.enabled || !previous.transparentTaskbar || preferences == previous))
+        port_.ResetCoreFailure();
     if (!(record_.preferences == preferences)) {
-        if (!acquired_ && !Acquire(preferences.enabled && preferences.transparentTaskbar)) return false;
+        // Hiding has no dependency on the transparency core or its frameworks.
+        // Persist the request under ownership before validating that optional
+        // payload, so a broken transparency core cannot discard a hide edit.
+        if (!acquired_ && !Acquire(false)) return false;
         auto next = record_; next.preferences = preferences;
         if (!Save(std::move(next))) return false;
     }
@@ -60,6 +66,7 @@ bool Controller::Apply(Preferences preferences) {
 }
 bool Controller::RestoreOwned() {
     running_ = false;
+    hideApplied_ = false;
     if (!HasRecovery(record_)) {
         if (acquired_) { port_.Release(); acquired_ = false; transparencyAcquired_ = false; }
         return true;
@@ -71,19 +78,6 @@ bool Controller::RestoreOwned() {
     }
     Error failure = Error::None;
     const auto remember = [&](Error error) { if (failure == Error::None) failure = error; };
-    // Stop the core first: its normal shutdown restores Explorer's appearance.
-    // A failed item retains its journal entry, but does not block other items.
-    if (record_.ownsCore) {
-        // StopCore validates any recovery launch itself and deliberately ignores
-        // enable-request cancellation. A live owned core needs no payload reload.
-        const auto error = port_.StopCore(!startedCore_);
-        if (error != Error::None) remember(error);
-        else {
-            startedCore_ = false;
-            auto next = record_; next.ownsCore = false;
-            if (!Save(std::move(next))) remember(error_);
-        }
-    }
     for (std::size_t i = 0; i < record_.appearances.size();) {
         if (port_.RestoreAppearance(record_.appearances[i]) == RestoreResult::Failed) {
             remember(Error::Recovery); ++i; continue;
@@ -91,22 +85,71 @@ bool Controller::RestoreOwned() {
         auto next = record_; next.appearances.erase(next.appearances.begin() + static_cast<std::ptrdiff_t>(i));
         if (!Save(std::move(next))) { remember(error_); ++i; }
     }
-    // Visibility recovery is independent of a missing or stalled transparency core.
-    if (!ApplyVisibility(false)) remember(error_);
-    if (record_.ownsAutoHide) {
-        bool current = false;
-        auto error = port_.ReadAutoHide(current);
-        if (error == Error::None && current != record_.originalAutoHide)
-            error = port_.SetAutoHide(record_.originalAutoHide);
+    if (!RestoreHiding()) remember(error_);
+    // Restore hiding before a potentially slow or denied core shutdown. A
+    // failure restoring the background must not leave the user's taskbar hidden.
+    if (record_.ownsCore) {
+        const auto error = port_.StopCore(!startedCore_);
         if (error != Error::None) remember(error);
         else {
-            auto next = record_; next.ownsAutoHide = false;
+            startedCore_ = false; initialCoreRecovery_ = false;
+            auto next = record_; next.ownsCore = false;
             if (!Save(std::move(next))) remember(error_);
         }
     }
     if (failure != Error::None) return Fail(failure);
     port_.Release(); acquired_ = false; transparencyAcquired_ = false;
     return true;
+}
+bool Controller::RestoreHiding() {
+    hideApplied_ = false;
+    Error failure = Error::None;
+    // Keep these recoveries independent: a missing secondary screen or a
+    // failed visibility restore must not leave global auto-hide enabled.
+    if (!ApplyVisibility(false)) failure = error_;
+    if (record_.ownsAutoHide) {
+        bool current = false;
+        auto error = port_.ReadAutoHide(current);
+        if (error == Error::None && current != record_.originalAutoHide)
+            error = port_.SetAutoHide(record_.originalAutoHide);
+        if (error == Error::None) {
+            auto next = record_; next.ownsAutoHide = false;
+            if (!Save(std::move(next))) error = error_;
+        }
+        if (failure == Error::None) failure = error;
+    }
+    return failure == Error::None ? true : Fail(failure);
+}
+bool Controller::ApplyHiding(const Preferences& preferences) {
+    hideApplied_ = false;
+    bool current = false;
+    auto error = port_.ReadAutoHide(current);
+    if (error != Error::None) return Fail(error);
+    if (!record_.ownsAutoHide) {
+        auto next = record_; next.ownsAutoHide = true; next.originalAutoHide = current;
+        if (!Save(std::move(next))) return false;
+    }
+    if (current != preferences.autoHideTaskbar &&
+        (error = port_.SetAutoHide(preferences.autoHideTaskbar)) != Error::None) return Fail(error);
+    if (!ApplyVisibility(preferences.autoHideTaskbar && preferences.hideBehavior == HideBehavior::FullyHidden))
+        return false;
+    hideApplied_ = true;
+    return true;
+}
+bool Controller::MaintainHiding() {
+    if (loaded_ == LoadState::Failed) return false;
+    const auto previousError = error_;
+    const bool wasRunning = running_;
+    bool ok = true;
+    if ((Effective().enabled || record_.ownsAutoHide || !record_.hiddenTaskbars.empty()) &&
+        !acquired_) ok = Acquire(false);
+    if (ok) {
+        const auto effective = Effective();
+        ok = effective.enabled ? ApplyHiding(effective) : RestoreHiding();
+    }
+    if (previousError != Error::None) error_ = previousError;
+    if (ok) running_ = wasRunning;
+    return ok;
 }
 void Controller::RepairOrphans() {
     const auto p = Effective();
@@ -152,8 +195,18 @@ bool Controller::ApplyVisibility(bool fullyHidden) {
 }
 bool Controller::Tick() {
     if (loaded_ == LoadState::Failed) return Fail(Error::Load);
+    hideApplied_ = false;
+    Error previousCoreError = Error::None;
     if (initialRecovery_) {
-        if (!RestoreOwned()) return false;
+        if (!RestoreOwned()) {
+            // Independent recovery has finished, while a previous core still
+            // cannot restore. Retain only that work, rather than restoring and
+            // reapplying hiding on every subsequent retry.
+            if (!record_.ownsCore || record_.ownsAutoHide || !record_.appearances.empty() ||
+                !record_.hiddenTaskbars.empty()) return false;
+            previousCoreError = error_;
+            initialCoreRecovery_ = true;
+        }
         initialRecovery_ = false;
     }
     const auto preferences = Effective();
@@ -161,25 +214,25 @@ bool Controller::Tick() {
         if (!RestoreOwned()) return false;
         error_ = Error::None; return true;
     }
-    if (!acquired_ || (preferences.transparentTaskbar && !transparencyAcquired_)) {
-        if (!Acquire(preferences.transparentTaskbar)) return false;
-        if (initialRecovery_) {
-            if (!RestoreOwned()) return false;
-            initialRecovery_ = false;
-            return Tick();
-        }
+    if (!acquired_) {
+        if (!Acquire(false)) return false;
+        // Acquire reloads the latest journal under the mutex. Re-enter through
+        // the independent recovery path, using its current preferences too.
+        return Tick();
     }
-    bool current = false;
-    auto error = port_.ReadAutoHide(current);
-    if (error != Error::None) return Fail(error);
-    if (!record_.ownsAutoHide) {
-        auto next = record_; next.ownsAutoHide = true; next.originalAutoHide = current;
+    if (!ApplyHiding(preferences)) return false;
+    Error error = Error::None;
+    if (previousCoreError != Error::None) return Fail(previousCoreError);
+    if (initialCoreRecovery_) {
+        error = port_.StopCore(true);
+        if (error != Error::None) return Fail(error);
+        initialCoreRecovery_ = false;
+        auto next = record_; next.ownsCore = false;
         if (!Save(std::move(next))) return false;
     }
-    if (current != preferences.autoHideTaskbar &&
-        (error = port_.SetAutoHide(preferences.autoHideTaskbar)) != Error::None) return Fail(error);
-    if (!ApplyVisibility(preferences.autoHideTaskbar && preferences.hideBehavior == HideBehavior::FullyHidden))
-        return false;
+    if (preferences.transparentTaskbar && !transparencyAcquired_) {
+        if (!Acquire(true)) return false;
+    }
     if (!preferences.transparentTaskbar) {
         if (record_.ownsCore) {
             error = port_.StopCore(!startedCore_);
@@ -252,7 +305,13 @@ bool Controller::Shutdown(std::optional<Preferences> pending) {
     return true;
 }
 Status Controller::Snapshot() const {
-    return {record_.preferences, mode_, error_, running_, !running_ && HasRecovery(record_), record_.appearances.size(),
-            Effective().enabled};
+    Status status{record_.preferences, mode_, error_, running_, !running_ && HasRecovery(record_), record_.appearances.size(),
+                  Effective().enabled};
+    const auto effective = Effective();
+    status.hideApplied = hideApplied_;
+    status.effectiveAutoHide = effective.enabled && effective.autoHideTaskbar;
+    status.fullyHidden = status.effectiveAutoHide && effective.hideBehavior == HideBehavior::FullyHidden;
+    status.autoHideDemand = autoHideDemand_;
+    return status;
 }
 }  // namespace lume::taskbar

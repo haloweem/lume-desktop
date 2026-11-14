@@ -252,8 +252,9 @@ struct Fixture {
 
 class ShellOnlyData final : public IDataObject {
 public:
-    explicit ShellOnlyData(IDataObject* source):source_(source){}
+    explicit ShellOnlyData(IDataObject* source,IDataObject* afterFirst=nullptr):source_(source),afterFirst_(afterFirst){}
     ULONG refs=1;
+    unsigned shellGets=0;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out)override{
         if(!out)return E_POINTER;*out=nullptr;
         if(iid!=IID_IUnknown&&iid!=IID_IDataObject)return E_NOINTERFACE;
@@ -262,7 +263,12 @@ public:
     ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
     ULONG STDMETHODCALLTYPE Release()override{return --refs;}
     HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* f)override{return f&&f->cfFormat==CF_HDROP?DV_E_FORMATETC:source_->QueryGetData(f);}
-    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* f,STGMEDIUM* m)override{return f&&f->cfFormat==CF_HDROP?DV_E_FORMATETC:source_->GetData(f,m);}
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* f,STGMEDIUM* m)override{
+        if(f&&f->cfFormat==CF_HDROP)return DV_E_FORMATETC;
+        if(f&&f->cfFormat==RegisterClipboardFormatW(CFSTR_SHELLIDLIST)&&++shellGets>1&&afterFirst_)
+            return afterFirst_->GetData(f,m);
+        return source_->GetData(f,m);
+    }
     HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC* f,STGMEDIUM* m)override{return source_->GetDataHere(f,m);}
     HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC* f,FORMATETC* out)override{return source_->GetCanonicalFormatEtc(f,out);}
     HRESULT STDMETHODCALLTYPE SetData(FORMATETC* f,STGMEDIUM* m,BOOL release)override{return source_->SetData(f,m,release);}
@@ -270,7 +276,7 @@ public:
     HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC* f,DWORD flags,IAdviseSink* sink,DWORD* connection)override{return source_->DAdvise(f,flags,sink,connection);}
     HRESULT STDMETHODCALLTYPE DUnadvise(DWORD connection)override{return source_->DUnadvise(connection);}
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA** out)override{return source_->EnumDAdvise(out);}
-private:IDataObject* source_;
+private:IDataObject* source_;IDataObject* afterFirst_;
 };
 
 void MixedDesktopSelection(){
@@ -298,6 +304,28 @@ void MixedDesktopSelection(){
     std::size_t nativeCount=0;std::vector<std::string> nativePaths;
     Check(lume::platform::windows::ReadPayload(native.get(),nativeCount,&nativePaths)&&nativeCount==24&&nativePaths.size()==24,
           "genuine mixed desktop object yields every local path without a format wrapper");
+    {
+        // Reuse an existing PIDL to exercise the Shell payload count without
+        // creating thousands of files; model deduplication is tested separately.
+        std::vector<PCUITEMID_CHILD> many(1100,children[1]);
+        IDataObject* largeRaw=nullptr;
+        Check(SUCCEEDED(SHCreateDataObject(desktop,static_cast<UINT>(many.size()),many.data(),nullptr,IID_PPV_ARGS(&largeRaw))),
+              "create bounded Shell batch above the old drop count limit");
+        ComPtr<IDataObject> largeNative(largeRaw);ShellOnlyData largeData(largeNative.get());
+        std::size_t count=0;std::vector<std::string> paths;
+        Check(lume::platform::windows::ReadPayload(&largeData,count,&paths)&&count==many.size()&&paths.size()==many.size(),
+              "Shell-only batches above 1024 retain every imported reference");
+        // A second read would replace the checked mixed selection with the
+        // larger batch. Shell must only see our copy of the first CIDA block.
+        ShellOnlyData changing(native.get(),largeNative.get());
+        count=0;
+        Check(lume::platform::windows::ReadPayload(&changing,count)&&count==24&&changing.shellGets==1,
+              "Enter parses the validated Shell snapshot without rereading its provider");
+        changing.shellGets=0;count=0;paths.clear();
+        Check(lume::platform::windows::ReadPayload(&changing,count,&paths)&&count==24&&paths.size()==24&&changing.shellGets==1,
+              "Drop cannot swap an unchecked second Shell payload into the parser");
+        Check(changing.refs==1,"snapshot parsing does not retain the changing external data object");
+    }
     // The Dock accepts shell locations as shortcuts that point at the location itself.
     std::size_t withLocations=0;std::vector<std::string> locationPaths;
     Check(lume::platform::windows::ReadPayload(&data,withLocations,&locationPaths,true)&&withLocations==25&&locationPaths.size()==25,
@@ -380,13 +408,39 @@ void Limits() {
     Check(f.Enter(data) == DROPEFFECT_LINK && f.feedback.back().count == 1024, "1024 paths accepted");
     Check(f.DropData(data) == DROPEFFECT_LINK && f.dropped.size() == 1024, "1024 paths imported");
     data.bytes = WidePayload(std::vector<std::wstring>(1025, L"Q:\\not-present.txt"));
-    Check(f.Enter(data) == DROPEFFECT_NONE && f.DropData(data) == DROPEFFECT_NONE, "1025 paths rejected");
+    Check(f.Enter(data) == DROPEFFECT_LINK && f.feedback.back().count == 1025 &&
+        f.DropData(data) == DROPEFFECT_LINK && f.dropped.size() == 1025, "1025 paths are not a count limit");
+    data.bytes = WidePayload(std::vector<std::wstring>(4096, L"Q:\\not-present.txt"));
+    Check(f.Enter(data) == DROPEFFECT_LINK && f.feedback.back().count == 4096 &&
+        f.DropData(data) == DROPEFFECT_LINK && f.dropped.size() == 4096, "large bounded batches retain every path");
     data.bytes = WidePayload({std::wstring(32767, L'x')});
     Check(f.Enter(data) == DROPEFFECT_LINK && f.DropData(data) == DROPEFFECT_LINK &&
         f.dropped.front().size() == 32767, "32767 UTF-16 units accepted");
     data.bytes = WidePayload({std::wstring(32768, L'x')});
     Check(f.Enter(data) == DROPEFFECT_NONE && f.DropData(data) == DROPEFFECT_NONE, "32768 UTF-16 units rejected");
+    data.bytes.assign(lume::platform::windows::kMaxPayload + 1, 0);
+    Check(f.Enter(data) == DROPEFFECT_NONE && f.DropData(data) == DROPEFFECT_NONE,
+        "external byte budget still rejects oversized drag memory");
     Check(data.media.created == data.media.released, "limits release every medium");
+}
+
+void DecodedPathBudget() {
+    Fixture f; Data data({});
+    // One million references in a small raw block, not one million files or
+    // temporary std::wstring objects. Container overhead exceeds the budget.
+    constexpr wchar_t path[] = L"Q:\\x";
+    constexpr std::size_t references = 1000000;
+    data.bytes.assign(sizeof(DROPFILES) + references * sizeof(path) + sizeof(wchar_t), 0);
+    DROPFILES header{};header.pFiles=sizeof(header);header.fWide=TRUE;
+    std::memcpy(data.bytes.data(),&header,sizeof(header));
+    for(std::size_t i=0;i<references;++i)
+        std::memcpy(data.bytes.data()+sizeof(header)+i*sizeof(path),path,sizeof(path));
+    Check(data.bytes.size()<lume::platform::windows::kMaxPayload,"dense short paths fit the raw memory limit");
+    Check(f.Enter(data)==DROPEFFECT_NONE&&!f.feedback.back().supported&&f.feedback.back().count==0,
+          "Enter rejects decoded string/container memory beyond the byte budget");
+    Check(f.DropData(data)==DROPEFFECT_NONE&&f.drops==0,
+          "Drop uses the same decoded memory budget and never imports a partial batch");
+    Check(data.media.created==data.media.released,"decoded memory rejection releases every medium");
 }
 
 void MalformedPayloads() {
@@ -574,6 +628,7 @@ int main() {
         {"detach during helper activation", DetachDuringHelperActivation},
         {"multi-path/cache/helper", MultiPathAndCache}, {"effects/rejected import", EffectsAndFailure},
         {"Drop revalidation", RevalidatePayload}, {"count/path limits", Limits},
+        {"decoded path memory budget", DecodedPathBudget},
         {"malformed/unsupported payload", MalformedPayloads}, {"ANSI payload", AnsiPayload},
         {"Leave/Detach/retained interface", LeaveAndDetach}, {"registration/IUnknown", RegistrationAndIdentity},
         {"COM exception boundaries", CallbackExceptions}, {"reentrant destruction", ReentrantDestruction},

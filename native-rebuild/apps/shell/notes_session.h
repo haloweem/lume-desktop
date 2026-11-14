@@ -1,6 +1,7 @@
 #pragma once
 #include "core/notes/notes_store.h"
 #include "core/settings/file_store.h"
+#include "apps/shell/native_material_request.h"
 #include <windows.h>
 #include <functional>
 #include <memory>
@@ -30,6 +31,8 @@ class NotesSession final {
     NotesSession(const NotesSession &) = delete;
     NotesSession &operator=(const NotesSession &) = delete;
     bool Restore();
+    void SetMaterialSelectionHandler(NativeMaterialSelectionHandler);
+    std::optional<std::wstring> HandleMaterialSelection(const NativeMaterialRequest &);
     // Strict version 1, scope "notes". Returns the replies to post, in order,
     // or nullopt for an unrelated or invalid message (no side effects).
     std::optional<std::vector<std::wstring>> HandleMessage(const std::wstring &);

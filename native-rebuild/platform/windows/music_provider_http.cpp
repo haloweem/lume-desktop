@@ -56,6 +56,8 @@ constexpr Route Routes[] = {
     {Provider::Netease, "POST", "interfacepc.music.163.com", "/eapi/song/enhance/player/url"},
     {Provider::Netease, "POST", "interfacepc.music.163.com", "/eapi/song/enhance/player/url/v1"},
     {Provider::Netease, "POST", "interfacepc.music.163.com", "/eapi/song/lyric/v1"},
+    {Provider::Netease, "POST", "interface.music.163.com", "/api/bsr/sk/get"},
+    {Provider::Netease, "POST", "interface3.music.163.com", "/xeapi/song/enhance/player/url/v1"},
     {Provider::QQ, "GET", "c.y.qq.com", "/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg"},
     {Provider::QQ, "GET", "c.y.qq.com", "/rsc/fcgi-bin/fcg_user_created_diss"},
     {Provider::QQ, "GET", "c.y.qq.com", "/fav/fcgi-bin/fcg_get_profile_order_asset.fcg"},
@@ -112,6 +114,16 @@ const Route* Target(const HttpRequest& request) {
 }
 bool AllowedHeader(const Route& route, std::string_view name, std::string_view value) {
     if (!Printable(value) || value.size() > 16384) return false;
+    if (route.provider == Provider::Netease && route.host == "interface3.music.163.com" &&
+        route.path == "/xeapi/song/enhance/player/url/v1") {
+        if (Same(name, "x-client-enc-state")) return value == "ENCRYPTED";
+        if (Same(name, "x-aeapi")) return value == "true";
+        if (Same(name, "x-os")) return value == "android";
+        if (Same(name, "x-deviceid") || Same(name, "x-sdeviceid") || Same(name, "x-osver") ||
+            Same(name, "x-appver") || Same(name, "x-buildver")) return !value.empty() && value.size() <= 128;
+        if (Same(name, "x-music-u")) return !value.empty() && value.size() <= 4096;
+        if (Same(name, "content-type")) return value == "application/x-www-form-urlencoded;charset=utf-8";
+    }
     if (route.provider == Provider::QQ && route.host == "api.tencentmusic.com") {
         if (Same(name, "host")) return value == route.host;
         if (Same(name, "method")) return value == "GetQimei";

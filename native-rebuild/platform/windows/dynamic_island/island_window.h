@@ -1,6 +1,7 @@
 #pragma once
 #include "core/dynamic_island/island_model.h"
 #include "core/dynamic_island/compact_widgets.h"
+#include "core/dynamic_island/expanded_widgets.h"
 #include "core/widget/widget_preferences.h"
 #include "core/calendar/calendar_date.h"
 #include "core/performance/performance_metrics.h"
@@ -20,8 +21,34 @@ struct IslandPresentation {
     unsigned remaining = 0;
     bool focusing = false, finished = false, english = false;
 };
+// Ephemeral notifications never enter the todo store or reminder history.
+// Without an activation callback the capsule opens its full message inside
+// the island. App notifications activate their source directly on click.
+struct IslandNotification {
+    std::string id;
+    std::wstring title, body;
+    std::function<void()> activate;
+    // A fixed bundled asset key, never a notification-supplied path or URL.
+    std::string icon{};
+    // New messages from one app refresh its capsule instead of building up
+    // a queue of stale generic alerts. Empty keeps independent notices.
+    std::string coalesceKey{};
+    // A scheduled voice reminder must start on arrival rather than waiting
+    // behind an unrelated capsule. Ordinary notifications keep FIFO behavior.
+    bool immediate = false;
+    unsigned durationMs = 10000;
+    // UI-thread visibility lease. All-screen mirrors share one voice owner.
+    std::function<void(bool)> presented{};
+    // Current normalized PCM amplitude; empty for silent/default styles.
+    std::function<float()> audioLevel{};
+    std::function<bool()> audioPlaying{};
+    // Shared voice owner selects captions from the actual audio device position.
+    std::function<std::wstring()> voiceCaption{};
+};
 enum class IslandSize { Small, Standard, Large };
 enum class IslandShape { Standard, Capsule };
+enum class IslandClockStyle { Simple, Progress, Digital, Date, Flip, Pixel };
+enum class IslandCalendarStyle { Default, ChineseAlmanac };
 // Playback includes an idle empty state; active reminders have their own view.
 enum class IslandPage { Music, Reminder };
 struct IslandTodo {
@@ -49,6 +76,7 @@ struct IslandTodoSource {
 enum class IslandMaterial { None, Liquid, Frosted };
 enum class IslandAnimationSpeed { Slow, Normal, Fast };
 enum class IslandBounce { Subtle, Normal, Bouncy };
+inline unsigned SnapIslandHoverDelay(unsigned ms) { return ms<100?100:ms>1000?1000:((ms+25)/50)*50; }
 struct IslandMonitor {
     std::wstring device;
     RECT bounds{}, work{};
@@ -64,22 +92,24 @@ struct IslandDisplay {
     bool hideFullscreen = true;  // Step aside for fullscreen apps, games and presentations.
     bool topmost = false;        // Explicitly chosen overlay above ordinary applications.
     bool hoverExpand = false;    // Expand after resting the pointer on the island.
-    unsigned hoverDelayMs = 320; // 100..1000 ms; retain the existing default delay.
+    unsigned hoverDelayMs = 300; // 100..1000 ms in 50 ms steps.
     IslandAnimationSpeed animationSpeed = IslandAnimationSpeed::Normal;
     IslandBounce bounce = IslandBounce::Normal;
     bool autoHide = true;        // Idle: tuck against the screen top, leaving a sliver to hover.
-    bool messages = true;        // Show new QQ / WeChat / ... messages (their taskbar button flashing).
     IslandSize size = IslandSize::Standard;
     IslandMaterial material = IslandMaterial::None;
     IslandShape shape = IslandShape::Capsule;
+    IslandClockStyle clockStyle = IslandClockStyle::Simple;
+    IslandCalendarStyle calendarStyle = IslandCalendarStyle::Default;
     dynamic_island::CompactWidget leftWidget=dynamic_island::CompactWidget::None;
     dynamic_island::CompactWidget rightWidget=dynamic_island::CompactWidget::None;
+    std::vector<dynamic_island::ExpandedWidget> expandedWidgets{dynamic_island::ExpandedWidget::Music};
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
-    return a.screen==b.screen&&a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
+    return a.expandedWidgets==b.expandedWidgets&&a.screen==b.screen&&a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.hoverDelayMs == b.hoverDelayMs &&
            a.animationSpeed == b.animationSpeed && a.bounce == b.bounce && a.size == b.size && a.material == b.material &&
-           a.autoHide == b.autoHide && a.messages == b.messages && a.shape == b.shape;
+           a.autoHide == b.autoHide && a.shape == b.shape && a.clockStyle == b.clockStyle && a.calendarStyle == b.calendarStyle;
 }
 inline bool operator!=(const IslandDisplay& a, const IslandDisplay& b) { return !(a == b); }
 struct IslandPreviewFrame {
@@ -100,7 +130,7 @@ std::shared_ptr<const WidgetBitmap> DecodeMediaArtwork(const std::string&);
 class IslandWindow final {
 public:
     using Act = std::function<void(dynamic_island::Action)>;
-    IslandWindow(HINSTANCE, Act);
+    IslandWindow(HINSTANCE, Act, std::function<bool()> notificationAllowed = {});
     ~IslandWindow();
     bool Start(const widget::Preferences&, const IslandDisplay& = {});
     // Bind this window to one screen; the session owns the all-screen group.
@@ -116,6 +146,11 @@ public:
     // island cannot show it now (stopped, stepping aside for a fullscreen app,
     // or in the desktop layer where windows may cover it).
     bool ShowNotice(const std::string& taskId, const std::wstring& title, const std::wstring& time);
+    // Briefly appears above ordinary applications, without activation or a
+    // permanent layering change. Returns false while notifications are blocked.
+    bool ShowNotification(const IslandNotification&);
+    // Clears both visible and queued notification content immediately.
+    void ClearNotifications();
     // Repaints after the shared todo store changed.
     void RefreshTodos();
     IslandPage Page() const;

@@ -5,7 +5,7 @@
 #error OutputDir must be supplied by package-original-pages.ps1
 #endif
 #ifndef OutputBaseFilename
-#define OutputBaseFilename "LumeSetup-1.0.9"
+#define OutputBaseFilename "LumeSetup-1.1.3"
 #endif
 #ifndef IconFile
 #error IconFile must be supplied by package-original-pages.ps1
@@ -19,11 +19,26 @@
 #ifndef UiIntegrityChecksFile
 #error UiIntegrityChecksFile must be supplied by package-original-pages.ps1
 #endif
+#if FileExists(SourceDir + "\notification-identity\Lume.NotificationIdentity.msix")
+  #ifndef NotificationIdentityPackageSha256
+    #error Signed notification identity must have its packaging-verified hash
+  #endif
+  #if Len(NotificationIdentityPackageSha256) != 64
+    #error Invalid signed notification identity package hash
+  #endif
+  #define SignedNotificationIdentity
+#endif
 
 [Setup]
+#ifdef LumeCodeSigning
+SignTool=LumeSign
+SignedUninstaller=yes
+SignedUninstallerDir={#SignedUninstallerDirectory}
+SignToolRetryCount=1
+#endif
 AppId={{8B29B016-65A4-4F35-8F0A-F6D7B9C10101}
 AppName=Lume
-AppVersion=1.0.9
+AppVersion=1.1.3
 AppPublisher=Lume
 AppPublisherURL=https://lumedesktop.com/
 AppSupportURL=https://lumedesktop.com/
@@ -50,11 +65,11 @@ CloseApplications=no
 RestartApplications=no
 LanguageDetectionMethod=uilanguage
 ShowLanguageDialog=yes
-VersionInfoVersion=1.0.9
+VersionInfoVersion=1.1.3
 VersionInfoCompany=Lume
 VersionInfoDescription=Lume Setup
 VersionInfoProductName=Lume
-VersionInfoProductVersion=1.0.9
+VersionInfoProductVersion=1.1.3
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "{#SourcePath}\installer-languages\ChineseSimplified.isl"
@@ -72,6 +87,16 @@ Source: "{#ShutdownHelperFile}"; DestDir: "{tmp}"; DestName: "LumeSetupShutdown.
 Source: "{#WebView2RuntimeInstallerFile}"; DestDir: "{tmp}"; DestName: "MicrosoftEdgeWebView2Setup.exe"; Flags: dontcopy
 Source: "{#SourceDir}\LumeLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeShell.exe"; DestDir: "{app}"; Flags: ignoreversion
+#if DirExists(SourceDir + "\notification-identity")
+; Optional files only: registration is an explicit user action after install.
+Source: "{#SourceDir}\notification-identity\*"; DestDir: "{app}\notification-identity"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+#if DirExists(SourceDir + "\Assets")
+; Sparse application logos are looked up relative to the installation root.
+Source: "{#SourceDir}\Assets\Square44x44Logo.png"; DestDir: "{app}\Assets"; Flags: ignoreversion
+Source: "{#SourceDir}\Assets\Square150x150Logo.png"; DestDir: "{app}\Assets"; Flags: ignoreversion
+Source: "{#SourceDir}\Assets\StoreLogo.png"; DestDir: "{app}\Assets"; Flags: ignoreversion
+#endif
 #if FileExists(SourceDir + "\LumeGlass.dll")
 Source: "{#SourceDir}\LumeGlass.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeGlass.NOTICE"; DestDir: "{app}"; Flags: ignoreversion
@@ -105,8 +130,9 @@ Source: "{#SourceDir}\WebView2-LICENSE.txt"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#SourceDir}\WebView2-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ui\*"; DestDir: "{app}\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\ui-recovery\*"; DestDir: "{app}\ui-recovery"; Flags: ignoreversion recursesubdirs createallsubdirs
-; This final file hook verifies before non-postinstall [Run] entries, including updates.
-Source: "{#SourceDir}\ui-integrity.stamp"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: VerifyAllInstalledUi
+; Finish both UI verification and identity registration before ANY [Run] entry.
+; ssPostInstall is too late for the silent-update Run entry.
+Source: "{#SourceDir}\ui-integrity.stamp"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: PrepareInstalledLume
 #endif
 
 [Tasks]
@@ -127,7 +153,7 @@ Name: "{group}\Lume"; Filename: "{app}\LumeShell.exe"; WorkingDir: "{app}"; Icon
 Name: "{autodesktop}\Lume"; Filename: "{app}\LumeShell.exe"; WorkingDir: "{app}"; IconFilename: "{app}\LumeShell.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\LumeShell.exe"; Description: "运行 Lume"; Flags: postinstall nowait skipifsilent; Check: UiWasVerified
+Filename: "{app}\LumeShell.exe"; Description: "运行 Lume"; Flags: postinstall nowait skipifsilent; Check: IsVerifiedLumeStart
 Filename: "{app}\LumeShell.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: IsVerifiedLumeUpdate
 
 [Code]
@@ -137,13 +163,60 @@ begin
 end;
 
 function IsVerifiedLumeUpdate: Boolean; forward;
+function IsVerifiedLumeStart: Boolean; forward;
 
 #include "installer_shutdown.iss"
 #include "installer_ui_integrity.iss"
 
+var NotificationIdentityReady: Boolean;
+
+function IsVerifiedLumeStart: Boolean;
+begin
+  Result := UiWasVerified and NotificationIdentityReady;
+end;
+
 function IsVerifiedLumeUpdate: Boolean;
 begin
-  Result := IsLumeUpdate and UiWasVerified;
+  Result := IsLumeUpdate and IsVerifiedLumeStart;
+end;
+
+procedure RegisterSignedNotificationIdentity;
+var
+  PackageFile: String;
+  ResultCode: Integer;
+begin
+  if NotificationIdentityReady then
+    Exit;
+  #ifdef SignedNotificationIdentity
+  if not UiWasVerified then
+    VerifyAllInstalledUi;
+  PackageFile := ExpandConstant('{app}\notification-identity\Lume.NotificationIdentity.msix');
+  if CompareText(GetSHA256OfFile(PackageFile), '{#NotificationIdentityPackageSha256}') <> 0 then
+    RaiseException('通知身份安装文件校验失败，Lume 尚未启动。请重新下载安装包。');
+  Log('Registering the verified signed notification identity as the original user before Shell launch.');
+  if not ExecAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{app}\notification-identity\Register-NotificationIdentity.ps1') +
+    '" -IdentityPackagePath "' + PackageFile + '" -InstallDirectory "' + ExpandConstant('{app}') + '" -CloseRunningLume',
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('Signed notification identity registration could not be launched for the original user.');
+    RaiseException('无法为原登录用户启动通知身份注册，Lume 尚未自动启动。请查看安装日志并重试。');
+  end;
+  Log('Signed notification identity registration result: ' + IntToStr(ResultCode));
+  if ResultCode <> 0 then
+    RaiseException('通知功能注册未完成（退出码 ' + IntToStr(ResultCode) + '），Lume 尚未自动启动。具体原因已记录到当前登录用户的 %LOCALAPPDATA%\Lume\Logs\notification-identity-install.log。请将该日志提供给支持人员。');
+  Log('notification-identity=signed-auto-registration; original-user registration completed before launch.');
+  #else
+  Log('notification-identity=metadata-only-not-user-ready; no signed package, registration skipped, desktop fallback retained.');
+  #endif
+  NotificationIdentityReady := True;
+end;
+
+procedure PrepareInstalledLume;
+begin
+  VerifyAllInstalledUi;
+  RegisterSignedNotificationIdentity;
 end;
 
 procedure RemoveOwnedLoginProtocol(RootKey: Integer);
@@ -215,6 +288,18 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { Remove only the current user's identity with this exact external location.
+      The script preserves registrations belonging to other installs/users. }
+    if FileExists(ExpandConstant('{app}\notification-identity\Remove-NotificationIdentity.ps1')) then
+    begin
+      if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+        '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+        ExpandConstant('{app}\notification-identity\Remove-NotificationIdentity.ps1') +
+        '" -InstallDirectory "' + ExpandConstant('{app}') + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Log('Unable to launch optional notification identity cleanup.')
+      else if ResultCode <> 0 then
+        Log('Optional notification identity cleanup did not complete; preserved unmatched registrations.');
+    end;
     RemoveOwnedLoginProtocol(HKLM);
     RemoveOwnedLoginProtocol(HKCU);
     if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Lume', RunCommand) then

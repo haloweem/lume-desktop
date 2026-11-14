@@ -2,6 +2,7 @@
 #include "platform/windows/taskbar/taskbar_port.h"
 #include "platform/windows/taskbar/taskbar_watch.h"
 #include "platform/windows/local_settings_file_store.h"
+#include "platform/windows/diagnostics/runtime_log.h"
 #include <algorithm>
 #include <mutex>
 #include <optional>
@@ -13,7 +14,14 @@ constexpr ULONGLONG ClassicMaintainMs = 100;
 bool Equal(const taskbar::Status& a, const taskbar::Status& b) {
     return a.preferences == b.preferences && a.mode == b.mode && a.error == b.error &&
         a.running == b.running && a.pendingRecovery == b.pendingRecovery && a.taskbars == b.taskbars &&
-        a.active == b.active;
+        a.active == b.active && a.hideApplied == b.hideApplied &&
+        a.effectiveAutoHide == b.effectiveAutoHide && a.fullyHidden == b.fullyHidden &&
+        a.autoHideDemand == b.autoHideDemand;
+}
+bool Equal(const taskbar::TransparencyStatus& a, const taskbar::TransparencyStatus& b) {
+    return a.effectStatus == b.effectStatus && a.taskbarType == b.taskbarType && a.stage == b.stage && a.hresult == b.hresult &&
+        a.registeredTaskbars == b.registeredTaskbars && a.backgrounds == b.backgrounds &&
+        a.appliedTaskbars == b.appliedTaskbars;
 }
 }
 struct TaskbarRuntime::Impl {
@@ -27,12 +35,38 @@ struct TaskbarRuntime::Impl {
     ~Impl() { Shutdown(); }
     void Publish(bool exiting = false, std::optional<taskbar::Error> error = {}) {
         Notify callback;
+        const auto nextState = controller->Snapshot();
+        taskbar::TransparencyStatus transparency;
+        if (nextState.preferences.enabled && nextState.preferences.transparentTaskbar) {
+            if (nextState.mode == taskbar::Mode::Classic) {
+                transparency.effectStatus = nextState.running && nextState.error == taskbar::Error::None ? "applied" : "pending";
+                transparency.stage = "classic-accent";
+                transparency.taskbarType = "classic";
+                transparency.registeredTaskbars = static_cast<std::uint32_t>(nextState.taskbars);
+                transparency.backgrounds = transparency.registeredTaskbars;
+                transparency.appliedTaskbars = transparency.effectStatus == "applied" ? transparency.registeredTaskbars : 0;
+            } else {
+                transparency = port->Transparency();
+                if (transparency.effectStatus == "inactive") transparency.effectStatus = "initializing";
+            }
+            if (nextState.error != taskbar::Error::None && !nextState.running && transparency.effectStatus != "applied")
+                transparency.effectStatus = "failed";
+        }
         {
             std::lock_guard<std::mutex> lock(mutex);
             auto next = controller->Snapshot(); if (error) next.error = *error;
             const bool applying = pending.has_value();
-            if (!Equal(status.state, next) || status.applying != applying || exiting) {
+            if (!Equal(status.state, next) || !Equal(status.transparency, transparency) || status.applying != applying || exiting) {
                 status.state = next; status.loaded = controller->Loaded();
+                if (!Equal(status.transparency, transparency)) {
+                    diag::Log("taskbar-effect", "status=" + transparency.effectStatus + " stage=" + transparency.stage +
+                        " type=" + transparency.taskbarType +
+                        " hr=" + std::to_string(transparency.hresult) +
+                        " registered=" + std::to_string(transparency.registeredTaskbars) +
+                        " backgrounds=" + std::to_string(transparency.backgrounds) +
+                        " applied=" + std::to_string(transparency.appliedTaskbars));
+                }
+                status.transparency = std::move(transparency);
                 status.applying = applying; ++status.revision; callback = notify;
             }
             if (exiting) status.worker = false;
@@ -106,6 +140,8 @@ struct TaskbarRuntime::Impl {
                 failures = 0; settle = false;
             }
             const auto before = controller->Snapshot();
+            const bool reloaded = before.error == taskbar::Error::CoreRestartRequired && port->CoreReloadResolved();
+            if (reloaded) port->ResetCoreFailure();
             if (request) { failures = 0; settle = false; }
             const bool wantsActive = before.active || (request && request->enabled);
             bool watchFailed = false;
@@ -117,7 +153,10 @@ struct TaskbarRuntime::Impl {
             // this worker alive while recovery is pending so its mutex ownership
             // never moves to a different thread. Enabling requires a listener.
             const bool ok = watchFailed && wantsActive
-                ? controller->Shutdown() : request ? controller->Apply(*request) : controller->Tick();
+                ? controller->Shutdown() : request ? controller->Apply(*request)
+                : reloaded ? controller->Tick()
+                : taskbar::RequiresExplicitRetry(before.error) && (before.active || before.pendingRecovery)
+                    ? controller->MaintainHiding() : controller->Tick();
             if (!ok && controller->Snapshot().error == taskbar::Error::Cancelled) {
                 // Superseded by a newer request: run it instead of reporting.
                 std::lock_guard<std::mutex> lock(mutex);
@@ -136,7 +175,12 @@ struct TaskbarRuntime::Impl {
             if ((!state.active || watchFailed) && !state.pendingRecovery) {
                 watch.Stop(); CloseEvent(); Publish(true, watchError); return;
             }
-            if (!ok) {
+            if (taskbar::RequiresExplicitRetry(state.error)) {
+                // A transparency failure must not disable the independent hide
+                // maintenance cadence, nor restart the known-failing core.
+                due = state.active || state.pendingRecovery ? GetTickCount64() + 1000 : 0;
+                settle = false;
+            } else if (!ok) {
                 // Six bounded retries, then only a new request or shell event can retry.
                 ++failures;
                 due = !taskbar::RequiresExplicitRetry(state.error) && failures <= 6
@@ -155,6 +199,12 @@ struct TaskbarRuntime::Impl {
                 if (state.running && state.preferences.enabled && state.preferences.autoHideTaskbar &&
                     state.preferences.hideBehavior == taskbar::HideBehavior::FullyHidden)
                     due = GetTickCount64() + ClassicMaintainMs;
+                // Periodic readback also covers an external change without a
+                // shell event, without retrying terminal transparency failures.
+                if (state.running || state.hideApplied) {
+                    const auto checkAt = GetTickCount64() + 1000;
+                    if (!due || due > checkAt) due = checkAt;
+                }
             }
             bool repeat = false;
             while (!repeat) {

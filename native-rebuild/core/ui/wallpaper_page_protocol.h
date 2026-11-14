@@ -7,7 +7,8 @@
 namespace lume::ui {
 enum class WallpaperAction {
     Snapshot, Refresh, Import, StopAll, Download, Cancel, Remove, Apply,
-    Pause, Resume, Stop, Fit, Volume, PauseFullscreen, Preview, EndPreview, Like, ApplyAll, Stats, EndStats
+    Pause, Resume, Stop, Fit, Volume, PauseFullscreen, Preview, EndPreview, Like, ApplyAll, Stats, EndStats,
+    RefreshVideos
 };
 struct WallpaperPageCommand {
     WallpaperAction action = WallpaperAction::Snapshot;

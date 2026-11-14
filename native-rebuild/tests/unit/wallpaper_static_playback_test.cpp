@@ -4,6 +4,7 @@
 #include "platform/windows/wallpaper/download.h"
 #include "platform/windows/wallpaper/media_server.h"
 #include "platform/windows/wallpaper/static_image.h"
+#include "platform/windows/wallpaper/wallpaper_pipe.h"
 #include "vendor/nlohmann/json.hpp"
 
 #include <windows.h>
@@ -347,9 +348,11 @@ bool RunProtected(const std::filesystem::path& executable,
         if (probed) {
             const auto path = probe.Property("path");
             const auto frame = probe.Property("video-frame-info");
-            Expect(path.is_string() && path.get<std::string>() == url,
-                balanced ? "balanced protected static image reaches mpv through the loopback URL"
-                         : "protected static image reaches mpv through the loopback URL");
+            const auto plugin=executable.parent_path()/L"lume-mpv-stream.dll";
+            const auto expectedPath=std::filesystem::is_regular_file(plugin)
+                ?lume::platform::windows::wallpaper_pipe::PlayerUrl(url):url;
+            Expect(path.is_string() && path.get<std::string>() == expectedPath,
+                "protected media reaches mpv through its exact registered transport");
             const auto filters = probe.Property("vf");
             Expect(filters.is_array() && HasBalancedFilter(filters) == (balanced && video),
                 "protected media receives a frame-rate filter only for balanced video");

@@ -45,7 +45,6 @@ class GlassScene {
   RECT previousLens{};
   bool pendingScene = false;
   bool presentable = false;
-  bool capturesClosed = false;
 
   static bool Bounds(HWND hwnd, RECT* bounds) {
     if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, bounds, sizeof(*bounds))))
@@ -181,7 +180,6 @@ class GlassScene {
 
   bool UpdateLayer(Layer* layer) {
     if (!layer || !layer->capture || !graphics) return false;
-    g_glassCaptureRegistry.Update(layer->capture, graphics);
     // Another scene may have dequeued the new frame. Each consumer must still
     // invalidate its own scene texture when it observes that revision.
     if (layer->revision != layer->capture->revision) ++captureFrames;
@@ -190,9 +188,6 @@ class GlassScene {
   }
 
 public:
-  // Whether captures were closed since the last call; the caller then flushes
-  // and trims the device (see the Prune call in Render).
-  bool TakeClosedCaptures() { const bool closed = capturesClosed; capturesClosed = false; return closed; }
   unsigned sourceCount = 0, readyCount = 0, captureFrames = 0, deferredScenes = 0;
   unsigned desktopIconSources = 0, desktopIconReady = 0;
   ~GlassScene() {
@@ -226,7 +221,9 @@ public:
     } catch (const winrt::hresult_error& error) { LogNative("SceneInit", error.code()); return false; }
   }
 
-  bool Render(HWND owner, HWND surface, const RECT& lens, ID3D11Device* device, ID3D11DeviceContext* context) {
+  template<class BindPipeline>
+  bool Render(HWND owner, HWND surface, const RECT& lens, ID3D11Device* device, ID3D11DeviceContext* context,
+      std::unique_lock<std::mutex>& contextLock,BindPipeline&& bindPipeline) {
     const auto visible = SourcesBelow(owner, surface, lens);
     const unsigned beforeFrames = captureFrames;
     bool changed = pendingScene || !texture || !EqualRect(&lens, &previousLens) || visible.size() != previousSources.size();
@@ -239,6 +236,20 @@ public:
              visible[i].surface->revision != previousSources[i].surface->revision)) { changed = true; break; }
       }
     }
+    // WGC dequeue/Close/Recreate and first-session startup can enter the OS.
+    // Keep these out of the shared immediate-context lock so a slow capture
+    // does not stall every other material worker.
+    context->ClearState();contextLock.unlock();
+    try {
+      for(const auto& source:visible) {
+        if(source.nativeSurface)continue;
+        if(auto* layer=OpenLayer(source.window)) {
+          layer->lastUsed=GetTickCount64();
+          g_glassCaptureRegistry.Update(layer->capture,graphics);
+        }
+      }
+    }catch(...){contextLock.lock();bindPipeline();throw;}
+    contextLock.lock();bindPipeline();
     const unsigned beforeReady = readyCount;
     bool waitingForFirstFrame = false;
     sourceCount = readyCount = desktopIconSources = desktopIconReady = 0;
@@ -251,7 +262,8 @@ public:
         }
         continue;
       }
-      auto* layer = OpenLayer(source.window);
+      const auto found=layers.find(source.window);
+      auto* layer=found==layers.end()?nullptr:found->second.get();
       if (!layer) continue;
       layer->lastUsed = GetTickCount64();
       if (!UpdateLayer(layer)) { layers.erase(source.window); continue; }
@@ -269,10 +281,9 @@ public:
       if (!IsWindow(it->first)) it = retryAfter.erase(it);
       else ++it;
     }
-    // Windows passing under the glass open full-window captures. Closing them
-    // releases their textures only on the next flush; a static lens may not
-    // present again for minutes, so the memory would otherwise accumulate.
-    if (g_glassCaptureRegistry.Prune()) capturesClosed = true;
+    // Retirement only enqueues the unused captures. The cleanup worker closes
+    // them and flushes/trims after their COM resources have actually released.
+    g_glassCaptureRegistry.Prune();
     // A new WGC session has no pixels until its first asynchronous frame.
     // Keep the committed scene intact during that handoff; clearing it or
     // hiding the surface makes the entire material flash at contact. A broken

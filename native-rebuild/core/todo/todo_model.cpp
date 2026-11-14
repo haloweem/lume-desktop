@@ -146,6 +146,17 @@ namespace {
 bool Repeating(const TaskView &task) {
     return task.recurrence && task.dueAt && !task.completed && !task.deletedAt && !task.projected;
 }
+TaskView ProjectionCursor(const TaskView& task) {
+    TaskView cursor;
+    cursor.dueAt=task.dueAt;cursor.reminderAt=task.reminderAt;cursor.schedule=task.schedule;cursor.day=task.day;
+    return cursor;
+}
+TaskView ProjectionRow(const TaskView& source,const TaskView& cursor) {
+    auto row=source;
+    row.dueAt=cursor.dueAt;row.reminderAt=cursor.reminderAt;row.schedule=cursor.schedule;
+    row.day=cursor.day;row.reminder=cursor.reminder;row.projected=true;
+    return row;
+}
 } // namespace
 std::vector<TaskView> ProjectOccurrences(const TaskView &task, Millis until, std::size_t limit,
                                          const ILocalTimePort &port) {
@@ -163,21 +174,59 @@ std::vector<TaskView> ProjectOccurrences(const TaskView &task, Millis until, std
     }
     return out;
 }
+std::vector<TaskView> ProjectOccurrencesForDays(const TaskView &task, const std::vector<calendar::Date>& days,
+                                              const ILocalTimePort &port) {
+    std::vector<TaskView> out;
+    if (!Repeating(task) || days.empty()) return out;
+    auto wanted = days;
+    wanted.erase(std::remove_if(wanted.begin(), wanted.end(), [](auto day) { return !calendar::IsValidDate(day); }), wanted.end());
+    std::sort(wanted.begin(), wanted.end());
+    wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
+    if (wanted.empty()) return out;
+    auto current = ProjectionCursor(task);
+    current.day = GroupDay(task, port);
+    const auto recurrence = *task.recurrence;
+    // Daily/weekly recurrences advance by fixed milliseconds. Skip old dates in
+    // valid (<=365 interval) chunks, retaining NextInstance's midnight/DST and
+    // schedule rules. Leave two intervals around the first requested date.
+    if (recurrence.interval > 0 && recurrence.interval <= 365 &&
+        (recurrence.frequency == Frequency::Daily || recurrence.frequency == Frequency::Weekly)) {
+        const auto first = ResolveLocal({wanted.front(), 0, 0, 0, 0}, port);
+        const auto start = current.schedule ? current.schedule->startAt : *current.dueAt;
+        const Millis step = 86400000LL * recurrence.interval * (recurrence.frequency == Frequency::Weekly ? 7 : 1);
+        auto skip = first && *first > start ? std::max<Millis>(0, (*first - start) / step - 2) : 0;
+        while (skip > 0) {
+            const auto count = std::min<Millis>(skip, 365 / recurrence.interval);
+            auto next = NextInstance(current, {recurrence.frequency, recurrence.interval * static_cast<int>(count)}, port);
+            if (!next) break;
+            current = std::move(*next);
+            skip -= count;
+        }
+    }
+    for (;;) {
+        auto next = NextInstance(current, recurrence, port);
+        if (!next || !next->day || !next->dueAt || *next->dueAt <= *current.dueAt || *next->day > wanted.back()) break;
+        if (std::binary_search(wanted.begin(), wanted.end(), *next->day)) {
+            out.push_back(ProjectionRow(task,*next));
+        }
+        current = std::move(*next);
+    }
+    return out;
+}
 void AppendReminderOccurrences(std::vector<TaskView> &tasks, Millis now, const ILocalTimePort &port) {
     const auto count = tasks.size();
     for (std::size_t i = 0; i < count; ++i) {
         if (!Repeating(tasks[i]) || !tasks[i].reminderAt || *tasks[i].reminderAt > now)
             continue;
-        auto current = tasks[i];
-        const auto recurrence = *current.recurrence;
+        auto current = ProjectionCursor(tasks[i]);
+        const auto recurrence = *tasks[i].recurrence;
         // Bounded walk: a daily series left open for decades stops here.
         for (int step = 0; step < 40000; ++step) {
             auto next = NextInstance(current, recurrence, port);
             if (!next || !next->reminderAt)
                 break;
             if (*next->reminderAt >= now - 86400000) {
-                next->projected = true;
-                tasks.push_back(*next);
+                tasks.push_back(ProjectionRow(tasks[i],*next));
                 if (*next->reminderAt > now)
                     break;
             }
@@ -246,6 +295,22 @@ Error ApplyPatch(TaskRecord &target, const TaskPatch &patch, bool creating, cons
         task.recurrence = recurrence;
         task.recurrenceChanged = true;
     }
+    if (patch.subtasks) {
+        if (patch.subtasks->size() > 100)
+            return Error::LimitExceeded;
+        std::vector<Subtask> steps;
+        for (const auto &step : *patch.subtasks) {
+            auto title = Trim(step.title);
+            if (step.id.empty() || !ValidUtf8Length(step.id, 200) || title.empty() || !ValidUtf8Length(title, 500))
+                return Error::InvalidTask;
+            for (const auto &other : steps)
+                if (other.id == step.id)
+                    return Error::InvalidTask;
+            steps.push_back({step.id, std::move(title), step.completed});
+        }
+        task.view.subtasks = std::move(steps);
+        task.subtasksChanged = true;
+    }
     if (task.tags.size() > 30)
         return Error::LimitExceeded;
     RefreshView(task, port);
@@ -280,6 +345,8 @@ Error CompleteTask(TaskRecord &target, Millis now, const std::string &nextId, st
         following->completedAt.reset();
         following->view.deletedAt.reset();
         following->resetSubtasks = true;
+        for (auto &step : following->view.subtasks)
+            step.completed = false;
         if (following->view.schedule)
             ScheduleTag(*following);
         RefreshView(*following, port);

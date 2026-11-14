@@ -44,6 +44,11 @@ struct WidgetWindowPorts {
     // Configure), never the frame, so the clickable area does not flicker
     // with the content and stays grabbable when the content is empty.
     std::function<std::vector<WidgetRect>(float,float)> hitShape={};
+    // Optional feature shape; the hit surface and material use the same radius.
+    std::function<float(float,float)> cornerRadius={};
+    // UI-thread notification; also sent after the first successful Start.
+    // Independent of data updates so a suspended sampler can resume itself.
+    std::function<void(bool)> contentVisibilityChanged={};
 };
 // UI-thread owner; no data sampling, persistence, business models or timers.
 class NativeWidgetWindow final {
@@ -54,6 +59,7 @@ public:
     bool Start();
     void Stop();
     bool Paint();
+    bool ContentVisible()const;
     // Start() reports false when the desktop layer refused the window; callers
     // surface that as its own error instead of a generic start failure.
     bool PlacementFailed()const;

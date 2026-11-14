@@ -1980,6 +1980,24 @@ void TestQualitySwitchAfterSupersededControls() {
 // track must fall back one level and keep playing instead of failing this and
 // every later track; an expired login must say so and never downgrade.
 void TestNewTrackQualityFallback() {
+    for (const auto* failure : {"network", "timeout", "service", "rate-limited", "invalid-response",
+            "netease-code--460", "preview-only", "entitlement"}) {
+        MusicSessionOptions options;
+        std::atomic<int> calls{0};
+        options.resolveAudioSource = [&](const auto&, std::string_view, const auto&) -> music::ResolvedAudioSource {
+            ++calls; throw std::runtime_error(failure);
+        };
+        MusicSession session(std::move(options));
+        session.HandlePage(QualityCommand("hires"));
+        auto track = QueueTrack("netease:refused"); track.source = "online:" + track.id;
+        session.PlayTracks({track}, track.id);
+        Check(Eventually([&] { return !SessionState(session)["error"].get<std::string>().empty(); }), "failure settles playback");
+        Check(calls == 1 && SessionState(session)["audio"]["requestedQuality"] == "hires",
+            "request refusal does not cascade through quality levels");
+        if (std::string_view(failure) == "netease-code--460")
+            Check(SessionState(session)["error"] == "music-source-netease-code--460", "signed refusal code survives projection");
+        session.Shutdown();
+    }
     {
         auto host = std::make_shared<HostFixture>();
         host->failLoadSource = "https://fixture.invalid/hires";

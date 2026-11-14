@@ -79,13 +79,15 @@ test('production browser toggles music and wallpaper surfaces through repeated a
     assert.equal(await previewCount(),firstPreviewCount);
     await page.evaluate(async()=>{
       const {initialMusicState}=await import('./music.js');
-      const {query,nav,lyrics,...native}=initialMusicState();
+      const {query,nav,lyrics,score,...native}=initialMusicState();
+      const {validHostMessage}=await import('./bridge.js');
       const track={id:'fixture',title:'Reference track',artist:'Lume',album:'Test',source:'C:/Music/fixture.mp3',artwork:'',duration:180};
       window.snapshot={...native,version:1,type:'music-state',session:12,revision:1,pageOpen:true,pageVisible:true,
         status:'playing',playing:true,current:track,queue:[track],timeline:{position:36,duration:180},
         capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}};
       window.lyricsMessage={version:1,type:'music-lyrics',session:12,trackId:track.id,
         lines:[{startTime:0,endTime:180,fullText:'Original lyric response',translation:'',words:[]}]};
+      if(!validHostMessage(snapshot))throw new Error('Navigation fixture must use the native music-state schema');
       harness.receive(snapshot);
       harness.receive(lyricsMessage);
     });
@@ -136,7 +138,7 @@ test('production browser toggles music and wallpaper surfaces through repeated a
     assert.match(await launcher.locator('path').getAttribute('d'),/^M64 48H448/);
     await page.evaluate(async()=>{
       const {initialMusicState}=await import('./music.js');
-      const {query,nav,lyrics,...native}=initialMusicState();
+      const {query,nav,lyrics,score,...native}=initialMusicState();
       const track={id:'fixture',title:'Reference track',artist:'Lume',album:'Test',source:'C:/Music/fixture.mp3',artwork:'',duration:180};
       window.snapshot={...native,version:1,type:'music-state',session:12,revision:1,pageOpen:true,pageVisible:true,
         status:'playing',playing:true,current:track,queue:[track],timeline:{position:36,duration:180},

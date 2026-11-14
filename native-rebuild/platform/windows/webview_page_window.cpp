@@ -23,6 +23,9 @@
 #include <deque>
 #include <cstdint>
 #include <iostream>
+#include <atomic>
+#include <mutex>
+#include <thread>
 
 namespace lume::platform::windows {
 using namespace webview_detail;
@@ -41,6 +44,8 @@ constexpr UINT kApplicationCommandMessage = WM_APP + 26;
 constexpr UINT kLifecycleCleanupMessage = WM_APP + 27;
 constexpr UINT kMusicDropMessage = WM_APP + 28;
 constexpr UINT_PTR kStartupTimeout = 1;
+constexpr UINT_PTR kCleanupTimeout = 2;
+constexpr UINT_PTR kIntegrityPoll = 3;
 constexpr UINT kMaxDroppedFiles = 32;
 constexpr auto kWebView3Id = L"{A0D6DF20-3B92-416D-AA0C-437A9C727857}";
 constexpr auto kController2Id = L"{c979903e-d4ca-4228-92eb-47ee3fa96eab}";
@@ -157,6 +162,33 @@ ComPtr<IStream> ReadMusicFont(const std::wstring& directory, std::wstring_view f
 }
 }
 
+namespace {
+struct UiIntegrityTask {
+    std::atomic<bool> done{false};
+    UiIntegrityResult result;
+};
+std::shared_ptr<UiIntegrityTask> StartIntegrityTask(const std::filesystem::path& directory,
+    const std::filesystem::path& cache,bool verification) {
+    static std::mutex mutex;
+    static std::weak_ptr<UiIntegrityTask> active[2];
+    std::lock_guard lock(mutex);
+    auto& slot=active[verification?1:0];
+    auto task=slot.lock();
+    // Reopening during slow I/O reuses the sole in-flight check. The worker
+    // owns only paths/results, never a window, COM interface or State pointer.
+    if(task&&!task->done.load())return task;
+    task=std::make_shared<UiIntegrityTask>();
+    auto manifest=BuiltUiManifest();
+    std::thread([task,directory,cache,manifest=std::move(manifest)]{
+        try{task->result=PrepareUiDirectory(directory/L"ui",directory/L"ui-recovery",cache,manifest);}
+        catch(...){task->result.failedFile=L"ui";}
+        task->done.store(true);
+    }).detach();
+    slot=task;
+    return task;
+}
+}
+
 struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     HWND hwnd = nullptr;
     HMODULE loader = nullptr;
@@ -170,6 +202,7 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     unsigned verificationRasterDpi = 0;
     std::wstring error;
     std::filesystem::path uiDirectory;
+    std::shared_ptr<UiIntegrityTask> integrityTask;
     ULONGLONG startupAt=GetTickCount64();
     std::wstring verificationReadyScript;
     CommandHandler handler;
@@ -209,6 +242,9 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         applicationCommands.clear();
         closing = true;
         if (hwnd) KillTimer(hwnd, kStartupTimeout);
+        if (hwnd) KillTimer(hwnd, kCleanupTimeout);
+        if (hwnd) KillTimer(hwnd, kIntegrityPoll);
+        integrityTask.reset();
         if (view) {
             if (messageRegistered) view->remove_WebMessageReceived(messageToken);
             if (navigationRegistered) view->remove_NavigationStarting(navigationToken);
@@ -305,7 +341,8 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         ConfigureRoundedWindow(hwnd,fullscreen?0.f:static_cast<float>(34.0*zoom*dpi),true);
     }
     void StartSuspend(std::uint32_t generation) {
-        if (closing || suspendInFlight || !lifecycleView) return;
+        if (closing || suspendInFlight) return;
+        if(!lifecycleView){ApplyLifecycleActions(lifecycle.OnSuspendCompleted(generation,false));return;}
         suspendInFlight = true;
         if (memoryView) memoryView->put_MemoryUsageTargetLevel(
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
@@ -332,12 +369,17 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
             using Type = ui::WebViewLifecycle::Action::Type;
             switch (action.type) {
             case Type::NotifyVisibility:
+                if(hwnd){
+                    if(action.visible)KillTimer(hwnd,kCleanupTimeout);
+                    else SetTimer(hwnd,kCleanupTimeout,2000,nullptr);
+                }
                 if (!action.visible && visibilityHandler) visibilityHandler(false);
                 Post(std::wstring(L"{\"version\":1,\"type\":\"visibility\",\"visible\":")+
                     (action.visible ? L"true" : L"false")+L",\"generation\":"+
                     std::to_wstring(action.generation)+L"}");
                 break;
             case Type::TrySuspend:
+                if(hwnd)KillTimer(hwnd,kCleanupTimeout);
                 StartSuspend(action.generation);
                 break;
             case Type::TrimWorkingSet:
@@ -623,10 +665,21 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         const auto profile = ProfileDirectory(verification);
         const auto cache=profile.empty()?std::filesystem::path{}:
             profile.parent_path()/L"UiRecovery"/BuiltUiIdentity();
-        const auto integrity=PrepareUiDirectory(directory/L"ui",directory/L"ui-recovery",cache,BuiltUiManifest());
+        try{integrityTask=StartIntegrityTask(directory,cache,verification);}
+        catch(...){Fail(L"无法启动界面文件检查",E_FAIL);return;}
+        if(!SetTimer(hwnd,kIntegrityPoll,50,nullptr)){
+            integrityTask.reset();Fail(L"无法等待界面文件检查",HRESULT_FROM_WIN32(GetLastError()));return;
+        }
+        CompleteIntegrity();
+    }
+    void CompleteIntegrity() {
+        if(closing||!integrityTask||!integrityTask->done.load())return;
+        const auto integrity=integrityTask->result;integrityTask.reset();KillTimer(hwnd,kIntegrityPoll);
+        const auto directory=ExecutableDirectory();
+        const auto profile=ProfileDirectory(verification);
         if(integrity.directory.empty()){
             if(verification)std::cerr<<"UI integrity failed: "<<std::filesystem::path(integrity.failedFile).u8string()
-                <<" damaged="<<integrity.damaged<<" cacheLength="<<cache.native().size()<<'\n';
+                <<" damaged="<<integrity.damaged<<'\n';
             const auto description=L"界面文件损坏或缺失："+integrity.failedFile;
             Fail(description.c_str(),HRESULT_FROM_WIN32(ERROR_CRC),
                 L"自动恢复未完成，请使用同版本或更新的 Lume 安装包覆盖安装。账户、设置和壁纸数据可保留。");return;
@@ -753,7 +806,11 @@ LRESULT CALLBACK WebViewPageWindow::WindowProc(HWND hwnd, UINT message, WPARAM w
             ReleaseCapture(); SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
         }
         return 0;
-    case WM_TIMER: if (wparam == kStartupTimeout && !state->ready) state->Fail(L"界面初始化超时", HRESULT_FROM_WIN32(ERROR_TIMEOUT)); return 0;
+    case WM_TIMER:
+        if(wparam==kIntegrityPoll)state->CompleteIntegrity();
+        else if(wparam==kCleanupTimeout){KillTimer(hwnd,kCleanupTimeout);state->ApplyLifecycleActions(state->lifecycle.OnCleanupTimeout());}
+        else if (wparam == kStartupTimeout && !state->ready) state->Fail(L"界面初始化超时", HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+        return 0;
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
         PAINTSTRUCT paint{}; auto target = BeginPaint(hwnd, &paint); RECT rect{}; GetClientRect(hwnd, &rect);

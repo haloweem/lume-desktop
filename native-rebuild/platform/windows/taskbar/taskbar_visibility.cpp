@@ -40,6 +40,7 @@ bool Hide(HWND window) {
     COLORREF key = 0; BYTE alpha = 255; DWORD flags = 0;
     if ((!GetLayeredWindowAttributes(window, &key, &alpha, &flags) || alpha != 0 || flags != LWA_ALPHA) &&
         !SetLayeredWindowAttributes(window, 0, 0, LWA_ALPHA)) return false;
+    if (!LooksHidden(window)) return false;
     // Opacity and click-through prevent edge activation from revealing or
     // intercepting the desktop even before Explorer handles this async request.
     return !IsWindowVisible(window) || ShowWindowAsync(window, SW_HIDE) != FALSE;
@@ -51,6 +52,13 @@ bool Restore(HWND window, const taskbar::Visibility& original) {
     if (!SetStyle(window, (style & ~mask) | (original.extendedStyle & mask))) return false;
     if ((original.extendedStyle & WS_EX_LAYERED) &&
         !SetLayeredWindowAttributes(window, original.colorKey, original.alpha, original.layeredFlags)) return false;
+    if ((GetWindowLongPtrW(window, GWL_EXSTYLE) & mask) != (original.extendedStyle & mask)) return false;
+    if (original.extendedStyle & WS_EX_LAYERED) {
+        COLORREF key = 0; BYTE alpha = 255; DWORD flags = 0;
+        if (!GetLayeredWindowAttributes(window, &key, &alpha, &flags) ||
+            flags != original.layeredFlags || ((flags & LWA_COLORKEY) && key != original.colorKey) ||
+            ((flags & LWA_ALPHA) && alpha != original.alpha)) return false;
+    }
     if (!ShowWindowAsync(window, original.visible ? SW_SHOWNA : SW_HIDE)) return false;
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
     return true;

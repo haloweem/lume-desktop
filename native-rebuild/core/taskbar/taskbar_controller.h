@@ -26,6 +26,8 @@ public:
     // Maintenance, restoration and shutdown must retain the failure.
     virtual void ResetCoreFailure() {}
     virtual bool CoreAlive() const = 0;
+    virtual TransparencyStatus Transparency() const { return {}; }
+    virtual bool CoreReloadResolved() const { return false; }
     // If recovery comes from a previous process, the Windows port restores via
     // the same verified core's normal shutdown path, and reports failure honestly.
     virtual Error StopCore(bool recoverPreviousProcess) = 0;
@@ -41,6 +43,9 @@ public:
     void SetAutoHideDemand(bool value) { autoHideDemand_ = value; }
     bool AutoHideDemand() const { return autoHideDemand_; }
     bool Tick();
+    // Read back/maintain hiding while a transparency failure is paused. Never
+    // launches, stops or resets a core, and preserves the transparency error.
+    bool MaintainHiding();
     bool Shutdown(std::optional<Preferences> pending = {});
     // While nothing should be fully hidden, show any taskbar still hidden
     // without a record. Call on the thread that owns the controller.
@@ -52,6 +57,8 @@ private:
     bool Save(Record);
     bool Acquire(bool transparency);
     bool RestoreOwned();
+    bool RestoreHiding();
+    bool ApplyHiding(const Preferences&);
     bool ApplyVisibility(bool fullyHidden);
     bool Fail(Error);
     Preferences Effective() const;
@@ -64,6 +71,8 @@ private:
     Error error_ = Error::None;
     bool acquired_ = false, transparencyAcquired_ = false;
     bool running_ = false, initialRecovery_ = false, startedCore_ = false;
+    bool initialCoreRecovery_ = false;
+    bool hideApplied_ = false;
     bool autoHideDemand_ = false;
     bool orphansRepaired_ = false;
 };

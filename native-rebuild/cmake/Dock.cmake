@@ -13,3 +13,15 @@ target_include_directories(lume-dock-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(lume-dock-session PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
 target_link_libraries(lume-dock-session PUBLIC lume-dock-runtime lume-platform-windows PRIVATE gdiplus shell32 ole32 uuid iphlpapi imm32)
 lume_enable_native_warnings(lume-dock-session)
+
+# Control center opened from the Dock's right end (native panel + system controls).
+add_library(lume-control-center STATIC
+  platform/windows/control_center/control_center_window.cpp
+  platform/windows/control_center/system_controls.cpp
+  platform/windows/control_center/network_controls.cpp)
+target_include_directories(lume-control-center PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lume-control-center PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+target_link_libraries(lume-control-center PRIVATE lume-core lume-window-surface lume-widget-ui lume-widget-material lume-native-calendar
+  user32 ole32 oleaut32 shell32 dwmapi wlanapi dxva2 wbemuuid iphlpapi runtimeobject uuid)
+lume_enable_native_warnings(lume-control-center)
+target_link_libraries(lume-dock-session PRIVATE lume-control-center)

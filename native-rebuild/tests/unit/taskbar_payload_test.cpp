@@ -1,4 +1,5 @@
 #include "platform/windows/taskbar/taskbar_payload.h"
+#include "vendor/nlohmann/json.hpp"
 #include <windows.h>
 #include <cstdlib>
 #include <fstream>
@@ -34,6 +35,35 @@ void CheckRuntimeLoader(const std::filesystem::path& directory) {
     }
     for (auto iterator = loaded.rbegin(); iterator != loaded.rend(); ++iterator)
         Check(FreeLibrary(*iterator) != FALSE, "release only the test's runtime module references");
+}
+void CheckCoreProtocolProbe(const std::filesystem::path& directory, const std::filesystem::path& report) {
+    const auto executable = directory / L"LumeTaskbarCore.exe";
+    // This verified build handles the probe before creating the app, a worker,
+    // a mutex or a hook. It never connects to the real Explorer taskbar.
+    auto command = L"\"" + executable.wstring() + L"\" --lume-status-probe \"" + report.wstring() + L"\"";
+    const auto job = CreateJobObjectW(nullptr, nullptr);
+    Check(job != nullptr, "create safe-probe containment job");
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{}; limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    Check(SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) != FALSE, "contain safe-probe lifecycle");
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup); startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION child{};
+    Check(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                         nullptr, directory.c_str(), &startup, &child) != FALSE, "new core loads from isolated verified payload");
+    if (!AssignProcessToJobObject(job, child.hProcess)) {
+        TerminateProcess(child.hProcess, 91); CloseHandle(child.hThread); CloseHandle(child.hProcess); CloseHandle(job);
+        Check(false, "assign probe before its first instruction");
+    }
+    const auto resumed = ResumeThread(child.hThread); CloseHandle(child.hThread);
+    Check(resumed != static_cast<DWORD>(-1), "resume only contained safe probe");
+    const bool ended = WaitForSingleObject(child.hProcess, 10000) == WAIT_OBJECT_0;
+    DWORD code = 1; const bool readCode = ended && GetExitCodeProcess(child.hProcess, &code);
+    const auto pid = child.dwProcessId; CloseHandle(job); CloseHandle(child.hProcess);
+    Check(readCode && code == 0, "safe core probe exits successfully without Explorer integration");
+    std::ifstream input(report, std::ios::binary); nlohmann::json status;
+    try { input >> status; } catch (...) { Check(false, "safe probe writes complete JSON"); }
+    Check(status.is_object() && status.value("schemaVersion", 0) == 1 && status.value("pid", DWORD{}) == pid &&
+          status.value("stage", "") == "protocol-probe" && status.value("effectStatus", "") == "inactive" &&
+          !status.value("serviceReady", true), "real core early CLI/status protocol is intact");
 }
 }
 int main(int count, char** args) {
@@ -90,13 +120,15 @@ int main(int count, char** args) {
           "ARM64 dependency closure does not include an unused runtime");
 #if defined(_M_ARM64) || defined(__aarch64__)
     CheckRuntimeLoader(arm64Executable.parent_path());
+    CheckCoreProtocolProbe(arm64Executable.parent_path(), root / L"probe.json");
 #else
     CheckRuntimeLoader(executable.parent_path());
+    CheckCoreProtocolProbe(executable.parent_path(), root / L"probe.json");
 #endif
     const auto broken = root / L"broken"; fs::create_directory(broken);
     { std::ofstream manifest(broken / L"SHA256SUMS.txt"); manifest << "untrusted"; }
     Check(VerifyTaskbarPayload(broken, false) == lume::taskbar::Error::PayloadIntegrity, "modified manifest cannot authorize replacement binaries");
     Check(fs::equivalent(root.parent_path(), fs::temp_directory_path()), "cleanup remains inside owned temporary directory");
     fs::remove_all(root);
-    std::cout << "taskbar pinned payload verification and staging passed; no core was launched\n";
+    std::cout << "taskbar pinned payload verification, staging and safe protocol probe passed; no Explorer integration ran\n";
 }

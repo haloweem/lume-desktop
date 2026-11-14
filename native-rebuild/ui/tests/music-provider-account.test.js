@@ -294,6 +294,8 @@ test('modal traps focus, escapes to opener, never displays raw QR text, and drop
   let resolve;
   const f=domFixture(t,{encode:()=>new Promise(done=>{resolve=done;})});
   const opener=f.find('[data-music-provider-open="qq"]');opener.focus();opener.click();
+  assert.equal(f.find('#music-provider-title').textContent,'QQ 扫码登录');
+  assert.equal(f.find('[data-provider-note]').textContent,'请使用手机 QQ 扫码确认');
   assert.equal(f.dom.window.document.activeElement,f.find('[data-provider-close]'));
   assert.equal(f.find('dialog').getAttribute('aria-modal'),'true');
   f.controller.receive(message(1,{qq:pending(f.request())}));

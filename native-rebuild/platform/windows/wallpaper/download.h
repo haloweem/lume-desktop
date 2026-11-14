@@ -48,6 +48,8 @@ struct CatalogFetchOptions {
     std::string videoUrl = lume::wallpaper::kOfficialCatalogUrl;
     std::string imageUrl = lume::wallpaper::kStaticCatalogUrl;
     bool allowLoopbackForTests = false;
+    // Refresh short-preview metadata without fetching the much larger image catalog.
+    bool videoOnly = false;
 };
 
 // Native authenticated cache v2. A per-library 32-byte key is protected using
@@ -71,8 +73,11 @@ ProtectedWriterFactory MakeProtectedWriterFactory(const std::string& libraryRoot
 
 // Blocking worker operations: never call on the UI thread. Every network
 // operation polls cancellation and closes its request handle to abort promptly.
+// The optional callback exposes a fully validated video collection before the
+// larger image catalog is fetched; it runs on the caller's network worker.
+using VideoCatalogReady = std::function<void(const lume::wallpaper::CatalogResult&)>;
 lume::wallpaper::CatalogResult FetchCatalog(const std::atomic<bool>& cancel,
-    const CatalogFetchOptions& options = {}) noexcept;
+    const CatalogFetchOptions& options = {}, const VideoCatalogReady& videosReady = {}) noexcept;
 DownloadResult Download(const lume::wallpaper::CatalogItem& item, const std::string& destination,
     const std::atomic<bool>& cancel, const ProgressCallback& progress = {},
     const DownloadOptions& options = {}) noexcept;

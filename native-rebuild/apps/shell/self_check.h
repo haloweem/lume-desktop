@@ -19,6 +19,9 @@ struct SelfCheck {
 };
 std::vector<SelfCheck> RunSelfChecks(const std::filesystem::path& installDirectory,
                                    const nlohmann::json& modules = nlohmann::json::object());
+// Combine the environment check with the module's observed effect state. Kept
+// separate so a live process can never stand in for confirmed taskbar effects.
+void ApplyTaskbarRuntimeState(SelfCheck&, const nlohmann::json& modules);
 const char* CheckStatusName(CheckStatus);
 nlohmann::json SelfChecksJson(const std::vector<SelfCheck>&);
 // Stable text of the problems only, to notify once per distinct set.

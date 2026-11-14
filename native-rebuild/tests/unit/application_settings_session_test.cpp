@@ -44,7 +44,7 @@ struct Transport final : IUpdateTransport {
         if (throwOnFetch) throw std::runtime_error("transport failure");
         if (offline) return {{}, "update-offline"};
         if (current) return {R"({"version":"1.0.1"})", {}};
-        return {R"({"version":"1.0.10","downloadUrl":"https://lumedesktop.com/electron.exe"})", {}};
+        return {R"({"version":"1.2.0","downloadUrl":"https://lumedesktop.com/electron.exe"})", {}};
     }
 };
 template<class Predicate> bool Pump(Predicate done) {

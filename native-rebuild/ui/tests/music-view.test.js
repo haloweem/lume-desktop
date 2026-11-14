@@ -832,3 +832,19 @@ test('default background uses its own descriptor channel and never replaces sele
   assert.equal(calls.at(-1).media,null);
   assert.equal(calls.at(-1).defaultMedia,next);
 });
+
+test('appending online rows retains existing artwork and search keeps its editor',async t=>{
+  const library={signedIn:true,providerId:'netease',tracks,playlists:[],recommendations:[]};
+  const f=await setup(t,nativeState(),true,{library});
+  const content=f.find('.MusicContent'),first=f.find('[data-music-track-id="one"]');
+  const artwork=first.querySelector('.MusicTrackArtwork');
+  f.controller.updateLibrary({...library,tracks:[...tracks,{...tracks[1],id:'three',title:'Third'}]});
+  assert.equal(f.find('.MusicContent'),content);
+  assert.equal(f.find('[data-music-track-id="one"]'),first);
+  assert.equal(first.querySelector('.MusicTrackArtwork'),artwork);
+  f.click('list-search');
+  const editor=f.find('[data-music-list-search]');editor.focus();
+  f.input('[data-music-list-search]','Second');
+  assert.equal(f.document.activeElement,editor);
+  assert.deepEqual([...f.root.querySelectorAll('.MusicContent [data-music-track-id]')].map(row=>row.dataset.musicTrackId),['two']);
+});

@@ -249,6 +249,19 @@ test('font picker delegates queries and commits, handles lifecycle and keeps the
 
       await mount();
       await trigger.click();
+      await settle(Array.from({length:4096},(_,i)=>({family:`Font ${String(i).padStart(4,'0')}`})));
+      assert.ok(await rows.count()<40,'only the visible font samples and overscan are mounted');
+      await rows.first().focus();await page.keyboard.press('End');
+      assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Font 4095','keyboard reaches the complete catalog');
+      assert.ok(await rows.count()<40,'jumping does not accumulate the old viewport');
+      await page.keyboard.press('Home');
+      assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Font 0000');
+      await search.fill('Font 3000');
+      assert.deepEqual(await rows.allTextContents(),['Font 3000'],'search includes fonts outside the visible window');
+      await search.press('Escape');
+
+      await mount();
+      await trigger.click();
       await page.evaluate(()=>{harness.controller.dispose();harness.resolve([{family:'Late'}]);});
       assert.equal(await page.evaluate(()=>harness.signal.aborted),true);
       assert.equal(await dialog.count(),0,'dispose removes modal and ignores late results');

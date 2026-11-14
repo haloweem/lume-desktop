@@ -189,6 +189,14 @@ Error ReadTask(const Json &source, TaskRecord &task, const ILocalTimePort &port)
     task.view.schedule = ReadSchedule(task.tags, port);
     task.view.color = ReadColor(task.tags);
     task.recurrence = ReadRecurrence(source);
+    if (source.contains("subtasks"))
+        for (const auto &step : source["subtasks"]) {
+            if (!step.is_object() || !step.contains("id") || !step["id"].is_string() || !step.contains("title") ||
+                !step["title"].is_string())
+                continue;  // Unrecognised entries stay in the preserved JSON.
+            task.view.subtasks.push_back({step["id"].get<std::string>(), step["title"].get<std::string>(),
+                                          step.contains("completed") && step["completed"].is_boolean() && step["completed"].get<bool>()});
+        }
     auto metadata = source;
     for (const char *key : {"id", "title", "notes", "status", "dueAt", "reminderAt", "deletedAt",
                             "completedAt", "createdAt", "updatedAt", "revision", "tags", "sortKey"})
@@ -238,6 +246,21 @@ Json WriteTask(const TaskRecord &task) {
         value["recurrence"] = nullptr;
     if (!value.contains("subtasks"))
         value["subtasks"] = Json::array();
+    if (task.subtasksChanged) {
+        // Keep unknown fields of surviving steps; drop removed ones.
+        Json steps = Json::array();
+        for (const auto &step : task.view.subtasks) {
+            Json item = Json::object();
+            for (const auto &old : value["subtasks"])
+                if (old.is_object() && old.contains("id") && old["id"] == step.id)
+                    item = old;
+            item["id"] = step.id;
+            item["title"] = step.title;
+            item["completed"] = step.completed;
+            steps.push_back(std::move(item));
+        }
+        value["subtasks"] = std::move(steps);
+    }
     if (task.resetSubtasks)
         for (auto &subtask : value["subtasks"])
             if (subtask.is_object())

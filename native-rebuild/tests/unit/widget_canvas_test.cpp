@@ -1,6 +1,7 @@
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include <windows.h>
 #include <objbase.h>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 using namespace lume::platform::windows;
@@ -23,6 +24,16 @@ int main(){
         }
         Expect(canvas.SurfaceGeneration()==generation,"one-second samples reuse the surface");
         Expect(bitmap.pixels[62*340+50]==0,"new sample clears previous foreground");
+        Expect(canvas.Begin(340,216,96),"scaled workspace drawing begins");
+        canvas.Scale(.5f);canvas.Offset(20,10);
+        canvas.PushClip({0,0,30,20});canvas.Rounded({0,0,80,80},0,0x58b3ff);canvas.PopClip();
+        Expect(canvas.Finish(bitmap),"scaled and translated workspace finishes");
+        Expect(bitmap.pixels[8*340+15]!=0&&bitmap.pixels[8*340+5]==0&&bitmap.pixels[8*340+30]==0,
+               "scale applies equally to content, logical offset and clip geometry");
+        Expect(canvas.Begin(340,216,96),"ordinary drawing follows a scaled workspace");
+        canvas.Rounded({20,10,10,10},0,0xffffff);Expect(canvas.Finish(bitmap),"ordinary drawing finishes");
+        Expect(bitmap.pixels[15*340+25]==0xffffffff&&bitmap.pixels[7*340+12]==0&&canvas.SurfaceGeneration()==generation,
+               "begin resets workspace transform without reallocating the retained surface");
         Expect(canvas.Begin(160,80,96),"scroll drawing begins");
         const float measured=canvas.MeasureText(L"祭祀、出行、嫁娶、冠笄、安床",12);
         Expect(measured>60&&measured<400,"measure full ordered activity text");
@@ -74,6 +85,128 @@ int main(){
         canvas.Rounded({0,0,160,80},0,0xffffff);
         Expect(canvas.Finish(bitmap)&&bitmap.pixels[0]==0xffffffff&&canvas.SurfaceGeneration()==clipGeneration,
                "clip does not leak into next frame or allocate a second surface");
+    }
+    {
+        WidgetCanvas canvas;WidgetBitmap singleLine,wrapped,bitmap;
+        const std::wstring original=L"CPU 25% · 提醒";
+        Expect(canvas.Begin(240,220,96),"baseline text before wrapped layouts");
+        const float originalWidth=canvas.MeasureText(original,14.5f,WidgetTextWeight::Semibold);
+        canvas.Text(original,{20,10,190,28},14.5f,0xffffff,1,WidgetTextWeight::Semibold);
+        Expect(canvas.Finish(singleLine),"single-line baseline finishes");
+
+        const std::wstring chinese=L"北京未来几小时可能降温，请适当添衣，出门前留意最新天气变化。";
+        Expect(canvas.Begin(240,220,96),"wrapped Chinese text begins");
+        const float chineseWide=canvas.MeasureWrappedText(chinese,200,14.5f);
+        const float chineseNarrow=canvas.MeasureWrappedText(chinese,90,14.5f);
+        Expect(chineseWide>0&&chineseNarrow>chineseWide+14,
+               "narrow Chinese content has a full measured multiline height");
+        canvas.WrappedText(chinese,{20,16,90,68},14.5f);
+        Expect(canvas.Finish(wrapped),"wrapped Chinese content finishes");
+        unsigned chineseInk=0;
+        for(unsigned y=0;y<220;++y)for(unsigned x=0;x<240;++x){
+            const auto pixel=wrapped.pixels[y*240+x];
+            if(x<20||x>=110||y<16||y>=84)Expect(pixel==0,"wrapped text stays inside its clipped viewport");
+            else if(pixel)++chineseInk;
+        }
+        Expect(chineseInk>0,"clipped Chinese viewport contains visible text");
+
+        Expect(canvas.Begin(240,220,96),"explicit line breaks begin");
+        const float oneLine=canvas.MeasureWrappedText(L"第一行",160,14.5f);
+        const float twoLines=canvas.MeasureWrappedText(L"第一行\n第二行",160,14.5f);
+        Expect(twoLines>oneLine+10,"explicit newline contributes a second complete measured line");
+        canvas.WrappedText(L"第一行\n第二行",{20,20,160,80},14.5f);
+        Expect(canvas.Finish(bitmap),"explicit line breaks finish");
+        unsigned firstLineInk=0,secondLineInk=0;
+        for(unsigned y=20;y<100;++y)for(unsigned x=20;x<180;++x){
+            if(!bitmap.pixels[y*240+x])continue;
+            if(static_cast<float>(y)<20+oneLine)++firstLineInk;else ++secondLineInk;
+        }
+        Expect(firstLineInk>0&&secondLineInk>0,"both lines paint from the top of the text block");
+
+        Expect(canvas.Begin(240,220,96),"unbroken English text begins");
+        const std::wstring unbroken(100,L'W');
+        const float englishWide=canvas.MeasureWrappedText(unbroken,200,14.5f);
+        const float englishNarrow=canvas.MeasureWrappedText(unbroken,60,14.5f);
+        Expect(englishNarrow>englishWide+14&&englishNarrow>oneLine*3,
+               "a long word without spaces wraps instead of overflowing horizontally");
+        canvas.WrappedText(unbroken,{30,15,60,120},14.5f);
+        Expect(canvas.Finish(bitmap),"unbroken English text finishes");
+        unsigned lowerInk=0;
+        for(unsigned y=0;y<220;++y)for(unsigned x=0;x<240;++x){
+            const auto pixel=bitmap.pixels[y*240+x];
+            if(x<30||x>=90||y<15||y>=135)Expect(pixel==0,"emergency word wrapping preserves the viewport bounds");
+            else if(pixel&&static_cast<float>(y)>=15+oneLine)++lowerInk;
+        }
+        Expect(lowerInk>0,"unbroken text remains visible on later wrapped lines");
+
+        for(unsigned index=0;index<12;++index){
+            Expect(canvas.Begin(240,220,96),"independent wrapped cache entry begins");
+            const auto text=std::to_wstring(index)+L"\n"+chinese;
+            Expect(canvas.MeasureWrappedText(text,130,14.5f)>oneLine,"each distinct block has a complete measured height");
+            canvas.WrappedText(text,{20,16,130,100},14.5f);
+            Expect(canvas.Finish(bitmap),"distinct wrapped cache entry finishes");
+        }
+        Expect(canvas.Begin(240,220,96),"wrapped layout rebuilds after bounded cache turnover");
+        Expect(std::abs(canvas.MeasureWrappedText(chinese,90,14.5f)-chineseNarrow)<.001f,
+               "cache turnover preserves the complete Chinese text metrics");
+        canvas.WrappedText(chinese,{20,16,90,68},14.5f);
+        Expect(canvas.Finish(bitmap)&&bitmap.pixels==wrapped.pixels,
+               "cache turnover reproduces the same clipped wrapped pixels");
+
+        Expect(canvas.Begin(240,220,96),"single-line text after wrapped layouts");
+        Expect(std::abs(canvas.MeasureText(original,14.5f,WidgetTextWeight::Semibold)-originalWidth)<.001f,
+               "wrapped layout alignment and wrapping cannot mutate single-line metrics");
+        canvas.Text(original,{20,10,190,28},14.5f,0xffffff,1,WidgetTextWeight::Semibold);
+        Expect(canvas.Finish(bitmap)&&bitmap.pixels==singleLine.pixels,
+               "wrapped text and clipping leave existing single-line pixels unchanged");
+    }
+    {
+        WidgetCanvas canvas;WidgetBitmap frame;
+        Expect(canvas.Begin(200,160,96),"folded text starts on a retained canvas");
+        canvas.Scale(.5f);canvas.Offset(20,10);canvas.PushClip({20,20,160,60});
+        canvas.FoldText(L"12",{20,20,160,120},80,80,.45f,0xffffff,1,WidgetTextWeight::Bold);
+        canvas.PopClip();canvas.Rounded({0,0,6,6},0,0x00aaff);
+        canvas.Scale(1);canvas.Offset(0,0);canvas.Rounded({185,145,5,5},0,0xffffff);
+        Expect(canvas.Finish(frame),"folded text finishes");
+        Expect(frame.pixels[6*200+11]==0xff00aaff&&frame.pixels[147*200+187]==0xffffffff,
+               "fold restores both the workspace transform and later ordinary drawing");
+        unsigned ink=0;
+        for(unsigned y=0;y<160;++y)for(unsigned x=0;x<200;++x){
+            const bool glyph=x>=20&&x<100&&y>=15&&y<45;
+            const bool marker=(x>=10&&x<13&&y>=5&&y<8)||(x>=185&&x<190&&y>=145&&y<150);
+            if(glyph&&frame.pixels[y*200+x])++ink;
+            else if(!glyph&&!marker)Expect(frame.pixels[y*200+x]==0,"folded glyphs respect the caller's clip");
+        }
+        Expect(ink>0,"folded text remains visible within its transformed viewport");
+    }
+    {
+        WidgetCanvas canvas;WidgetBitmap reference,translated;
+        for(const unsigned dpi:{96u,144u,192u}){
+            Expect(canvas.Begin(100,30,dpi),"serif translation reference begins");
+            canvas.SerifText(L"嫁娶",{20,4,40,20},11.5f,0x287f65,1,WidgetTextWeight::Bold);
+            Expect(canvas.Finish(reference),"serif translation reference finishes");
+            Expect(canvas.Begin(100,30,dpi),"serif translated frame begins");
+            canvas.Offset(96.f/static_cast<float>(dpi),0);
+            canvas.SerifText(L"嫁娶",{20,4,40,20},11.5f,0x287f65,1,WidgetTextWeight::Bold);
+            Expect(canvas.Finish(translated),"serif translated frame finishes");
+            unsigned ink=0;
+            for(unsigned y=0;y<reference.height;++y)for(unsigned x=1;x<reference.width;++x){
+                const auto a=reference.pixels[y*reference.width+x-1],b=translated.pixels[y*translated.width+x];
+                if(a)++ink;
+                for(const unsigned shift:{0u,8u,16u,24u})
+                    Expect(std::abs(static_cast<int>((a>>shift)&255)-static_cast<int>((b>>shift)&255))<=3,
+                           "integer-pixel translation preserves small serif glyph coverage at each DPI");
+            }
+            Expect(ink>0,"serif translation fixture contains actual printed glyphs");
+        }
+        Expect(canvas.Begin(180,40,144),"ordinary font reference begins");
+        canvas.Text(L"Ordinary 中文 UI",{8,8,160,24},12,0xffffff);
+        Expect(canvas.Finish(reference),"ordinary font reference finishes");
+        Expect(canvas.Begin(180,40,144),"mixed font frame begins");
+        canvas.SerifText(L"宜",{8,8,20,24},12,0xffffff,0);
+        canvas.Text(L"Ordinary 中文 UI",{8,8,160,24},12,0xffffff);
+        Expect(canvas.Finish(translated)&&translated.pixels==reference.pixels,
+               "serif rendering parameters do not leak into ordinary UI text");
     }
     CoUninitialize();
     std::cout<<"widget canvas cache and transparent foreground passed\n";

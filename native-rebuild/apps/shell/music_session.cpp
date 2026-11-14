@@ -104,6 +104,9 @@ struct MusicSession::Impl {
             case ui::MusicAction::Visibility:
                 pageVisible = pageOpen && command.flag;
                 if (!command.flag) {
+                    ++scoreGeneration;
+                    pendingScoreRequest.reset();pendingScore.reset();
+                    scoreRequestedId.clear();scoreRunningKey.clear();
                     model.SetAnalysis({});
                     CancelLyricsLocked();
                     cancelContent = pageRequestsActive;
@@ -804,8 +807,9 @@ private:
         std::lock_guard lock(mutex);
         if (closed || target.generation != playbackGeneration || !target.current || !OnlineTrack(*target.current))
             return false;
-        // Re-login is the only remedy for these; a lower level would fail too.
-        if (resolveFailure == "expired" || resolveFailure == "signed-out") return false;
+        // Only an unavailable/unsupported level benefits from changing quality.
+        // Network failures and provider refusals must not multiply the wait.
+        if (!resolveFailure.empty() && resolveFailure != "unavailable" && resolveFailure != "unsupported") return false;
         const auto next = LowerQuality(target.quality);
         if (next.empty()) return false;
         requestedQuality = next;
@@ -824,6 +828,17 @@ private:
         std::lock_guard lock(mutex);
         if (resolveFailure == "expired" || resolveFailure == "signed-out") return "music-source-expired";
         if (resolveFailure == "network") return "music-source-network";
+        if (resolveFailure == "timeout") return "music-source-timeout";
+        if (resolveFailure == "rate-limited") return "music-source-rate-limited";
+        if (resolveFailure == "preview-only") return "music-source-preview-only";
+        if (resolveFailure == "entitlement") return "music-source-entitlement";
+        if (resolveFailure == "service" || resolveFailure == "invalid-response") return "music-source-service";
+        if (resolveFailure.rfind("netease-code-", 0) == 0) {
+            auto code = std::string_view(resolveFailure).substr(13);
+            if (!code.empty() && code.front() == '-') code.remove_prefix(1);
+            if (!code.empty() && code.size() <= 9 && code.find_first_not_of("0123456789") == code.npos)
+                return "music-source-" + resolveFailure;
+        }
         return "music-source-unavailable";
     }
 

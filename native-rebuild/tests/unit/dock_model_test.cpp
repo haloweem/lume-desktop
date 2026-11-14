@@ -26,6 +26,36 @@ int main() {
           "items are sorted by case-insensitive name; shortcuts drop .lnk");
     Check(items[2].added && items[1].added && !items[0].added, "user-added items are marked even when also on the desktop");
 
+    // Removing from the launchpad: added items leave `added`, desktop items are
+    // hidden (the file stays); adding the path again shows it once more.
+    {
+        const std::vector<std::string> desktop{"C:\\D\\a.txt", "C:\\D\\b.txt"};
+        Preferences removal;
+        removal.added = {"C:\\E\\tool.exe", "C:\\D\\b.txt"};
+        removal.order = {"C:\\D\\a.txt", "C:\\D\\b.txt"};
+        Check(RemoveFromLaunchpad(removal, "C:\\D\\a.txt", desktop, key) == Change::Changed &&
+              removal.removed == std::vector<std::string>{"C:\\D\\a.txt"} &&
+              removal.order == std::vector<std::string>{"C:\\D\\b.txt"}, "desktop item is hidden from the launchpad");
+        Check(RemoveFromLaunchpad(removal, "C:\\E\\tool.exe", desktop, key) == Change::Changed &&
+              removal.added == std::vector<std::string>{"C:\\D\\b.txt"} && removal.removed.size() == 1,
+              "added-only item leaves the added list");
+        Check(RemoveFromLaunchpad(removal, "C:\\D\\b.txt", desktop, key) == Change::Changed &&
+              removal.added.empty() && removal.removed.size() == 2, "added desktop item is both unlisted and hidden");
+        Check(RemoveFromLaunchpad(removal, "C:\\D\\b.txt", desktop, key) == Change::Unchanged, "removing twice is unchanged");
+        Check(LaunchpadItems(desktop, removal.added, removal.order, key, key, {}, removal.removed).empty(),
+              "removed desktop items are not listed");
+        removal.launchpadMaximized = true;
+        std::string encodedRemoval;
+        Preferences decodedRemoval;
+        Check(Valid(removal, key) && Encode(removal, encodedRemoval) && Decode(encodedRemoval, decodedRemoval, key) &&
+              decodedRemoval.removed == removal.removed && decodedRemoval.launchpadMaximized,
+              "removed paths and maximized launchpad round-trip");
+        Check(Add(removal, {"C:\\D\\a.txt"}, key) == Change::Changed &&
+              removal.removed == std::vector<std::string>{"C:\\D\\b.txt"} &&
+              LaunchpadItems(desktop, removal.added, removal.order, key, key, {}, removal.removed).size() == 1,
+              "adding a removed path shows it again");
+    }
+
     // A saved arrangement comes first; unlisted items follow by name.
     const auto arranged = LaunchpadItems({"C:\\D\\b.txt", "C:\\D\\a.txt", "C:\\D\\c.txt"}, {},
                                          {"c:\\d\\C.TXT", "C:\\D\\gone.txt", "C:\\D\\b.txt"}, key, key);
@@ -134,23 +164,129 @@ int main() {
           DockItems(pinned, targets, {}, key, false, 0)[1].kind == Kind::Pinned,
           "Lume can be hidden without removing pinned items");
     {
+        Preferences manager;
+        manager.controlCenter = false;
+        manager.lumeVisible = false;
+        manager.pinned = pinned;
+        manager.lumePosition = 1;
+        const std::string executable = "C:\\Lume\\Lume.exe";
+        const std::vector<RunningApp> other{{"C:\\Apps\\editor.exe", "Editor"}};
+        const auto open = DockItemsFor(manager, targets, other, key, executable, true);
+        Check(open.size() == 6 && open[3].kind == Kind::Separator && open[4].name == "Editor" &&
+              open[5].kind == Kind::Running && open[5].path == executable && open[5].name == "Lume" && open[5].running,
+              "open manager appears after other running programs even when its pin is hidden");
+        const auto closed = DockItemsFor(manager, targets, other, key, executable, false);
+        Check(closed.size() == 5 && closed.back().name == "Editor", "closed manager leaves the running section");
+        const auto quiet = DockItemsFor(manager, targets, {}, key, executable, false);
+        Check(quiet.size() == 3 && quiet.back().kind == Kind::Pinned, "resident widgets alone add no running Lume or separator");
+        manager.lumeVisible = true;
+        const auto both = DockItemsFor(manager, targets, other, key, executable, true);
+        Check(both.size() == 7 && both[2].kind == Kind::Lume && both.back().kind == Kind::Running &&
+              MotionKey(both[2]) != MotionKey(both.back()), "fixed and running Lume have independent animation identities");
+        auto duplicate = other;
+        duplicate.push_back({"c:\\lume\\LUME.EXE", "Lume"});
+        Check(DockItemsFor(manager, targets, duplicate, key, executable, true).size() == both.size(),
+              "self entry is deduplicated by path key");
+        Check(DockItemsFor(manager, targets, other, key, {}, true).size() == closed.size() + 1,
+              "missing executable never creates a synthetic running entry");
+        Check(manager.lumePosition == 1 && manager.pinned == pinned, "manager visibility never changes stored pin order");
+    }
+    {
         Preferences tray;
-        tray.systemTray = true;
+        Check(tray.controlCenter, "the control center is on by default");
         const auto withTray = DockItems({}, {}, {}, key, true, 0, {}, true);
         Check(withTray.size() == 4 && withTray[2].kind == Kind::Separator &&
-              withTray[3].kind == Kind::SystemTray && withTray.back().name == "系统快捷设置",
-              "system tray stays at the far right behind a separator");
+              withTray[3].kind == Kind::SystemTray && withTray.back().name == "控制中心",
+              "control center stays at the far right behind a separator");
         Check(!Movable(withTray.back()) && !Removable(withTray.back()),
               "system tray is fixed and cannot be removed by dragging");
         std::string encoded;
         Preferences reopened;
-        Check(Encode(tray, encoded) && Decode(encoded, reopened, key) && reopened.systemTray,
-              "system tray visibility survives save and restart");
-        Check(!SystemTrayAvailable && DockItemsFor(reopened, {}, {}, key).size() == 2,
-              "paused system tray stays absent even when saved preferences enable it");
-        tray.systemTray = false;
-        Check(DockItemsFor(tray, {}, {}, key).size() == 2,
-              "system tray is absent when its preference is disabled");
+        tray.controlCenter = false;
+        Check(Encode(tray, encoded) && Decode(encoded, reopened, key) && !reopened.controlCenter,
+              "control center visibility survives save and restart");
+        Check(DockItemsFor(reopened, {}, {}, key).size() == 2, "control center is absent when its preference is disabled");
+        Preferences old;
+        Check(Decode(R"({"version":1,"enabled":true,"frosted":false,"pinned":[],"added":[],"systemTray":false})", old, key) && old.controlCenter &&
+              DockItemsFor(old, {}, {}, key).back().kind == Kind::SystemTray,
+              "files from before the control center show it at the right end");
+        // Minimized-window thumbnails are appended later; the control center moves back to the end.
+        auto withWindows = DockItemsFor(old, {}, {}, key);
+        withWindows.push_back({Kind::Window, "C:/Apps/a.exe", "A", false});
+        KeepControlCenterLast(withWindows);
+        Check(withWindows.back().kind == Kind::SystemTray && withWindows[withWindows.size() - 2].kind == Kind::Separator,
+              "control center stays last after window thumbnails");
+    }
+    {
+        Preferences visibility;
+        Check(visibility.showRunning, "the separate running section is on by default");
+        std::string encoded;
+        Preferences reopened;
+        Check(Encode(visibility, encoded) && encoded.find("\"showRunning\":true") != std::string::npos &&
+              Decode(encoded, reopened, key) && reopened.showRunning,
+              "enabled running-section visibility is explicitly encoded and round-trips");
+        visibility.showRunning = false;
+        Check(Encode(visibility, encoded) && encoded.find("\"showRunning\":false") != std::string::npos &&
+              Decode(encoded, reopened, key) && !reopened.showRunning,
+              "hidden running-section visibility survives save and reopen");
+        Check(Decode(R"({"version":1,"enabled":true,"frosted":false,"pinned":[],"added":[]})", reopened, key) &&
+              reopened.showRunning, "older preferences without showRunning restore its enabled default");
+        reopened.showRunning = false;
+        for (const auto* invalid : {"0", "1", "\"false\"", "null", "[]", "{}"})
+            Check(!Decode(std::string(R"({"version":1,"enabled":true,"frosted":false,"pinned":[],"added":[],"showRunning":)") +
+                          invalid + "}", reopened, key) && !reopened.showRunning,
+                  "showRunning rejects non-boolean values without changing the previous preferences");
+    }
+    {
+        Preferences visibility;
+        visibility.controlCenter = false;
+        visibility.pinned = {pinned[0], "C:\\Users\\a\\Desktop\\WeGame.lnk", pinned[1]};
+        visibility.lumePosition = 1;
+        const std::vector<std::string> resolved{targets[0], "C:\\Program Files (x86)\\WeGame\\wegame.exe", targets[1]};
+        const std::string launcherUi = "C:\\Program Files (x86)\\WeGame\\x64\\wegameui.exe";
+        const std::string executable = "C:\\Lume\\Lume.exe";
+        const std::vector<RunningApp> active{{"c:\\program files\\chrome\\CHROME.EXE", "Chrome"},
+            {launcherUi, "WeGame UI"}, {"C:\\Apps\\editor.exe", "Editor"},
+            {"C:\\Apps\\editor.exe", "Editor duplicate"}, {targets[1], "Music", true}};
+        const auto before = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(before.size() == 10 && before[5].kind == Kind::Separator &&
+              before[6].name == "Chrome" && before[7].name == "WeGame UI" &&
+              before[8].name == "Editor" && before[9].path == executable,
+              "enabled running section preserves first-seen app order and the open manager");
+        const auto savedPins = visibility.pinned;
+        visibility.showRunning = false;
+        const auto hidden = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(hidden.size() == 5 && hidden[0].kind == Kind::Launchpad && hidden[2].kind == Kind::Lume &&
+              std::none_of(hidden.begin(), hidden.end(), [](const auto& item) {
+                  return item.kind == Kind::Running || item.kind == Kind::Separator;
+              }), "hiding running apps removes every running entry and its separator but keeps fixed Lume");
+        Check(hidden.size() == 5 && hidden[1].kind == Kind::Pinned && hidden[1].running &&
+              hidden[1].target == resolved[0] && hidden[1].orderIndex == 0 &&
+              hidden[3].kind == Kind::Pinned && hidden[3].running && hidden[3].target == resolved[1] &&
+              hidden[3].runningProgram == launcherUi && hidden[3].orderIndex == 1 &&
+              hidden[4].kind == Kind::Pinned && hidden[4].running && hidden[4].target == resolved[2] &&
+              hidden[4].orderIndex == 2,
+              "hidden running section preserves pinned dots, shortcut targets, launcher association and minimized state");
+        visibility.controlCenter = true;
+        const auto centered = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(centered.size() == 7 && centered[5].kind == Kind::Separator && centered[6].kind == Kind::SystemTray &&
+              std::count_if(centered.begin(), centered.end(), [](const auto& item) { return item.kind == Kind::Separator; }) == 1,
+              "hidden running section retains only the control center's own separator");
+        visibility.controlCenter = false;
+        visibility.lumeVisible = false;
+        const auto noLume = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(noLume.size() == 4 && std::none_of(noLume.begin(), noLume.end(), [](const auto& item) {
+                  return item.kind == Kind::Lume || item.kind == Kind::Running || item.kind == Kind::Separator;
+              }), "an open manager cannot recreate the hidden running section when its fixed icon is also hidden");
+        visibility.lumeVisible = true;
+        visibility.showRunning = true;
+        const auto restoredRunning = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(restoredRunning.size() == before.size() && std::equal(before.begin(), before.end(), restoredRunning.begin(),
+              [](const auto& a, const auto& b) {
+                  return a.kind == b.kind && a.path == b.path && a.name == b.name && a.running == b.running &&
+                         a.orderIndex == b.orderIndex && a.target == b.target && a.runningProgram == b.runningProgram;
+              }) && visibility.pinned == savedPins && visibility.lumePosition == 1,
+              "reenabling the running section restores its original order without changing pinned preferences");
     }
 
     // Pin, unpin, add, remove and validation.

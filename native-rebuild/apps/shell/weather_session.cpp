@@ -209,6 +209,10 @@ struct WeatherSession::Impl {
     }
     void Native(WidgetAction action,const widget::Preferences& bounds){
         if(stopped||applying)return;
+        const auto request=materialSelection;
+        if(request&&(action==WidgetAction::Liquid||action==WidgetAction::Frosted)){
+            request(action==WidgetAction::Liquid?ui::PageCommand::WeatherLiquidGlass:ui::PageCommand::WeatherFrostedGlass,window.Handle());return;
+        }
         if(action==WidgetAction::Settings){if(openSettings)openSettings();return;}
         if(action==WidgetAction::Refresh){Refresh();return;}
         auto next=prefs;
@@ -231,7 +235,7 @@ struct WeatherSession::Impl {
     }
     void Shutdown(){if(stopped)return;stopped=true;StopRuntime();}
     HINSTANCE instance;HWND receiver=nullptr;
-    std::string path;Notify notify;std::function<void()> openSettings;
+    std::string path;Notify notify;std::function<void()> openSettings;MaterialSelectionHandler materialSelection;
     LocalSettingsFileStore localFiles;weather::PreferencesStore store;
     weather::LoadedPreferences loaded;weather::Preferences prefs;
     std::string runtimeCity,error;WeatherReading reading;
@@ -244,6 +248,7 @@ WeatherSession::WeatherSession(HINSTANCE instance,std::string path,Notify notify
     impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),files,std::move(factory),std::move(clock))){}
 WeatherSession::~WeatherSession()=default;
 bool WeatherSession::Restore(){return impl_->Restore();}
+void WeatherSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 bool WeatherSession::SetSharedConsumer(bool active){return impl_->SetSharedConsumer(active);}
 std::optional<std::wstring> WeatherSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
 std::wstring WeatherSession::State()const{return impl_->State();}

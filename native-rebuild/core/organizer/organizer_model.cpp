@@ -3,11 +3,14 @@
 #include <cstdint>
 #include <set>
 #include <utility>
+#include <unordered_map>
 namespace lume::organizer {
 namespace {
 struct Codepoint { std::uint32_t value;std::size_t begin,length; };
 std::optional<std::vector<Codepoint>> Utf8(std::string_view text){
-    if(text.size()>MaxStateBytes)return {};
+    // Text validation keeps its original resource bound independently of the
+    // larger serialized-state budget. Path and title limits remain unchanged.
+    if(text.size()>1024*1024)return {};
     std::vector<Codepoint> out;
     for(std::size_t i=0;i<text.size();){
         const auto first=static_cast<unsigned char>(text[i]);
@@ -29,6 +32,13 @@ bool Space(std::uint32_t value){
         value==0x2028||value==0x2029||value==0x202f||value==0x205f||value==0x3000||value==0xfeff;
 }
 bool Kind(ItemKind kind){return kind==ItemKind::File||kind==ItemKind::Folder||kind==ItemKind::Shortcut;}
+bool ValidAccent(Accent accent){
+    switch(accent){
+        case Accent::None:case Accent::Blue:case Accent::Green:
+        case Accent::Amber:case Accent::Rose:case Accent::Purple:return true;
+        default:return false;
+    }
+}
 bool SameBounds(const std::optional<Bounds>& a,const std::optional<Bounds>& b){
     if(!a||!b)return !a&&!b;
     return a->x==b->x&&a->y==b->y&&a->width==b->width&&a->height==b->height;
@@ -36,9 +46,10 @@ bool SameBounds(const std::optional<Bounds>& a,const std::optional<Bounds>& b){
 bool ValidCollection(const Collection& collection,const TextKey& pathKey){
     const auto title=SanitizeTitle(collection.title);
     if((collection.id!=DefaultCollectionId&&!ValidId(collection.id))||!title||*title!=collection.title||
-        (collection.bounds&&!ValidBounds(*collection.bounds))||collection.items.size()>MaxItems||
+        (collection.bounds&&!ValidBounds(*collection.bounds))||
         (collection.mode!=Mode::Expanded&&collection.mode!=Mode::Collapsed)||
-        (collection.layout!=Layout::Icons&&collection.layout!=Layout::List)||collection.iconScale<50||collection.iconScale>120||
+        (collection.layout!=Layout::Icons&&collection.layout!=Layout::List)||!ValidAccent(collection.accent)||
+        collection.iconScale<50||collection.iconScale>120||
         (collection.desktopRole!=DesktopRole::None&&collection.desktopRole!=DesktopRole::Applications&&collection.desktopRole!=DesktopRole::Files)||!pathKey)return false;
     std::set<std::string> ids,paths;
     for(const auto& item:collection.items){
@@ -48,7 +59,7 @@ bool ValidCollection(const Collection& collection,const TextKey& pathKey){
         const auto key=pathKey(item.path);
         if(key.empty()||!paths.insert(key).second)return false;
     }
-    if(collection.dismissed.size()>MaxDismissed||(collection.desktopRole==DesktopRole::None&&!collection.dismissed.empty()))return false;
+    if(collection.desktopRole==DesktopRole::None&&!collection.dismissed.empty())return false;
     std::set<std::string> dismissed;
     for(const auto& value:collection.dismissed){
         const auto path=NormalizeLocalPath(value);
@@ -312,9 +323,6 @@ Change MoveItems(State& state,std::string_view fromId,std::string_view toId,cons
     std::vector<Item> moving,staying;
     for(auto& item:from->items)(wanted.count(item.id)?moving:staying).push_back(item);
     if(moving.size()!=wanted.size())return Change::Invalid;
-    std::size_t added=0;
-    for(const auto& item:moving)if(!keys.count(pathKey(item.path)))++added;
-    if(to->items.size()+added>MaxItems)return Change::Limit;
     std::set<std::string> ids;for(const auto& item:to->items)ids.insert(item.id);
     for(auto& item:moving){
         if(!keys.insert(pathKey(item.path)).second)continue;
@@ -333,7 +341,7 @@ const Collection* Find(const State& state,std::string_view id){
     return found==state.collections.end()?nullptr:&*found;
 }
 Change AddItems(Collection& collection,const std::vector<Item>& batch,const TextKey& pathKey){
-    if(batch.size()>1024||!ValidCollection(collection,pathKey))return Change::Invalid;
+    if(!ValidCollection(collection,pathKey))return Change::Invalid;
     std::set<std::string> ids,paths;auto items=collection.items;
     for(const auto& item:items){ids.insert(item.id);paths.insert(pathKey(item.path));}
     for(const auto& item:batch){
@@ -341,7 +349,6 @@ Change AddItems(Collection& collection,const std::vector<Item>& batch,const Text
         const auto key=pathKey(*path);if(key.empty())return Change::Invalid;
         if(paths.count(key))continue;
         if(!ValidId(item.id)||!ids.insert(item.id).second||!Kind(item.kind))return Change::Invalid;
-        if(items.size()>=MaxItems)return Change::Limit;
         paths.insert(key);items.push_back({item.id,*path,DisplayName(*path,item.kind),item.kind,item.desktop});
     }
     if(items.size()==collection.items.size())return Change::Unchanged;
@@ -352,8 +359,6 @@ Change RemoveItem(Collection& collection,std::string_view id){
     if(found==collection.items.end())return Change::Unchanged;
     if(collection.desktopRole!=DesktopRole::None&&found->desktop&&
        std::find(collection.dismissed.begin(),collection.dismissed.end(),found->path)==collection.dismissed.end()){
-        // Bounded: the oldest dismissal gives way (that entry may return).
-        if(collection.dismissed.size()>=MaxDismissed)collection.dismissed.erase(collection.dismissed.begin());
         collection.dismissed.push_back(found->path);
     }
     collection.items.erase(found);return Change::Changed;
@@ -366,7 +371,6 @@ void DismissDesktopPath(State& state,const std::string& path){
         if(!target||collection.desktopRole==DesktopRole::Applications)target=&collection;
     }
     if(!target)return;
-    if(target->dismissed.size()>=MaxDismissed)target->dismissed.erase(target->dismissed.begin());
     target->dismissed.push_back(path);
 }
 Change RemoveItem(State& state,std::string_view collectionId,std::string_view id){
@@ -380,12 +384,14 @@ Change RemoveItem(State& state,std::string_view collectionId,std::string_view id
 }
 Change Reorder(Collection& collection,const std::vector<std::string>& order){
     if(order.size()!=collection.items.size())return Change::Invalid;
-    std::set<std::string> ids;std::vector<Item> items;bool changed=false;
+    std::unordered_map<std::string_view,std::size_t> positions;positions.reserve(collection.items.size());
+    for(std::size_t i=0;i<collection.items.size();++i)positions.emplace(collection.items[i].id,i);
+    std::vector<bool> used(collection.items.size(),false);std::vector<Item> items;items.reserve(order.size());bool changed=false;
     for(std::size_t i=0;i<order.size();++i){
-        if(!ids.insert(order[i]).second)return Change::Invalid;
-        const auto found=std::find_if(collection.items.begin(),collection.items.end(),[&](const auto& item){return item.id==order[i];});
-        if(found==collection.items.end())return Change::Invalid;
-        changed|=collection.items[i].id!=order[i];items.push_back(*found);
+        const auto found=positions.find(order[i]);
+        if(found==positions.end()||used[found->second])return Change::Invalid;
+        used[found->second]=true;
+        changed|=collection.items[i].id!=order[i];items.push_back(collection.items[found->second]);
     }
     if(!changed)return Change::Unchanged;
     collection.items=std::move(items);return Change::Changed;
@@ -412,10 +418,11 @@ Change RemoveCollection(State& state,std::string_view id){
 Change Reset(Collection& collection){
     const auto title=collection.desktopRole==DesktopRole::Applications?u8"桌面":collection.desktopRole==DesktopRole::Files?u8"文件":
         collection.id==DefaultCollectionId?u8"桌面收纳":u8"新建收纳";
-    if(collection.title==title&&SameBounds(collection.bounds,{})&&collection.mode==Mode::Expanded&&collection.layout==Layout::Icons&&collection.iconScale==70)
+    if(collection.title==title&&SameBounds(collection.bounds,{})&&collection.mode==Mode::Expanded&&collection.layout==Layout::Icons&&
+        collection.iconScale==70&&collection.accent==Accent::None)
         return Change::Unchanged;
     collection.title=title;collection.bounds.reset();collection.mode=Mode::Expanded;collection.layout=Layout::Icons;
-    collection.iconScale=70;
+    collection.iconScale=70;collection.accent=Accent::None;
     return Change::Changed;
 }
 namespace {

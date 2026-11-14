@@ -1,10 +1,12 @@
 #include "apps/shell/desktop_application.h"
+#include "apps/shell/desktop_service_lifecycle.h"
 #include "platform/windows/text_util.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/ui_stall_trace.h"
 #include "apps/shell/calendar_session.h"
 #include "platform/windows/music_desktop_controls.h"
-#include "platform/windows/calendar/calendar_todo_editor.h"
+#include "platform/windows/calendar/todo_sheet_window.h"
+#include "platform/windows/control_center/control_center_window.h"
 #include "core/todo/todo_time.h"
 #include "apps/shell/performance_session.h"
 #include "apps/shell/spectrum_session.h"
@@ -18,15 +20,20 @@
 #include "apps/shell/taskbar_session.h"
 #include "apps/shell/minimize_animation_session.h"
 #include "apps/shell/music_preferences_session.h"
+#include "apps/shell/music_library_coordinator.h"
 #include "apps/shell/notes_session.h"
 #include "core/settings/json_settings_codec.h"
 #include "core/settings/settings_store.h"
 #include "apps/shell/diagnostic_operations.h"
-#include "apps/shell/diagnostic_report.h"
+#include "apps/shell/diagnostic_job_session.h"
 #include "apps/shell/self_check.h"
 #include "core/application_settings/application_settings.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "apps/shell/island_adapter.h"
+#include "apps/shell/island_media_adapter.h"
+#include "apps/shell/material_capture_permission.h"
+#include "apps/shell/material_capture_permission_session.h"
+#include "apps/shell/todo_board.h"
 #include "apps/shell/external_lyrics.h"
 #include "core/ui/clock_page_state.h"
 #include "core/ui/system_feature_page_commands.h"
@@ -45,7 +52,6 @@
 #include <deque>
 #include <set>
 #include <map>
-#include <mutex>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -55,6 +61,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <utility>
+#include <type_traits>
 
 namespace lume::shell {
 using namespace platform::windows;
@@ -130,6 +137,22 @@ UpdateNotificationOptions UpdateOptions(const DesktopApplicationOptions& options
 }
 }
 struct DesktopApplication::State {
+    void DrainMaterialCapturePermission() {
+        const auto result=materialPermission.Drain();
+        if(exiting||!result)return;
+        if(result->native)DispatchNativeMaterial(*result->native,true);
+        else Dispatch(result->command,true,result->target);
+    }
+    void DispatchNativeMaterial(NativeMaterialRequest request,bool permissionChecked=false){
+        if(exiting)return;
+        if(!permissionChecked&&materialPermission.Defer(request,thread,options.verification))return;
+        if(request.target==NativeMaterialTarget::Note){
+            if(const auto message=notes.HandleMaterialSelection(request))Post(*message);
+        } else if(request.target==NativeMaterialTarget::MusicDesktop){
+            if(const auto message=musicDesktop.HandleMaterialSelection(request))Post(*message);
+        }
+        Wake();
+    }
     // The calendar's todo form, opened from the island below the capsule. It
     // writes through the shared TodoSession, so every todo view refreshes.
     void OpenIslandTodoEditor(const std::string& id,calendar::Date day){
@@ -216,6 +239,12 @@ struct DesktopApplication::State {
         // Weather page: a bounded projection of the weather component's current
         // reading. Reads are on demand, so the island adds no fetching of its own.
         value.weather=[this]{return exiting?dynamic_island::Weather{}:IslandWeather(weather.Reading());};
+        value.weatherUpdatedAt=[this]{
+            const auto reading=weather.Reading();
+            if(exiting||!reading.snapshot)return std::uint64_t{0};
+            const auto& data=*reading.snapshot;const auto observed=std::min(data.updatedAt,data.validAt);
+            return observed>0?static_cast<std::uint64_t>(observed):std::uint64_t{0};
+        };
         value.openWeatherSettings=[this]{if(!exiting)Open(ManagerPage::Weather);};
         value.openPerformanceSettings=[this]{if(!exiting)Open(ManagerPage::Performance);};
         value.weatherActive=[this](bool active){weather.SetSharedConsumer(active);};
@@ -274,7 +303,7 @@ struct DesktopApplication::State {
             [this](const std::wstring& message){
                 if(!applicationSettings.HasWork())window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
                 Post(message);
-                if(!exiting){dynamicIsland.SetEnglish(applicationSettings.Preferences().language=="en");updateNotifications.SetLanguage(applicationSettings.Preferences().language=="en");updateNotifications.Wake();Wake();}
+                if(!exiting){dynamicIsland.SetEnglish(applicationSettings.Preferences().language=="en");lume::platform::windows::TodoSheetWindow::SetEnglish(applicationSettings.Preferences().language=="en");lume::platform::windows::ControlCenterWindow::SetEnglish(applicationSettings.Preferences().language=="en");updateNotifications.SetLanguage(applicationSettings.Preferences().language=="en");updateNotifications.Wake();Wake();}
             },
             [this](bool balanced){return wallpaper.SetBalancedMode(balanced);}),
         wallpaper(instance,WallpaperOptions(this->options,applicationSettings.BalancedMode(),
@@ -320,6 +349,7 @@ struct DesktopApplication::State {
             islandTodos.Changed();
             calendar.RefreshTodos();todayTodo.Refresh();dynamicIsland.RefreshTodos();
             if(remindersStarted)reminders.Refresh();
+            if(ready&&visible)Post(todoBoard.State());
         });
         window.ConfigureWallpaper(
             [this](const ui::WallpaperPageCommand& command){
@@ -337,14 +367,14 @@ struct DesktopApplication::State {
             [this](std::vector<std::wstring> paths){wallpaper.HandleDroppedFiles(std::move(paths));});
         window.ConfigureMusicDrop([this](std::vector<std::wstring> paths){
             if(!this->options.musicLibrary.root.empty()) {
-                if(!musicLibrary.Import(std::move(paths)))LibraryFailure("busy");
+                if(!musicLibrary.Import(std::move(paths)))musicLibraryCoordinator.Failure("busy");
             }
             else if(this->options.verification)music.ImportLocalFiles(std::move(paths));
         });
         window.ConfigureMusicFonts(musicFonts.AssetDirectory().wstring(),
             [this](std::wstring_view filename){return musicFonts.AssetSize(filename);});
         window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
-        window.ConfigureThreadWake(lume::window_ids::ShellWakeMessage,[this]{DrainMusic();});
+        window.ConfigureThreadWake(lume::window_ids::ShellWakeMessage,[this]{DrainPendingWork();});
         window.ConfigureApplicationCommands([this](std::wstring_view message){
             if(exiting)return;
             if(const auto report=ParseDiagnosticReportCommand(message)) {
@@ -367,6 +397,8 @@ struct DesktopApplication::State {
                     if(!exiting)Post(applicationSettings.State());
                 } else if(const auto reply=applicationSettings.HandlePage(*command,window.Handle()))Post(*reply);
             } else if(const auto accountCommand=ui::ParseAccountPageJson(message))account.HandlePage(*accountCommand,window.Handle());
+            else if(const auto notificationReply=dynamicIsland.HandleNotifications(message))Post(*notificationReply);
+            else if(const auto boardReply=todoBoard.Handle(message))Post(*boardReply);
             else if(const auto providerCommand=ParseMusicProviderAccountCommand(message)) {
                 Post(musicAccounts.HandlePage(*providerCommand));
                 musicOnline.AccountsChanged();
@@ -375,7 +407,7 @@ struct DesktopApplication::State {
                 Post(musicOnline.HandlePage(*onlineCommand));
             }
             else if(const auto libraryCommand=ui::ParseMusicLibraryCommand(message)) {
-                LibraryCommand(*libraryCommand);
+                musicLibraryCoordinator.Command(*libraryCommand);
             }
             else if(const auto replies=NotesReply(message)) {
                 for(const auto& reply:*replies)Post(reply);
@@ -411,15 +443,30 @@ struct DesktopApplication::State {
                 Wake();
             }
         });
+        const MaterialSelectionHandler selectMaterial=[this](ui::PageCommand command,HWND source){Dispatch(command,false,source);};
+        const NativeMaterialSelectionHandler selectNativeMaterial=[this](NativeMaterialRequest request){DispatchNativeMaterial(std::move(request));};
+        notes.SetMaterialSelectionHandler(selectNativeMaterial);
+        musicDesktop.SetMaterialSelectionHandler(selectNativeMaterial);
+        calendar.SetMaterialSelectionHandler(selectMaterial);
+        performance.SetMaterialSelectionHandler(selectMaterial);
+        almanac.SetMaterialSelectionHandler(selectMaterial);
+        weather.SetMaterialSelectionHandler(selectMaterial);
+        todayTodo.SetMaterialSelectionHandler(selectMaterial);
+        organizer.SetMaterialSelectionHandler(selectMaterial);
+        dock.SetMaterialSelectionHandler(selectMaterial);
+        dynamicIsland.SetMaterialSelectionHandler(selectMaterial);
+        radial.SetMaterialSelectionHandler(selectMaterial);
         window.ConfigureVisibility([this](bool visible){
+            if(!visible)materialPermission.Cancel();
             if(!visible)dynamicIsland.ReleasePreview();
             if(!visible){radial.CancelCapture();musicAccounts.CancelActive();musicOnline.Cancel();musicLibrary.SetVisible(false);musicFonts.Cancel();musicBackground.CancelActive();musicBackground.SetVisible(false);}
             if(visible && ready && !exiting) {PostCurrentState();updateNotifications.RetryPresentation();}
         });
+        ConfigureServiceLifecycle();
     }
     MusicSessionOptions PlaybackOptions() {
         auto value=MusicOptions(options,[this]{Wake();});
-        value.analysisActive=[this]{ return dynamicIsland.Running(); };
+        value.analysisActive=[this]{ return dynamicIsland.AnalysisActive(); };
         if(!value.resolveSource && !value.resolveAudioSource)value.resolveAudioSource=[this](const auto& track,auto quality,const auto& cancelled){
             return musicOnline.ResolveAudioSource(track,quality,cancelled);
         };
@@ -460,37 +507,6 @@ struct DesktopApplication::State {
         value.notify=[this](const auto& state){if(!exiting)Post(state);};
         value.wake=[this]{Wake();};
         return value;
-    }
-    void LibraryCommand(const ui::MusicLibraryCommand& command) {
-        if(command.action=="visibility"){musicLibrary.SetVisible(command.visible);return;}
-        if(options.musicLibrary.root.empty()){LibraryFailure("unavailable");return;}
-        bool accepted=false;
-        if(command.action=="snapshot")accepted=musicLibrary.Page();
-        else if(command.action=="page")accepted=musicLibrary.Page(command.offset,command.limit);
-        else if(command.action=="remove")accepted=musicLibrary.Remove(command.id);
-        else accepted=musicLibrary.Play(command.id,command.action=="play"?MusicLibraryPlaybackAction::Play:
-            command.action=="enqueue"?MusicLibraryPlaybackAction::Enqueue:MusicLibraryPlaybackAction::InsertNext);
-        if(!accepted)LibraryFailure("busy");
-    }
-    void LibraryFailure(const std::string& error) {
-        auto json=musicLibraryState;
-        json["error"]=error;
-        const auto bytes=json.dump(-1,' ',true);
-        PublishLibraryState(std::wstring(bytes.begin(),bytes.end()));
-    }
-    void PublishLibraryState(const std::wstring& state) {
-        auto json=nlohmann::json::parse(state);
-        json.erase("scope");
-        json["type"]="music-library-state";
-        json["revision"]=++musicLibraryRevision;
-        // Artwork placeholders are native IDs, not URLs. Only explicit media leases leave the shell.
-        for(auto& track:json["tracks"]) {
-            const auto image=track.value("artwork",std::string{});
-            if(image.rfind("http://127.0.0.1:",0)!=0)track["artwork"]="";
-        }
-        musicLibraryState=json;
-        const auto utf8=json.dump(-1,' ',true);
-        Post(std::wstring(utf8.begin(),utf8.end()));
     }
     std::vector<std::string> SelectedFontFamilies() {
         std::vector<std::string> result;
@@ -542,27 +558,51 @@ struct DesktopApplication::State {
     std::function<void(const std::wstring&,bool)> Notifier(std::optional<ManagerPage> page={}){
         return [this,page](const std::wstring& message,bool attention){Post(message);if(attention&&page)Open(*page);Wake();};
     }
-    // The desktop widgets, last to first: the same order on exit and in the destructor.
-    void ShutdownWidgets(){desktopIcons.Shutdown();organizer.Shutdown();weather.Shutdown();todayTodo.Shutdown();almanac.Shutdown();performance.Shutdown();spectrum.Shutdown();calendar.Shutdown();clock.Shutdown();}
-    void ShutdownApplicationServices(){
-        radial.Shutdown();
-        dock.Shutdown();
-        dynamicIsland.Shutdown();
-        notes.Shutdown();
-        musicDesktop.Shutdown();
-        musicFonts.Shutdown();
-        if(musicLibraryRestored&&!options.musicLibrary.root.empty())musicLibrary.SaveQueue(music.Snapshot());
-        music.Shutdown();
-        musicLibrary.Shutdown();
-        musicOnline.Shutdown();
-        musicAccounts.Shutdown();
-        updateNotifications.Shutdown();applicationSettings.SetUpdateObserver({});
-        applicationSettings.Shutdown();account.Shutdown();
-        applicationSettings.FlushPreferences();
-        wallpaper.Shutdown();applicationSettings.JoinShutdown();
-        musicBackground.Shutdown();
+    void ConfigureServiceLifecycle(){
+        const auto start=[](auto& service){return [target=&service]{target->Restore();};};
+        const auto stop=[](auto& service){return [target=&service]{
+            if constexpr(std::is_same_v<decltype(target->Shutdown()),bool>)return target->Shutdown();
+            else {target->Shutdown();return true;}
+        };};
+        // Registration is startup order. Priorities preserve the production
+        // teardown order independently of how features are declared below.
+        lifecycle.Add({"wallpaper",150,start(wallpaper),stop(wallpaper),[this]{return wallpaper.HasWork();}});
+        lifecycle.Add({"clock",290,start(clock),stop(clock),[this]{return clock.Running();}});
+        lifecycle.Add({"calendar",280,start(calendar),stop(calendar),[this]{return calendar.Running();}});
+        lifecycle.Add({"performance",250,start(performance),stop(performance),[this]{return performance.Handle()!=nullptr;}});
+        lifecycle.Add({"spectrum",260,start(spectrum),stop(spectrum),[this]{return spectrum.Handle()!=nullptr;}});
+        lifecycle.Add({"almanac",240,start(almanac),stop(almanac),[this]{return almanac.Handle()!=nullptr;}});
+        lifecycle.Add({"today-todo",230,start(todayTodo),stop(todayTodo),[this]{return todayTodo.Handle()!=nullptr;}});
+        lifecycle.Add({"weather",220,start(weather),stop(weather),[this]{return weather.Handle()!=nullptr;}});
+        lifecycle.Add({"organizer",210,start(organizer),stop(organizer),[this]{return organizer.Handle()!=nullptr;}});
+        lifecycle.Add({"desktop-icons",200,start(desktopIcons),stop(desktopIcons),[this]{return desktopIcons.Running()||desktopIcons.HasRecovery();}});
+        lifecycle.Add({"taskbar",310,start(taskbar),stop(taskbar),[this]{return taskbar.HasWork()||(taskbar.Preferences().enabled&&taskbar.Preferences().transparentTaskbar);}});
+        lifecycle.Add({"minimize",300,[this]{if(options.minimizeVisible)minimize.Restore();},stop(minimize),[this]{return minimize.Running();}});
+        lifecycle.Add({"radial",30,[this]{if(options.radialVisible)radial.Restore();},stop(radial),[this]{return radial.Running();}});
+        lifecycle.Add({"dock",40,start(dock),stop(dock),[this]{return dock.Running()||dock.Snapshot().enabled;}});
+        lifecycle.Add({"island",50,[this]{
+            const bool english=applicationSettings.Preferences().language=="en";
+            dynamicIsland.SetEnglish(english);TodoSheetWindow::SetEnglish(english);ControlCenterWindow::SetEnglish(english);dynamicIsland.Restore();
+        },stop(dynamicIsland),[this]{return dynamicIsland.Running();}});
+        lifecycle.Add({"music-background",170,start(musicBackground),stop(musicBackground),[this]{return musicBackground.HasWork();}});
+        lifecycle.Add({"music-library",110,[this]{if(!options.musicLibrary.root.empty())musicLibrary.Restore();},stop(musicLibrary),[this]{return musicLibrary.HasWork();}});
+        lifecycle.Add({"music-desktop",70,[this]{if(!options.musicDesktop.path.empty())musicDesktop.Restore();},stop(musicDesktop),[this]{return musicDesktop.Running();}});
+        lifecycle.Add({"notes",60,[this]{if(options.notesVisible)notes.Restore();},stop(notes),[this]{return notes.Active();}});
+        lifecycle.Add({"application-settings",142,start(applicationSettings),stop(applicationSettings),[this]{return applicationSettings.HasWork();}});
+        lifecycle.Add({"account",143,start(account),stop(account),[this]{return account.HasWork();}});
+        lifecycle.Add({"diagnostic-jobs",10,{},stop(diagnosticJobs),{}});
+        lifecycle.Add({"material-permission",20,{},[this]{materialPermission.Cancel();return true;},{}});
+        lifecycle.Add({"music-fonts",80,{},stop(musicFonts),{}});
+        lifecycle.Add({"music-save-queue",90,{},[this]{musicLibraryCoordinator.SaveQueue(music.Snapshot());return true;},{}});
+        lifecycle.Add({"music",100,{},stop(music),[this]{return music.HasWork();}});
+        lifecycle.Add({"music-online",120,{},stop(musicOnline),[this]{return musicOnline.HasWork();}});
+        lifecycle.Add({"music-accounts",130,{},stop(musicAccounts),[this]{return musicAccounts.HasWork();}});
+        lifecycle.Add({"update-notifications",140,{},[this]{updateNotifications.Shutdown();applicationSettings.SetUpdateObserver({});return true;},[this]{return updateNotifications.HasWork();}});
+        lifecycle.Add({"settings-flush",144,{},[this]{applicationSettings.FlushPreferences();return true;},{}});
+        lifecycle.Add({"settings-join",160,{},[this]{applicationSettings.JoinShutdown();return true;},{}});
+        lifecycle.Add({"reminders",180,{},stop(reminders),[this]{return reminders.HasWork();}});
     }
-    ~State(){todos->SetChanged({});ShutdownApplicationServices();reminders.Shutdown();minimize.Shutdown();taskbar.Shutdown();ShutdownWidgets();}
+    ~State(){todos->SetChanged({});lifecycle.Shutdown();}
     ReminderAppearance Appearance()const{
         const auto& p=calendar.Snapshot();ReminderAppearance out;
         const auto color=[](calendar::Rgba value){return RGB((value.rgb>>16)&255,(value.rgb>>8)&255,value.rgb&255);};
@@ -633,15 +673,7 @@ struct DesktopApplication::State {
         const auto wide=Wide(message.dump(-1,' ',false,nlohmann::json::error_handler_t::replace));
         if(!wide.empty())window.Post(wide);
     }
-    // Report, copied text and self-check are collected here (module states
-    // belong to this thread) and built on one worker at a time.
-    enum class DiagnosticJob { Report, Copy, Check, StartupCheck };
-    struct DiagnosticJobResult {
-        DiagnosticJob kind=DiagnosticJob::Report;
-        DiagnosticReportResult report;
-        std::string text;
-        std::vector<SelfCheck> checks;
-    };
+    // Module snapshots are captured on the UI thread before entering the job session.
     DiagnosticReportInput DiagnosticInput(const std::string& note) {
         DiagnosticReportInput input;
         input.dataDirectory=std::filesystem::u8path(options.applicationSettings.dataDirectory);
@@ -656,23 +688,10 @@ struct DesktopApplication::State {
     void CreateReport(const std::string& note){StartDiagnosticJob(DiagnosticJob::Report,note);}
     void StartDiagnosticJob(DiagnosticJob kind,const std::string& note) {
         const bool page=kind!=DiagnosticJob::StartupCheck;
-        if(reportRunning){if(page)PostReportState({{"status","working"},{"action",JobAction(kind)}});return;}
-        reportRunning=true;
+        if(diagnosticJobs.Running()){if(page)PostReportState({{"status","working"},{"action",JobAction(kind)}});return;}
         if(page)PostReportState({{"status","working"},{"action",JobAction(kind)}});
-        auto input=DiagnosticInput(note);
-        if(reportWorker.thread.joinable())reportWorker.thread.join();
-        try {
-            reportWorker.thread=std::thread([this,kind,input=std::move(input)]{
-                DiagnosticJobResult result;result.kind=kind;
-                try {
-                    if(kind==DiagnosticJob::Report)result.report=WriteDiagnosticReport(input);
-                    else if(kind==DiagnosticJob::Copy)result.text=DiagnosticText(input);
-                    else result.checks=RunSelfChecks(input.installDirectory,input.modules);
-                } catch(...) {result.report.error="DIAGNOSTIC_JOB_FAILED";}
-                {std::lock_guard<std::mutex> lock(reportMutex);reportResult=std::move(result);}
-                Wake();
-            });
-        } catch(...) {reportRunning=false;if(page)PostReportState({{"status","failed"},{"action",JobAction(kind)},{"error","DIAGNOSTIC_REPORT_THREAD"}});}
+        if(diagnosticJobs.Start(kind,DiagnosticInput(note),thread)==DiagnosticJobSession::StartResult::ThreadFailed&&page)
+            PostReportState({{"status","failed"},{"action",JobAction(kind)},{"error","DIAGNOSTIC_REPORT_THREAD"}});
     }
     static const char* JobAction(DiagnosticJob kind) {
         return kind==DiagnosticJob::Copy?"copy":kind==DiagnosticJob::Report?"create":"self-check";
@@ -712,10 +731,8 @@ struct DesktopApplication::State {
         diagnosticTray->ShowNotice(L"Lume 自检发现问题",Wide("“"+titles+"”可能无法正常工作。点击查看原因和解决办法。"));
     }
     void DrainReport() {
-        std::optional<DiagnosticJobResult> result;
-        {std::lock_guard<std::mutex> lock(reportMutex);result.swap(reportResult);}
+        const auto result=diagnosticJobs.Drain();
         if(!result)return;
-        reportRunning=false;
         switch(result->kind) {
         case DiagnosticJob::Report:
             if(!result->report.ok){PostReportState({{"status","failed"},{"action","create"},{"error",result->report.error}});return;}
@@ -816,7 +833,8 @@ struct DesktopApplication::State {
         const wchar_t* name=page==ManagerPage::TodayTodo?L"todayTodo":page==ManagerPage::Calendar?L"calendar":page==ManagerPage::Performance?L"performance":page==ManagerPage::Spectrum?L"spectrum":page==ManagerPage::Almanac?L"almanac":page==ManagerPage::Weather?L"weather":page==ManagerPage::Organizer?L"organizer":page==ManagerPage::Icons?L"icons":page==ManagerPage::Taskbar?L"taskbar":page==ManagerPage::MinimizeAnimation?L"minimize":page==ManagerPage::Music?L"music":page==ManagerPage::Dock?L"dock":L"clock";
         Post(std::wstring(L"{\"version\":1,\"type\":\"navigate\",\"page\":\"")+name+L"\"}");
     }
-    void DrainMusic(){
+    void DrainPendingWork(){
+        DrainMaterialCapturePermission();
         DrainReport();
         while(!musicCommands.empty()) {
             const auto command=musicCommands.front();musicCommands.pop_front();
@@ -827,47 +845,11 @@ struct DesktopApplication::State {
             Post(*state);musicOnline.AccountsChanged();
         }
         if(const auto state=musicOnline.DrainNotification())Post(*state);
-        for(auto& result:musicLibrary.Drain()) {
-            if(!result.state.empty())PublishLibraryState(result.state);
-            else if(!result.error.empty())LibraryFailure(result.error);
-            if(result.restored&&!musicLibraryRestored) {
-                musicLibraryRestored=result.error.empty();
-                if(result.restoredQueue&&music.Snapshot().session==0)
-                    music.RestoreQueue(*result.restoredQueue,true);
-            }
-            if(!result.error.empty())continue;
-            if(result.action==MusicLibraryPlaybackAction::Play)
-                music.PlayTracks(std::move(result.playTracks),std::move(result.playId),true);
-            else if(result.action==MusicLibraryPlaybackAction::Enqueue||result.action==MusicLibraryPlaybackAction::InsertNext)
-                music.EnqueueTracks(std::move(result.playTracks),result.action==MusicLibraryPlaybackAction::InsertNext,true);
-        }
+        musicLibraryCoordinator.Process(musicLibrary.Drain());
         const auto snapshot=music.Snapshot();
         musicDesktop.Update(snapshot);
-        dynamic_island::Media islandMedia;
-        if(snapshot.current) {
-            islandMedia.session=snapshot.session;islandMedia.id=snapshot.current->id;
-            islandMedia.artwork=islandCovers.Resolve(*snapshot.current);
-            islandMedia.title=Wide(snapshot.current->title);islandMedia.artist=Wide(snapshot.current->artist);
-            islandMedia.available=snapshot.status!=music::PlaybackStatus::Error;
-            islandMedia.playing=snapshot.playing;islandMedia.position=snapshot.position;
-            islandMedia.duration=snapshot.current->duration;
-            islandMedia.energy=static_cast<float>(snapshot.analysis.energy);
-            if(dynamicIsland.Snapshot().enabled){
-                const auto lines=music.CurrentLyrics();
-                // Converted once per track and lyrics, not every frame.
-                const auto key=snapshot.current->id+"#"+std::to_string(lines.size())+"#"+(lines.empty()?std::string():lines.front().fullText);
-                if(key!=islandCuesKey){islandCuesKey=key;islandCues=LyricCuesOf(lines);}
-                islandMedia.lyrics=islandCues;
-            }
-            for(std::size_t i=0;i<islandMedia.spectrum.size();++i) {
-                const auto begin=i*music::kMusicAnalysisBins/islandMedia.spectrum.size();
-                const auto end=std::max(begin+1,(i+1)*music::kMusicAnalysisBins/islandMedia.spectrum.size());
-                float peak=0;for(auto n=begin;n<end;++n)peak=std::max(peak,static_cast<float>(snapshot.analysis.bins[n]));
-                islandMedia.spectrum[i]=peak;
-            }
-        }
-        dynamicIsland.Update(std::move(islandMedia));
-        if(musicLibraryRestored&&!options.musicLibrary.root.empty())musicLibrary.SaveQueue(snapshot);
+        dynamicIsland.Update(islandMediaAdapter.Project(snapshot,dynamicIsland.Snapshot().enabled));
+        musicLibraryCoordinator.SaveQueue(snapshot);
         for(const auto& state:musicBackground.Drain())Post(state);
     }
     void PostCurrentState(){
@@ -883,6 +865,7 @@ struct DesktopApplication::State {
         if(options.radialVisible)Post(radial.State());
         Post(dock.State());
         Post(dynamicIsland.State());
+        Post(dynamicIsland.NotificationsState());
         Post(desktopIcons.State());
         Post(taskbar.State());
         if(options.minimizeVisible)Post(minimize.State());
@@ -907,10 +890,10 @@ struct DesktopApplication::State {
         if(visible){window.Present();Navigate();}
         else {opening=true;Wake();}
     }
-    void CloseManager(){radial.CancelCapture();calendar.CancelEditor();window.RequestClose();}
+    void CloseManager(){materialPermission.Cancel();radial.CancelCapture();calendar.CancelEditor();window.RequestClose();}
     void Exit(){
         if(exiting)return;
-        exiting=true;updateNotifications.Shutdown();applicationSettings.SetUpdateObserver({});reminders.Shutdown();calendar.CancelEditor();
+        exiting=true;materialPermission.Cancel();updateNotifications.Shutdown();applicationSettings.SetUpdateObserver({});reminders.Shutdown();calendar.CancelEditor();
         // WM_QUIT also unwinds a native editor, which reposts it to the page loop.
         if(window.Handle())window.RequestClose();else {awaitingQuit=true;PostQuitMessage(0);}
         Wake();
@@ -929,8 +912,13 @@ struct DesktopApplication::State {
         if(!ok)Open(ManagerPage::Clock);
         Wake();
     }
-    void Dispatch(ui::PageCommand command){
+    void Dispatch(ui::PageCommand command,bool permissionChecked=false,HWND source=nullptr){
         if(exiting)return;
+        if(!permissionChecked&&materialPermission.Defer(command,source?source:window.Handle(),thread,options.verification,source))return;
+        if(source&&(command==ui::PageCommand::TodayTodoLiquidGlass||command==ui::PageCommand::TodayTodoFrostedGlass||command==ui::PageCommand::TodayTodoSolid)){
+            if(const auto message=todayTodo.HandleMaterialSelection(command,source)){Post(*message);Wake();}
+            return;
+        }
         if(command==ui::PageCommand::Ready){
             ready=true;PostCurrentState();
             if(!exiting)Navigate();
@@ -977,19 +965,7 @@ struct DesktopApplication::State {
                 " topmost="+std::to_string((GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0)+
                 " visible="+std::to_string(IsWindowVisible(window)!=FALSE));
         };
-        // The wallpaper first: its player starts on its own thread and process,
-        // so after sign-in it appears while the widgets are still being built.
-        wallpaper.Restore();
-        clock.Restore();calendar.Restore();performance.Restore();spectrum.Restore();almanac.Restore();todayTodo.Restore();weather.Restore();organizer.Restore();desktopIcons.Restore();taskbar.Restore();
-        if(options.minimizeVisible)minimize.Restore();
-        if(options.radialVisible)radial.Restore();
-        dock.Restore();
-        dynamicIsland.SetEnglish(applicationSettings.Preferences().language=="en");dynamicIsland.Restore();
-        musicBackground.Restore();
-        if(!options.musicLibrary.root.empty())musicLibrary.Restore();
-        if(!options.musicDesktop.path.empty())musicDesktop.Restore();
-        if(options.notesVisible)notes.Restore();
-        applicationSettings.Restore();account.Restore();
+        lifecycle.Restore();
         // Capture initial state only when the diagnostics feature is enabled.
         if constexpr(diagnostics::FeatureEnabled)for(const auto& snapshot:{ui::ClockPageState(clock),calendar.State(),performance.State(),spectrum.State(),
             almanac.State(),todayTodo.State(),weather.State(),organizer.State(),dock.State(),desktopIcons.State(),
@@ -1038,18 +1014,16 @@ struct DesktopApplication::State {
             // Opening and drag summaries share the bounded diagnostic frame log.
             if(const auto directory=lume::platform::windows::diag::Directory();!directory.empty())
                 lume::platform::windows::ui_stall::SetLogPath((directory/L"launchpad-frames.log").wstring());
-            while((!exiting||awaitingQuit)&&!opening&&(options.startHidden||clock.Running()||calendar.Running()||performance.Handle()||spectrum.Handle()||todayTodo.Handle()||almanac.Handle()||weather.Handle()||organizer.Handle()||radial.Running()||dock.Running()||dock.Snapshot().enabled||dynamicIsland.Running()||desktopIcons.Running()||desktopIcons.HasRecovery()||taskbar.HasWork()||
-                (taskbar.Preferences().enabled&&taskbar.Preferences().transparentTaskbar)||minimize.Running()||wallpaper.HasWork()||reminders.HasWork()||applicationSettings.HasWork()||account.HasWork()||music.HasWork()||musicAccounts.HasWork()||musicOnline.HasWork()||musicLibrary.HasWork()||musicDesktop.Running()||notes.Active()||musicBackground.HasWork()||updateNotifications.HasWork())&&trayAvailable){
+            while((!exiting||awaitingQuit)&&!opening&&(options.startHidden||lifecycle.HasWork())&&trayAvailable){
                 MSG message{};const int got=GetMessageW(&message,nullptr,0,0);
                 if(got<=0){exiting=true;awaitingQuit=false;break;}
-                if(message.message==lume::window_ids::ShellWakeMessage){DrainMusic();continue;}
+                if(message.message==lume::window_ids::ShellWakeMessage){DrainPendingWork();continue;}
                 TranslateMessage(&message);lume::platform::windows::ui_stall::Run(message);
             }
             showManager=opening;
         }while(!exiting&&opening);
-        todos->SetChanged({});ShutdownApplicationServices();reminders.Shutdown();ShutdownWidgets();
-        if(!minimize.Shutdown())result=1;
-        if(!taskbar.Shutdown())result=1;
+        todos->SetChanged({});
+        if(!lifecycle.Shutdown())result=1;
         diagnosticTray=nullptr;thread=0;CoUninitialize();return result;
     }
     HINSTANCE instance;
@@ -1074,14 +1048,17 @@ struct DesktopApplication::State {
     DockSession dock;
     platform::windows::SystemMediaSession systemMedia;
     ExternalLyrics externalLyrics;
-    std::string islandCuesKey;
-    dynamic_island::LyricCues islandCues;
     std::string dockCoverKey;
     std::shared_ptr<const platform::windows::WidgetBitmap> dockCover;
     DynamicIslandSession dynamicIsland;
     lume::platform::windows::MusicCoverResolver islandCovers{[this]{Wake();}};
-    lume::platform::windows::CalendarTodoEditor islandEditor;
+    IslandMediaAdapter islandMediaAdapter{
+        [this](const music::Track& track){return islandCovers.Resolve(track);},
+        [this]{return music.CurrentLyrics();},LyricCuesOf};
+    lume::platform::windows::TodoSheetWindow islandEditor;
     IslandTodoAdapter islandTodos{todos};
+    // One protocol for every page that shows the shared to-do board.
+    TodoBoard todoBoard{todos.get(),[this](const std::string& id,calendar::Date day){OpenIslandTodoEditor(id,day);}};
     DesktopIconsSession desktopIcons;
     TaskbarSession taskbar;
     MinimizeAnimationSession minimize;
@@ -1095,10 +1072,21 @@ struct DesktopApplication::State {
     MusicLibraryWorker musicLibrary;
     MusicDesktopSession musicDesktop;
     NotesSession notes;
-    std::uint64_t musicLibraryRevision=0;
-    bool musicLibraryRestored=false;
-    nlohmann::json musicLibraryState={{"version",1},{"type","music-library-state"},{"loaded",false},
-        {"error",""},{"total",0},{"offset",0},{"limit",100},{"tracks",nlohmann::json::array()}};
+    MusicLibraryCoordinator musicLibraryCoordinator{
+        !options.musicLibrary.root.empty(),
+        {
+            [this](bool visible){musicLibrary.SetVisible(visible);},
+            [this](std::size_t offset,std::size_t limit){return musicLibrary.Page(offset,limit);},
+            [this](std::string id){return musicLibrary.Remove(std::move(id));},
+            [this](std::string id,MusicLibraryPlaybackAction action){return musicLibrary.Play(std::move(id),action);},
+            [this](const music::MusicSnapshot& snapshot){return musicLibrary.SaveQueue(snapshot);}
+        },
+        {
+            [this]{return music.Snapshot().session;},
+            [this](const music::MusicSnapshot& snapshot){music.RestoreQueue(snapshot,true);},
+            [this](std::vector<music::Track> tracks,std::string id){music.PlayTracks(std::move(tracks),std::move(id),true);},
+            [this](std::vector<music::Track> tracks,bool insertNext){music.EnqueueTracks(std::move(tracks),insertNext,true);}
+        },[this](const std::wstring& state){Post(state);}};
     MusicPreferencesSession musicPreferences;
     MusicFontAssetSession musicFonts;
     UpdateNotificationSession updateNotifications;
@@ -1112,13 +1100,11 @@ struct DesktopApplication::State {
     ULONGLONG dockNotRunningSince=0;
     bool radialShortcutSettings=false;
     DWORD thread=0;
+    MaterialCapturePermissionSession materialPermission;
     bool visible=false,ready=false,opening=false,exiting=false,ran=false,awaitingQuit=false,remindersStarted=false;
     std::map<std::string,std::string> tracedStates;
-    std::mutex reportMutex;
-    std::optional<DiagnosticJobResult> reportResult;
-    bool reportRunning=false;
-    // Last member: joined first on destruction, while everything it uses lives.
-    struct Worker {std::thread thread;~Worker(){if(thread.joinable())thread.join();}} reportWorker;
+    DiagnosticJobSession diagnosticJobs;
+    DesktopServiceLifecycle lifecycle;
 };
 DesktopApplication::DesktopApplication(HINSTANCE instance,DesktopApplicationOptions options):state_(std::make_unique<State>(instance,std::move(options))){}
 DesktopApplication::~DesktopApplication()=default;

@@ -4,7 +4,13 @@
     [switch]$WallpaperValidationOnly,
     [switch]$AllowDirtySource,
     [ValidateSet('Quick', 'Incremental', 'Full')][string]$VerificationMode = 'Incremental',
-    [string]$OutputDirectory = 'H:\refactor\project'
+    [string]$OutputDirectory = 'H:\refactor\project',
+    [string]$NotificationIdentityPackage = '',
+    [string]$CertificateThumbprint = '',
+    [ValidateSet('CurrentUser','LocalMachine')][string]$CertificateStoreLocation = 'CurrentUser',
+    [uri]$TimestampUrl,
+    [string]$SignToolPath = '',
+    [string]$MakeAppxPath = ''
 )
 $ErrorActionPreference = 'Stop'
 # Keep CMake's localized /showIncludes detection and Ninja's output in sync.
@@ -12,6 +18,19 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 . (Join-Path $PSScriptRoot 'package-verification-cache.ps1')
+. (Join-Path $repoRoot 'native-rebuild\tools\signing\Signing-Common.ps1')
+$codeSigningEnabled = -not [string]::IsNullOrWhiteSpace($CertificateThumbprint)
+$codeSigningContext = $null
+if ($codeSigningEnabled) {
+    if (-not $TimestampUrl) { throw 'Code signing requires -TimestampUrl <RFC3161 endpoint>.' }
+    if ($NotificationIdentityPackage) { throw 'Choose automatic certificate signing or an externally signed NotificationIdentityPackage, not both.' }
+    $codeSigningContext = New-LumeCodeSigningContext -CertificateThumbprint $CertificateThumbprint `
+        -CertificateStoreLocation $CertificateStoreLocation -TimestampUrl $TimestampUrl -SignToolPath $SignToolPath
+} elseif ($PSBoundParameters.ContainsKey('CertificateThumbprint') -or $PSBoundParameters.ContainsKey('TimestampUrl') -or $PSBoundParameters.ContainsKey('CertificateStoreLocation') -or
+        $PSBoundParameters.ContainsKey('SignToolPath') -or $PSBoundParameters.ContainsKey('MakeAppxPath')) {
+    throw 'Signing options require -CertificateThumbprint; no signing option is silently ignored.'
+}
+$codeSigningRecords = [Collections.Generic.List[object]]::new()
 $totalWatch = [Diagnostics.Stopwatch]::StartNew()
 $phaseWatch = [Diagnostics.Stopwatch]::StartNew()
 $phaseTimings = [Collections.Generic.List[object]]::new()
@@ -42,12 +61,13 @@ function Set-ProbeEnvironment {
 }
 & (Join-Path $PSScriptRoot 'webview-runtime-packaging-test.ps1') -RepositoryRoot $repoRoot
 & (Join-Path $PSScriptRoot 'wallpaper-runtime-packaging-test.ps1') -RepositoryRoot $repoRoot
+& (Join-Path $PSScriptRoot 'notification-identity-packaging-test.ps1') -RepositoryRoot $repoRoot
 $releaseRoot = Join-Path $repoRoot 'build-artifacts\native-rebuild\release'
 $packageRoot = Join-Path $repoRoot ('build-artifacts\native-rebuild\package-original-pages\' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff'))
 $stage = Join-Path $packageRoot 'stage'
 $outputRoot = Join-Path $packageRoot 'output'
 $extractRoot = Join-Path $packageRoot 'extracted'
-$outputName = 'LumeSetup-1.0.9.exe'
+$outputName = 'LumeSetup-1.1.3.exe'
 $output = Join-Path $OutputDirectory $outputName
 # LUME_ISCC / LUME_INNOUNP select other installs of Inno Setup 6 and innounp.
 $iscc = if ($env:LUME_ISCC) { $env:LUME_ISCC } else { Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe' }
@@ -76,12 +96,52 @@ if ($WallpaperValidationOnly -and -not $IncludeWallpaperValidationRuntime) {
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 $configureLog = Join-Path $packageRoot 'release-configure.log'
 $buildLog = Join-Path $packageRoot 'release-build.log'
-& cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') *> $configureLog
+if ($codeSigningEnabled) {
+    $signingCMakeCache = Join-Path $packageRoot 'signing-publisher.cmake'
+    Write-LumeSigningCMakeCache -Context $codeSigningContext -Path $signingCMakeCache
+    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') -C $signingCMakeCache *> $configureLog
+} else {
+    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') *> $configureLog
+}
 if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $configureLog -Tail 50; throw 'Release configure failed before packaging' }
 Complete-PackagePhase 'configure-and-prerequisites'
 & cmake --build $releaseRoot --parallel 5 *> $buildLog
 if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $buildLog -Tail 60; throw 'Release build failed before packaging' }
 Complete-PackagePhase 'release-build'
+if ($codeSigningEnabled) {
+    # Sign only Lume-owned products, after all linking and before staging or
+    # payload hashes. Dependency/probe bytes remain untouched.
+    $productSigningLog = Join-Path $packageRoot 'signing-products.log'
+    try {
+        & {
+            foreach ($relative in (Get-LumeOwnedSigningFiles)) {
+                $record = Invoke-LumeCodeSignFile -Path (Join-Path $releaseRoot $relative) -Context $codeSigningContext
+                Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'owned-product'
+                Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue $relative
+                $codeSigningRecords.Add($record)
+            }
+        } *> $productSigningLog
+    } catch { Get-Content -LiteralPath $productSigningLog -Tail 25; throw }
+    $NotificationIdentityPackage = Join-Path $packageRoot 'Lume.NotificationIdentity.msix'
+    $identitySigningArguments = @{
+        IdentityDirectory = Join-Path $releaseRoot 'notification-identity'
+        OutputPath = $NotificationIdentityPackage
+        CertificateThumbprint = $codeSigningContext.Thumbprint
+        CertificateStoreLocation = $codeSigningContext.CertificateStoreLocation
+        TimestampUrl = $codeSigningContext.TimestampUrl
+        SignToolPath = $codeSigningContext.SignToolPath
+    }
+    if ($MakeAppxPath) { $identitySigningArguments.MakeAppxPath = $MakeAppxPath }
+    $identitySigningLog = Join-Path $packageRoot 'signing-notification-identity.log'
+    try {
+        & (Join-Path $repoRoot 'native-rebuild\packaging\notification-identity\Build-NotificationIdentityPackage.ps1') @identitySigningArguments *> $identitySigningLog
+        $record = Assert-LumeSignedFile -Path $NotificationIdentityPackage -Context $codeSigningContext
+        Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'notification-identity'
+        Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue 'notification-identity/Lume.NotificationIdentity.msix'
+        $codeSigningRecords.Add($record)
+    } catch { Get-Content -LiteralPath $identitySigningLog -Tail 25; throw }
+    Complete-PackagePhase 'product-and-identity-signing'
+}
 foreach ($path in @((Join-Path $releaseRoot 'ui\index.html'), (Join-Path $releaseRoot 'lume-webview-page-window-test.exe'))) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing built packaging input: $path" }
 }
@@ -105,22 +165,38 @@ $musicOnlineNotices = [ordered]@{
     'ONLINE_PROVENANCE.md' = 'native-rebuild/platform/windows/music_providers/ONLINE_PROVENANCE.md'
     'Folia-AGPL-3.0.txt' = 'native-rebuild/ui/music-visualizers/vendor/licenses/Folia-AGPL-3.0.txt'
     'Folia-NOTICE.md' = 'native-rebuild/ui/music-visualizers/vendor/licenses/Folia-NOTICE.md'
+    'FOLIA-PLAYBACK-SOURCES.md' = 'native-rebuild/platform/windows/music_providers/FOLIA-PLAYBACK-SOURCES.md'
+    'NETEASE-API-LICENSE.txt' = 'native-rebuild/platform/windows/music_providers/NETEASE-API-LICENSE.txt'
+    'miniz-LICENSE.txt' = 'native-rebuild/vendor/miniz/LICENSE'
+    'miniz-SOURCES.md' = 'native-rebuild/vendor/miniz/SOURCES.md'
 }
 $settingsAccountProbes = @(
+  'lume-todo-sheet-native-test', 'lume-control-center-native-test',
   'lume-ui-integrity-test',
+  'lume-material-capture-retirement-test',
+  'lume-material-presentation-recovery-test',
+  'lume-mpv-process-controller-test',
   'lume-interface-scale-window-test',
   'lume-window-layer-policy-test',
   'lume-application-tray-menu-test',
-  'lume-dynamic-island-test', 'lume-desktop-dynamic-island-test',
+  'lume-dynamic-island-test', 'lume-desktop-dynamic-island-test', 'lume-island-shape-mask-test',
+  'lume-island-almanac-test',
+  'lume-island-animation-updates-test',
+  'lume-island-content-motion-test',
   'lume-today-todo-session-test', 'lume-desktop-today-todo-test',
   'lume-dock-context-menu-test',
+  'lume-desktop-dock-settings-test',
   'lume-dock-interaction-test',
+  'lume-dock-snapshot-cache-test',
   'lume-dock-reflection-test',
   'lume-wallpaper-session-test',
+  'lume-spectrum-capture-test',
   'lume-taskbar-controller-test', 'lume-taskbar-store-test', 'lume-taskbar-runtime-test', 'lume-taskbar-session-test',
   'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test',
+  'lume-taskbar-visibility-test', 'lume-taskbar-port-test',
   'lume-diagnostic-report-test',
-  'lume-organizer-desktop-test', 'lume-organizer-icons-test', 'lume-organizer-model-test',
+  'lume-organizer-desktop-test', 'lume-organizer-icons-test', 'lume-organizer-model-test', 'lume-organizer-drop-target-test', 'lume-organizer-collapse-test',
+  'lume-organizer-motion-test', 'lume-widget-menu-native-test',
   'lume-dock-application-layer-test',
   'lume-launchpad-collection-test',
   'lume-diagnostics-collector-test',
@@ -129,7 +205,12 @@ $settingsAccountProbes = @(
   'lume-account-security-test', 'lume-account-jwt-test', 'lume-account-storage-test', 'lume-account-avatar-test',
   'lume-account-http-test', 'lume-account-backend-test', 'lume-account-session-test', 'lume-account-protocol-test',
   'lume-account-rotation-test', 'lume-account-background-test', 'lume-account-engagement-test',
-  'lume-shell-activation-test', 'lume-webview-application-commands-test', 'lume-desktop-settings-account-test'
+  'lume-shell-activation-test', 'lume-webview-application-commands-test', 'lume-desktop-settings-account-test',
+  'lume-material-capture-permission-test', 'lume-material-capture-permission-session-test',
+  'lume-desktop-service-lifecycle-test', 'lume-music-library-coordinator-test',
+  'lume-island-media-adapter-test', 'lume-diagnostic-job-session-test',
+  'lume-notes-material-selection-test', 'lume-music-material-menu-test',
+  'lume-desktop-island-notifications-test', 'lume-island-notification-audio-test', 'lume-external-lyrics-test'
 )
 $installerProbes = @('lume-installer-shutdown-test')
 $musicProbes = @(
@@ -159,7 +240,7 @@ $acceptanceProbes = @(
   'lume-native-calendar-window-test', 'lume-native-widget-window-test', 'lume-native-clock-window-test', 'lume-widget-layer-stress-test',
   'lume-weather-session-test', 'lume-weather-view-test', 'lume-almanac-session-test', 'lume-performance-session-test', 'lume-spectrum-session-test',
   'lume-organizer-session-test', 'lume-organizer-icons-test', 'lume-organizer-icon-host-test',
-  'lume-organizer-interaction-test', 'lume-organizer-motion-test', 'lume-organizer-drop-target-test', 'lume-widget-menu-native-test',
+  'lume-organizer-interaction-test',
   'lume-desktop-icons-runtime-test', 'lume-desktop-icons-session-test',
   'lume-taskbar-runtime-test', 'lume-taskbar-session-test',
   'lume-minimize-animation-test', 'lume-minimize-animation-runtime-test', 'lume-minimize-animation-session-test',
@@ -212,6 +293,43 @@ $products = @('LumeLauncher.exe', 'LumeShell.exe', 'LumeMusicHost.exe', 'LumeIco
   'LumeMinimize.NOTICE.md', 'LumeMinimize.SOURCES.md')
 foreach ($name in $products) {
     Copy-Item -LiteralPath (Join-Path $releaseRoot $name) -Destination (Join-Path $stage $name)
+}
+$notificationIdentityRoot = Join-Path $releaseRoot 'notification-identity'
+$notificationIdentityEnabled = Select-String -LiteralPath (Join-Path $releaseRoot 'CMakeCache.txt') -Pattern '^LUME_NOTIFICATION_IDENTITY:BOOL=ON$' -Quiet
+$notificationIdentityMode = 'metadata-only-not-user-ready'
+$notificationIdentityPackageHash = $null
+if ($notificationIdentityEnabled) {
+    $identityFiles = @('AppxManifest.xml', 'identity-config.json', 'README.md', 'Identity-Common.ps1',
+        'Register-NotificationIdentity.ps1', 'Remove-NotificationIdentity.ps1',
+        'Assets\Square44x44Logo.png', 'Assets\Square150x150Logo.png', 'Assets\StoreLogo.png')
+    foreach ($relative in $identityFiles) {
+        $identitySource = Join-Path $notificationIdentityRoot $relative
+        if (-not (Test-Path -LiteralPath $identitySource -PathType Leaf)) { throw "Missing optional identity payload: $relative" }
+        $identityDestination = Join-Path $stage ('notification-identity\' + $relative)
+        New-Item -ItemType Directory -Force -Path (Split-Path $identityDestination -Parent) | Out-Null
+        Copy-Item -LiteralPath $identitySource -Destination $identityDestination
+    }
+    # AppInfo/taskbar visual assets of the sparse identity resolve relative to
+    # ExternalLocation, even though its manifest is in notification-identity.
+    . (Join-Path $notificationIdentityRoot 'Identity-Common.ps1')
+    $identityManifestStream = [IO.File]::OpenRead((Join-Path $notificationIdentityRoot 'AppxManifest.xml'))
+    try { $identityManifest = Read-LumeIdentityXml $identityManifestStream } finally { $identityManifestStream.Dispose() }
+    Copy-LumeIdentityExternalAssets $identityManifest $notificationIdentityRoot $stage
+}
+if ($NotificationIdentityPackage) {
+    if (-not $notificationIdentityEnabled) { throw 'Signed notification identity requires LUME_NOTIFICATION_IDENTITY=ON in the compiled Shell.' }
+    . (Join-Path $notificationIdentityRoot 'Identity-Common.ps1')
+    $compiledIdentityConfig = Get-Content -LiteralPath (Join-Path $notificationIdentityRoot 'identity-config.json') -Raw | ConvertFrom-Json
+    $validatedIdentityPackage = Assert-LumeSignedIdentityPackage $NotificationIdentityPackage $compiledIdentityConfig
+    $stagedIdentityPackage = Join-Path $stage 'notification-identity\Lume.NotificationIdentity.msix'
+    Copy-Item -LiteralPath $validatedIdentityPackage -Destination $stagedIdentityPackage
+    $notificationIdentityPackageHash = (Get-FileHash -LiteralPath $stagedIdentityPackage -Algorithm SHA256).Hash
+    if ($notificationIdentityPackageHash -ne (Get-FileHash -LiteralPath $validatedIdentityPackage -Algorithm SHA256).Hash) {
+        throw 'Signed notification identity package changed during staging.'
+    }
+    $notificationIdentityMode = 'signed-auto-registration'
+} elseif (-not $WallpaperValidationOnly) {
+    throw 'A user-ready notification installer requires -NotificationIdentityPackage <trusted signed MSIX>. Metadata-only output is limited to local validation mode.'
 }
 $webViewRuntimeManifestPath = Join-Path $repoRoot 'native-rebuild\packaging\webview2-runtime.json'
 $webViewRuntime = Get-Content -LiteralPath $webViewRuntimeManifestPath -Raw | ConvertFrom-Json
@@ -321,6 +439,9 @@ $uiSource = Join-Path $repoRoot 'native-rebuild\ui'
 $uiInstallChecks = [Collections.Generic.List[string]]::new()
 foreach ($relative in Get-Content -LiteralPath (Join-Path $releaseRoot 'ui/payload-manifest.txt')) {
     if (-not $relative -or $relative -match '(^/|(^|/)\.\.(/|$)|:|\\)') { throw "Invalid UI manifest entry: $relative" }
+    if ($relative -match '(^|/)(build-artifacts|test-results|playwright-report|coverage|\.cache|verification|evidence|tests|tools|node_modules)(/|$)') {
+        throw "Development artifact must not enter the installer or recovery UI: $relative"
+    }
     $sourceUi = Join-Path $uiSource $relative
     $builtUi = Join-Path $releaseRoot ('ui/' + $relative)
     if (-not (Test-Path -LiteralPath $builtUi -PathType Leaf) -or (Get-FileHash -LiteralPath $builtUi).Hash -ne (Get-FileHash -LiteralPath $sourceUi).Hash) { throw "Stale Release UI: $relative" }
@@ -349,6 +470,16 @@ foreach ($entry in $musicOnlineNotices.GetEnumerator()) {
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-rebuild\packaging\AcceptanceNotes-seven-features.txt') -Destination (Join-Path $stage 'AcceptanceNotes.txt')
 Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("`r`nSource: " + $sourceDescription) -Encoding utf8
+Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("notification-identity=" + $notificationIdentityMode) -Encoding utf8
+if ($codeSigningEnabled) {
+    Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("code-signing=selected-certificate; publisher=" + $codeSigningContext.Subject) -Encoding utf8
+}
+if ($notificationIdentityPackageHash) {
+    Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("notification-identity-package-sha256=" + $notificationIdentityPackageHash) -Encoding utf8
+    Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value '安装器将在启动 Lume 前，以原登录用户验证并注册受信签名的通知身份包；Windows 通知访问权限仍需用户主动选择。签名包存在不代表已完成实际安装、升级和各用户授权验收。' -Encoding utf8
+} else {
+    Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value '本包只有通知身份元数据，未携带受信签名 MSIX，不会自动注册身份。面向普通用户的即时通知部署尚未就绪；本机开发身份实测不能作为所有用户秒接收的证据。现有桌面接收路径继续作为后备。' -Encoding utf8
+}
 if ($WallpaperValidationOnly) {
     Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value @"
 
@@ -366,10 +497,62 @@ $iss = Join-Path $repoRoot 'native-rebuild\packaging\LumeSetup.iss'
 $icon = Join-Path $repoRoot 'native-rebuild\packaging\lume.ico'
 $shutdownHelper = Join-Path $releaseRoot 'LumeSetupShutdown.exe'
 Complete-PackagePhase 'stage-and-source-hashes'
-& $iscc "/DSourceDir=$stage" "/DOutputDir=$outputRoot" "/DOutputBaseFilename=$([IO.Path]::GetFileNameWithoutExtension($outputName))" "/DIconFile=$icon" "/DShutdownHelperFile=$shutdownHelper" "/DWebView2RuntimeInstallerFile=$webViewRuntimeInstaller" "/DUiIntegrityChecksFile=$uiIntegrityChecksFile" $iss
-if ($LASTEXITCODE -ne 0) { throw "Inno compilation failed: $LASTEXITCODE" }
+$notificationIdentityHashArgument = if ($notificationIdentityPackageHash) { $notificationIdentityPackageHash } else { '' }
+$isccArguments = @("/DSourceDir=$stage", "/DOutputDir=$outputRoot", "/DOutputBaseFilename=$([IO.Path]::GetFileNameWithoutExtension($outputName))",
+    "/DIconFile=$icon", "/DShutdownHelperFile=$shutdownHelper", "/DWebView2RuntimeInstallerFile=$webViewRuntimeInstaller",
+    "/DUiIntegrityChecksFile=$uiIntegrityChecksFile", "/DNotificationIdentityPackageSha256=$notificationIdentityHashArgument")
+if ($codeSigningEnabled) {
+    $callbackEvidence = Join-Path $packageRoot 'signing-compiler-callbacks'
+    $signedUninstallerDirectory = Join-Path $packageRoot 'signed-uninstallers'
+    New-Item -ItemType Directory -Path $callbackEvidence, $signedUninstallerDirectory -Force | Out-Null
+    $signingConfigurationPath = Join-Path $packageRoot 'signing-configuration.json'
+    $signingConfiguration = [ordered]@{
+        Thumbprint=$codeSigningContext.Thumbprint; Subject=$codeSigningContext.Subject
+        CertificateStoreLocation=$codeSigningContext.CertificateStoreLocation
+        TimestampUrl=$codeSigningContext.TimestampUrl; SignToolPath=$codeSigningContext.SignToolPath
+        EvidenceDirectory=$callbackEvidence
+    }
+    $signingConfiguration | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $signingConfigurationPath -Encoding utf8
+    $signingPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $signingPowerShell -PathType Leaf)) { throw 'Windows PowerShell is required for the Inno signing callback.' }
+    $innoSigningCommand = New-LumeInnoSigningCommand -PowerShellPath $signingPowerShell `
+        -HelperPath (Join-Path $repoRoot 'native-rebuild\tools\signing\Invoke-FileSigning.ps1')
+    $isccArguments += @('/DLumeCodeSigning=1', "/DSignedUninstallerDirectory=$signedUninstallerDirectory", ('/SLumeSign=' + $innoSigningCommand))
+}
+$isccArguments += $iss
+$previousSigningConfiguration = [Environment]::GetEnvironmentVariable('LUME_SIGNING_CONFIGURATION', 'Process')
+try {
+    if ($codeSigningEnabled) { [Environment]::SetEnvironmentVariable('LUME_SIGNING_CONFIGURATION', $signingConfigurationPath, 'Process') }
+    & $iscc @isccArguments
+    $compilerExitCode = $LASTEXITCODE
+} finally {
+    [Environment]::SetEnvironmentVariable('LUME_SIGNING_CONFIGURATION', $previousSigningConfiguration, 'Process')
+}
+if ($compilerExitCode -ne 0) { throw "Inno compilation failed: $compilerExitCode" }
 Complete-PackagePhase 'installer-compression'
 $built = Join-Path $outputRoot $outputName
+if ($codeSigningEnabled) {
+    $record = Assert-LumeSignedFile -Path $built -Context $codeSigningContext
+    Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'installer'
+    Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue $outputName
+    $codeSigningRecords.Add($record)
+    $compilerSigningRecords = @(Get-ChildItem -LiteralPath $callbackEvidence -Filter '*.json' -File | ForEach-Object {
+        Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+    })
+    $uninstallerPrefix = [IO.Path]::GetFullPath($signedUninstallerDirectory).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+    $uninstallerRecords = @($compilerSigningRecords | Where-Object {
+        ([IO.Path]::GetFullPath([string]$_.path)).StartsWith($uninstallerPrefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($uninstallerRecords.Count -eq 0) { throw 'Inno produced no retained, signed uninstaller template evidence.' }
+    foreach ($uninstallerRecord in $uninstallerRecords) {
+        $record = Assert-LumeRetainedSigningRecord -Record $uninstallerRecord -Context $codeSigningContext -EvidenceDirectory $callbackEvidence
+        Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'uninstaller-template'
+        Add-Member -InputObject $record -NotePropertyName compilerInputPath -NotePropertyValue $uninstallerRecord.path
+        Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue ('signing-compiler-callbacks/' + [IO.Path]::GetFileName($record.path))
+        $codeSigningRecords.Add($record)
+    }
+    Complete-PackagePhase 'installer-and-uninstaller-signature-verification'
+}
 # A full extraction already decodes and checks the compressed data. The old
 # -t followed by -x decompressed the same archive twice. Keep extraction and
 # the independent SHA-256 comparison of every extracted file.
@@ -391,6 +574,29 @@ foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File) {
 $applicationStageFiles = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.Name -ne 'MicrosoftEdgeWebView2Setup.exe' })
 if (@(Get-ChildItem -LiteralPath (Join-Path $extractRoot '{app}') -Recurse -File).Count -ne $applicationStageFiles.Count) { throw 'Unexpected file in installer application payload' }
 Complete-PackagePhase 'all-payload-hashes'
+if ($codeSigningEnabled) {
+    # Verify the delivered copies themselves as well as the byte-for-byte chain.
+    foreach ($relative in (Get-LumeOwnedSigningFiles)) {
+        $installedRelative = switch ($relative) {
+            'LumeSetupShutdown.exe' { '{tmp}/LumeSetupShutdown.exe' }
+            'lume-mpv-stream.dll' { '{app}/wallpaper-runtime/lume-mpv-stream.dll' }
+            default { '{app}/' + $relative }
+        }
+        $record = Assert-LumeSignedFile -Path (Join-Path $extractRoot $installedRelative) -Context $codeSigningContext
+        Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'extracted-owned-product'
+        Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue $installedRelative
+        $codeSigningRecords.Add($record)
+    }
+    $installedIdentityRelative = '{app}/notification-identity/Lume.NotificationIdentity.msix'
+    $record = Assert-LumeSignedFile -Path (Join-Path $extractRoot $installedIdentityRelative) -Context $codeSigningContext
+    Add-Member -InputObject $record -NotePropertyName role -NotePropertyValue 'extracted-notification-identity'
+    Add-Member -InputObject $record -NotePropertyName relativePath -NotePropertyValue $installedIdentityRelative
+    $codeSigningRecords.Add($record)
+    [ordered]@{schemaVersion=1;subject=$codeSigningContext.Subject;thumbprint=$codeSigningContext.Thumbprint;
+        timestampUrl=$codeSigningContext.TimestampUrl;products=@($codeSigningRecords.ToArray());compilerCallbacks=$compilerSigningRecords} |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $packageRoot 'signing-evidence.json') -Encoding utf8
+    Complete-PackagePhase 'extracted-product-and-identity-signature-verification'
+}
 if ($IncludeWallpaperValidationRuntime) {
     $runtimeProbe = Join-Path $extractRoot '{app}\wallpaper-runtime\mpv.exe'
     $runtimeInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -451,7 +657,8 @@ try {
 }
 Complete-PackagePhase 'webview-startup-smoke'
 $acceptanceRuns = @($settingsAccountProbes | ForEach-Object {
-    [pscustomobject]@{name=$_; mode=$(if($_ -eq 'lume-wallpaper-session-test'){'download-admission-only'}else{''})}
+    [pscustomobject]@{name=$_; mode=$(if($_ -eq 'lume-wallpaper-session-test'){'download-admission-only'}
+        elseif($_ -eq 'lume-mpv-process-controller-test'){'startup-visibility-only'}else{''})}
 })
 # Keep online probes on fake transports, desktop controls offscreen, and desktop
 # composition in verification mode. Live/SMTC smoke switches are never automatic.
@@ -461,9 +668,13 @@ $acceptanceRuns += @($updateProbes | ForEach-Object { [pscustomobject]@{name=$_;
 $acceptanceRuns += [pscustomobject]@{name='lume-update-presenter-test'; mode='real-material'}
 $acceptanceRuns += [pscustomobject]@{name='lume-widget-layer-stress-test'; mode=''}
 $acceptanceRuns += [pscustomobject]@{name='lume-material-capture-compatibility-test'; mode=''}
+# Exercise the extracted DLL even in the compact wallpaper-validation package.
+# Listing it as alwaysRun alone cannot include a probe omitted from this list.
+$acceptanceRuns += [pscustomobject]@{name='lume-native-material-test'; mode=''}
 $acceptanceRuns += [pscustomobject]@{name='lume-desktop-icons-session-test'; mode='persistence-only'}
+$acceptanceRuns += [pscustomobject]@{name='lume-organizer-session-test'; mode='large-collection'}
 if (-not $WallpaperValidationOnly) {
-    $acceptanceRuns += @($acceptanceProbes | Where-Object { $_ -notin @('lume-widget-layer-stress-test', 'lume-material-capture-compatibility-test') } | ForEach-Object { [pscustomobject]@{name=$_; mode=''} })
+    $acceptanceRuns += @($acceptanceProbes | Where-Object { $_ -notin @('lume-widget-layer-stress-test', 'lume-material-capture-compatibility-test', 'lume-native-material-test') } | ForEach-Object { [pscustomobject]@{name=$_; mode=''} })
     $acceptanceRuns += [pscustomobject]@{name='lume-native-widget-window-test'; mode='snap-system-release'}
     $acceptanceRuns += [pscustomobject]@{name='lume-organizer-session-test'; mode='editor-material'}
     foreach ($name in @('lume-minimize-animation-runtime-test', 'minimize-runtime-test32')) {
@@ -509,15 +720,21 @@ foreach ($run in $acceptanceRuns) {
     $cacheKey = Get-PackageTextHash ($policyHash + '|' + $probeHashes[$name] + '|' + $logName + '|' + $context)
     $cachePath = Join-Path $cacheRoot ($cacheKey + '.json')
     $alwaysRun = $name -in @('lume-installer-shutdown-test', 'lume-update-presenter-test',
+        'lume-todo-sheet-native-test', 'lume-control-center-native-test',
         'lume-ui-integrity-test',
         'lume-interface-scale-window-test',
         'lume-window-layer-policy-test',
         'lume-application-tray-menu-test',
         'lume-dynamic-island-test',
+        'lume-island-notification-audio-test',
+        'lume-external-lyrics-test',
         'lume-widget-layer-stress-test', 'lume-music-system-fonts-test',
         'lume-taskbar-payload-test', 'lume-taskbar-frameworks-test',
+        'lume-taskbar-controller-test', 'lume-taskbar-visibility-test', 'lume-taskbar-port-test',
+        'lume-taskbar-store-test', 'lume-taskbar-session-test',
         'lume-taskbar-runtime-test', 'lume-diagnostic-report-test',
-        'lume-material-capture-compatibility-test')
+        'lume-material-capture-compatibility-test', 'lume-material-capture-retirement-test',
+        'lume-material-presentation-recovery-test', 'lume-native-material-test', 'lume-mpv-process-controller-test')
     # Quick: a build to try out. Packaging, unpack, payload hashes and the
     # install/update probes above still run; the isolated regressions do not.
     if ($VerificationMode -eq 'Quick' -and -not $alwaysRun) {
@@ -559,6 +776,8 @@ foreach ($run in $acceptanceRuns) {
         '"' + (Join-Path $packageRoot 'settings-fixtures') + '"'
     } elseif ($name -eq 'lume-installer-shutdown-test') {
         '"' + $extractedShutdownHelper + '"'
+    } elseif ($name -eq 'lume-island-notification-audio-test') {
+        '"' + (Join-Path $extractRoot '{app}\ui\assets\notifications\off-work-squidward.wav') + '"'
     } elseif ($name -eq 'lume-music-host-integration-test') {
         '"' + (Join-Path $extractRoot '{app}\LumeMusicHost.exe') + '"'
     } elseif ($name -eq 'lume-music-desktop_controls-test') {
@@ -574,7 +793,7 @@ foreach ($run in $acceptanceRuns) {
         $info.Arguments = '--initialization-regression'
     } elseif ($run.mode -eq 'shutdown-regression') {
         $info.Arguments = '--shutdown-regression ' + $info.Arguments
-    } elseif ($run.mode -eq 'snap-system-release' -or $run.mode -eq 'editor-material' -or $run.mode -eq 'persistence-only' -or $run.mode -eq 'download-admission-only') {
+    } elseif ($run.mode -eq 'snap-system-release' -or $run.mode -eq 'editor-material' -or $run.mode -eq 'persistence-only' -or $run.mode -eq 'download-admission-only' -or $run.mode -eq 'large-collection' -or $run.mode -eq 'startup-visibility-only') {
         $info.Arguments = '--' + $run.mode
     }
     Set-ProbeEnvironment $info 'LUME_CALENDAR_PROBE_OUTPUT' (Join-Path $packageRoot 'calendar-artifacts')
@@ -600,13 +819,13 @@ Complete-PackagePhase 'acceptance-probes'
 $previousHash = $null
 if (Test-Path -LiteralPath $output -PathType Leaf) {
     $previousHash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
-    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.0.9.exe'
+    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.1.3.exe'
     Copy-Item -LiteralPath $output -Destination $previous
     if ((Get-FileHash -LiteralPath $previous -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous installer backup verification failed' }
 }
 foreach ($suffix in @('.sha256.txt', '.验收说明.txt')) {
     if (Test-Path -LiteralPath ($output + $suffix) -PathType Leaf) {
-        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.0.9.exe' + $suffix))
+        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.1.3.exe' + $suffix))
     }
 }
 # Prepare and verify on the destination volume, then replace the installer in
@@ -635,6 +854,7 @@ $verificationLines = @(
     "source=$sourceDescription",
     "previousSha256=$previousHash",
     "verification-mode=$VerificationMode",
+    "notification-identity=$notificationIdentityMode",
     "executed-acceptance-probes=$executedProbes",
     "reused-acceptance-probes=$reusedProbes",
     "skipped-acceptance-probes=$skippedProbes",
@@ -663,6 +883,12 @@ $verificationLines = @(
     'clean-path-update-presenter-fallback-and-real-material=pass'
     'real-account-authorization-and-profile-upload=pending-user-verification'
 )
+if ($notificationIdentityPackageHash) { $verificationLines += "notification-identity-package-sha256=$notificationIdentityPackageHash" }
+if ($codeSigningEnabled) {
+    $verificationLines += @('code-signing=owned-products-identity-installer-and-uninstaller-verified',
+        "code-signing-certificate-thumbprint=$($codeSigningContext.Thumbprint)",
+        "code-signing-publisher=$($codeSigningContext.Subject)", 'code-signing-evidence=signing-evidence.json')
+}
 if ($WallpaperValidationOnly) {
     $verificationLines += 'interactive-acceptance-probes=skipped; wallpaper-validation-only-mode'
     $verificationLines += 'desktop-state-dependent-component-probes=not-run'

@@ -13,6 +13,10 @@ constexpr double kLowMidi = 38, kHighMidi = 90, kBinStep = 0.2;   // D2..F#6 in 
 constexpr int kBins = static_cast<int>((kHighMidi - kLowMidi) / kBinStep) + 1;
 constexpr int kCandidates = 4;
 constexpr double kPitchHop = 0.02, kBeatHop = 0.01;
+struct AnalysisCancelled {};
+void CheckCancelled(const std::function<bool()>& cancelled) {
+    if (cancelled && cancelled()) throw AnalysisCancelled{};
+}
 
 using Complex = std::complex<double>;
 void Fft(std::vector<Complex>& a) {
@@ -143,11 +147,16 @@ PitchFrame Salience(const std::vector<double>& magnitude, double rate, std::size
 // Viterbi over each frame's candidates plus an unvoiced state: strong
 // salience pays, pitch jumps and voicing flips cost, so octave errors and
 // one-frame blips lose to a continuous line.
-std::vector<std::uint16_t> TrackPitch(const std::vector<PitchFrame>& frames) {
+std::vector<std::uint16_t> TrackPitch(const std::vector<PitchFrame>& frames,const std::function<bool()>& cancelled) {
     std::vector<double> tops, levels;
-    for (const auto& frame : frames) { levels.push_back(frame.rms); if (frame.top > 0) tops.push_back(frame.top); }
+    tops.reserve(frames.size());levels.reserve(frames.size());
+    for (std::size_t i=0;i<frames.size();++i) {
+        if(i%256==0)CheckCancelled(cancelled);
+        const auto& frame=frames[i];levels.push_back(frame.rms); if (frame.top > 0) tops.push_back(frame.top);
+    }
     const double norm = Percentile(tops, 0.8);
     const double silence = Percentile(levels, 0.9) * 0.03;
+    CheckCancelled(cancelled);
     std::vector<std::uint16_t> pitch(frames.size(), 0);
     if (frames.empty() || norm <= 0) return pitch;
     constexpr int kStates = kCandidates + 1;   // last state = unvoiced
@@ -162,6 +171,7 @@ std::vector<std::uint16_t> TrackPitch(const std::vector<PitchFrame>& frames) {
     };
     for (int state = 0; state < kStates; ++state) score[0][state] = emission(0, state);
     for (std::size_t t = 1; t < frames.size(); ++t) {
+        if(t%256==0)CheckCancelled(cancelled);
         for (int state = 0; state < kStates; ++state) {
             double best = -1e18; int from = kCandidates;
             for (int previous = 0; previous < kStates; ++previous) {
@@ -179,19 +189,22 @@ std::vector<std::uint16_t> TrackPitch(const std::vector<PitchFrame>& frames) {
     }
     int state = static_cast<int>(std::max_element(score.back().begin(), score.back().end()) - score.back().begin());
     for (std::size_t t = frames.size(); t-- > 0;) {
+        if(t%256==0)CheckCancelled(cancelled);
         if (state < kCandidates && state < frames[t].count)
             pitch[t] = static_cast<std::uint16_t>(std::lround(frames[t].candidates[state].midi * 10));
         if (t) state = back[t][state];
     }
     // Drop voiced runs shorter than 60 ms and smooth the rest with a 5-frame median.
     for (std::size_t t = 0; t < pitch.size();) {
+        if(t%256==0)CheckCancelled(cancelled);
         if (!pitch[t]) { ++t; continue; }
         std::size_t end = t;
-        while (end < pitch.size() && pitch[end]) ++end;
+        while (end < pitch.size() && pitch[end]) {if(end%256==0)CheckCancelled(cancelled);++end;}
         if (end - t < 3) std::fill(pitch.begin() + t, pitch.begin() + end, std::uint16_t{0});
         else {
             std::vector<std::uint16_t> run(pitch.begin() + t, pitch.begin() + end);
             for (std::size_t i = 0; i < run.size(); ++i) {
+                if(i%256==0)CheckCancelled(cancelled);
                 std::array<std::uint16_t, 5> window{};
                 std::size_t count = 0;
                 for (std::size_t j = i >= 2 ? i - 2 : 0; j <= std::min(run.size() - 1, i + 2); ++j) window[count++] = run[j];
@@ -207,14 +220,16 @@ std::vector<std::uint16_t> TrackPitch(const std::vector<PitchFrame>& frames) {
 // Ellis (2007): tempo from the autocorrelation of the onset envelope with a
 // log-Gaussian preference around 120 BPM, then a DP that trades onset
 // strength against deviation from that period.
-void TrackBeats(std::vector<double> onset, MelodyAnalysis& result) {
+void TrackBeats(std::vector<double> onset, MelodyAnalysis& result,const std::function<bool()>& cancelled) {
+    CheckCancelled(cancelled);
     const double rate = 1 / kBeatHop;
     if (onset.size() < static_cast<std::size_t>(rate * 6)) return;
     const std::size_t average = static_cast<std::size_t>(rate * 0.4);
     std::vector<double> prefix(onset.size() + 1, 0);
-    for (std::size_t i = 0; i < onset.size(); ++i) prefix[i + 1] = prefix[i] + onset[i];
+    for (std::size_t i = 0; i < onset.size(); ++i) {if(i%4096==0)CheckCancelled(cancelled);prefix[i + 1] = prefix[i] + onset[i];}
     std::vector<double> envelope(onset.size());
     for (std::size_t i = 0; i < onset.size(); ++i) {
+        if(i%4096==0)CheckCancelled(cancelled);
         const auto lo = i > average ? i - average : 0, hi = std::min(onset.size(), i + average + 1);
         envelope[i] = std::max(0.0, onset[i] - (prefix[hi] - prefix[lo]) / (hi - lo));
     }
@@ -227,8 +242,9 @@ void TrackBeats(std::vector<double> onset, MelodyAnalysis& result) {
     const int shortest = static_cast<int>(60 * rate / 200), longest = static_cast<int>(60 * rate / 50);
     std::vector<double> correlation(longest * 2 + 2, 0);
     for (int lag = shortest; lag <= longest * 2 + 1 && lag < static_cast<int>(envelope.size()); ++lag) {
+        CheckCancelled(cancelled);
         double sum = 0;
-        for (std::size_t t = lag; t < envelope.size(); ++t) sum += envelope[t] * envelope[t - lag];
+        for (std::size_t t = lag; t < envelope.size(); ++t) {if(t%4096==0)CheckCancelled(cancelled);sum += envelope[t] * envelope[t - lag];}
         correlation[lag] = sum / (envelope.size() - lag);
     }
     std::vector<double> weighted(longest + 2, 0);
@@ -248,6 +264,7 @@ void TrackBeats(std::vector<double> onset, MelodyAnalysis& result) {
     std::vector<double> cumulative(envelope.size());
     std::vector<int> link(envelope.size(), -1);
     for (std::size_t t = 0; t < envelope.size(); ++t) {
+        if(t%256==0)CheckCancelled(cancelled);
         double best = 0; int from = -1;
         const auto lo = static_cast<std::ptrdiff_t>(t) - static_cast<std::ptrdiff_t>(std::lround(2 * period));
         const auto hi = static_cast<std::ptrdiff_t>(t) - static_cast<std::ptrdiff_t>(std::lround(period / 2));
@@ -262,13 +279,14 @@ void TrackBeats(std::vector<double> onset, MelodyAnalysis& result) {
     const auto tailStart = envelope.size() - std::min(envelope.size(), static_cast<std::size_t>(period));
     auto beat = static_cast<int>(std::max_element(cumulative.begin() + tailStart, cumulative.end()) - cumulative.begin());
     std::vector<double> beats;
-    for (; beat >= 0; beat = link[beat]) beats.push_back(beat * kBeatHop);
+    for (; beat >= 0; beat = link[beat]) {if(beats.size()%256==0)CheckCancelled(cancelled);beats.push_back(beat * kBeatHop);}
     std::reverse(beats.begin(), beats.end());
     result.beats = std::move(beats);
 }
 }  // namespace
 
 MelodyAnalysis AnalyzeMelody(const std::vector<float>& mono, double rate, const std::function<bool()>& cancelled) {
+    try {
     MelodyAnalysis result;
     result.hop = kPitchHop;
     if (!(rate >= 4000 && rate <= 48000) || mono.size() < static_cast<std::size_t>(rate) ||
@@ -280,17 +298,18 @@ MelodyAnalysis AnalyzeMelody(const std::vector<float>& mono, double rate, const 
     const auto pitchFrames = static_cast<std::size_t>(mono.size() / (rate * kPitchHop)) + 1;
     std::vector<PitchFrame> frames(pitchFrames);
     for (std::size_t t = 0; t < pitchFrames; ++t) {
-        if (t % 256 == 0 && stop()) return {};
+        if (t % 32 == 0 && stop()) return {};
         const double rms = pitchSpectrum.Compute(mono, static_cast<std::ptrdiff_t>(std::lround(t * rate * kPitchHop)));
         frames[t] = Salience(pitchSpectrum.magnitude, rate, pitchSize);
         frames[t].rms = rms;
     }
     if (stop()) return {};
-    result.pitch = TrackPitch(frames);
+    result.pitch = TrackPitch(frames,cancelled);
     // Audible span: first and last frame above the silence floor the pitch
     // tracker uses (30 dB under the loud passages).
     std::vector<double> levels;
-    for (const auto& frame : frames) levels.push_back(frame.rms);
+    levels.reserve(frames.size());
+    for (std::size_t i=0;i<frames.size();++i) {if(i%4096==0)CheckCancelled(cancelled);levels.push_back(frames[i].rms);}
     const double quiet = Percentile(levels, 0.9) * 0.03;
     const auto audible = [&](const PitchFrame& frame) { return frame.rms > quiet; };
     const auto first = std::find_if(frames.begin(), frames.end(), audible);
@@ -306,7 +325,7 @@ MelodyAnalysis AnalyzeMelody(const std::vector<float>& mono, double rate, const 
     const auto beatFrames = static_cast<std::size_t>(mono.size() / (rate * kBeatHop)) + 1;
     std::vector<double> onset(beatFrames, 0), previous(beatSize / 2, 0);
     for (std::size_t t = 0; t < beatFrames; ++t) {
-        if (t % 1024 == 0 && stop()) return {};
+        if (t % 128 == 0 && stop()) return {};
         beatSpectrum.Compute(mono, static_cast<std::ptrdiff_t>(std::lround(t * rate * kBeatHop)));
         double flux = 0;
         for (std::size_t k = 1; k < beatSize / 2; ++k) {
@@ -316,8 +335,9 @@ MelodyAnalysis AnalyzeMelody(const std::vector<float>& mono, double rate, const 
         }
         onset[t] = flux;
     }
-    TrackBeats(std::move(onset), result);
+    TrackBeats(std::move(onset), result,cancelled);
     return stop() ? MelodyAnalysis{} : result;
+    } catch(const AnalysisCancelled&) { return {}; }
 }
 
 }  // namespace lume::music

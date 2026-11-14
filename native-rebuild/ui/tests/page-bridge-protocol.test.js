@@ -7,11 +7,19 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createBridge} from '../bridge.js';
 import {validRadialShortcut} from '../radial.js';
+import {validExpandedLayout} from '../expanded-widgets.js';
 
 const source = readFileSync(new URL('../../core/ui/page_bridge.cpp', import.meta.url), 'utf8');
+const layoutSource = readFileSync(new URL('../../core/dynamic_island/expanded_widgets.h', import.meta.url), 'utf8');
+const layoutConstants=new Map();
+for(const [,name,expression] of layoutSource.matchAll(/inline constexpr unsigned (\w+)=([^;]+);/g)){
+  const terms=expression.split('+').map(term=>term.trim());
+  assert.ok(terms.every(term=>/^\d+$/.test(term)||layoutConstants.has(term)),`unrecognized layout limit: ${expression}`);
+  layoutConstants.set(name,terms.reduce((value,term)=>value+(layoutConstants.has(term)?layoutConstants.get(term):Number(term)),0));
+}
 const exact = new Set([...source.matchAll(/\{\s*L"(v1\|[^"]*)"\s*,\s*PageCommand::\w+\s*\}/g)].map(m => m[1]));
-const numeric = [...source.matchAll(/\{L"(v1\|[^"]*\|)",(\d+),(\d+),PageCommand::\w+\}/g)]
-  .map(m => ({prefix: m[1], min: Number(m[2]), max: Number(m[3])}));
+const numeric = [...source.matchAll(/\{L"(v1\|[^"]*\|)",(\d+),(\d+|dynamic_island::ExpandedLayoutMaximum),PageCommand::\w+\}/g)]
+  .map(m => ({prefix: m[1], min: Number(m[2]), max: m[3]==='dynamic_island::ExpandedLayoutMaximum'?layoutConstants.get('ExpandedLayoutMaximum'):Number(m[3])}));
 const delay = source.match(/delayPrefix = L"(v1\|[^"]*\|)";[\s\S]*?if \(delay < (\d+) \|\| delay > (\d+)\)/);
 numeric.push({prefix: delay[1], min: Number(delay[2]), max: Number(delay[3])});
 // Drops carry files and go through postMessageWithAdditionalObjects, not send().
@@ -56,7 +64,13 @@ test('numeric ranges agree at and beyond both ends', () => {
     // Per-style settings carry an extra word: v1|spectrum|blocks|barWidth|9.
     const words = prefix.split('|').slice(1, -1);
     if (words[0] === 'radial') continue;  // checked value by value below
-    for (const value of [min, max]) assert.equal(pageSends([...words, value]), prefix + value, prefix + value);
+    for (const value of [min, max]) {
+      const message=pageSends([...words, value]);
+      if(prefix==='v1|dynamicIsland|expandedLayout|') {
+        assert.equal(message!==null,validExpandedLayout(value),prefix+value);
+        if(message!==null)assert.equal(hostAccepts(message),true,message);
+      } else assert.equal(message,prefix+value,prefix+value);
+    }
     for (const value of [min - 1, max + 1]) assert.equal(pageSends([...words, value]), null, prefix + value);
   }
 });
@@ -108,7 +122,7 @@ test('settings page controls use the host ranges', () => {
   const found = [];
   const expect = (where, prefix, min, max) => found.push({where, prefix, actual: [Number(min), Number(max)]});
   const dock = read('dock.js'), organizer = read('organizer.js'), minimize = read('minimize.js'),
-    icons = read('desktop-icons.js'), app = read('app.js');
+    icons = read('desktop-icons.js'), controls = read('component-settings-commands.js');
   const dockKey = {'dock-icon-scale': 'iconScale', 'dock-bottom-offset': 'bottomOffset', 'dock-icon-spacing': 'iconSpacing',
     'dock-launchpad-scale': 'launchpadScale', 'dock-launchpad-icon-scale': 'launchpadIconScale'};
   for (const m of dock.matchAll(/rangeControl\('([\w-]+)',t\([^)]*\),[^,]+,(\d+),(\d+),/g))
@@ -123,9 +137,10 @@ test('settings page controls use the host ranges', () => {
     expect('organizer.js icon scale', 'v1|organizer|iconScale|', m[1], m[2]);
   for (const m of minimize.matchAll(/'(durationMs|unhideDurationMs)',(\d+),(\d+)\)/g))
     expect(`minimize.js ${m[1]}`, `v1|minimize|${m[1]}|`, m[2], m[3]);
-  const appMinimize = app.match(/const min=key==='durationMs'\?(\d+):(\d+),max=key==='durationMs'\?(\d+):(\d+);/);
-  expect('app.js durationMs', 'v1|minimize|durationMs|', appMinimize[1], appMinimize[3]);
-  expect('app.js unhideDurationMs', 'v1|minimize|unhideDurationMs|', appMinimize[2], appMinimize[4]);
+  const duration = controls.match(/const min=key==='durationMs'\?(\d+):(\d+),max=key==='durationMs'\?(\d+):(\d+);/);
+  assert.ok(duration,'component number controller declares both duration limits');
+  expect('component durationMs', 'v1|minimize|durationMs|', duration[1], duration[3]);
+  expect('component unhideDurationMs', 'v1|minimize|unhideDurationMs|', duration[2], duration[4]);
   const delay = icons.match(/id="icons-delay" type="number" min="(\d+)" max="(\d+)"/);
   expect('desktop-icons.js delay', 'v1|icons|delay|', delay[1], delay[2]);
   assert.ok(found.length >= 19, `controls found: ${found.length}`);

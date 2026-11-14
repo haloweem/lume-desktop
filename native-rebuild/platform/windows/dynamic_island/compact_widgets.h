@@ -11,7 +11,7 @@ namespace lume::platform::windows {
 struct CompactData {
     SYSTEMTIME time{};
     std::optional<double> battery,disk;
-    bool plugged=false,hasBattery=false;
+    bool plugged=false,hasBattery=false,charging=false;
     unsigned files=0;
     ULONGLONG refreshed=0,diskAt=0;
     void Refresh();

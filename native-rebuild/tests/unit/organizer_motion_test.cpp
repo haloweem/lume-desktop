@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <string>
 
 using namespace lume::platform::windows;
@@ -150,10 +151,142 @@ void TabStrip(){
     Check(Difference(plain,tabs,{44,18,320,36},96)>200,"tab strip pixels differ from the single title");
     Check(Difference(plain,tabs,single.viewport,96)==0,"tabs leave the icon grid pixels unchanged");
 }
+void CollapsedHeader(){
+    auto collection=Collection();collection.mode=lume::organizer::Mode::Collapsed;
+    collection.title=u8"收纳文件和常用快捷方式";
+    constexpr float width=OrganizerCollapsedWidth,height=OrganizerCollapsedHeight;
+    OrganizerViewState view;view.searchOpen=true;
+    const auto layout=LayoutOrganizer(width,height,collection,view);
+    Check(layout.collapsed&&layout.cells.empty()&&layout.viewport.width==0&&layout.viewport.height==0&&layout.maxScroll==0,
+        "collapsed organizer has only a title bar, with no item layout or viewport");
+    Check(Same(layout.header,{0,0,width,height})&&layout.searchInput.width==0,
+        "the whole compact bar is a header and has no hidden search input");
+    Check(HitOrganizer(width,height,collection,layout.title.x+10,22,view).kind==OrganizerHit::Kind::Title&&
+        HitOrganizer(width,height,collection,layout.search.x+10,22,view).kind==OrganizerHit::Kind::Search&&
+        HitOrganizer(width,height,collection,18,22,view).kind==OrganizerHit::Kind::Header&&
+        HitOrganizer(width,height,collection,120,height+1,view).kind==OrganizerHit::Kind::None,
+        "compact title, search, dragging margin and outside hit regions stay separate");
+    const auto panels=OrganizerSearchPanels(layout,view);
+    Check(panels.size()==1&&panels[0].x==layout.search.x&&panels[0].y>=0&&
+        panels[0].y+panels[0].height<=height,"only the in-bar search button requests an extra glass panel");
+    auto grouped=TabView({L"桌面",L"文件",L"工作资料",L"游戏",L"更长的标签名称"},4);
+    const auto overflow=LayoutOrganizer(width,height,collection,grouped);
+    Check(overflow.tabs.size()==5&&overflow.maxTabScroll>0&&
+        overflow.tabStrip.x+overflow.tabStrip.width<overflow.search.x,
+        "compact groups preserve a scrollable tab strip beside search");
+    grouped.tabScroll=overflow.maxTabScroll;
+    const auto scrolled=LayoutOrganizer(width,height,collection,grouped);
+    const auto last=scrolled.tabs.back();
+    Check(Same(scrolled.title,last)&&last.x>=scrolled.tabStrip.x&&
+        last.x+last.width<=scrolled.tabStrip.x+scrolled.tabStrip.width+.01f,
+        "scrolling reveals the active last tab and its rename bounds");
+    const auto hit=HitOrganizer(width,height,collection,last.x+last.width/2,22,grouped);
+    Check(hit.kind==OrganizerHit::Kind::Tab&&hit.index==4,"last compact tab remains reachable by hit testing");
+    OrganizerMotionFrame stale;stale.cells={{0,{14,2,52,52},1.28f,5,true}};
+    stale.slots={{10,0,80,80}};stale.marquee=WidgetRect{0,0,width,height};
+    stale.external=true;stale.feedback=1;stale.count=999;
+    for(const unsigned dpi:{96u,120u,144u,192u}){
+        unsigned iconLookups=0;
+        const auto paint=[&](const lume::organizer::Collection& source,const OrganizerViewState& state,
+                             const OrganizerMotionFrame* frame){
+            WidgetCanvas canvas;WidgetBitmap pixels;
+            Check(canvas.Begin(width,height,dpi),"compact canvas begins at each DPI");
+            DrawOrganizer(canvas,width,height,source,0,[&](const auto&){++iconLookups;
+                return std::make_shared<const WidgetBitmap>(WidgetBitmap{1,1,{0xffff00ffu}});},state,frame);
+            Check(canvas.Finish(pixels),"compact canvas finishes at each DPI");return pixels;
+        };
+        const auto plain=paint(collection,view,nullptr),withStale=paint(collection,view,&stale);
+        auto empty=collection;empty.items.clear();
+        Check(iconLookups==0&&plain.pixels==withStale.pixels&&plain.pixels==paint(empty,view,nullptr).pixels,
+            "compact pixels never contain item previews, selection, drag counts or stale animation");
+        const auto tabs=paint(collection,grouped,&stale);
+        Check(iconLookups==0&&tabs.pixels!=plain.pixels,"compact tab labels render without loading any item icon");
+    }
+    OrganizerMotion motion;auto expanded=collection;expanded.mode=lume::organizer::Mode::Expanded;
+    const auto expandedLayout=LayoutOrganizer(420,392,expanded);
+    motion.Update(expanded,expandedLayout,OrganizerPoint{100,100},{},"",{},.016f,false,true,7);
+    const auto& folded=motion.Update(collection,layout,OrganizerPoint{100,22},{},"",{},.016f,false,true,7);
+    Check(folded.cells.empty()&&folded.slots.empty()&&!folded.marquee&&!folded.external&&
+        folded.feedback==0&&folded.count==0&&!motion.Active(),"folding clears expanded motion and stops its timer work");
+    view.temporaryExpanded=true;
+    const auto temporary=LayoutOrganizer(420,392,collection,view);
+    Check(!temporary.collapsed&&temporary.cells.size()==collection.items.size()&&temporary.searchInput.width>0,
+        "temporary search expansion restores the ordinary item and input layout");
+}
+void AccentMarkers(){
+    using lume::organizer::Accent;
+    Check(OrganizerAccentColor(Accent::None)==0,"no accent adds no color to the original drawing");
+    std::set<std::uint32_t> colors;
+    for(const auto accent:{Accent::Blue,Accent::Green,Accent::Amber,Accent::Rose,Accent::Purple})
+        Check(OrganizerAccentColor(accent)&&colors.insert(OrganizerAccentColor(accent)).second,
+            "each optional accent has its own RGB marker color");
+    for(const bool collapsed:{false,true})for(const unsigned dpi:{96u,144u}){
+        auto collection=Collection();
+        if(collapsed)collection.mode=lume::organizer::Mode::Collapsed;
+        const float width=collapsed?static_cast<float>(OrganizerCollapsedWidth):420.f;
+        const float height=collapsed?static_cast<float>(OrganizerCollapsedHeight):392.f;
+        const auto paint=[&](const lume::organizer::Collection& source,const OrganizerViewState& view){
+            WidgetCanvas canvas;WidgetBitmap pixels;
+            Check(canvas.Begin(width,height,dpi),"accent canvas begins");
+            DrawOrganizer(canvas,width,height,source,{}, {},view);
+            Check(canvas.Finish(pixels),"accent canvas finishes");return pixels;
+        };
+        const auto plain=paint(collection,{});
+        const auto layout=LayoutOrganizer(width,height,collection);
+        auto colored=collection;colored.accent=Accent::Blue;
+        const auto blue=paint(colored,{});
+        const auto coloredLayout=LayoutOrganizer(width,height,colored);
+        Check(Difference(plain,blue,layout.header,dpi)>100&&Same(layout.title,coloredLayout.title)&&
+            Same(layout.search,coloredLayout.search)&&Same(layout.viewport,coloredLayout.viewport),
+            "accent changes only header appearance and preserves all layout regions");
+        CheckClip(blue,plain,layout.header,dpi);
+        const auto before=HitOrganizer(width,height,collection,layout.title.x+5,layout.title.y+10);
+        const auto after=HitOrganizer(width,height,colored,layout.title.x+5,layout.title.y+10);
+        Check(before.kind==after.kind&&before.index==after.index,"accent never changes title hit behavior");
+        colored.accent=Accent::None;
+        Check(paint(colored,{}).pixels==plain.pixels,"clearing an accent restores the exact default pixels");
+        auto tabs=TabView({L"桌面",L"文件"},0);const auto baseTabs=paint(collection,tabs);
+        tabs.tabAccents={Accent::None,Accent::None};
+        Check(paint(collection,tabs).pixels==baseTabs.pixels,"explicit uncolored tabs keep the exact original appearance");
+        const auto tabLayout=LayoutOrganizer(width,height,collection,tabs);
+        tabs.tabAccents={Accent::Green,Accent::Rose};const auto markedTabs=paint(collection,tabs);
+        const auto markedLayout=LayoutOrganizer(width,height,collection,tabs);
+        Check(Difference(baseTabs,markedTabs,tabLayout.tabStrip,dpi)>20&&
+            Same(tabLayout.tabs[0],markedLayout.tabs[0])&&Same(tabLayout.tabs[1],markedLayout.tabs[1]),
+            "independent tab markers are visible inside unchanged tab hit bounds");
+        CheckClip(markedTabs,baseTabs,tabLayout.tabStrip,dpi);
+    }
+}
 void CaptureVisuals(const std::filesystem::path& directory){
     std::filesystem::create_directories(directory);
     auto collection=Collection();
     const OrganizerImage icon=[](const auto& item){return CaptureIcon(item);};
+    for(const unsigned dpi:{96u,144u})for(const bool grouped:{false,true}){
+        auto compact=collection;compact.mode=lume::organizer::Mode::Collapsed;compact.title=u8"桌面收纳";
+        OrganizerViewState view;
+        if(grouped){view=TabView({L"桌面",L"文件",L"工作资料"},1);view.tabScroll=20;}
+        WidgetCanvas canvas;WidgetBitmap bitmap;
+        Check(canvas.Begin(OrganizerCollapsedWidth,OrganizerCollapsedHeight,dpi),"compact capture canvas begins");
+        // Neutral backing for the foreground review; live material is owned
+        // and verified by the window/session integration tests.
+        canvas.Rounded({0,0,OrganizerCollapsedWidth,OrganizerCollapsedHeight},10,0x273342,.96f);
+        DrawOrganizer(canvas,OrganizerCollapsedWidth,OrganizerCollapsedHeight,compact,{},icon,view);
+        Check(canvas.Finish(bitmap),"compact capture canvas finishes");
+        CaptureOne(directory,std::string("collapsed_")+(grouped?"tabs_":"title_")+std::to_string(dpi)+"dpi",bitmap);
+    }
+    for(const bool grouped:{false,true}){
+        auto compact=collection;compact.mode=lume::organizer::Mode::Collapsed;compact.title=u8"工作资料";
+        compact.accent=grouped?lume::organizer::Accent::Green:lume::organizer::Accent::Blue;
+        OrganizerViewState view;
+        if(grouped){view=TabView({L"工作",L"文件"},0);
+            view.tabAccents={lume::organizer::Accent::Green,lume::organizer::Accent::Rose};}
+        WidgetCanvas canvas;WidgetBitmap bitmap;
+        Check(canvas.Begin(OrganizerCollapsedWidth,OrganizerCollapsedHeight,144),"accent compact capture begins");
+        canvas.Rounded({0,0,OrganizerCollapsedWidth,OrganizerCollapsedHeight},10,0x273342,.96f);
+        DrawOrganizer(canvas,OrganizerCollapsedWidth,OrganizerCollapsedHeight,compact,{},icon,view);
+        Check(canvas.Finish(bitmap),"accent compact capture finishes");
+        CaptureOne(directory,grouped?"collapsed_accent_tabs_144dpi":"collapsed_accent_blue_144dpi",bitmap);
+    }
     {
         auto grouped=collection;grouped.title=u8"桌面";grouped.iconScale=70;
         OrganizerViewState view;view.tabs={L"桌面",L"文件"};
@@ -567,10 +700,6 @@ void Pixels(){
         auto noIcons=Paint(collection,view,&frame,dpi);
         Check(Difference(noIcons,moved,viewport,dpi)>50,"missing cached icon falls back to existing glyph drawing");
     }
-    collection.mode=lume::organizer::Mode::Collapsed;
-    const auto layout=LayoutOrganizer(180,216,collection);OrganizerMotion motion;
-    const auto frame=motion.Update(collection,layout,OrganizerPoint{layout.cells[0].bounds.x+26,layout.cells[0].bounds.y+26}, {},"",{},0,true);
-    Check(frame.cells.size()==4&&!motion.Active(),"collapsed layout retains four static cells under reduced motion");
 }
 }
 int main(int argc,char** argv){
@@ -582,7 +711,7 @@ int main(int argc,char** argv){
         CompositeOver(0xff12ab34u,0xff204060u)==0xff12ab34u,
         "BMP compositing respects premultiplied transparent, half-alpha and opaque BGRA pixels");
     LayoutAndSelection();
-    PointerAndDrag();SpringsAndIdentity();HoverAndReduced();ExternalArrival();HoverEdges();Pixels();TabStrip();
+    PointerAndDrag();SpringsAndIdentity();HoverAndReduced();ExternalArrival();HoverEdges();Pixels();TabStrip();CollapsedHeader();AccentMarkers();
     Check(VerifyOrganizerViewport(),"existing viewport pixels and hit tests pass without motion");
     if(capture)CaptureVisuals(std::filesystem::u8path(argv[2]));
     CoUninitialize();std::cout<<"PASS organizer motion, direct drag, interruption, settle, identity and real canvas pixels\n";

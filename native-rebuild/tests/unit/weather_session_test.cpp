@@ -5,6 +5,7 @@
 #include "platform/windows/weather/weather_view.h"
 #include "platform/windows/material/material_api.h"
 #include "weather_fixtures.h"
+#include "material_release_wait.h"
 #include <objbase.h>
 #include <commctrl.h>
 #include <atomic>
@@ -63,6 +64,12 @@ int main(){
     auto address=GetProcAddress(glass,"LumeMaterialStatistics");LumeMaterialStatisticsFn statistics=nullptr;
     std::memcpy(&statistics,&address,sizeof(statistics));Expect(statistics!=nullptr,"material diagnostics");
     const auto stats=[&]{LumeMaterialStatisticsData value{};value.size=sizeof(value);Expect(statistics(&value)!=0,"read material diagnostics");return value;};
+    const auto released=[&]{LumeMaterialStatisticsData value{};value.size=sizeof(value);return material_test::Released(statistics,value,Pump);};
+    const auto waitDevices=[&](unsigned expected){
+        const auto deadline=GetTickCount64()+2000;
+        while(stats().devices!=expected&&GetTickCount64()<deadline)Pump(5);
+        return stats().devices==expected;
+    };
     std::atomic<int> live=0,requests=0;std::atomic<bool> block=false;Files files;
     weather::Preferences initial;initial.window.locked=true;
     Expect(weather::EncodePreferences(initial,files.data["weather.json"]),"locked input fixture");
@@ -138,15 +145,17 @@ int main(){
         Expect(GetTickCount64()-start<500&&!session.Running()&&!session.Handle()&&live==0&&!session.Reading().snapshot,"close cancels and joins in-flight work");
         Expect(requests==beforeClose,"header close hitbox is separate from refresh");
         Expect(!IsWindow(tip),"close releases tooltip and subclass");
-        Expect(stats().users==0&&stats().devices==0&&stats().captures==0,"close releases weather material lease and GPU resources");
+        Expect(released(),"close releases weather material lease and GPU resources");
         Expect(!session.Snapshot().window.enabled,"native close persisted");
         block=false;
         for(int i=0;i<15;++i){
             session.HandlePage(PageCommand::WeatherEnable);
-            Expect(stats().users==1&&stats().devices==1,"one weather session has one material lease");
+            // Attach returns after creating its lease; the worker acquires the
+            // shared graphics device asynchronously, before its first frame.
+            Expect(stats().users==1&&waitDevices(1),"one weather session has one material lease");
             session.HandlePage(PageCommand::WeatherDisable);
             Expect(live==0&&!session.Handle(),"repeated lifecycle releases backend and window");
-            Expect(stats().users==0&&stats().devices==0&&stats().captures==0,"repeated lifecycle releases shared material resources");
+            Expect(released(),"repeated lifecycle releases shared material resources");
         }
         session.HandlePage(PageCommand::WeatherEnable);session.Shutdown();
         Expect(live==0&&!session.Handle()&&!session.HandlePage(PageCommand::WeatherEnable),"shutdown cannot resurrect");
@@ -157,7 +166,7 @@ int main(){
         shell::PerformanceSession performance(GetModuleHandleW(nullptr),"performance.json",{},[]{},&files);
         shell::AlmanacSession almanac(GetModuleHandleW(nullptr),"almanac.json",{},[]{},&files);
         performance.HandlePage(PageCommand::PerformanceEnable);almanac.HandlePage(PageCommand::AlmanacEnable);
-        Expect(performance.Running()&&almanac.Running()&&stats().users==3&&stats().devices==1,
+        Expect(performance.Running()&&almanac.Running()&&stats().users==3&&waitDevices(1),
             "weather, performance and almanac share one GPU device with independent business lifetimes");
         const auto calendarRevision=almanac.DataRevision();
         restored.HandlePage(PageCommand::WeatherCityBeijing);
@@ -166,7 +175,7 @@ int main(){
         Expect(live==0&&performance.Running()&&almanac.Running()&&stats().users==2&&stats().devices==1,
             "closing weather releases network backend without closing shared device used by other widgets");
         almanac.Shutdown();performance.Shutdown();
-        Expect(stats().users==0&&stats().devices==0&&stats().captures==0,"last of three sessions releases all shared material resources");
+        Expect(released(),"last of three sessions releases all shared material resources");
     }
     {
         weather::Preferences sharedPrefs;sharedPrefs.city="auto";

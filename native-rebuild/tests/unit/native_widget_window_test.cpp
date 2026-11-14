@@ -11,6 +11,7 @@
 #include "platform/windows/widget_ui/widget_snap_protocol.h"
 #include "platform/windows/widget_ui/desktop_level.h"
 #include "widget_snap_message_probe.h"
+#include "material_release_wait.h"
 using namespace lume::platform::windows;
 void Expect(bool ok,const char* text){if(!ok){std::cerr<<text<<'\n';std::exit(1);}}
 namespace {
@@ -646,11 +647,14 @@ int SplitHitRegression(){
         "create split stand-in host");
     const lume::widget::Limits limits{400,200,200,60,800,400};
     WidgetWindowPorts ports;ports.glass=false;ports.hoverPane=false;ports.bottom=true;ports.showCloseButton=false;
+    std::vector<bool> visibility;
+    ports.contentVisibilityChanged=[&](bool value){visibility.push_back(value);};
     ports.draw=[](WidgetCanvas& canvas,float w,float h){canvas.Rounded({0,0,w,h},0,0xff3366,1);};
     ports.hitShape=[](float w,float h){return std::vector<WidgetRect>{{20,h-30,w-40,20}};};
     NativeWidgetWindow widget(GetModuleHandleW(nullptr),L"Split hit",limits,ports);
     auto preferences=lume::widget::Defaults(limits);preferences.placed=true;preferences.x=160;preferences.y=180;
     Expect(widget.Configure(preferences)&&widget.Start(),"split widget starts");
+    Expect(!visibility.empty()&&visibility.back()&&widget.ContentVisible(),"initial visible content starts its sampler");
     MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE))DispatchMessageW(&message);
     HWND display=nullptr;
     for(HWND w=FindWindowExW(nullptr,nullptr,L"LumeWidgetDisplaySurface",nullptr);w;w=FindWindowExW(nullptr,w,L"LumeWidgetDisplaySurface",nullptr))
@@ -669,8 +673,19 @@ int SplitHitRegression(){
     const bool followed=matches();
     desktop_level::Place(widget.Handle(),false);
     const bool paired=GetWindow(widget.Handle(),GW_HWNDNEXT)==display;
+    window_layer::Context policy;policy.foreignForeground=true;GetWindowRect(widget.Handle(),&policy.foregroundBounds);
+    const auto pumpVisibility=[] {MSG message{};const auto id=window_layer::ContentVisibilityMessage();while(PeekMessageW(&message,nullptr,id,id,PM_REMOVE))DispatchMessageW(&message);};
+    window_layer::contextReader=[&]{return policy;};window_layer::Start();pumpVisibility();
+    Expect(!widget.ContentVisible()&&!visibility.back()&&IsWindowVisible(widget.Handle()),
+           "full foreground coverage suspends content while preserving the desktop HWND");
+    const auto coveredEvents=visibility.size();window_layer::Update(policy);pumpVisibility();
+    Expect(visibility.size()==coveredEvents,"unchanged coverage does not repeatedly notify the sampler");
+    ++policy.foregroundBounds.left;window_layer::Update(policy);pumpVisibility();
+    Expect(widget.ContentVisible()&&visibility.back(),"partial uncover resumes without a sampler update message");
+    policy.foregroundBounds={};window_layer::Stop();window_layer::contextReader={};pumpVisibility();
     ShowWindow(widget.Handle(),SW_HIDE);
     const bool hidden=!IsWindowVisible(display);
+    Expect(!widget.ContentVisible()&&!visibility.back(),"explicit hide suspends content synchronously");
     widget.Stop();DestroyWindow(host);
     if(!shown)std::cerr<<"FAIL: the display window shows directly below its widget\n";
     if(!through)std::cerr<<"FAIL: drawn content outside the hit shape lets clicks through\n";
@@ -720,8 +735,19 @@ int main(int argc,char** argv){
         int result=1;std::thread run([&]{Expect(SetThreadDesktop(desktop)!=FALSE,"bind isolated layer desktop");
             CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
             window_layer::contextReader=[] { return window_layer::Context{}; };
-            result=DesktopLevelRegression()|PlacementRefusalRegression()|GlassPairRegression()|ManagerCeilingRegression()|DeselectRegression()|
-                BandRegression()|SplitHitRegression();window_layer::contextReader={};CoUninitialize();});
+            const auto scenario=[](const char* name,auto test){
+                std::cerr<<"layer phase="<<name<<" begin\n";
+                const int code=test();std::cerr<<"layer phase="<<name<<" result="<<code<<'\n';return code;
+            };
+            result=scenario("desktop",DesktopLevelRegression);
+            result|=scenario("placement-refusal",PlacementRefusalRegression);
+            result|=scenario("glass-pair",GlassPairRegression);
+            result|=scenario("manager-ceiling",ManagerCeilingRegression);
+            result|=scenario("deselect",DeselectRegression);
+            result|=scenario("bands",BandRegression);
+            result|=scenario("split-hit",SplitHitRegression);
+            window_layer::contextReader={};std::cerr<<"layer phase=com-shutdown begin\n";CoUninitialize();
+            std::cerr<<"layer phase=com-shutdown complete\n";});
         run.join();CloseDesktop(desktop);CoUninitialize();
         if(!result)std::cout<<"desktop level regression passed\n";
         return result;
@@ -823,8 +849,12 @@ int main(int argc,char** argv){
         SendMessageW(first.Handle(),WM_CLOSE,0,0);Expect(actions==1,"close dispatches persistence action");
         first.Stop();Expect(!first.Handle()&&stats().users==1,"closing one does not close the other");
         Expect(second.Paint(),"remaining widget still draws");
-        second.Stop();shared=stats();
-        Expect(shared.users==0&&shared.devices==0&&shared.captures==0,"last lease releases shared resources");
+        second.Stop();
+        shared=stats();
+        Expect(material_test::Released(statistics,shared,[](DWORD delay){
+            const auto end=GetTickCount64()+delay;
+            do{MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}Sleep(1);}while(GetTickCount64()<end);
+        }),"last lease asynchronously releases shared resources");
         for(int i=0;i<3;++i){Expect(first.Start(),"restart");first.Stop();}
         Expect(stats().users==0,"repeated lifecycle releases leases");
     }

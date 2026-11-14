@@ -12,9 +12,20 @@ taskbar::Error TaskbarCoreDialogError(std::wstring_view);
 struct TaskbarCoreLaunch {
     std::filesystem::path executable;
     std::wstring arguments;
+    // Production cores publish a per-launch, atomically replaced report. An
+    // empty path is reserved for isolated lifecycle fixtures.
+    std::filesystem::path diagnosticsFile;
 };
+struct TaskbarCoreDiagnostics {
+    taskbar::TransparencyStatus transparency;
+    taskbar::Error error = taskbar::Error::None;
+    bool valid = false;
+    bool serviceReady = false;
+};
+TaskbarCoreDiagnostics ReadTaskbarCoreDiagnostics(const std::filesystem::path&, DWORD corePid, DWORD explorerPid);
 struct TaskbarCoreTimings {
-    std::uint32_t startTimeoutMs = 8000;
+    // The upstream Explorer handshake can itself wait 35 seconds.
+    std::uint32_t startTimeoutMs = 42000;
     std::uint32_t readySettleMs = 1200;
     std::uint32_t waitSliceMs = 50;
     std::uint32_t stopTimeoutMs = 3000;
@@ -43,6 +54,8 @@ public:
     bool Alive() const;
     bool Ready() const;
     bool HasProcess() const;
+    taskbar::TransparencyStatus Transparency() const;
+    bool ReloadResolved() const;
     std::uintptr_t ExitSignal() const;
 private:
     struct Impl;

@@ -55,6 +55,10 @@ begin
   Result := 0;
   if not UiFilesVerified then
     Result := 14;
+  #ifdef SignedNotificationIdentity
+  if not IsVerifiedLumeStart then
+    Result := 15;
+  #endif
 end;
 
 <event('CurPageChanged')>

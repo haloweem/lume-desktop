@@ -11,10 +11,8 @@ std::vector<platform::windows::IslandTodo> IslandTodoAdapter::ForDay(calendar::D
     if(!todos_)return rows;
     platform::windows::CalendarTodoView view;
     const auto& time=todos_->Time();
-    auto end=todo::LocalDateTime{day,23,59,59,999};
-    const auto until=time.FromLocal(end);
-    const auto now=WindowsLocalTime::NowMillis();
-    view.Update(todos_->Read(),&time,now,until.value_or(now));
+    view.Update(todos_->Read(),&time);
+    view.PrepareDays({day});
     for(const auto index:view.ForDay(day)){
         const auto& task=view.Snapshot().tasks[index];
         platform::windows::IslandTodo row;row.id=task.id;row.title=platform::windows::TodoWide(task.title);

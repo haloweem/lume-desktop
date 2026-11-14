@@ -11,6 +11,7 @@ struct TaskbarRuntimeStatus {
     bool applying = false;
     bool worker = false;
     std::uint64_t revision = 0;
+    taskbar::TransparencyStatus transparency;
 };
 class TaskbarRuntime final {
 public:

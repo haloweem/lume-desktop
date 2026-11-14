@@ -7,6 +7,23 @@ namespace lume::organizer {
 namespace {
 using Json=nlohmann::json;
 const char* KindName(ItemKind kind){return kind==ItemKind::Folder?"folder":kind==ItemKind::Shortcut?"shortcut":"file";}
+const char* AccentName(Accent accent){
+    switch(accent){
+        case Accent::Blue:return "blue";
+        case Accent::Green:return "green";
+        case Accent::Amber:return "amber";
+        case Accent::Rose:return "rose";
+        case Accent::Purple:return "purple";
+        default:return "none";
+    }
+}
+std::optional<Accent> ParseAccent(const Json& value){
+    if(!value.is_string())return {};
+    const auto& text=value.get_ref<const std::string&>();
+    for(const auto accent:{Accent::None,Accent::Blue,Accent::Green,Accent::Amber,Accent::Rose,Accent::Purple})
+        if(text==AccentName(accent))return accent;
+    return {};
+}
 std::optional<ItemKind> ParseKind(const Json& value){
     if(!value.is_string())return {};
     const auto text=value.get_ref<const std::string&>();
@@ -64,6 +81,7 @@ bool Encode(const State& state,std::string& output){
             if(!collection.parent.empty())row["parent"]=collection.parent;
             if(!collection.active.empty())row["active"]=collection.active;
             row["iconScale"]=collection.iconScale;
+            if(collection.accent!=Accent::None)row["accent"]=AccentName(collection.accent);
             if(collection.desktopRole!=DesktopRole::None)
                 row["desktopRole"]=collection.desktopRole==DesktopRole::Applications?"applications":"files";
             if(!collection.dismissed.empty())row["dismissed"]=collection.dismissed;
@@ -75,8 +93,9 @@ bool Encode(const State& state,std::string& output){
         if(state.applicationsRetired)retired.push_back("applications");
         if(state.filesRetired)retired.push_back("files");
         if(!retired.empty())document["retiredDesktop"]=std::move(retired);
-        output=document.dump();
-        return output.size()<=MaxStateBytes;
+        auto encoded=document.dump();
+        if(encoded.size()>MaxStateBytes)return false;
+        output=std::move(encoded);return true;
     }catch(...){return false;}
 }
 bool Decode(std::string_view text,State& output,const TextKey& pathKey){
@@ -105,10 +124,10 @@ bool Decode(std::string_view text,State& output,const TextKey& pathKey){
         }
         for(const auto& input:rows){
             if(!HasKeys(input,{"id","version","title","bounds","enabled","mode","layout","items"},
-                    {"locked","frosted","parent","active","iconScale","desktopRole","dismissed"})||
+                    {"locked","frosted","parent","active","iconScale","accent","desktopRole","dismissed"})||
                 input.contains("locked")!=input.contains("frosted")||
                 !input.at("id").is_string()||!input.at("title").is_string()||
-                !input.at("enabled").is_boolean()||!input.at("items").is_array()||input.at("items").size()>MaxItems||
+                !input.at("enabled").is_boolean()||!input.at("items").is_array()||
                 input.value("version",0)!=1)return false;
             Collection collection;collection.id=input.at("id").get<std::string>();collection.title=input.at("title").get<std::string>();
             if((collection.id!=DefaultCollectionId&&!ValidId(collection.id))||!collectionIds.insert(collection.id).second)return false;
@@ -118,6 +137,11 @@ bool Decode(std::string_view text,State& output,const TextKey& pathKey){
             if(input.contains("frosted")&&!input.at("frosted").is_boolean())return false;
             collection.locked=input.value("locked",false);
             collection.frosted=input.value("frosted",false);
+            if(input.contains("accent")){
+                const auto accent=ParseAccent(input.at("accent"));
+                if(!accent)return false;
+                collection.accent=*accent;
+            }
             // Missing in old files means the original 100%, not the new default.
             collection.iconScale=100;
             if(input.contains("iconScale")){
@@ -133,7 +157,7 @@ bool Decode(std::string_view text,State& output,const TextKey& pathKey){
             }
             if(input.contains("dismissed")){
                 const auto& dismissed=input.at("dismissed");
-                if(!dismissed.is_array()||dismissed.empty()||dismissed.size()>MaxDismissed)return false;
+                if(!dismissed.is_array()||dismissed.empty())return false;
                 for(const auto& path:dismissed){
                     if(!path.is_string())return false;
                     collection.dismissed.push_back(path.get<std::string>());

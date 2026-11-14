@@ -5,6 +5,8 @@
 #include "platform/windows/widget_ui/widget_snap_protocol.h"
 #include "platform/windows/widget_ui/LumeWidgetColorPicker.h"
 #include "platform/windows/widget_ui/LumeWidgetPositionEditor.h"
+#include "platform/windows/lume_window_ids.h"
+#include "platform/windows/widget_ui/window_layer_policy.h"
 #include "widget_snap_message_probe.h"
 #include <windows.h>
 #include <objidl.h>
@@ -17,6 +19,7 @@
 #include <cstring>
 
 namespace {
+void Stage(const char* text) { std::cout<<"clock test: "<<text<<'\n'<<std::flush; }
 void WriteBitmap(const lume::platform::windows::ClockBitmap& bitmap, const char* name) {
     const char* destination=std::getenv("LUME_CLOCK_PROBE_OUTPUT");
     if (!destination) return;
@@ -41,17 +44,24 @@ void WriteBitmap(const lume::platform::windows::ClockBitmap& bitmap, const char*
     }
 }
 UINT expectedPopupCount=0;
-BOOL CALLBACK FindSystemMenu(HWND window,LPARAM data) {
+ULONGLONG popupCancelDeadline=0;
+BOOL CALLBACK FindWidgetMenu(HWND window,LPARAM data) {
     DWORD process=0;GetWindowThreadProcessId(window,&process);
     wchar_t className[32]{};GetClassNameW(window,className,32);
-    if(process==GetCurrentProcessId()&&std::wstring(className)==L"#32768"){
+    if(process==GetCurrentProcessId()&&IsWindowVisible(window)&&
+       std::wstring(className)==lume::window_ids::WidgetMenuClass){
         *reinterpret_cast<HWND*>(data)=window;return FALSE;
     }
     return TRUE;
 }
 void CALLBACK CancelPopup(HWND,UINT,UINT_PTR timer,DWORD) {
-    HWND menu=nullptr;EnumThreadWindows(GetCurrentThreadId(),FindSystemMenu,reinterpret_cast<LPARAM>(&menu));
-    if(menu) { ++expectedPopupCount; KillTimer(nullptr,timer); EndMenu(); }
+    HWND menu=nullptr;EnumThreadWindows(GetCurrentThreadId(),FindWidgetMenu,reinterpret_cast<LPARAM>(&menu));
+    if(menu) {
+        ++expectedPopupCount;KillTimer(nullptr,timer);
+        SendMessageW(menu,WM_KEYDOWN,VK_ESCAPE,0);
+    } else if(GetTickCount64()>=popupCancelDeadline) {
+        KillTimer(nullptr,timer);PostQuitMessage(-778);
+    }
 }
 const wchar_t* quittingModalClass=nullptr;
 bool quittingModalWasVisible=false;
@@ -75,15 +85,9 @@ void PumpSnapMessages() {
     while(PeekMessageW(&message,nullptr,lume::platform::windows::widget_snap::Message,
         lume::platform::windows::widget_snap::Message+16,PM_REMOVE))DispatchMessageW(&message);
 }
-struct RestoreCursor {
-    RestoreCursor(){GetCursorPos(&position);}
-    ~RestoreCursor(){SetCursorPos(position.x,position.y);}
-    POINT position{};
-};
 int SnapRegression(unsigned scenario) {
     using namespace lume;
     using namespace lume::platform::windows;
-    RestoreCursor cursor;
     unsigned failures=0,positionActions=0;
     const auto verify=[&](bool valid,const char* text){
         if(!valid){++failures;std::cerr<<"FAIL: "<<text<<'\n';}
@@ -128,7 +132,6 @@ int SnapRegression(unsigned scenario) {
         }
         SendMessageW(calendarWindow.Handle(),WM_EXITSIZEMOVE,0,0);
     }else{
-        Check(SetCursorPos(clockBounds.left+20,clockBounds.top+20)!=FALSE,"place cursor inside owned clock");
         SendMessageW(clockWindow.Handle(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(20,20));
         Check(GetCapture()==clockWindow.Handle(),"clock owns the in-flight drag");
         const auto width=clockBounds.right-clockBounds.left,height=clockBounds.bottom-clockBounds.top;
@@ -143,8 +146,12 @@ int SnapRegression(unsigned scenario) {
         verify(!GetPropW(clockWindow.Handle(),widget_snap::ActiveEdges)&&!GetPropW(calendarWindow.Handle(),widget_snap::ActiveEdges),
             "locking an in-flight clock drag clears both guide owners");
         RECT lockedBounds{},afterMove{};GetWindowRect(clockWindow.Handle(),&lockedBounds);
-        Check(SetCursorPos(clockBounds.left+70,clockBounds.top+60)!=FALSE,"advance cursor after lock");
+        // Drive the owned HWND directly on the inactive test desktop. The
+        // canceled interaction must reject movement without moving the user's
+        // system pointer or requiring the test desktop to become interactive.
         SendMessageW(clockWindow.Handle(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(70,60));
+        RECT afterLock{lockedBounds.left+50,lockedBounds.top+40,lockedBounds.right+50,lockedBounds.bottom+40};
+        SendMessageW(clockWindow.Handle(),WM_MOVING,0,reinterpret_cast<LPARAM>(&afterLock));
         GetWindowRect(clockWindow.Handle(),&afterMove);
         verify(EqualRect(&lockedBounds,&afterMove)!=FALSE,"a locked in-flight clock cannot continue moving");
         SendMessageW(clockWindow.Handle(),WM_LBUTTONUP,0,MAKELPARAM(70,60));
@@ -154,17 +161,30 @@ int SnapRegression(unsigned scenario) {
     return failures?1:0;
 }
 }
-int main(int argc,char** argv) {
+int RunTests(int argc,char** argv) {
   try {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     using namespace lume;
     using namespace lume::platform::windows;
+    if(argc==2&&std::strcmp(argv[1],"--close-only")==0) {
+        NativeClockWindow* active=nullptr;
+        NativeClockWindow window(GetModuleHandleW(nullptr),[&](clock::Action action){
+            if(action.type==clock::ActionType::Enable&&!action.value)active->Stop();
+        });
+        active=&window;
+        Check(window.Configure(clock::Style::Welfare,clock::Appearance{})&&window.Start(),"isolated close-only clock starts");
+        SendMessageW(window.Handle(),WM_CLOSE,0,0);
+        Check(!window.Handle(),"close-only callback synchronously destroys the native clock");
+        Stage("close-only passed");return 0;
+    }
     if(argc==2&&(std::strcmp(argv[1],"--snap-lock")==0||std::strcmp(argv[1],"--snap-handoff")==0||
         std::strcmp(argv[1],"--snap-calendar-dedup")==0))
         return SnapRegression(std::strcmp(argv[1],"--snap-calendar-dedup")==0?2u:
             std::strcmp(argv[1],"--snap-handoff")==0?1u:0u);
-    Check(argc==1,"Usage: lume-native-clock-window-test [--snap-lock|--snap-handoff|--snap-calendar-dedup]");
+    Check(argc==1,"Usage: lume-native-clock-window-test [--snap-lock|--snap-handoff|--snap-calendar-dedup|--close-only]");
+    Stage("snap regressions");
     Check(SnapRegression(0)==0&&SnapRegression(1)==0&&SnapRegression(2)==0,"clock snap lock, handoff and calendar dedup regressions");
+    Stage("rendering and bounds");
     for(unsigned dpi:{96u,120u,144u,168u,192u,288u}) {
       const SIZE size{MulDiv(721,static_cast<int>(dpi),96),MulDiv(165,static_cast<int>(dpi),96)};
       const auto grip=ClockGrip(size,dpi);
@@ -200,6 +220,7 @@ int main(int argc,char** argv) {
       for (auto pixel : bitmap.pixels) Check(pixel == 0, "zero alpha retains transparency");
     }
     NativeClockWindow* active = nullptr;
+    Stage("window lifecycle and snapping");
     unsigned actions=0;
     clock::Action lastAction{};
     NativeClockWindow window(GetModuleHandleW(nullptr), [&](clock::Action action) {
@@ -250,6 +271,7 @@ int main(int argc,char** argv) {
           "suspending the active snap source clears both guide owners");
     window.Resume();
     calendarWindow.Stop();
+    Stage("edge positions");
     // Transparent clock canvas may straddle a screen edge; it must not be
     // forced wholly into one monitor on move, refresh, or restart.
     for(auto edgeStyle:{clock::Style::Welfare,clock::Style::Mond,clock::Style::InsideDream}) {
@@ -285,6 +307,8 @@ int main(int argc,char** argv) {
     window.Center();
     Check(actions==1 && lastAction.type==clock::ActionType::Position, "center emits position for controller acceptance");
     const auto beforeCancel=actions;
+    Stage("context menu cancellation");
+    popupCancelDeadline=GetTickCount64()+1000;
     const UINT_PTR cancelTimer=SetTimer(nullptr,0,30,CancelPopup);
     Check(cancelTimer!=0,"cancel probe timer");
     SendMessageW(window.Handle(),WM_CONTEXTMENU,0,MAKELPARAM(100,100));
@@ -294,10 +318,13 @@ int main(int argc,char** argv) {
     Check(window.Configure(clock::Style::Welfare,locked),"lock clock");
     SendMessageW(window.Handle(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(20,20));
     Check(GetCapture()!=window.Handle(),"locked clock does not capture drag");
+    popupCancelDeadline=GetTickCount64()+1000;
     const auto lockedCancelTimer=SetTimer(nullptr,0,30,CancelPopup);
+    Check(lockedCancelTimer!=0,"locked cancel probe timer");
     SendMessageW(window.Handle(),WM_CONTEXTMENU,0,MAKELPARAM(100,100));
     KillTimer(nullptr,lockedCancelTimer);
     Check(expectedPopupCount==2 && actions==beforeCancel,"locked clock still supports original context menu");
+    Stage("shared modal quit forwarding");
     ULONG_PTR graphicsToken=0;
     Gdiplus::GdiplusStartupInput graphicsInput;
     Check(Gdiplus::GdiplusStartup(&graphicsToken,&graphicsInput,nullptr)==Gdiplus::Ok,"shared picker graphics startup");
@@ -333,13 +360,66 @@ int main(int argc,char** argv) {
           "shared modal forwards WM_QUIT exit code to application loop");
     }
     Gdiplus::GdiplusShutdown(graphicsToken);
+    Stage("suspend, resume and cleanup");
     window.Suspend(); Check(!window.IsRunning(), "suspends and releases rendering");
+    window_layer::desktopForeground=[] { return true; };
+    window_layer::RestoreDesktop(window.Handle());
+    Check(!IsWindowVisible(window.Handle()),"desktop recovery preserves explicitly suspended clock visibility");
+    window_layer::desktopForeground={};
     window.Resume(); Check(window.IsRunning(), "resumes");
     SendMessageW(window.Handle(),WM_CLOSE,0,0);
     Check(!window.Handle() && !window.IsRunning(), "close callback can synchronously destroy window");
     Check(window.Start(), "restart after close");
     window.Dispose(); window.Dispose();
     Check(!window.Handle(), "dispose idempotent");
-    std::cout << "Native clock original font rendering and lifecycle passed\n";
+    std::cout << "Native clock original font rendering and lifecycle passed\n"<<std::flush;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+  return 0;
+}
+
+int main(int argc,char** argv) {
+    if(argc>1&&std::strcmp(argv[1],"--isolated")==0)return RunTests(argc-1,argv+1);
+    if(argc>2){std::cerr<<"too many clock test arguments\n";return 2;}
+    std::wstring argument;
+    if(argc==2) {
+        const std::string value=argv[1];
+        if(value!="--snap-lock"&&value!="--snap-handoff"&&value!="--snap-calendar-dedup"&&value!="--close-only") {
+            std::cerr<<"unknown clock test argument\n";return 2;
+        }
+        argument.assign(value.begin(),value.end());
+    }
+    const auto name=L"LumeClockTest-"+std::to_wstring(GetCurrentProcessId());
+    HDESK desktop=CreateDesktopW(name.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);
+    if(!desktop){std::cerr<<"create isolated clock test desktop failed\n";return 2;}
+    // Bind the whole child process before any GUI/IME worker is created. Only
+    // moving a runner thread leaves input-method workers on a different desktop
+    // and can block their teardown while DestroyWindow waits for that worker.
+    const auto desktopPath=L"WinSta0\\"+name;
+    PROCESS_INFORMATION process{};HANDLE job=nullptr;bool assigned=false;int result=1;
+    try {
+        wchar_t executable[32768]{};
+        Check(GetModuleFileNameW(nullptr,executable,32768)!=0,"find isolated clock executable");
+        std::wstring command=std::wstring(L"\"")+executable+L"\" --isolated";
+        if(!argument.empty())command+=L" "+argument;
+        STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.lpDesktop=const_cast<wchar_t*>(desktopPath.c_str());
+        startup.dwFlags=STARTF_USESTDHANDLES;
+        startup.hStdInput=GetStdHandle(STD_INPUT_HANDLE);startup.hStdOutput=GetStdHandle(STD_OUTPUT_HANDLE);
+        startup.hStdError=GetStdHandle(STD_ERROR_HANDLE);
+        job=CreateJobObjectW(nullptr,nullptr);Check(job!=nullptr,"create isolated clock lifetime job");
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        Check(SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)),"bound clock fixture lifetime");
+        Check(CreateProcessW(executable,command.data(),nullptr,nullptr,TRUE,CREATE_SUSPENDED|CREATE_NO_WINDOW,
+              nullptr,nullptr,&startup,&process),"start clock process on isolated desktop");
+        assigned=AssignProcessToJobObject(job,process.hProcess)!=FALSE;Check(assigned,"assign clock fixture lifetime job");
+        Check(ResumeThread(process.hThread)!=static_cast<DWORD>(-1),"resume isolated clock process");
+        Check(WaitForSingleObject(process.hProcess,20000)==WAIT_OBJECT_0,"isolated clock scenario finishes within timeout");
+        DWORD code=1;Check(GetExitCodeProcess(process.hProcess,&code)!=FALSE,"read isolated clock result");
+        result=static_cast<int>(code);
+    }catch(const std::exception& error){std::cerr<<error.what()<<'\n';}
+    if(process.hProcess&&!assigned)TerminateProcess(process.hProcess,1);
+    if(job)CloseHandle(job);
+    if(process.hThread)CloseHandle(process.hThread);
+    if(process.hProcess){WaitForSingleObject(process.hProcess,1000);CloseHandle(process.hProcess);}
+    if(!CloseDesktop(desktop)){std::cerr<<"close isolated clock test desktop failed\n";return 2;}
+    return result;
 }

@@ -20,9 +20,10 @@ class Port final:public taskbar::ITaskbarPort {
 public:
     explicit Port(Fixture& fixture):fixture(fixture){}
     taskbar::Error Acquire(bool,taskbar::Mode& mode)override {
-        ++fixture.acquired;mode=taskbar::Mode::Windows11X64;return taskbar::Error::None;
+        if(!owns){++fixture.acquired;owns=true;}
+        mode=taskbar::Mode::Windows11X64;return taskbar::Error::None;
     }
-    void Release()override{++fixture.released;}
+    void Release()override{if(owns){++fixture.released;owns=false;}}
     taskbar::Error ReadAutoHide(bool& value)override{value=fixture.hidden;return taskbar::Error::None;}
     taskbar::Error SetAutoHide(bool value)override{fixture.hidden=value;return taskbar::Error::None;}
     taskbar::Error ReadVisibility(std::vector<taskbar::Visibility>& out)override{
@@ -39,6 +40,7 @@ public:
     taskbar::Error StopCore(bool)override{fixture.core=false;return taskbar::Error::None;}
 private:
     Fixture& fixture;
+    bool owns=false;
 };
 struct Probe {
     shell::DesktopApplication* app=nullptr;

@@ -12,6 +12,8 @@ using auth::Json;
 // returning. Unexpected encrypted QRC/KRC is unsupported, never empty success.
 // Throws runtime_error: service, expired, unsupported, unavailable, invalid-response,
 // or cancelled. Credentials are borrowed and never persisted or modified.
+// Refreshed device metadata has a bounded process cache, partitioned by the
+// credential fingerprint; authentication fields never enter that cache.
 Json Execute(auth::Provider provider, std::string_view action, const Json& arguments,
              const Json& credentials, const auth::Cancelled& cancelled,
              const auth::Exchange& exchange = auth::SendHttp);

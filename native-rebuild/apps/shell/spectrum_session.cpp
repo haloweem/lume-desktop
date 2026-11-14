@@ -51,6 +51,11 @@ struct SpectrumSession::Impl{
             Gdiplus::GdiplusShutdown(token);return result;
         };
         ports.command=[this](UINT command,const widget::Preferences& bounds){MenuCommand(command,bounds);};
+        ports.contentVisibilityChanged=[this](bool visible){
+            capture.SetActive(visible);
+            last={};
+            if(!visible)std::fill(shown.begin(),shown.end(),0.f);
+        };
         return ports;
     }
     std::wstring State(bool applied=false,bool saved=false)const{
@@ -181,7 +186,7 @@ struct SpectrumSession::Impl{
         const bool ok=Apply(next);if(notify)notify(State(),!ok);
     }
     void Updated(){
-        pending=false;if(stopped||!window.Handle())return;
+        pending=false;if(stopped||!window.ContentVisible())return;
         const auto now=std::chrono::steady_clock::now();
         const float seconds=last.time_since_epoch().count()?std::chrono::duration<float>(now-last).count():0.f;last=now;
         const auto frame=capture.Latest();

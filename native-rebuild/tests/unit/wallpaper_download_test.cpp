@@ -172,6 +172,27 @@ void Cancellation(const std::filesystem::path& base) {
         "cancellation has a distinct terminal result");
     Expect(!std::filesystem::exists(base / "cancel.apk"), "cancelled transfer does not publish");
 }
+void CancelWithExclusiveWriter(const std::filesystem::path& base) {
+    const auto root=base/"cancel-exclusive";
+    const auto target=root/"unchanged.apk";
+    std::filesystem::create_directories(root);
+    {std::ofstream prior(target,std::ios::binary);prior<<"previous";}
+    std::atomic<bool> cancel{false};
+    auto factory=MakeProtectedWriterFactory(root.u8string());
+    DownloadOptions options;
+    options.protectedWriter=[&](const std::string& path,std::string& error){
+        auto writer=factory(path,error);
+        Expect(bool(writer),"native exclusive writer created before cancellation");
+        cancel=true;
+        return writer;
+    };
+    const auto result=Download(Item("https://static.lumedesktop.com/lume/test.mp4"),target.u8string(),cancel,{},options);
+    Expect(result.cancelled&&!result.ok,"cancellation between writer creation and transfer is reported");
+    for(const auto& file:std::filesystem::directory_iterator(root))
+        Expect(file.path().extension()!=".download","exclusive writer closes before staging cleanup on early cancellation");
+    std::ifstream input(target,std::ios::binary);
+    Expect(std::string(std::istreambuf_iterator<char>(input),{})=="previous","early cancellation preserves completed wallpaper");
+}
 void ProtectionAndOrigin(const std::filesystem::path& base) {
     std::atomic<bool> cancel{false};
     auto item = Item("https://static.lumedesktop.com/lume/test.mp4");
@@ -261,6 +282,30 @@ std::string Manifest(bool video) {
     }})}}.dump();
 }
 void PartialCatalogs() {
+    {
+        std::atomic<bool> cancel{false};
+        Server videos({Response(Manifest(true), 200, "application/json")});
+        Server images({Response(Manifest(false), 200, "application/json")});
+        unsigned ready=0;
+        const auto result=FetchCatalog(cancel,{videos.Url(),images.Url(),true},[&](const auto& partial) {
+            ++ready;
+            Expect(partial.error.empty() && partial.videoCatalogLoaded && !partial.imageCatalogLoaded &&
+                partial.items.size()==1 && images.requests==0,
+                "validated videos become available before the image catalog request starts");
+        });
+        Expect(ready==1 && result.error.empty() && result.videoCatalogLoaded && result.imageCatalogLoaded &&
+            result.items.size()==2,"early video delivery preserves the final combined catalog");
+    }
+    {
+        std::atomic<bool> cancel{false};
+        Server videos({Response(Manifest(true), 200, "application/json")});
+        Server images({Response(Manifest(false), 200, "application/json")});
+        CatalogFetchOptions options{videos.Url(), images.Url(), true, true};
+        const auto result = FetchCatalog(cancel, options);
+        Expect(result.error.empty() && result.videoCatalogLoaded && !result.imageCatalogLoaded &&
+            result.items.size() == 1 && videos.requests == 1 && images.requests == 0,
+            "preview metadata refresh fetches only videos and leaves the image collection untouched");
+    }
     std::atomic<bool> cancel{false};
     {
         // {"wallpapers":[]} gzip encoded, as a compressing CDN returns it.
@@ -371,6 +416,7 @@ int main(int argc, char** argv) {
     ResumeShortBody(base);
     FailureDoesNotPublish(base);
     Cancellation(base);
+    CancelWithExclusiveWriter(base);
     ProtectionAndOrigin(base);
     HttpValidation(base);
     NativeEncryptedRanges(base);

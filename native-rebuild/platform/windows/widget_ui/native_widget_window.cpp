@@ -25,6 +25,13 @@ struct NativeWidgetWindow::State {
     State(HINSTANCE instance,std::wstring title,widget::Limits limits,WidgetWindowPorts ports):
         instance(instance),title(std::move(title)),limits(limits),ports(std::move(ports)),prefs(widget::Defaults(limits)){}
     ~State(){Stop();}
+    bool ContentVisible()const{return !stopping&&window_layer::ContentVisible(window);}
+    void PublishVisibility(bool force=false){
+        const bool next=ContentVisible();
+        if(!force&&visibilityKnown&&contentVisible==next)return;
+        contentVisible=next;visibilityKnown=true;
+        if(ports.contentVisibilityChanged)ports.contentVisibilityChanged(next);
+    }
     widget::Preferences Bounds()const{
         auto p=prefs;RECT r{};
         if(window&&GetWindowRect(window,&r)){p.placed=true;p.x=r.left;p.y=r.top;p.width=MulDiv(r.right-r.left,96,static_cast<int>(dpi));p.height=MulDiv(r.bottom-r.top,96,static_cast<int>(dpi));}
@@ -91,10 +98,11 @@ struct NativeWidgetWindow::State {
         // Placement already falls back to a show without a z-order request; a
         // still hidden window means the desktop layer refused it outright.
         if(!IsWindowVisible(window)&&!window_layer::Suppressed(window)){placementFailed=true;Stop();return false;}
+        PublishVisibility(true);
         return true;
     }
     void Stop(){
-        stopping=true;moveAnchored=false;ClearSnapGuides();material.Detach();
+        stopping=true;PublishVisibility();moveAnchored=false;ClearSnapGuides();material.Detach();
         if(window){auto old=window;window=nullptr;if(GetCapture()==old)ReleaseCapture();DestroyWindow(old);}
         if(display){RemovePropW(display,lume::window_ids::DesktopCompanionOwnerProp);DestroyWindow(display);display=nullptr;}
         surface.Release();displaySurface.Release();canvas.reset();bitmap={};hitBitmap={};hover=false;pressed=false;stopping=false;
@@ -130,6 +138,10 @@ struct NativeWidgetWindow::State {
     }
     float Width()const{RECT r{};GetClientRect(window,&r);return static_cast<float>(r.right)*96/dpi;}
     float Height()const{RECT r{};GetClientRect(window,&r);return static_cast<float>(r.bottom)*96/dpi;}
+    float CornerRadius(float width,float height)const{
+        if(ports.cornerRadius)return std::clamp(ports.cornerRadius(width,height),0.f,std::min(width,height)/2);
+        return std::max(22.f,std::min(width*.064705882353f,height*.061111111111f));
+    }
     bool CloseAt(float x,float y)const{return ports.showCloseButton&&x>=Width()-26&&x<Width()-6&&y>=4&&y<24;}
     bool Paint(){
         if(!window||!canvas||stopping)return false;
@@ -141,7 +153,7 @@ struct NativeWidgetWindow::State {
         // glyphs in a layered HWND; it is not a black/white fallback material.
         // It covers the glass body only: a strip reserved below the glass is
         // clear, so the desktop icons or Dock under it keep their clicks.
-        const float radius=std::max(22.f,std::min(w*.064705882353f,h*.061111111111f));
+        const float radius=CornerRadius(w,h);
         const float body=ports.materialBottomInset?std::max(1.f,h-static_cast<float>(ports.materialBottomInset(w,h))):h;
         if(prefs.solid){canvas->Rounded({0,0,w,h},radius,static_cast<std::uint32_t>(prefs.panelColor),1);}
         // A bottom widget (the spectrum) has no hit surface at all: only what it
@@ -157,7 +169,7 @@ struct NativeWidgetWindow::State {
         }
         const unsigned edges=snap.Edges()|remoteEdges;
         widget_snap::SetEdges(window,edges);
-        const float inset=std::max(22.f,std::min(w*.064705882353f,h*.061111111111f));
+        const float inset=radius;
         if(edges&widget_snap::Left)canvas->Line(1,inset,1,h-inset,0x0a84ff,.9f,2);
         if(edges&widget_snap::Right)canvas->Line(w-1,inset,w-1,h-inset,0x0a84ff,.9f,2);
         if(edges&widget_snap::Top)canvas->Line(inset,1,w-inset,1,0x0a84ff,.9f,2);
@@ -187,7 +199,7 @@ struct NativeWidgetWindow::State {
         if(!window||stopping)return;
         if(prefs.solid||!ports.glass){if(material.State()!=WidgetMaterialState::Detached)material.Detach();return;}
         LumeMaterialParameters p{};p.size=sizeof(p);p.owner=window;p.frosted=prefs.frosted;p.opticalProfile=1;p.lightForeground=1;
-        p.cornerRadius=std::max(22.f,std::min(Width()*.064705882353f,Height()*.061111111111f));
+        p.cornerRadius=CornerRadius(Width(),Height());
         if(ports.materialBottomInset)
             p.bottomInset=std::min(ports.materialBottomInset(Width(),Height()),
                                   static_cast<unsigned>(std::max(0.f,Height()-1.f)));
@@ -278,7 +290,8 @@ struct NativeWidgetWindow::State {
         if((message==WM_WINDOWPOSCHANGED||message==WM_ACTIVATE||message==WM_EXITSIZEMOVE)&&s->ports.bottom&&!s->stopping&&desktop_level::placingWindow!=hwnd&&
            IsWindowVisible(hwnd))
             PostMessageW(hwnd,desktop_level::Message(),0,0);
-        if(message==WM_WINDOWPOSCHANGED&&!s->stopping)s->SyncDisplay();
+        if(message==WM_WINDOWPOSCHANGED&&!s->stopping){s->SyncDisplay();if(!s->configuring)s->PublishVisibility();}
+        if(message==window_layer::ContentVisibilityMessage()) {s->PublishVisibility();return 0;}
         if(message==WM_NCDESTROY)desktop_level::Forget(hwnd);
         if(message==desktop_level::Message()){
             if(!s->stopping&&IsWindowVisible(hwnd))desktop_level::Place(hwnd,false);
@@ -416,6 +429,7 @@ struct NativeWidgetWindow::State {
     HWND display=nullptr;LayeredSurface displaySurface;WidgetBitmap hitBitmap;bool hitDirty=true;
     bool configuring=false,stopping=false,hover=false,closeHover=false,pressed=false,menu=false,resizing=false;
     bool placementFailed=false;
+    bool visibilityKnown=false,contentVisible=false;
 };
 NativeWidgetWindow::NativeWidgetWindow(HINSTANCE instance,std::wstring title,widget::Limits limits,WidgetWindowPorts ports):
     state_(std::make_unique<State>(instance,std::move(title),limits,std::move(ports))){}
@@ -424,6 +438,7 @@ bool NativeWidgetWindow::Configure(const widget::Preferences& p){return state_->
 bool NativeWidgetWindow::Start(){return state_->Start();}
 void NativeWidgetWindow::Stop(){state_->Stop();}
 bool NativeWidgetWindow::Paint(){return state_->Paint();}
+bool NativeWidgetWindow::ContentVisible()const{return state_->ContentVisible();}
 bool NativeWidgetWindow::PlacementFailed()const{return state_->placementFailed;}
 HWND NativeWidgetWindow::Handle()const{return state_->window;}
 widget::Preferences NativeWidgetWindow::Bounds()const{return state_->Bounds();}

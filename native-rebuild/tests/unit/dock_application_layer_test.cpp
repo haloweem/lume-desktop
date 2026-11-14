@@ -2,6 +2,7 @@
 // isolated desktop. No input-desktop switch or running Lume is involved.
 #include "platform/windows/dock/dock_window.h"
 #include "platform/windows/dock/dock_sources.h"
+#include "platform/windows/dock/dock_desktop_layer.h"
 #include "platform/windows/widget_ui/desktop_level.h"
 #include <objbase.h>
 #include <commctrl.h>
@@ -100,12 +101,14 @@ HWND Surface(HWND owner) {
 }
 struct IdleOrder {
     HWND icons, bar;
-    unsigned changes = 0, inversions = 0;
+    unsigned changes = 0, inversions = 0, iconChanges = 0, barChanges = 0;
     static LRESULT CALLBACK Observe(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         const LRESULT result = DefSubclassProc(window, message, w, l);
         if (message == WM_WINDOWPOSCHANGED) {
             auto& self = *reinterpret_cast<IdleOrder*>(data);
             ++self.changes;
+            if(window==self.icons)++self.iconChanges;
+            if(window==self.bar)++self.barChanges;
             const HWND glass = Surface(self.bar);
             if (desktop_level::Above(self.bar, self.icons) ||
                 (glass && IsWindowVisible(glass) && desktop_level::Above(glass, self.icons))) {
@@ -229,6 +232,7 @@ int Scenario() {
     ShowWindow(browser, SW_SHOWMAXIMIZED);
     SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, flags);
     Check(desktop_level::Host() == host, "scenario uses its own desktop host");
+    window_layer::desktopForeground=[] { return desktop_level::DesktopForeground(); };
     const std::vector<Item> items{{Kind::Launchpad, {}, "Launchpad", false}, {Kind::Lume, {}, "Lume", true},
                                   {Kind::Pinned, "C:\\fixture.exe", "Fixture", false}};
     DockWindow dock(GetModuleHandleW(nullptr), {});
@@ -258,7 +262,9 @@ int Scenario() {
             if (window.handle == reinterpret_cast<std::uint64_t>(app)) return true;
         return false;
     };
-    Check(listed(), "open taskbar application is enumerated");
+    // The HWND can be found while CreateWindowEx is still completing its
+    // initial show. Wait for the actual taskbar provider to observe it.
+    Check(WaitFor(listed), "open taskbar application is enumerated");
     SetWindowLongPtrW(app, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(host));
     Check(!listed(), "ordinary owned popup is excluded");
     SetWindowLongPtrW(app, GWL_EXSTYLE, WS_EX_APPWINDOW | WS_EX_NOACTIVATE);
@@ -276,6 +282,29 @@ int Scenario() {
     // No Dock.Show or manual restack: WinEvents must repair this order.
     Check(WaitFor([&] { return desktop_level::Above(app, dock.Handle()); }), "application event repairs layer without refresh");
     BelowApplication(dock, app, "Dock follows external application ceiling");
+
+    // Use an ordinary application above the desktop, before the later
+    // Show Desktop scenarios deliberately raise the host over applications.
+    SetWindowPos(host,HWND_BOTTOM,0,0,0,0,flags|SWP_SHOWWINDOW);
+    SetWindowPos(app,HWND_TOP,0,0,0,0,flags|SWP_SHOWWINDOW);
+    desktop_level::Watcher::ForegroundChanged(app);
+    SendMessageW(dock.Handle(),DockDesktopLayer::Message,0,0);
+    BelowApplication(dock,app,"navigation fixture begins below the real application");
+    Check(desktop_level::Above(dock.BarHandle(),host),"navigation fixture begins above the desktop host");
+    // Explorer's navigation sink can briefly be visible and nonempty below
+    // the desktop. Old ceiling scans selected it as the last application.
+    HWND sink=Window(L"CtrlNotifySink",{10,10,110,110},WS_POPUP|WS_VISIBLE);
+    SetWindowPos(sink,HWND_BOTTOM,0,0,0,0,flags|SWP_SHOWWINDOW);
+    RECT sinkBounds{};
+    Check(IsWindowVisible(sink)&&GetWindowRect(sink,&sinkBounds)&&!IsRectEmpty(&sinkBounds)&&
+          desktop_level::Above(app,host)&&desktop_level::Above(host,sink),
+          "navigation sink is visible and nonempty below both the real app and desktop");
+    Check(desktop_level::ApplicationCeiling(host)==app,"shared ceiling ignores navigation sink and retains the real application");
+    SendMessageW(dock.Handle(),DockDesktopLayer::Message,0,0);
+    BelowApplication(dock,app,"navigation sink cannot move Dock above the real application");
+    Check(desktop_level::Above(dock.BarHandle(),host)&&GetWindow(dock.Handle(),GW_HWNDNEXT)==dock.BarHandle(),
+          "navigation sink cannot move Dock below desktop or split its pair");
+    DestroyWindow(sink);
 
     Check(WaitFor([&] { return Surface(dock.BarHandle()) != nullptr; }, 3000), "real asynchronous glass surface exists on test desktop");
     unsigned materialSamples = 0, visibleMaterialSamples = 0;
@@ -336,6 +365,26 @@ int Scenario() {
     Check(WaitFor([&] { return IsWindowVisible(dock.Handle()) && desktop_level::Above(dock.BarHandle(), host); }),
           "desktop activation restores both Dock layers above raised host");
     Check(desktop_level::Above(dock.Handle(), dock.BarHandle()), "Show Desktop preserves Dock pair order");
+    // Simulate Show Desktop's own minimization on this isolated desktop. A
+    // normal application must not restore the pair; a desktop transition does.
+    desktop_level::Watcher::ForegroundChanged(manager);
+    ShowWindow(dock.Handle(),SW_MINIMIZE);ShowWindow(dock.BarHandle(),SW_MINIMIZE);
+    SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+    Check(IsIconic(dock.Handle())&&IsIconic(dock.BarHandle()),
+          "ordinary application foreground does not unminimize desktop Dock layers");
+    SetWindowPos(host,HWND_TOP,0,0,0,0,flags);
+    desktop_level::Watcher::ForegroundChanged(host);
+    Check(WaitFor([&] { return dock.LayersVisible()&&!IsIconic(dock.Handle())&&!IsIconic(dock.BarHandle()); }),
+          "desktop activation unminimizes both Dock layers without toggling the component");
+    Check(desktop_level::Above(dock.Handle(),dock.BarHandle())&&desktop_level::Above(dock.BarHandle(),host),
+          "unminimized Dock retains pair order above the desktop host");
+    ShowWindow(dock.Handle(),SW_HIDE);ShowWindow(dock.BarHandle(),SW_HIDE);
+    desktop_level::RequestAll();
+    Check(WaitFor([&] { return dock.LayersVisible(); }),
+          "desktop restack restores a system-hidden Dock pair even when both layers were hidden");
+    Check(!(GetWindowLongPtrW(dock.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)&&
+          !(GetWindowLongPtrW(dock.BarHandle(),GWL_EXSTYLE)&WS_EX_TOPMOST),
+          "minimized and hidden recovery never promotes Dock to topmost");
     // A taskbar/overlay can be the first non-Lume window above the desktop.
     // Inserting after its HWND would silently promote the Dock to topmost;
     // the next idle sweep demotes each layer separately and exposes glass.
@@ -344,13 +393,32 @@ int Scenario() {
     IdleOrder idle{dock.Handle(), dock.BarHandle()};
     SetWindowSubclass(idle.icons, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&idle));
     SetWindowSubclass(idle.bar, IdleOrder::Observe, 1, reinterpret_cast<DWORD_PTR>(&idle));
+    // Settle the new overlay's band once before measuring redundant requests.
+    // No message pumping in this loop: genuine app/animation transitions are
+    // tested separately below and must not be mistaken for no-op restacks.
+    SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+    Check(IsWindowVisible(idle.icons)&&IsWindowVisible(idle.bar)&&
+          GetWindow(idle.icons,GW_HWNDNEXT)==idle.bar&&desktop_level::Above(idle.bar,host),
+          "repeated restack fixture begins visible and correctly ordered above desktop");
+    const HWND stableAbove=GetWindow(idle.icons,GW_HWNDPREV);
+    const HWND stableBelow=GetWindow(idle.bar,GW_HWNDNEXT);
+    idle.changes=idle.iconChanges=idle.barChanges=0;
     for (int cycle = 0; cycle < 20; ++cycle) {
         SendMessageW(dock.Handle(), desktop_level::Message(), 0, 0);
+        SendMessageW(dock.Handle(), DockDesktopLayer::Message, 0, 0);
         Check(!(GetWindowLongPtrW(dock.Handle(), GWL_EXSTYLE) & WS_EX_TOPMOST) &&
               !(GetWindowLongPtrW(dock.BarHandle(), GWL_EXSTYLE) & WS_EX_TOPMOST),
               "idle desktop restack never inherits overlay topmost band");
         Check(desktop_level::Above(dock.BarHandle(), host), "idle Dock stays above desktop");
+        Check(IsWindowVisible(idle.icons)&&IsWindowVisible(idle.bar)&&
+              GetWindow(idle.icons,GW_HWNDNEXT)==idle.bar&&
+              GetWindow(idle.icons,GW_HWNDPREV)==stableAbove&&GetWindow(idle.bar,GW_HWNDNEXT)==stableBelow,
+              "repeated desktop and event restacks preserve the visible pair and surrounding order");
     }
+    if(idle.iconChanges||idle.barChanges)
+        std::printf("redundant restack position messages: icons=%u bar=%u\n",idle.iconChanges,idle.barChanges);
+    Check(idle.iconChanges==0&&idle.barChanges==0,
+          "correctly ordered repeated restacks send no unnecessary icon or bar WM_WINDOWPOSCHANGED");
     DestroyWindow(topmost);
     // The following case tests a normal application's ceiling, not the
     // fullscreen manager (which covers the Dock in the normal application band).
@@ -437,6 +505,27 @@ int Scenario() {
     {
         using namespace window_layer;
         Context policy;contextReader=[&]{return policy;};Start();
+        Check(WaitFor([&]{return Surface(dock.BarHandle())!=nullptr;},3000),
+              "shell transition fixture waits for its asynchronous material worker");
+        const HWND retainedGlass=Surface(dock.BarHandle());
+        Check(retainedGlass!=nullptr,"shell transition fixture starts with a live material worker");
+        for(unsigned cycle=0;cycle<12;++cycle){
+            // Grouped taskbar previews can cover a monitor and inherit a
+            // notification state from the previously active game. Neither
+            // opening the preview nor selecting a window may retire the Dock
+            // pair or its asynchronous material worker.
+            policy={};policy.foreignForeground=true;policy.fullscreen={info.rcMonitor};
+            ApplyForegroundProtection(policy,true,cycle%2?QUNS_RUNNING_D3D_FULL_SCREEN:QUNS_PRESENTATION_MODE);
+            Update(policy);SendMessageW(dock.Handle(),desktop_level::Message(),0,0);Pump(20);
+            Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle())&&
+                  !Suppressed(dock.Handle())&&Surface(dock.BarHandle())==retainedGlass,
+                  "grouped taskbar preview preserves both Dock windows and the same material worker");
+            policy={};policy.foreignForeground=true;Update(policy);
+            SendMessageW(dock.Handle(),desktop_level::Message(),0,0);Pump(20);
+            Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle())&&
+                  Surface(dock.BarHandle())==retainedGlass,
+                  "selecting a window from grouped taskbar preview never recreates the material");
+        }
         policy.foreignForeground=true;policy.fullscreen={info.rcMonitor};Update(policy);
         SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
         Check(!IsWindowVisible(dock.Handle())&&!IsWindowVisible(dock.BarHandle()),

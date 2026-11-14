@@ -1,8 +1,12 @@
 #include "material_api.h"
 #include "material_diagnostics.h"
 #include "../lume_window_ids.h"
+#include "../widget_ui/desktop_peek.h"
 #include "annular_region.h"
 #include "capture_compatibility.h"
+#include "capture_access.h"
+#include "capture_retirement.h"
+#include "presentation_recovery.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -77,6 +81,7 @@ struct GlassInstance {
   // calendar component with dynamic thickness and fluid refraction.
   std::atomic<uint32_t> opticalProfile{0};
   std::thread worker;
+  unsigned retirementSlot=lume_glass::CaptureRetirementQueue::Invalid;
   winrt::handle workerExited{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
   std::atomic<unsigned> frames{0};
   std::atomic<unsigned> sceneChecks{0};
@@ -90,6 +95,7 @@ struct GlassInstance {
   std::atomic<unsigned> scenePixels{0};
   std::atomic<unsigned> surfacePixels{0};
   std::atomic<unsigned> revision{0};
+  std::atomic<std::uint64_t> displayGeneration{0};
   std::atomic<HRESULT> lastError{S_OK};
   std::atomic<bool> sampleRequested{false};
   std::atomic<unsigned> samples{0};
@@ -183,17 +189,37 @@ void LogNative(const char* stage, HRESULT result = S_OK) {
 }
 
 
+HWND SurfaceInsertAfter(HWND owner, HWND surface) {
+  // A click-through foreground companion belongs between its owner and glass.
+  // Normally it is adjacent; also handle the old owner/glass/display ordering
+  // without scanning unrelated application windows on each rendered frame.
+  for (HWND below = GetWindow(owner, GW_HWNDNEXT); below; below = GetWindow(below, GW_HWNDNEXT)) {
+    if (below == surface || !IsWindowVisible(below)) continue;
+    if (GetPropW(below, lume::window_ids::DesktopCompanionOwnerProp) == owner &&
+        GetWindowThreadProcessId(below, nullptr) == GetWindowThreadProcessId(owner, nullptr)) return below;
+    break;
+  }
+  return owner;
+}
+
 LRESULT CALLBACK SurfaceWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
   if (message == WM_NCCREATE) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams));
   }
-  if (message == WM_APP + 1) {
+  if (message==WM_DISPLAYCHANGE || message==WM_SETTINGCHANGE || message==WM_DPICHANGED ||
+      (message==WM_POWERBROADCAST && (wParam==PBT_APMRESUMEAUTOMATIC || wParam==PBT_APMRESUMESUSPEND))) {
+    auto* glass=reinterpret_cast<GlassInstance*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+    if(glass){++glass->displayGeneration;++glass->revision;glass->wake->Notify();}
+  }
+  if (message == lume::window_ids::GlassRestackMessage) {
+    RemovePropW(hwnd, lume::window_ids::GlassRestackPendingProp);
     auto* glass = reinterpret_cast<GlassInstance*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (glass && glass->frameReady && IsWindowVisible(glass->owner) &&
-        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp))
-      SetWindowPos(hwnd, glass->owner, 0, 0, 0, 0,
+    if (glass && !glass->stop && glass->frameReady && IsWindowVisible(glass->owner) && !IsIconic(glass->owner) &&
+        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp)) {
+      lume::platform::windows::desktop_peek::SyncFromOwner(hwnd, glass->owner);
+      SetWindowPos(hwnd, SurfaceInsertAfter(glass->owner, hwnd), 0, 0, 0, 0,
                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
-    else ShowWindow(hwnd, SW_HIDE);
+    } else ShowWindow(hwnd, SW_HIDE);
     return 0;
   }
   if (message == WM_NCHITTEST) return HTTRANSPARENT;
@@ -208,6 +234,33 @@ HMODULE MaterialModule() {
       reinterpret_cast<LPCWSTR>(&SurfaceWindowProc),&module);
   return module;
 }
+HRESULT ResolvePresentationOutput(HMONITOR monitor,ComPtr<IDXGIFactory1>& factory,ComPtr<IDXGIOutput>& output) {
+  output.Reset();
+  if(!factory || !factory->IsCurrent()) {
+    factory.Reset();
+    const auto result=CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf()));
+    if(FAILED(result))return result;
+  }
+  // The output providing the display clock can belong to a different adapter
+  // from the shared rendering device, especially on hybrid/multi-GPU machines.
+  for(UINT a=0;;++a){
+    ComPtr<IDXGIAdapter1> adapter;
+    const auto adapterResult=factory->EnumAdapters1(a,adapter.GetAddressOf());
+    if(adapterResult==DXGI_ERROR_NOT_FOUND)break;
+    if(FAILED(adapterResult))return adapterResult;
+    for(UINT o=0;;++o){
+      ComPtr<IDXGIOutput> candidate;
+      const auto outputResult=adapter->EnumOutputs(o,candidate.GetAddressOf());
+      if(outputResult==DXGI_ERROR_NOT_FOUND)break;
+      if(FAILED(outputResult))return outputResult;
+      DXGI_OUTPUT_DESC description{};
+      if(SUCCEEDED(candidate->GetDesc(&description)) && description.AttachedToDesktop && description.Monitor==monitor){
+        output=std::move(candidate);return S_OK;
+      }
+    }
+  }
+  return DXGI_ERROR_NOT_FOUND;
+}
 bool RegisterSurfaceClass() {
   WNDCLASSW windowClass{};
   windowClass.lpfnWndProc=SurfaceWindowProc;
@@ -216,6 +269,7 @@ bool RegisterSurfaceClass() {
   return RegisterClassW(&windowClass)!=0 || GetLastError()==ERROR_CLASS_ALREADY_EXISTS;
 }
 void NotifyStatus(GlassInstance* glass) {
+  if(glass->stop)return;
   const int state=glass->failed?3:glass->frameReady?2:glass->initialized?3:1;
   if(glass->publishedState.exchange(state)!=state)
     PostMessageW(glass->owner,LumeMaterialStatusChangedMessage,0,0);
@@ -229,6 +283,16 @@ void SignalInitialization(GlassInstance* glass, bool succeeded) {
 
 #include "glass-capture.h"
 #include "glass-scene.h"
+
+lume_glass::CaptureRetirementQueue& WorkerRetirement() {
+  static auto* queue=new lume_glass::CaptureRetirementQueue(&GlassCaptureRegistry::PinLifetime,nullptr);
+  return *queue;
+}
+void DestroyRetiredWorker(void* value) noexcept {
+  auto* glass=static_cast<GlassInstance*>(value);
+  if(glass->worker.joinable())glass->worker.join();
+  delete glass;
+}
 
 RECT OwnerMonitorBounds(HWND owner, const RECT& fallback) {
   MONITORINFO info = { sizeof(MONITORINFO) };
@@ -282,6 +346,68 @@ void RefreshLiveLens(GlassInstance* glass) {
   glass->lensWidth.store((std::max)(1, static_cast<int>(client.right - client.left)), std::memory_order_relaxed);
   const int inset = MulDiv(glass->bottomInset.load(std::memory_order_relaxed), GetDpiForWindow(glass->owner), 96);
   glass->lensHeight.store((std::max)(1, static_cast<int>(client.bottom - client.top) - inset), std::memory_order_relaxed);
+}
+
+RECT SurfaceCanvasBounds(GlassInstance* glass, const RECT& desktop) {
+  RECT body{glass->lensX.load(), glass->lensY.load(),
+      glass->lensX.load() + glass->lensWidth.load(), glass->lensY.load() + glass->lensHeight.load()};
+  const auto include = [&body](const RECT& value) {
+    if (!IsRectEmpty(&value)) UnionRect(&body, &body, &value);
+  };
+  // A timeline is one fixed presentation stage. Reserve its whole trajectory
+  // before showing instead of resizing/moving the HWND with every spring frame.
+  if (const int width = glass->stageWidth.load(); width > 0) {
+    const int x = glass->stageX.load(), y = glass->stageY.load();
+    include({x, y, x + width, y + glass->stageHeight.load()});
+  }
+  {
+    std::lock_guard<std::mutex> lock(glass->contentMutex);
+    const float scale = GetDpiForWindow(glass->owner) / 96.f;
+    POINT origin{};
+    if (glass->anchored) origin = glass->anchor;
+    else ClientToScreen(glass->owner, &origin);
+    const auto rectangle = [origin, scale](float x, float y, float width, float height) {
+      return RECT{origin.x + static_cast<LONG>(std::floor(x * scale)),
+          origin.y + static_cast<LONG>(std::floor(y * scale)),
+          origin.x + static_cast<LONG>(std::ceil((x + width) * scale)),
+          origin.y + static_cast<LONG>(std::ceil((y + height) * scale))};
+    };
+    for (const auto& frame : glass->timeline) {
+      include(rectangle(frame.lensX, frame.lensY, frame.lensWidth, frame.lensHeight));
+      if (glass->contentEnabled)
+        include(rectangle(frame.lensX + frame.contentX, frame.lensY + frame.contentY,
+            frame.contentWidth, frame.contentHeight));
+    }
+    if (glass->contentEnabled) {
+      const float x = glass->lensPrecise ? glass->lensXf.load() : static_cast<float>(glass->lensX.load());
+      const float y = glass->lensPrecise ? glass->lensYf.load() : static_cast<float>(glass->lensY.load());
+      include({static_cast<LONG>(std::floor(x + glass->contentRect[0] * scale)),
+          static_cast<LONG>(std::floor(y + glass->contentRect[1] * scale)),
+          static_cast<LONG>(std::ceil(x + (glass->contentRect[0] + glass->contentRect[2]) * scale)),
+          static_cast<LONG>(std::ceil(y + (glass->contentRect[1] + glass->contentRect[3]) * scale))});
+    }
+  }
+  RECT envelope = body;
+  InflateRect(&envelope, 64, 64);
+  RECT clipped{};
+  // A V7 foreground may extend beyond its owner and cross a monitor edge.
+  // Capture sampling is monitor-local, but the composition canvas must retain
+  // those foreground pixels on every display in the virtual desktop.
+  if (!IntersectRect(&clipped, &envelope, &desktop))
+    return {desktop.left, desktop.top, desktop.left + 1, desktop.top + 1};
+  const auto covers = [](const RECT& a, const RECT& b) {
+    return a.left <= b.left && a.top <= b.top && a.right >= b.right && a.bottom >= b.bottom;
+  };
+  // Padding alone must not turn an ordinary large widget into a fullscreen
+  // canvas. A genuine monitor-filling lens still keeps all of its pixels.
+  const RECT monitor = OwnerMonitorBounds(glass->owner, desktop);
+  if (covers(clipped, monitor)) {
+    RECT exact = body;
+    InflateRect(&exact, 24, 24);
+    RECT exactClipped{};
+    if (!covers(exact, monitor) && IntersectRect(&exactClipped, &exact, &desktop)) clipped = exactClipped;
+  }
+  return clipped;
 }
 
 bool DrawLens(GlassInstance* glass, ID3D11DeviceContext* context, const OutputCapture& output,
@@ -398,6 +524,8 @@ bool InitializeAndRun(GlassInstance* glass) {
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LogNative("InitializeAndRun");
   try {
+    lume_glass::ResetMaterialCaptureAccess();
+    lume_glass::RequireMaterialCaptureAccess(true);
     // Windows 10 supports WGC but cannot disable its notification border.
     // Reject that path before creating a surface, GPU device or capture pool.
     lume_glass::RequireCaptureBorderControl([] {
@@ -412,12 +540,27 @@ bool InitializeAndRun(GlassInstance* glass) {
   const int surfaceTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
   const int surfaceWidth = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
   const int surfaceHeight = (std::max)(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+  const RECT desktopBounds{surfaceLeft, surfaceTop, surfaceLeft + surfaceWidth, surfaceTop + surfaceHeight};
+  RefreshLiveLens(glass);
+  RECT surfaceCanvas = SurfaceCanvasBounds(glass, desktopBounds);
   const DWORD topmost=(GetWindowLongPtrW(glass->owner,GWL_EXSTYLE)&WS_EX_TOPMOST)?WS_EX_TOPMOST:0;
   glass->surface = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | topmost,
       lume::window_ids::GlassSurfaceClass, L"Lume Liquid Glass", WS_POPUP,
-      surfaceLeft, surfaceTop, surfaceWidth, surfaceHeight, nullptr, nullptr, MaterialModule(), glass);
+      surfaceCanvas.left, surfaceCanvas.top, surfaceCanvas.right - surfaceCanvas.left,
+      surfaceCanvas.bottom - surfaceCanvas.top, nullptr, nullptr, MaterialModule(), glass);
   if (!glass->surface) { SignalInitialization(glass, false); return false; }
-  // The HWND spans the virtual desktop. Publish an empty region before DComp
+  // This is a composition canvas, never a fullscreen application. Windows'
+  // documented NonRudeHWND contract additionally opts it out before its first
+  // show. Keep the real HWND lens-sized too: Explorer builds that do not honor
+  // this hint must never see an invisible virtual-desktop-sized canvas.
+  if (!SetPropW(glass->surface, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE))) {
+    const DWORD error = GetLastError();
+    glass->lastError = error ? HRESULT_FROM_WIN32(error) : E_FAIL;
+    LogNative("NonRudeSurface", glass->lastError);
+    SignalInitialization(glass, false); return false;
+  }
+  lume::platform::windows::desktop_peek::SyncFromOwner(glass->surface, glass->owner);
+  // Publish an empty region before DComp
   // sees it: a hidden launchpad prewarm otherwise starts with an unrestricted
   // surface and can disrupt Explorer taskbar input on both monitors. The frame
   // loop publishes the actual lens region before its first visible frame.
@@ -473,8 +616,6 @@ bool InitializeAndRun(GlassInstance* glass) {
   HRESULT dxgiResult = device.As(&dxgiDevice);
   HRESULT factory2Result = factory.As(&factory2);
   if (FAILED(dxgiResult) || FAILED(factory2Result)) { LogNative("QueryDCompInterfaces", FAILED(dxgiResult) ? dxgiResult : factory2Result); SignalInitialization(glass, false); return false; }
-  ComPtr<IDXGIDevice3> trimDevice;  // optional; Windows 8.1+
-  dxgiDevice.As(&trimDevice);
   DXGI_SWAP_CHAIN_DESC1 swapDescription = {};
   RefreshLiveLens(glass);
   const auto bufferSize = [](int size) { return ((size + 48 + 63) / 64) * 64; };
@@ -602,7 +743,7 @@ bool InitializeAndRun(GlassInstance* glass) {
   LogNative("ResourceInit");
   RefreshLiveLens(glass);
   SignalInitialization(glass, true);
-  RECT previousRegion{}, publishedRegion{};
+  RECT previousRegion{}, previousScreenRegion{}, publishedRegion{};
   bool regionExact = false;
   float previousInnerRadius=-1;
   POINT presentedOrigin{}, renderOrigin{};
@@ -610,9 +751,12 @@ bool InitializeAndRun(GlassInstance* glass) {
   unsigned presentedFrames = 0;
   unsigned renderedRevision = 0;
   bool wasVisible = false;
+  const ULONGLONG hiddenWarmupUntil = GetTickCount64() + 2000;
   ULONGLONG motionUntil = 0;
-  HMONITOR presentationMonitor = nullptr;
+  ComPtr<IDXGIFactory1> presentationFactory=factory;
   ComPtr<IDXGIOutput> presentationOutput;
+  lume_glass::DisplayTimingRefresh displayTiming;
+  lume_glass::FrameLatencyRecovery frameRecovery;
   auto interactionTime = std::chrono::steady_clock::now();
   int interactionX = glass->lensX, interactionY = glass->lensY;
   bool interactionDirty = false;
@@ -630,17 +774,83 @@ bool InitializeAndRun(GlassInstance* glass) {
   double refreshMs = 1000.0 / 60;
   auto vblankAt = std::chrono::steady_clock::now();
   while (!glass->stop.load(std::memory_order_relaxed)) {
+    // No prompt and at most one ordinary permission RPC per second. A revoked
+    // grant retires this scene instead of continuing a now-bordered capture.
+    lume_glass::RequireMaterialCaptureAccess();
     ++glass->sceneChecks;
     const HRESULT deviceState=device->GetDeviceRemovedReason();
     if (FAILED(deviceState)) {glass->lastError=deviceState;glass->failed=true;break;}
     if (!IsWindow(glass->owner)) { glass->stop = true; break; }
-    if (IsWindowVisible(glass->owner) && !IsIconic(glass->owner)) wasVisible = true;
+    const bool ownerVisible = IsWindowVisible(glass->owner) && !IsIconic(glass->owner) &&
+        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp);
+    if (ownerVisible) wasVisible = true;
     else if (wasVisible) break;
     if (GetSystemMetrics(SM_XVIRTUALSCREEN) != surfaceLeft || GetSystemMetrics(SM_YVIRTUALSCREEN) != surfaceTop ||
         GetSystemMetrics(SM_CXVIRTUALSCREEN) != surfaceWidth || GetSystemMetrics(SM_CYVIRTUALSCREEN) != surfaceHeight) break;
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
       TranslateMessage(&message); DispatchMessageW(&message);
+    }
+    // Keep the last committed pixels and capture leases across ordinary
+    // application coverage. Recreating WGC/our surface here made restoring
+    // the desktop flash and repeatedly allocated capture-service buffers.
+    // Ignore capture-frame wakes while covered: no scene/dequeue/Present work
+    // is useful until the foreground observer uncovers this desktop pane.
+    if(GetPropW(glass->owner,lume::window_ids::ContentOccludedProp)) {
+      MsgWaitForMultipleObjectsEx(0,nullptr,kHiddenResumeWaitMs,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+      interactionTime=std::chrono::steady_clock::now();syncPending=false;continue;
+    }
+    // A launchpad is prepared with a hidden owner and opacity zero. Keep its
+    // first two frames warm and await a captured scene, then retain the
+    // resources without processing backdrop frames or submitting invisible
+    // GPU work. Otherwise activity elsewhere on this display kept that large
+    // hidden panel rendering continuously for the lifetime of the Dock.
+    // Explicit parameter updates may still prepare new content before Show.
+    // Bound warmup for an unavailable source; showing the owner always resumes it.
+    if (!ownerVisible && presentedFrames >= 2 &&
+        (glass->frameReady || GetTickCount64() >= hiddenWarmupUntil) &&
+        glass->revision.load() == renderedRevision) {
+      const HANDLE wakeEvent = glass->wake->Handle();
+      MsgWaitForMultipleObjectsEx(1, &wakeEvent, kHiddenResumeWaitMs,
+          QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+      interactionTime = std::chrono::steady_clock::now();
+      syncPending = false;
+      continue;
+    }
+    // Resolve the display clock before using it to predict a timeline frame.
+    // Same-monitor refresh-rate/HDR changes do not necessarily change HMONITOR.
+    const auto monitor=MonitorFromWindow(glass->owner,MONITOR_DEFAULTTONEAREST);
+    const auto monitorKey=reinterpret_cast<std::uintptr_t>(monitor);
+    const auto displayGeneration=glass->displayGeneration.load();
+    const auto timingNow=GetTickCount64();
+    if(displayTiming.Due(monitorKey,displayGeneration,timingNow)){
+      const bool rebind=!presentationOutput || displayTiming.NeedsRebind(monitorKey,displayGeneration,
+          presentationFactory && presentationFactory->IsCurrent());
+      HRESULT result=S_OK;
+      if(rebind){
+        vblankQpc=0;syncPending=false;
+        result=ResolvePresentationOutput(monitor,presentationFactory,presentationOutput);
+      }
+      DXGI_OUTPUT_DESC description{};
+      if(SUCCEEDED(result))result=presentationOutput?presentationOutput->GetDesc(&description):DXGI_ERROR_NOT_FOUND;
+      if(SUCCEEDED(result) && (!description.AttachedToDesktop || description.Monitor!=monitor))result=DXGI_ERROR_NOT_FOUND;
+      if(SUCCEEDED(result)){
+        DEVMODEW mode{};mode.dmSize=sizeof(mode);
+        const double period=EnumDisplaySettingsW(description.DeviceName,ENUM_CURRENT_SETTINGS,&mode) && mode.dmDisplayFrequency>1
+            ?1000.0/mode.dmDisplayFrequency:1000.0/60;
+        const bool changed=std::abs(period-refreshMs)>.0001;
+        if(changed){refreshMs=period;vblankQpc=0;syncPending=false;}
+        if(rebind||changed){
+          char detail[128]{};
+          std::snprintf(detail,sizeof(detail),"generation=%llu refreshHz=%.2f rebind=%u",
+              static_cast<unsigned long long>(displayGeneration),1000.0/refreshMs,rebind?1u:0u);
+          lume::platform::windows::material_diagnostics::Write("DisplayTimingReady",S_OK,detail);
+        }
+      }else{
+        presentationOutput.Reset();presentationFactory.Reset();vblankQpc=0;syncPending=false;
+        LogNative("DisplayTimingResolve",result);
+      }
+      displayTiming.Checked(monitorKey,displayGeneration,timingNow,SUCCEEDED(result));
     }
     // V7 timeline: place this frame where the owner's motion is at the moment
     // the frame reaches the screen (the next refresh), whatever its thread does.
@@ -713,6 +923,17 @@ bool InitializeAndRun(GlassInstance* glass) {
     }
     syncPending = false;
     RefreshLiveLens(glass);
+    const RECT nextCanvas = SurfaceCanvasBounds(glass, desktopBounds);
+    if (!EqualRect(&surfaceCanvas, &nextCanvas)) {
+      if (!SetWindowPos(glass->surface, nullptr, nextCanvas.left, nextCanvas.top,
+          nextCanvas.right - nextCanvas.left, nextCanvas.bottom - nextCanvas.top,
+          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER)) {
+        const DWORD error = GetLastError();
+        glass->lastError = error ? HRESULT_FROM_WIN32(error) : E_FAIL;
+        break;
+      }
+      surfaceCanvas = nextCanvas;
+    }
     const auto lensRead = std::chrono::steady_clock::now();
     const auto interactionNow = std::chrono::steady_clock::now();
     lume_glass::InteractionInput input;
@@ -728,42 +949,28 @@ bool InitializeAndRun(GlassInstance* glass) {
     interactionTime = interactionNow; interactionX = nextInteractionX; interactionY = nextInteractionY;
     glass->interactionPressure = glass->interaction.pressure.value;
     glass->interactionMotion = std::hypot(glass->interaction.motionX.value, glass->interaction.motionY.value);
-    const auto monitor = MonitorFromWindow(glass->owner, MONITOR_DEFAULTTONEAREST);
-    if (monitor != presentationMonitor) {
-      presentationMonitor = monitor;
-      presentationOutput.Reset();
-      for (UINT index = 0; ; ++index) {
-        ComPtr<IDXGIOutput> candidate;
-        if (FAILED(adapter->EnumOutputs(index, candidate.GetAddressOf()))) break;
-        DXGI_OUTPUT_DESC description{};
-        if (SUCCEEDED(candidate->GetDesc(&description)) && description.Monitor == monitor) {
-          presentationOutput = std::move(candidate);
-          DEVMODEW mode{}; mode.dmSize = sizeof(mode);
-          refreshMs = EnumDisplaySettingsW(description.DeviceName, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1
-              ? 1000.0 / mode.dmDisplayFrequency : 1000.0 / 60;
-          break;
-        }
-      }
-    }
     RECT currentRegion = {glass->lensX - surfaceLeft - 24, glass->lensY - surfaceTop - 24,
         glass->lensX + glass->lensWidth - surfaceLeft + 24, glass->lensY + glass->lensHeight - surfaceTop + 24};
+    RECT localRegion = currentRegion;
+    OffsetRect(&localRegion, surfaceLeft - surfaceCanvas.left, surfaceTop - surfaceCanvas.top);
     const float innerRadius=glass->innerRadius.load(std::memory_order_relaxed);
-    const bool geometryChanged = !EqualRect(&currentRegion, &previousRegion) || innerRadius!=previousInnerRadius;
-    if (geometryChanged) motionUntil = GetTickCount64() + 120;
+    const bool geometryChanged = !EqualRect(&localRegion, &previousRegion) || innerRadius!=previousInnerRadius;
+    if (!EqualRect(&currentRegion, &previousScreenRegion) || geometryChanged) motionUntil = GetTickCount64() + 120;
+    previousScreenRegion = currentRegion;
     // A plain lens publishes its window region exactly only at rest. While it
     // moves or resizes the region only grows (with headroom): a new region
     // every frame cost 1-5 ms and made the glass miss vblanks. Outside the
     // lens the swap chain is transparent, so a larger region shows nothing.
     const bool plain = innerRadius <= 0;
-    RECT regionTarget = currentRegion;
+    RECT regionTarget = localRegion;
     bool publish = false;
     if (!plain) {
       publish = geometryChanged;
     } else if (geometryChanged && presentedFrames > 0 && !IsRectEmpty(&publishedRegion)) {
       RECT grown{};
-      UnionRect(&grown, &publishedRegion, &currentRegion);
+      UnionRect(&grown, &publishedRegion, &localRegion);
       if (!EqualRect(&grown, &publishedRegion)) {
-        InflateRect(&grown, (currentRegion.right - currentRegion.left) / 8, (currentRegion.bottom - currentRegion.top) / 8);
+        InflateRect(&grown, (localRegion.right - localRegion.left) / 8, (localRegion.bottom - localRegion.top) / 8);
         regionTarget = grown;
         publish = true;
       }
@@ -777,7 +984,7 @@ bool InitializeAndRun(GlassInstance* glass) {
       if(!plain){
         DeleteObject(region);
         const float ownerDpi=GetDpiForWindow(glass->owner)/96.0f;
-        const int left=glass->lensX-surfaceLeft,top=glass->lensY-surfaceTop;
+        const int left=glass->lensX-surfaceCanvas.left,top=glass->lensY-surfaceCanvas.top;
         const int width=glass->lensWidth,height=glass->lensHeight;
         const int edge=static_cast<int>(std::lround(8*ownerDpi));
         const int hole=static_cast<int>(std::lround(innerRadius*ownerDpi));
@@ -790,10 +997,10 @@ bool InitializeAndRun(GlassInstance* glass) {
         ShowWindow(glass->surface,SW_HIDE);break;
       }
       publishedRegion = regionTarget;
-      regionExact = EqualRect(&regionTarget, &currentRegion) != FALSE;
+      regionExact = EqualRect(&regionTarget, &localRegion) != FALSE;
     }
     if (geometryChanged) {
-      previousRegion = currentRegion;
+      previousRegion = localRegion;
       previousInnerRadius = innerRadius;
     }
     std::unique_lock<std::mutex> contextLock(graphics->contextMutex);
@@ -887,19 +1094,30 @@ bool InitializeAndRun(GlassInstance* glass) {
     RECT region = {glass->lensX.load() - captureMargin, glass->lensY.load() - captureMargin,
         glass->lensX.load() + glass->lensWidth.load() + captureMargin,
         glass->lensY.load() + glass->lensHeight.load() + captureMargin};
-    // An explicit lens animates inside its owner: sample the whole window plus
-    // room for the overshoot once, so the scene does not re-render (and pick up
-    // new sources) on every frame of the motion.
+    // An anchored timeline already contains the complete owner trajectory.
+    // Re-reading the growing owner HWND here made the capture region change
+    // every animation frame, forcing GlassScene to rescan/rebuild its WGC scene
+    // while the island expanded. Use the fixed timeline envelope instead; the
+    // shader still follows the exact per-frame lens keyframe inside it.
+    bool anchoredStage = false;
     if (std::lock_guard<std::mutex> lock(glass->contentMutex); glass->lensOverride) {
-      RECT client{};
-      POINT origin{};
-      if (GetClientRect(glass->owner, &client) && ClientToScreen(glass->owner, &origin)) {
-        const int width = client.right - client.left, height = client.bottom - client.top;
-        const float zoom = (std::max)(1.0f, (std::min)(width / (340.0f * dpi), height / (360.0f * dpi)));
-        const int margin = static_cast<int>(std::ceil(32.0f * dpi * zoom)) + 1;
-        const RECT stage = {origin.x - width / 10 - margin, origin.y - height / 10 - margin,
-            origin.x + width + width / 10 + margin, origin.y + height + height / 10 + margin};
+      if (glass->anchored && !IsRectEmpty(&glass->anchorStage)) {
+        RECT stage = glass->anchorStage;
+        InflateRect(&stage, captureMargin, captureMargin);
         UnionRect(&region, &region, &stage);
+        anchoredStage = true;
+      }
+      if (!anchoredStage) {
+        RECT client{};
+        POINT origin{};
+        if (GetClientRect(glass->owner, &client) && ClientToScreen(glass->owner, &origin)) {
+          const int width = client.right - client.left, height = client.bottom - client.top;
+          const float zoom = (std::max)(1.0f, (std::min)(width / (340.0f * dpi), height / (360.0f * dpi)));
+          const int margin = static_cast<int>(std::ceil(32.0f * dpi * zoom)) + 1;
+          const RECT stage = {origin.x - width / 10 - margin, origin.y - height / 10 - margin,
+              origin.x + width + width / 10 + margin, origin.y + height + height / 10 + margin};
+          UnionRect(&region, &region, &stage);
+        }
       }
     }
     const RECT sampleBounds = OwnerMonitorBounds(glass->owner,
@@ -912,7 +1130,7 @@ bool InitializeAndRun(GlassInstance* glass) {
     scene.SetBackdropScale(glass->opticalProfile.load(std::memory_order_relaxed) == 4 ? 4 : 1);
     if (IntersectRect(&monitorRegion, &region, &sampleBounds))
       sceneChanged = scene.Render(anchor&&IsWindow(anchor)?anchor:glass->owner,
-          glass->surface, monitorRegion, device.Get(), context.Get());
+          glass->surface, monitorRegion, device.Get(), context.Get(),contextLock,bindPipeline);
     output.desktopView = scene.View();
     output.bounds = scene.PresentationBounds(monitorRegion);
     glass->scenePixels = scene.Pixels();
@@ -930,15 +1148,8 @@ bool InitializeAndRun(GlassInstance* glass) {
     // The shared immediate context is only held while issuing GPU work. Frame
     // pacing and message waits must leave it available to other glass scenes.
     context->ClearState();
-    if (scene.TakeClosedCaptures()) {
-      // Full-window captures of windows that passed under the glass were just
-      // closed. D3D destroys their textures only on a flush, and the driver
-      // keeps the freed memory pooled until trimmed; a static lens may not
-      // present for minutes, so without this every such window leaks GPU memory.
-      context->Flush();
-      if (trimDevice) trimDevice->Trim();
-    }
     contextLock.unlock();
+    if(glass->stop)break;
     const unsigned revision = glass->revision.load();
     if (presentedFrames >= 2 && GetTickCount64() >= motionUntil && !sceneChanged && !interactionDirty && revision == renderedRevision) {
       // Capture frames and window events wake each consumer independently.
@@ -966,9 +1177,29 @@ bool InitializeAndRun(GlassInstance* glass) {
       while (PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&pending); DispatchMessageW(&pending); }
       if (glass->stop.load(std::memory_order_relaxed)) break;
     }
+    const DWORD waitError=wait==WAIT_FAILED?GetLastError():ERROR_SUCCESS;
     if (glass->stop.load(std::memory_order_relaxed)) break;
-    if (wait == WAIT_TIMEOUT) { ++glass->revision; continue; }
-    if (wait != WAIT_OBJECT_0) break;
+    const bool activeOwner=IsWindowVisible(glass->owner) && !IsIconic(glass->owner) &&
+        !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp);
+    if(!IsWindow(glass->owner) || (wasVisible && !activeOwner))break;
+    if (wait == WAIT_TIMEOUT) {
+      ++glass->revision;
+      if(frameRecovery.TimedOut(activeOwner)){
+        const HRESULT error=HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        glass->lastError=error;glass->failed=true;glass->frameReady=false;
+        char detail[96]{};std::snprintf(detail,sizeof(detail),"consecutive=%u waitMs=1000",frameRecovery.Timeouts());
+        lume::platform::windows::material_diagnostics::Write("FrameLatencyRecovery",error,detail);
+        // Run retires this scene and waits its existing two-second cooldown.
+        break;
+      }
+      continue;
+    }
+    if (wait != WAIT_OBJECT_0) {
+      glass->lastError=HRESULT_FROM_WIN32(waitError?waitError:ERROR_GEN_FAILURE);
+      glass->failed=true;glass->frameReady=false;
+      LogNative("FrameLatencyWait",glass->lastError.load());break;
+    }
+    frameRecovery.Ready();
     contextLock.lock();
     // Other workers can bind their own constant buffers, samplers and shaders
     // while this worker waits. Restore the entire pipeline, not only its target.
@@ -1102,14 +1333,15 @@ bool InitializeAndRun(GlassInstance* glass) {
     glass->lastError = presented;
     if (FAILED(presented)) break;
     const float opacity = glass->opacity.load();
-    if (renderOrigin.x != presentedOrigin.x || renderOrigin.y != presentedOrigin.y || presentedFrames == 0 || opacity != presentedOpacity) {
-      compositionVisual->SetOffsetX(static_cast<float>(renderOrigin.x));
-      compositionVisual->SetOffsetY(static_cast<float>(renderOrigin.y));
+    const POINT visualOrigin{renderLeft - surfaceCanvas.left, renderTop - surfaceCanvas.top};
+    if (visualOrigin.x != presentedOrigin.x || visualOrigin.y != presentedOrigin.y || presentedFrames == 0 || opacity != presentedOpacity) {
+      compositionVisual->SetOffsetX(static_cast<float>(visualOrigin.x));
+      compositionVisual->SetOffsetY(static_cast<float>(visualOrigin.y));
       opacityEffect->SetOpacity(opacity);
       compositionVisual->SetEffect(opacity < 1.f ? opacityEffect.Get() : nullptr);
       const HRESULT committed = compositionDevice->Commit();
       if (FAILED(committed)) { glass->lastError = committed; break; }
-      presentedOrigin = renderOrigin;
+      presentedOrigin = visualOrigin;
       presentedOpacity = opacity;
     }
     ++presentedFrames;
@@ -1121,11 +1353,21 @@ bool InitializeAndRun(GlassInstance* glass) {
     // Present(0)'s latency handle can signal immediately for discarded frames.
     // Wait on the owner's display outside the shared lock to bound submissions
     // to its real refresh rate, including when the widget changes monitors.
-    if (!presentationOutput || FAILED(presentationOutput->WaitForVBlank())) Sleep(16);
-    vblankAt = std::chrono::steady_clock::now();
-    { LARGE_INTEGER at{}; QueryPerformanceCounter(&at); vblankQpc = at.QuadPart; }
-    revisionAtVblank = glass->revision.load();
-    syncPending = true;
+    const HRESULT vblankResult=presentationOutput?presentationOutput->WaitForVBlank():E_PENDING;
+    if(SUCCEEDED(vblankResult)){
+      vblankAt=std::chrono::steady_clock::now();
+      LARGE_INTEGER at{};QueryPerformanceCounter(&at);vblankQpc=at.QuadPart;
+      revisionAtVblank=glass->revision.load();syncPending=true;
+    }else{
+      if(presentationOutput){
+        LogNative("DisplayVBlankFailed",vblankResult);
+        presentationOutput.Reset();presentationFactory.Reset();
+        displayTiming.WaitFailed(GetTickCount64());
+      }
+      // A fallback sleep is not a vblank observation. Discard the prediction
+      // anchor and retry the output on a bounded schedule, even on the same screen.
+      vblankQpc=0;syncPending=false;Sleep(16);
+    }
     if (frameTiming) {
       // Absolute steady-clock milliseconds, comparable with a probe's own samples.
       const auto absolute = [](std::chrono::steady_clock::time_point at) {
@@ -1135,13 +1377,15 @@ bool InitializeAndRun(GlassInstance* glass) {
       bool content = false; unsigned contentRev = 0;
       { std::lock_guard<std::mutex> lock(glass->contentMutex); content = glass->contentEnabled; contentRev = glass->contentRevision; }
       std::snprintf(line, sizeof(line), "T t=%.2f read=%.2f lens=%dx%d at=%d,%d content=%d rev=%u opacity=%.2f", absolute(std::chrono::steady_clock::now()),
-          absolute(lensRead), glass->lensWidth.load(), glass->lensHeight.load(), glass->lensX.load(), glass->lensY.load(), content ? 1 : 0, contentRev, glass->opacity.load());
+          absolute(lensRead), glass->lensWidth.load(), glass->lensHeight.load(), glass->lensX.load(), glass->lensY.load(), content ? 1 : 0, contentRev, opacity);
       LogNative(line);
     }
-    if (glass->frameReady && IsWindowVisible(glass->owner) &&
+    if (!glass->stop && glass->frameReady && IsWindowVisible(glass->owner) && !IsIconic(glass->owner) &&
         !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp)) {
-      if (!IsWindowVisible(glass->surface) || GetWindow(glass->owner, GW_HWNDNEXT) != glass->surface)
-        SetWindowPos(glass->surface, glass->owner, 0, 0, 0, 0,
+      lume::platform::windows::desktop_peek::SyncFromOwner(glass->surface, glass->owner);
+      const HWND anchor = SurfaceInsertAfter(glass->owner, glass->surface);
+      if (!IsWindowVisible(glass->surface) || GetWindow(anchor, GW_HWNDNEXT) != glass->surface)
+        SetWindowPos(glass->surface, anchor, 0, 0, 0, 0,
                      SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
     } else if (IsWindowVisible(glass->surface)) {
       ++glass->surfaceHides;
@@ -1259,6 +1503,15 @@ struct MaterialApartment {
     winrt::uninit_apartment();
   }
 };
+bool InitializeCaptureCleanupApartment() noexcept {
+  try {
+    // One cleanup thread lasts until process exit, including when a system
+    // capture Close never returns. Keep its apartment counted and initialized.
+    static thread_local auto* apartment = new MaterialApartment;
+    (void)apartment;
+    return true;
+  } catch (...) { return false; }
+}
 void Run(GlassInstance* raw) {
   try {
     MaterialApartment apartment;
@@ -1285,12 +1538,13 @@ void Run(GlassInstance* raw) {
           WaitForSingleObject(raw->wake->Handle(),100);
       }
       NotifyStatus(raw);
-      while(!raw->stop && IsWindow(raw->owner) && (!IsWindowVisible(raw->owner)||IsIconic(raw->owner)))
+      while(!raw->stop && IsWindow(raw->owner) && (!IsWindowVisible(raw->owner)||IsIconic(raw->owner)||
+          GetPropW(raw->owner,lume::window_ids::LayerSuppressedProp)||
+          GetPropW(raw->owner,lume::window_ids::ContentOccludedProp)))
         WaitForSingleObject(raw->wake->Handle(),kHiddenResumeWaitMs);
       if(!IsWindow(raw->owner))raw->stop=true;
     }
   }catch(...){raw->lastError=E_FAIL;SignalInitialization(raw,false);}
-  RemovePropW(raw->owner,lume::window_ids::GlassOwnerProp);
   SetEvent(raw->workerExited.get());
 }
 } // namespace
@@ -1301,12 +1555,17 @@ extern "C" __declspec(dllexport) LumeMaterialHandle __cdecl LumeMaterialAttach(c
     std::lock_guard<std::mutex> lock(g_mutex);
     if(GetPropW(p->owner,lume::window_ids::GlassOwnerProp) || !RegisterSurfaceClass())return 0;
     auto g=std::make_unique<GlassInstance>();if(!g->workerExited)return 0;
+    const auto slot=WorkerRetirement().Reserve(nullptr);
+    if(slot==lume_glass::CaptureRetirementQueue::Invalid){LogNative("MaterialWorkerRetirementLimit",HRESULT_FROM_WIN32(ERROR_BUSY));return 0;}
+    struct Reservation {unsigned slot;bool transferred=false;~Reservation(){if(!transferred)WorkerRetirement().Abandon(slot);}} reservation{slot};
+    g->retirementSlot=slot;
     g->owner=p->owner;Configure(*g,*p);RefreshLiveLens(g.get());
     const auto id=g_nextId++;
     // Allocate the map entry before starting a worker, so a failed allocation cannot destroy a joinable thread.
     auto inserted=g_glasses.emplace(id,std::move(g));auto* raw=inserted.first->second.get();
-    SetPropW(raw->owner,lume::window_ids::GlassOwnerProp,reinterpret_cast<HANDLE>(1));
+    SetPropW(raw->owner,lume::window_ids::GlassOwnerProp,reinterpret_cast<HANDLE>(raw));
     try {raw->worker=std::thread(Run,raw);}catch(...){RemovePropW(raw->owner,lume::window_ids::GlassOwnerProp);g_glasses.erase(id);throw;}
+    reservation.transferred=true;
     return id;
   }catch(...){return 0;}
 }
@@ -1318,21 +1577,17 @@ extern "C" __declspec(dllexport) int __cdecl LumeMaterialUpdate(LumeMaterialHand
 extern "C" __declspec(dllexport) void __cdecl LumeMaterialDetach(LumeMaterialHandle id) {
   std::unique_ptr<GlassInstance> g;
   {std::lock_guard<std::mutex> lock(g_mutex);auto i=g_glasses.find(static_cast<uint32_t>(id));if(i==g_glasses.end())return;g=std::move(i->second);g_glasses.erase(i);}
-  g->stop=true;g->wake->Notify();if(g->surface)PostMessageW(g->surface,WM_NULL,0,0);
-  if(g->worker.joinable()) {
-    // The worker owns a window, and its z-order/destruction calls can send
-    // synchronous messages to the owner. A plain join on that UI thread can
-    // deadlock. Service only sent messages while retiring this lease: queued
-    // input, timers and material callbacks must not reenter closing controls.
-    const HANDLE exited=g->workerExited.get();
-    while(MsgWaitForMultipleObjectsEx(1,&exited,INFINITE,QS_SENDMESSAGE,0)==WAIT_OBJECT_0+1) {
-      MSG message{};
-      PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE);
-    }
-    g->worker.join();
+  g->stop=true;g->wake->Notify();
+  if(GetPropW(g->owner,lume::window_ids::GlassOwnerProp)==reinterpret_cast<HANDLE>(g.get()))
+    RemovePropW(g->owner,lume::window_ids::GlassOwnerProp);
+  if(const auto surface=g->surface.load()){
+    ShowWindowAsync(surface,SW_HIDE);PostMessageW(surface,WM_NULL,0,0);
   }
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if(g_glasses.empty())UnregisterClassW(lume::window_ids::GlassSurfaceClass,MaterialModule());
+  // Reserve before Attach, so even a permanently blocked driver admits at
+  // most Capacity workers. Detach only transfers ownership; it never falls
+  // back to an unbounded UI join. The DLL is pinned before workers start.
+  const auto slot=g->retirementSlot;
+  WorkerRetirement().Retire(slot,g.release(),&DestroyRetiredWorker);
 }
 extern "C" __declspec(dllexport) int __cdecl LumeMaterialInspect(LumeMaterialHandle id,LumeMaterialStatus* s) {
   if(!s||s->size!=sizeof(*s))return 0;

@@ -22,6 +22,8 @@ public:
     taskbar::Error StartCore() override;
     void ResetCoreFailure() override;
     bool CoreAlive() const override;
+    taskbar::TransparencyStatus Transparency() const override;
+    bool CoreReloadResolved() const override;
     taskbar::Error StopCore(bool recoverPreviousProcess) override;
     std::uintptr_t ExitSignal() const override;
 private:

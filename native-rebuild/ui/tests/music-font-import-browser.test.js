@@ -122,13 +122,16 @@ test('production app imports native font assets, hands off leases and restores c
       await page.waitForFunction(()=>!!document.querySelector('[data-titlebar-music]'));
       await page.evaluate(async()=>{
         const {initialMusicState}=await import('./music.js');
-        const {query,nav,lyrics,...native}=initialMusicState();
+        const {query,nav,lyrics,score,...native}=initialMusicState();
+        const {validHostMessage}=await import('./bridge.js');
         const track={id:'font-import',title:'Font import fixture',artist:'Lume',album:'Test',
           source:'C:/fixture/font-import.mp3',artwork:'',duration:60};
         harness.receive({version:1,type:'navigate',page:'music'});
-        harness.receive({...native,version:1,type:'music-state',session:19,revision:1,pageOpen:true,
+        const snapshot={...native,version:1,type:'music-state',session:19,revision:1,pageOpen:true,
           pageVisible:true,status:'paused',playing:false,current:track,queue:[track],
-          timeline:{position:12,duration:60},capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}});
+          timeline:{position:12,duration:60},capabilities:{canToggle:true,canSeek:true,canNext:true,canPrevious:true}};
+        if(!validHostMessage(snapshot))throw new Error('Font import fixture must use the native music-state schema');
+        harness.receive(snapshot);
         harness.receive({version:1,type:'music-lyrics',session:19,trackId:track.id,
           lines:Array.from({length:10},(_,i)=>({startTime:i*6,endTime:i*6+6,
             fullText:'A melody through the night',translation:'',words:[]}))});

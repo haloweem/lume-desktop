@@ -30,6 +30,8 @@ Lume 客户端整体按 AGPL-3.0 发布（见 `LICENSE`）。其中包含的第�
 | lunar-javascript 1.7.7 | MIT | 农历与黄历数据 |
 | OpenCC 数据、opencc-js | Apache-2.0 / MIT | 简繁转换 |
 | nlohmann/json | MIT | `vendor/nlohmann/` |
+| @neteasecloudmusicapienhanced/api 4.41.1 | MIT | 网易云 xeapi 原生移植：`platform/windows/music_providers/netease_playback.cpp`；来源及原许可见同目录 `FOLIA-PLAYBACK-SOURCES.md`、`NETEASE-API-LICENSE.txt` |
+| miniz 3.0.2 | MIT | `vendor/miniz/`；仅使用有界 inflate 解压，来源与许可见 `SOURCES.md`、`LICENSE` |
 | dr_flac | Public Domain / MIT-0 | `vendor/dr-flac/` |
 | ybouane/liquidglass、iyinchao/liquid-glass-studio | MIT | 材质 `platform/windows/material/` |
 | macos-minimize-animation（Windhawk 模组） | MIT | 最小化动画 `platform/windows/minimize_animation/` |

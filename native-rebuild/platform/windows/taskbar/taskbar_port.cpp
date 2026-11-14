@@ -71,6 +71,10 @@ struct WindowsTaskbarPort::Impl {
             const bool arm64 = mode == taskbar::Mode::Windows11Arm64;
             const auto staged = StageTaskbarPayload(paths, arm64, cancellation, launch.executable);
             if (staged != Error::None) return staged;
+            // The verified child atomically replaces a per-host report. Matching
+            // child and Explorer identities reject content from earlier runs.
+            launch.diagnosticsFile = paths.cacheRoot /
+                (L"core-status-" + std::to_wstring(GetCurrentProcessId()) + L".json");
             // An already-installed core must still restore Explorer during
             // shutdown. Missing-framework deployment, however, is cancellable:
             // closing Lume must not begin or wait for a new installation.
@@ -148,8 +152,9 @@ WindowsTaskbarPort::~WindowsTaskbarPort() = default;
 Error WindowsTaskbarPort::Acquire(bool transparency, taskbar::Mode& mode) { return impl_->Acquire(transparency, mode); }
 void WindowsTaskbarPort::Release() { impl_->Release(); }
 Error WindowsTaskbarPort::ReadAutoHide(bool& value) {
-    if (!FindWindowW(L"Shell_TrayWnd", nullptr)) return Error::ReadAutoHide;
-    APPBARDATA data{}; data.cbSize = sizeof(data);
+    const auto window = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (!window) return Error::ReadAutoHide;
+    APPBARDATA data{}; data.cbSize = sizeof(data); data.hWnd = window;
     value = (SHAppBarMessage(ABM_GETSTATE, &data) & ABS_AUTOHIDE) != 0;
     return Error::None;
 }
@@ -176,8 +181,14 @@ Error WindowsTaskbarPort::ReadVisibility(std::vector<taskbar::Visibility>& outpu
     struct State { std::vector<taskbar::Visibility> found; bool ok = true; } state;
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
         auto& state = *reinterpret_cast<State*>(data);
+        wchar_t name[64]{};
+        if (!GetClassNameW(window, name, 64) ||
+            (wcscmp(name, L"Shell_TrayWnd") && wcscmp(name, L"Shell_SecondaryTrayWnd"))) return TRUE;
         taskbar::Visibility original;
-        if (!Identity(window, original)) return TRUE;
+        // A recognized taskbar whose identity cannot be verified is a failure,
+        // not a non-taskbar. Otherwise a denied secondary screen silently drops
+        // out and complete hiding would be reported as successful on all screens.
+        if (!Identity(window, original)) { state.ok = false; return FALSE; }
         if (!taskbar_visibility::Capture(window, original) || state.found.size() >= taskbar::MaxTaskbars) {
             state.ok = false; return FALSE;
         }
@@ -196,8 +207,16 @@ Error WindowsTaskbarPort::Hide(const taskbar::Visibility& original) {
 }
 taskbar::RestoreResult WindowsTaskbarPort::RestoreVisibility(const taskbar::Visibility& original) {
     if (!impl_->paths.allowSystemEffects || !impl_->ownership) return taskbar::RestoreResult::Failed;
-    if (!Current(original)) return taskbar::RestoreResult::Gone;
-    return taskbar_visibility::Restore(reinterpret_cast<HWND>(static_cast<std::uintptr_t>(original.window)), original)
+    const auto window = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(original.window));
+    if (!IsWindow(window)) return taskbar::RestoreResult::Gone;
+    DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+    if (pid != original.process) return taskbar::RestoreResult::Gone;
+    taskbar::Appearance current;
+    // A transient query/access failure is not proof that the original taskbar
+    // vanished. Keep its visibility journal until identity can be checked.
+    if (!Identity(window, current)) return taskbar::RestoreResult::Failed;
+    if (!taskbar::SameTarget(original, current)) return taskbar::RestoreResult::Gone;
+    return taskbar_visibility::Restore(window, original)
         ? taskbar::RestoreResult::Restored : taskbar::RestoreResult::Failed;
 }
 void WindowsTaskbarPort::RepairHidden() {
@@ -252,6 +271,8 @@ taskbar::RestoreResult WindowsTaskbarPort::RestoreAppearance(const taskbar::Appe
 Error WindowsTaskbarPort::StartCore() { return impl_->StartCore(); }
 void WindowsTaskbarPort::ResetCoreFailure() { impl_->core->ResetFailure(); }
 bool WindowsTaskbarPort::CoreAlive() const { return impl_->core->Ready(); }
+taskbar::TransparencyStatus WindowsTaskbarPort::Transparency() const { return impl_->core->Transparency(); }
+bool WindowsTaskbarPort::CoreReloadResolved() const { return impl_->core->ReloadResolved(); }
 Error WindowsTaskbarPort::StopCore(bool recover) { return impl_->StopCore(recover); }
 std::uintptr_t WindowsTaskbarPort::ExitSignal() const { return impl_->core->ExitSignal(); }
 }  // namespace lume::platform::windows

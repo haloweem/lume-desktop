@@ -1,6 +1,7 @@
 #include "platform/windows/wallpaper/media_server.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "platform/windows/wallpaper/wallpaper_pipe.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -10,10 +11,85 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <future>
+#include <chrono>
 
 namespace {
 int failures=0;
 void Expect(bool result,const char* why){if(!result){std::cerr<<"FAIL: "<<why<<'\n';++failures;}}
+bool PipeIo(HANDLE pipe,bool write,void* data,DWORD length) {
+    auto* cursor=static_cast<char*>(data);
+    while(length){
+        OVERLAPPED op{};op.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        DWORD moved=0;
+        bool ok=(write?WriteFile(pipe,cursor,length,nullptr,&op):ReadFile(pipe,cursor,length,nullptr,&op))!=FALSE;
+        if(!ok&&GetLastError()==ERROR_IO_PENDING){
+            ok=WaitForSingleObject(op.hEvent,2000)==WAIT_OBJECT_0;
+            if(!ok){CancelIoEx(pipe,&op);GetOverlappedResult(pipe,&op,&moved,TRUE);}
+        }
+        ok=ok&&GetOverlappedResult(pipe,&op,&moved,TRUE);
+        CloseHandle(op.hEvent);
+        if(!ok||!moved)return false;
+        cursor+=moved;length-=moved;
+    }
+    return true;
+}
+HANDLE OpenPipeLease(const std::string& url) {
+    using namespace lume::platform::windows;
+    const auto colon=url.find(':',7),slash=url.find('/',colon);
+    if(colon==url.npos||slash==url.npos)return INVALID_HANDLE_VALUE;
+    const auto name=wallpaper_pipe::Name(static_cast<unsigned>(std::stoul(url.substr(colon+1,slash-colon-1))));
+    HANDLE pipe=INVALID_HANDLE_VALUE;
+    for(int i=0;i<200&&pipe==INVALID_HANDLE_VALUE;++i){
+        pipe=CreateFileW(name.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
+        if(pipe==INVALID_HANDLE_VALUE)Sleep(5);
+    }
+    if(pipe==INVALID_HANDLE_VALUE)return pipe;
+    auto path=url.substr(slash);std::uint32_t length=static_cast<std::uint32_t>(path.size());
+    char magic[4]={'L','W','P','1'};std::uint64_t size=0;
+    if(!PipeIo(pipe,true,magic,4)||!PipeIo(pipe,true,&length,4)||!PipeIo(pipe,true,path.data(),length)||
+        !PipeIo(pipe,false,&size,8)||!size){CloseHandle(pipe);return INVALID_HANDLE_VALUE;}
+    return pipe;
+}
+void TestPipeCancellationAndIdle() {
+    using namespace lume::platform::windows;
+    using namespace std::chrono_literals;
+    for(bool stop:{false,true}){
+        WallpaperMediaServer server;
+        WallpaperMediaSource source;
+        source.bytes=65536;source.contentType="video/mp4";source.extension="mp4";
+        source.read=[](std::uint64_t,char* out,std::size_t capacity,std::size_t& read){
+            read=capacity;std::memset(out,'P',read);return true;
+        };
+        const auto url=server.Register("local-pipe-cancel",source);
+        auto pipe=OpenPipeLease(url);
+        Expect(pipe!=INVALID_HANDLE_VALUE,"authenticated pipe fixture connects");
+        if(pipe==INVALID_HANDLE_VALUE)continue;
+        wallpaper_pipe::Request request{0,65536};std::uint32_t count=0;
+        Expect(PipeIo(pipe,true,&request,sizeof(request))&&PipeIo(pipe,false,&count,4)&&count==65536,
+            "fixture leaves an entire successful response unread");
+        auto closing=std::async(std::launch::async,[&]{if(stop)server.Stop();else server.Remove("local-pipe-cancel");});
+        const bool finished=closing.wait_for(1500ms)==std::future_status::ready;
+        // Release our client even on regression so the test never leaves a join blocked.
+        CloseHandle(pipe);closing.get();
+        Expect(finished,"Stop/Remove do not flush unread pipe bytes before cancellation");
+    }
+    WallpaperMediaServer server;
+    WallpaperMediaSource source;
+    source.bytes=4;source.contentType="video/mp4";source.extension="mp4";
+    source.read=[](std::uint64_t,char* out,std::size_t capacity,std::size_t& read){
+        read=capacity;std::memset(out,'I',read);return true;
+    };
+    auto pipe=OpenPipeLease(server.Register("local-pipe-idle",source));
+    Expect(pipe!=INVALID_HANDLE_VALUE,"idle pipe fixture connects");
+    if(pipe==INVALID_HANDLE_VALUE)return;
+    Sleep(31000);
+    wallpaper_pipe::Request request{0,4};std::uint32_t count=0;char bytes[4]{};
+    Expect(PipeIo(pipe,true,&request,sizeof(request))&&PipeIo(pipe,false,&count,4)&&count==4&&
+        PipeIo(pipe,false,bytes,4)&&std::string(bytes,4)=="IIII",
+        "authenticated player can resume after the former 30 second idle deadline");
+    CloseHandle(pipe);server.Stop();
+}
 std::string Request(const std::string& url,const std::string& range={},bool head=false,const std::string& origin={}) {
     const auto colon=url.find(':',7),slash=url.find('/',colon);
     if(colon==std::string::npos||slash==std::string::npos)return {};
@@ -202,6 +278,7 @@ int main() {
     server.Remove("local-gif");
     TestLeaseRevocation();
     TestStopDuringClientTraffic();
+    TestPipeCancellationAndIdle();
     TestExactOriginCors();
     WSACleanup();
     return failures==0?0:1;

@@ -29,13 +29,10 @@ void CALLBACK Tick(HWND,UINT,UINT_PTR,DWORD) {
             p.stage=2;SendMessageW(notice,WM_LBUTTONDOWN,MK_LBUTTON,point);SendMessageW(notice,WM_LBUTTONUP,0,point);
         }
     } else if(p.stage==2) {
-        if(auto editor=Find(L"LumeCalendarTodoEditor")) {
-            wchar_t title[100]{};GetWindowTextW(GetDlgItem(editor,101),title,100);
-            // EDIT fields may be nested in the scroll surface.
-            if(!*title)EnumChildWindows(editor,[](HWND h,LPARAM data)->BOOL{
-                if(GetDlgCtrlID(h)==101){GetWindowTextW(h,reinterpret_cast<wchar_t*>(data),100);return FALSE;}return TRUE;
-            },reinterpret_cast<LPARAM>(title));
-            p.ok=p.ok&&p.app->CalendarRunning()&&std::wstring(title)==L"提醒接续验收";
+        if(auto editor=Find(L"LumeTodoSheetWindow")) {
+            // The task sheet's caption names the task it edits.
+            wchar_t title[160]{};GetWindowTextW(editor,title,160);
+            p.ok=p.ok&&p.app->CalendarRunning()&&std::wstring(title).find(L" · 提醒接续验收")!=std::wstring::npos;
             p.stage=3;p.app->Exit();
         }
     }
@@ -69,7 +66,7 @@ int main(){try{
     const auto timer=SetTimer(nullptr,0,30,Tick);if(!timer)throw std::runtime_error("create probe timer");
     const auto result=app.Run();KillTimer(nullptr,timer);probe=nullptr;
     if(result||!statusValid||!state.ok||state.stage!=3||app.CalendarRunning()||app.ClockRunning()||
-       app.ManagerHandle()||Find(L"LumeNativeReminder")||Find(L"LumeCalendarTodoEditor"))
+       app.ManagerHandle()||Find(L"LumeNativeReminder")||Find(L"LumeTodoSheetWindow"))
         throw std::runtime_error("closed widgets keep reminder host; view opens correct task; exit releases windows");
     std::cout<<"DESKTOP_REMINDER_PASS\n";
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

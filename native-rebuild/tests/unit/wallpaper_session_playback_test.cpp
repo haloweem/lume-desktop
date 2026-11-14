@@ -1,4 +1,5 @@
 #include "apps/shell/wallpaper_session.h"
+#include "apps/shell/wallpaper_resource_history.h"
 #include "core/wallpaper/library.h"
 #include "core/wallpaper/playback_preferences.h"
 #include "platform/windows/local_settings_file_store.h"
@@ -7,15 +8,19 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <winioctl.h>
+#include <wtsapi32.h>
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
@@ -163,10 +168,11 @@ HWND SessionWindow() {
 }
 struct Probe {
     HANDLE pipe=INVALID_HANDLE_VALUE;
+    DWORD connectedPid=0;
     std::string buffered;
     std::uint64_t serial=700000;
     ~Probe(){Close();}
-    void Close(){if(pipe!=INVALID_HANDLE_VALUE)CloseHandle(pipe);pipe=INVALID_HANDLE_VALUE;buffered.clear();}
+    void Close(){if(pipe!=INVALID_HANDLE_VALUE)CloseHandle(pipe);pipe=INVALID_HANDLE_VALUE;connectedPid=0;buffered.clear();}
     bool Open(DWORD pid) {
         Close();
         WIN32_FIND_DATAW entry{};
@@ -182,8 +188,10 @@ struct Probe {
             if(GetNamedPipeServerProcessId(handle,&owner)&&owner==pid){pipe=handle;break;}
             CloseHandle(handle);
         }while(FindNextFileW(finder,&entry));
-        FindClose(finder);return pipe!=INVALID_HANDLE_VALUE;
+        FindClose(finder);if(pipe!=INVALID_HANDLE_VALUE)connectedPid=pid;return pipe!=INVALID_HANDLE_VALUE;
     }
+    bool Follow(HWND parent){const auto players=EmbeddedPlayers(parent);return players.size()==1&&
+        (connectedPid==players.front()||Open(players.front()));}
     bool Transfer(bool write,void* data,DWORD size,DWORD& transferred) {
         OVERLAPPED operation{};operation.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
         if(!operation.hEvent)return false;
@@ -201,10 +209,10 @@ struct Probe {
         }
         CloseHandle(operation.hEvent);return success!=FALSE;
     }
-    Json Property(const char* name) {
+    Json Request(const Json& command) {
         if(pipe==INVALID_HANDLE_VALUE)return {};
         const auto id=++serial;
-        auto request=Json{{"command",Json::array({"get_property",name})},{"request_id",id}}.dump()+"\n";
+        auto request=Json{{"command",command},{"request_id",id}}.dump()+"\n";
         DWORD written=0;if(!Transfer(true,request.data(),static_cast<DWORD>(request.size()),written))return {};
         const auto end=GetTickCount64()+2000;
         while(GetTickCount64()<end) {
@@ -216,11 +224,15 @@ struct Probe {
             }
             const auto response=Json::parse(buffered.substr(0,newline),nullptr,false);
             buffered.erase(0,newline+1);
-            if(response.is_object()&&response.value("request_id",std::uint64_t{0})==id)
-                return response.value("error",std::string{})=="success"&&response.contains("data")?response["data"]:Json{};
+            if(response.is_object()&&response.value("request_id",std::uint64_t{0})==id){
+                if(response.value("error",std::string{})!="success")return {};
+                if(command.is_array()&&!command.empty()&&command[0]=="set_property")return Json(true);
+                return response.value("data",Json{});
+            }
         }
         return {};
     }
+    Json Property(const char* name) {return Request(Json::array({"get_property",name}));}
 };
 void Send(Session& session,Action action,std::uint64_t display,const std::string& id={},bool flag=false,int volume=0) {
     lume::ui::WallpaperPageCommand command;
@@ -369,6 +381,309 @@ void BalancedRestore(const fs::path& executable,const fs::path& video,const fs::
         "balanced fixture cleans only its own complete process tree and windows");
     evidence["balanced_restore"].push_back(std::move(record));
 }
+void CoverageResumeStability(const fs::path& executable,const fs::path& video,const fs::path& output,
+                             std::uint64_t display,HWND parent) {
+    const auto root=output/"coverage-stability";
+    fs::create_directories(root);
+    std::string first,second;
+    Expect(Setup(root,video,display,first,second),"seed isolated seamless coverage fixture");
+    std::atomic<bool> covered{false};
+    lume::shell::WallpaperSessionOptions options;
+    options.root=root.u8string();options.executable=executable.wstring();options.verification=true;
+    options.verificationParent=parent;options.balancedMode=true;
+    options.verificationFullscreen=[&](std::uint64_t){return covered.load();};
+    // Keep production's 30-second parking threshold. The longer pause below
+    // must cross the old 3-second rebuild coalescing interval without parking.
+    Session session(GetModuleHandleW(nullptr),options,[](const auto&){});
+    Expect(session.Restore()&&Wait([&]{return HasScreenState(session,display,"paused");}),
+        "coverage fixture restores a manually paused real player");
+    const auto hidden=SessionWindow();
+    const auto players=EmbeddedPlayers(parent);
+    Probe probe;
+    Expect(hidden&&players.size()==1&&probe.Open(players.front()),
+        "coverage fixture connects only to its owned player and notification window");
+    if(!hidden||players.size()!=1){session.Shutdown();return;}
+    Send(session,Action::Resume,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Property("pause")==Json(false);}),
+        "coverage fixture starts the actual video timeline");
+    Pump(3200);
+    for(const DWORD hold:{250u,3500u}) {
+        covered=true;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+        Expect(Wait([&]{return Screen(session,display).value("autoPaused",false)&&probe.Property("pause")==Json(true);}),
+            "fullscreen coverage pauses the existing player before return to desktop");
+        const auto pausedPosition=probe.Property("time-pos");
+        Pump(hold);
+        Expect(EmbeddedPlayers(parent)==players,
+            "brief and longer ordinary fullscreen coverage retain the same player before parking");
+        covered=false;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+        Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Follow(parent)&&
+            probe.Property("pause")==Json(false);}),"returning to desktop resumes the attached player's actual timeline");
+        const auto resumedPosition=probe.Property("time-pos");
+        Expect(EmbeddedPlayers(parent)==players,
+            "ordinary fullscreen return never replaces a healthy player or exposes its static fallback");
+        Expect(pausedPosition.is_number()&&resumedPosition.is_number()&&
+            std::abs(resumedPosition.get<double>()-pausedPosition.get<double>())<1.5,
+            "resuming fullscreen coverage preserves playback position");
+    }
+    const auto beforeManual=EmbeddedPlayers(parent);
+    Send(session,Action::Pause,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"paused")&&probe.Property("pause")==Json(true);}),
+        "manual pause reaches the same real player");
+    Pump(3500);Send(session,Action::Resume,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Property("pause")==Json(false);})&&
+        EmbeddedPlayers(parent)==beforeManual,"manual pause and resume also preserve player identity");
+    probe.Close();session.Shutdown();
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&OwnedProcesses().empty();},5000),
+        "seamless coverage fixture releases its complete owned process tree");
+}
+void EarlyResumeRecovery(const fs::path& executable,const fs::path& video,const fs::path& output,
+                         std::uint64_t display,HWND parent) {
+    // A newly started player is not proof that its GPU resources survived a
+    // later display-off/lock. Exercise that ordering inside the coalescing
+    // window, rather than waiting 3.2 seconds before the first invalidation.
+    for(const std::string scenario:{"early-lock","early-display-off","early-manual-pause"}) {
+        const auto root=output/scenario;
+        fs::create_directories(root);
+        std::string first,second;
+        Expect(Setup(root,video,display,first,second),"seed early-resume media and saved manual preference");
+        if(first.empty())continue;
+        const bool manual=scenario=="early-manual-pause";
+        const bool displayPower=scenario=="early-display-off";
+        lume::shell::WallpaperSessionOptions options;
+        options.root=root.u8string();options.executable=executable.wstring();
+        options.verification=true;options.verificationParent=parent;
+        Session session(GetModuleHandleW(nullptr),options,[](const auto&){});
+        const auto restoreStarted=GetTickCount64();
+        Expect(session.Restore()&&Wait([&]{return HasScreenState(session,display,"paused");}),
+            "early-resume restores one real manually paused player");
+        const auto hidden=SessionWindow();
+        Probe probe;
+        Expect(hidden&&EmbeddedPlayers(parent).size()==1&&probe.Follow(parent),
+            "early-resume connects only to its owned player and event window");
+        if(!hidden||!probe.Follow(parent)){session.Shutdown();continue;}
+        if(!manual) {
+            Send(session,Action::Resume,display);
+            Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Property("pause")==Json(false);}),
+                "early-resume starts the real video timeline before invalidation");
+        }
+        const auto savedPreferences=[&] {
+            std::ifstream file(root/L"preferences.json",std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>());
+        }();
+        struct DisplayPower {GUID setting;DWORD length;DWORD value;};
+        DisplayPower power{GUID_CONSOLE_DISPLAY_STATE,sizeof(DWORD),0};
+        const auto inactive=[&] {
+            if(displayPower) {
+                power.value=0;
+                SendMessageW(hidden,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+            }else SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_LOCK,0);
+        };
+        const auto resume=[&] {
+            if(displayPower) {
+                power.value=1;
+                SendMessageW(hidden,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+            }else SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+        };
+        auto lastFreshAt=restoreStarted;
+        for(unsigned cycle=0;cycle<2;++cycle) {
+            const auto before=EmbeddedPlayers(parent);
+            inactive();
+            Expect(Wait([&]{return probe.Property("pause")==Json(true)&&
+                (manual||Screen(session,display).value("autoPaused",false));}),
+                "early invalidation actually pauses the owned player without parking");
+            const auto elapsed=GetTickCount64()-lastFreshAt;
+            const bool early=elapsed<3000;
+            Expect(early,"new invalidation occurs inside three seconds of the previous fresh player");
+            resume();
+            const bool refreshed=Wait([&]{return EmbeddedPlayers(parent).size()==1&&EmbeddedPlayers(parent)!=before&&
+                HasScreenState(session,display,manual?"paused":"playing")&&probe.Follow(parent)&&
+                probe.Property("pause")==Json(manual);},6000);
+            Expect(refreshed,"each early lock or display-off cycle requires fresh GPU resources after returning");
+            const auto after=EmbeddedPlayers(parent);
+            lastFreshAt=GetTickCount64();
+            evidence["early_resume"].push_back({{"scenario",scenario},{"cycle",cycle},
+                {"inactiveAfterFreshMs",elapsed},{"early",early},{"refreshed",refreshed},
+                {"beforePids",before},{"afterPids",after},{"state",Screen(session,display)}});
+            if(!refreshed)break;
+            // These are follow-up notifications from the same return. They
+            // must not cause another cold start without a new inactive edge.
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+            SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMESUSPEND,0);
+            SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+            Pump(300);
+            Expect(EmbeddedPlayers(parent)==after,
+                "related resume notifications coalesce after this invalidation was already rebuilt");
+        }
+        const auto actualPause=probe.Property("pause");
+        Expect(actualPause==Json(manual)&&HasScreenState(session,display,manual?"paused":"playing"),
+            "early resource refresh preserves the user's manual versus automatic pause policy");
+        std::ifstream savedFile(root/L"preferences.json",std::ios::binary);
+        const std::string afterPreferences{std::istreambuf_iterator<char>(savedFile),std::istreambuf_iterator<char>()};
+        Expect(afterPreferences==savedPreferences,"power and lock cycles leave the saved playback preference untouched");
+        probe.Close();session.Shutdown();
+        Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&OwnedProcesses().empty()&&GetWindow(parent,GW_CHILD)==nullptr;},5000),
+            "early-resume fixture releases every owned player and container");
+    }
+}
+void ResumeRecovery(const fs::path& executable,const fs::path& video,const fs::path& output,
+                    std::uint64_t display,HWND parent) {
+    const auto root=output/"resume-policy";
+    fs::create_directories(root);
+    std::string first,second;
+    Expect(Setup(root,video,display,first,second),"seed isolated resume policy fixture");
+    std::atomic<bool> covered{false};
+    lume::shell::WallpaperSessionOptions options;
+    options.root=root.u8string();options.executable=executable.wstring();options.verification=true;
+    options.verificationParent=parent;options.balancedMode=true;
+    options.verificationFullscreen=[&](std::uint64_t){return covered.load();};
+    options.verificationRecoveryMilliseconds=1500;
+    const auto historyDirectory=root/"diagnostic-history";
+    const auto historyStarted=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    options.verificationResourceHistoryDirectory=historyDirectory.u8string();
+    options.verificationResourceHistoryIntervalMilliseconds=1000;
+    Session session(GetModuleHandleW(nullptr),options,[](const auto&){});
+    Expect(session.Restore()&&Wait([&]{return HasScreenState(session,display,"paused");}),"resume fixture restores saved manual pause");
+    const auto hidden=SessionWindow();
+    Expect(hidden!=nullptr,"resume fixture uses only its own notification window");
+    if(!hidden){session.Shutdown();return;}
+    Probe probe;
+    auto players=EmbeddedPlayers(parent);
+    Expect(players.size()==1&&probe.Open(players.front()),"resume fixture connects to its real owned mpv");
+    if(players.size()!=1){session.Shutdown();return;}
+    Send(session,Action::Resume,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Property("pause")==Json(false);}),"manual resume starts the actual timeline");
+    Expect(probe.Request(Json::array({"set_property","pause",true}))==Json(true),"inject player pause drift without changing Lume intent");
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return probe.Property("pause")==Json(false);}),"a lost pause acknowledgement cannot strand playback on returning to desktop");
+    Send(session,Action::Pause,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"paused")&&probe.Property("pause")==Json(true);}),"manual pause is confirmed before drift test");
+    Expect(probe.Request(Json::array({"set_property","pause",false}))==Json(true),"inject unintended player resume");
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return probe.Property("pause")==Json(true);}),"health reconciliation preserves the user's manual pause");
+    Send(session,Action::Resume,display);
+    Expect(Wait([&]{return probe.Property("pause")==Json(false);}),"playing fixture is ready for fullscreen policy");
+    covered=true;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return Screen(session,display).value("autoPaused",false)&&probe.Property("pause")==Json(true);}),"covering game automatically pauses the actual player");
+    covered=false;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Follow(parent)&&probe.Property("pause")==Json(false);}),"returning to desktop clears automatic pause and resumes mpv");
+    Pump(3200);const auto beforeShortLock=EmbeddedPlayers(parent);
+    SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_LOCK,0);
+    Expect(Wait([&]{return Screen(session,display).value("autoPaused",false);}),"short lock records automatic pause before parking deadline");
+    SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent)!=beforeShortLock&&HasScreenState(session,display,"playing")&&probe.Follow(parent);}),
+        "short unlock rebuilds stale GPU resources even before the parking deadline");
+    const auto rebuilt=EmbeddedPlayers(parent);
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);Pump(800);
+    Expect(EmbeddedPlayers(parent)==rebuilt,"related resume and unlock notifications coalesce into one resource rebuild");
+    for(unsigned attempt=0;attempt<4;++attempt){
+        players=EmbeddedPlayers(parent);probe.Close();
+        const auto revision=State(session).value("revision",std::uint64_t{0});
+        Expect(players.size()==1&&TerminateOwnedPlayer(players.front(),parent,executable),"terminate only the isolated player to exercise repeated recovery");
+        const auto previous=players;
+        Expect(Wait([&]{const auto next=EmbeddedPlayers(parent);return next.size()==1&&next!=previous&&
+            State(session).value("revision",std::uint64_t{0})>revision&&HasScreenState(session,display,"playing");},12000),
+            "a fourth failure is cooled down and recovered instead of permanently abandoning wallpaper");
+    }
+    players=EmbeddedPlayers(parent);
+    Expect(players.size()==1&&probe.Open(players.front()),"repeated recovery retains one player");
+    covered=true;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&HasScreenState(session,display,"paused");},8000),
+        "long game coverage parks only that display's decoder");
+    probe.Close();Pump(2200);
+    Expect(EmbeddedPlayers(parent).empty(),"a still-covered desktop does not repeatedly rebuild its parked player");
+    covered=false;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).size()==1&&HasScreenState(session,display,"playing");},8000),
+        "leaving a long game rebuilds the wallpaper on return to desktop");
+    players=EmbeddedPlayers(parent);
+    Expect(players.size()==1&&probe.Open(players.front()),"game return reconnects to the one replacement player");
+    const auto beforePark=players;
+    SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_LOCK,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&HasScreenState(session,display,"paused");},8000),
+        "long lock parks the decoder while retaining the logical paused wallpaper");
+    Expect(session.HasWork(),"parked wallpaper keeps a resume owner without a child process");
+    probe.Close();
+    SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).size()==1&&HasScreenState(session,display,"playing");},8000),
+        "unlock rebuilds a parked player without a page command");
+    players=EmbeddedPlayers(parent);
+    Expect(players.size()==1&&players!=beforePark&&probe.Open(players.front()),"unlock owns a fresh player and pipe");
+    const auto firstTime=probe.Property("time-pos");Pump(450);const auto lastTime=probe.Property("time-pos");
+    Expect(probe.Property("pause")==Json(false)&&firstTime.is_number()&&lastTime.is_number()&&firstTime!=lastTime,
+        "unlocked wallpaper has an advancing real video timeline");
+    Send(session,Action::Pause,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"paused")&&probe.Property("pause")==Json(true);}),"manual pause is persisted before parking");
+    SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_LOCK,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty();},8000),"manual-paused video also releases its decoder on long lock");
+    const auto manualUnlockRevision=State(session).value("revision",std::uint64_t{0});
+    probe.Close();SendMessageW(hidden,WM_WTSSESSION_CHANGE,WTS_SESSION_UNLOCK,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).size()==1&&
+        State(session).value("revision",std::uint64_t{0})>manualUnlockRevision&&
+        HasScreenState(session,display,"paused");},8000),
+        "unlock restores a manually paused wallpaper without overriding its preference");
+    // A child HWND and IPC pipe can appear before StartPlayback confirms its
+    // final pause policy. The previous parked snapshot was also paused, so
+    // require a completed publication above and retry the actual readback.
+    Expect(Wait([&]{return probe.Follow(parent)&&probe.Property("pause")==Json(true);}),
+        "manual pause survives the parked process replacement");
+    Send(session,Action::Resume,display);
+    Expect(Wait([&]{return probe.Property("pause")==Json(false);}),"resume fixture is playing before display-power ordering check");
+    struct DisplayPower {GUID setting;DWORD length;DWORD value;};
+    DisplayPower power{GUID_CONSOLE_DISPLAY_STATE,sizeof(DWORD),0};
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMSUSPEND,0);
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&HasScreenState(session,display,"paused");},8000),
+        "automatic system resume does not override a display that is still powered off");
+    probe.Close();power.value=1;
+    SendMessageW(hidden,WM_POWERBROADCAST,PBT_POWERSETTINGCHANGE,reinterpret_cast<LPARAM>(&power));
+    Expect(Wait([&]{return EmbeddedPlayers(parent).size()==1&&HasScreenState(session,display,"playing");},8000),
+        "display-on notification independently resumes a parked wallpaper");
+    // Allow two low-frequency intervals for an owned replacement's CPU delta;
+    // real display power and the user's running wallpaper remain untouched.
+    Pump(2200);
+    probe.Close();session.Shutdown();
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&OwnedProcesses().empty();},5000),"resume policy fixture leaves no child process or container");
+    const auto history=lume::shell::ReadWallpaperResourceHistory(historyDirectory);
+    bool sampled=false,evented=false,paused=false,parked=false,cpu=false;
+    std::set<std::pair<DWORD,std::string>> historicalPlayers;
+    const auto runPrefix=std::to_string(GetCurrentProcessId())+'-';
+    std::size_t begin=0;
+    while(begin<history.records.size()){
+        const auto end=history.records.find('\n',begin);
+        const auto record=Json::parse(history.records.substr(begin,end==std::string::npos?std::string::npos:end-begin),nullptr,false);
+        if(record.is_object()&&record.value("atUnixMs",std::uint64_t{0})>=historyStarted&&
+            record.value("runId",std::string{}).rfind(runPrefix,0)==0&&record.contains("processes")&&record["processes"].is_array()){
+            const bool sample=record.value("type",std::string{})=="sample";
+            sampled=sampled||sample;evented=evented||record.value("type",std::string{})=="event";
+            for(const auto& process:record["processes"]){
+                paused=paused||process.value("state",std::string{})=="paused"||process.value("manualPaused",false)||process.value("systemPaused",false);
+                parked=parked||process.value("parked",false)||process.value("state",std::string{})=="parked";
+                const auto pid=process.value("pid",DWORD{0});
+                if(pid)historicalPlayers.emplace(pid,process.value("createdFileTime",std::string{}));
+                if(sample&&pid&&process.contains("cpuMachinePercent")&&process["cpuMachinePercent"].is_number()&&
+                    process.contains("cpuIntervalMs")&&process["cpuIntervalMs"].is_number_unsigned()&&process["cpuIntervalMs"].get<std::uint64_t>()>0){
+                    const auto value=process["cpuMachinePercent"].get<double>();cpu=cpu||(std::isfinite(value)&&value>=0&&value<=100);
+                }
+            }
+        }
+        if(end==std::string::npos)break;
+        begin=end+1;
+    }
+    Expect(sampled&&evented,"real session writes minute-history samples and immediate context events into its isolated directory");
+    Expect(paused&&parked,"resource history retains actual automatic/manual pause and parked policy transitions");
+    Expect(historicalPlayers.size()>=5&&history.summaryState.value("pidReplacements",std::size_t{0})>=4,
+        "resource history links repeated owned PID replacements back to the same display");
+    Expect(cpu,"resource history contains a real normalized CPU delta for an owned player");
+    const auto exports=output/"resource-history-export";fs::create_directories(exports);
+    const auto save=[&](const char* name,const std::string& bytes){std::ofstream file(exports/name,std::ios::binary);file<<bytes;return file.good();};
+    const std::array<bool,4> exported{{save("wallpaper-resources.jsonl",history.records),save("wallpaper-resources.csv",history.csv),
+        save("wallpaper-resource-summary.txt",history.summary),save("wallpaper-resource-summary.json",history.summaryState.dump(2))}};
+    Expect(std::all_of(exported.begin(),exported.end(),[](bool saved){return saved;}),
+        "four real-session resource history exports are saved as inspectable evidence");
+    evidence["resource_history"]=history.summaryState;
+    evidence["resource_history_live_run"]={{"runPrefix",runPrefix},{"startedAtUnixMs",historyStarted},{"playerIdentities",historicalPlayers.size()}};
+}
 void WatchdogRecovery(const fs::path& executable,const fs::path& video,const fs::path& base,
                       std::uint64_t display,HWND parent) {
     for(const std::string scenario:{"resume-during-recovery","still-covered","manual-pause","playing"}) {
@@ -408,7 +723,7 @@ void WatchdogRecovery(const fs::path& executable,const fs::path& video,const fs:
         }
         const auto before=EmbeddedPlayers(parent);
         const auto saved=State(session);
-        armed=true;SendMessageW(hidden,WM_DISPLAYCHANGE,0,0);
+        armed=true;SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMPOWERSTATUSCHANGE,0);
         Expect(Wait([&]{return entered.load();}),"memory protection reaches controlled threshold sample");
         if(scenario=="resume-during-recovery")
             SendMessageW(hidden,WM_POWERBROADCAST,PBT_APMRESUMEAUTOMATIC,0);
@@ -431,9 +746,12 @@ void WatchdogRecovery(const fs::path& executable,const fs::path& video,const fs:
         }
         const bool shouldPlay=scenario!="manual-pause";
         if(shouldPlay) {
-            Expect(Wait([&]{return probe.Property("pause")==Json(false);},6000),
+            Expect(Wait([&]{return probe.Follow(parent)&&probe.Property("pause")==Json(false);},6000),
                 "returning to desktop resumes actual mpv after watchdog recovery");
-            Expect(HasScreenState(session,display,"playing")&&!Screen(session,display).value("autoPaused",true),
+            // IPC acknowledges pause before the actor publishes its snapshot.
+            // Require both to converge instead of sampling that narrow gap.
+            Expect(Wait([&]{return HasScreenState(session,display,"playing")&&
+                !Screen(session,display).value("autoPaused",true)&&probe.Property("pause")==Json(false);},6000),
                 "public state agrees with resumed player");
         }
         const auto timeBefore=probe.Property("time-pos");Pump(400);
@@ -453,14 +771,16 @@ void WatchdogRecovery(const fs::path& executable,const fs::path& video,const fs:
 }
 int main(int argc,char** argv) {
     if(argc!=4&&argc!=5) {
-        std::cerr<<"Usage: wallpaper-session-playback-test mpv.exe fixture-video.mp4 output-directory [resource-phase-seconds|--balanced-regression|--watchdog-regression]\n";return 2;
+        std::cerr<<"Usage: wallpaper-session-playback-test mpv.exe fixture-video.mp4 output-directory [resource-phase-seconds|--balanced-regression|--watchdog-regression|--resume-regression|--early-resume-regression]\n";return 2;
     }
     const auto executable=fs::absolute(fs::u8path(argv[1]));
     const auto video=fs::absolute(fs::u8path(argv[2]));
     const auto output=fs::absolute(fs::u8path(argv[3]));
     const bool balancedRegression=argc==5&&std::string(argv[4])=="--balanced-regression";
     const bool watchdogRegression=argc==5&&std::string(argv[4])=="--watchdog-regression";
-    if(argc==5&&!balancedRegression&&!watchdogRegression) {
+    const bool resumeRegression=argc==5&&std::string(argv[4])=="--resume-regression";
+    const bool earlyResumeRegression=argc==5&&std::string(argv[4])=="--early-resume-regression";
+    if(argc==5&&!balancedRegression&&!watchdogRegression&&!resumeRegression&&!earlyResumeRegression) {
         const auto seconds=std::strtoul(argv[4],nullptr,10);
         if(seconds<3||seconds>30)return 2;
         resourceHoldMs=static_cast<DWORD>(seconds*1000);
@@ -483,9 +803,29 @@ int main(int argc,char** argv) {
     lume::shell::WallpaperSessionOptions options;
     options.root=root.u8string();options.executable=executable.wstring();
     options.verification=true;options.verificationParent=parent;
+    options.verificationRecoveryMilliseconds=3000;
     evidence["executable"]=executable.u8string();evidence["fixture"]=video.u8string();
     evidence["root_pid"]=GetCurrentProcessId();
     evidence["scope"]="owned 640x360 off-screen parent, real session and player descendants; not desktop/compositor acceptance";
+    if(earlyResumeRegression) {
+        EarlyResumeRecovery(executable,video,root,display,parent);
+        DestroyWindow(parent);
+        evidence["residual-pids"]=OwnedProcesses();
+        for(const auto& item:ownedHandles)CloseHandle(item.second);
+        ownedHandles.clear();evidence["failures"]=failures;
+        std::ofstream(output/L"early-resume-evidence.json")<<evidence.dump(2);
+        return failures?1:0;
+    }
+    if(resumeRegression) {
+        CoverageResumeStability(executable,video,root,display,parent);
+        ResumeRecovery(executable,video,root,display,parent);
+        DestroyWindow(parent);
+        evidence["residual-pids"]=OwnedProcesses();
+        for(const auto& item:ownedHandles)CloseHandle(item.second);
+        ownedHandles.clear();evidence["failures"]=failures;
+        std::ofstream(output/L"resume-policy-evidence.json")<<evidence.dump(2);
+        return failures?1:0;
+    }
     if(watchdogRegression) {
         WatchdogRecovery(executable,video,root,display,parent);
         DestroyWindow(parent);
@@ -581,18 +921,16 @@ int main(int argc,char** argv) {
             const bool settled=Wait([&] {
                 const auto current=State(session);
                 const auto children=EmbeddedPlayers(parent);
-                const auto screen=Screen(session,display);
                 return current.is_object()&&current.value("revision",std::uint64_t{0})>revision&&
-                    ((children.size()==1&&children!=players&&HasScreenState(session,display,"paused"))||
-                     (attempt>=3&&children.empty()&&screen.is_object()&&screen.value("state",std::string{})=="failed"));
+                    children.size()==1&&children!=players&&HasScreenState(session,display,"paused");
             },12000);
             const auto replacement=EmbeddedPlayers(parent);
             crashes.push_back({{"attempt",attempt+1},{"terminated_pid",players.front()},
                 {"replacement_pids",replacement},{"settled",settled},
                 {"elapsed_ms",GetTickCount64()-started},{"state",State(session)}});
-            Expect(settled,"player crash settles as recovered or explicitly failed, never stale playing/paused");
+            Expect(settled,"repeated player crashes recover after bounded cooldown, never stale playing/paused");
             if(replacement.empty()) {
-                Expect(attempt>=3,"recovery remains available before the bounded retry limit");
+                Expect(false,"recovery remains available after the third failure");
                 break;
             }
             Expect(replacement.size()==1&&replacement!=players,"crash recovery creates exactly one replacement PID");

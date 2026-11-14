@@ -1,10 +1,14 @@
 #include "platform/windows/taskbar/taskbar_core_process.h"
 #include "platform/windows/diagnostics/runtime_log.h"
+#include "vendor/nlohmann/json.hpp"
 #include <string>
 #include <windows.h>
 #include <atomic>
 #include <cwchar>
 #include <cwctype>
+#include <fstream>
+#include <limits>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -12,19 +16,122 @@
 namespace lume::platform::windows {
 using taskbar::Error;
 Error TaskbarCoreDialogError(std::wstring_view text) {
+    // The upstream uses the same restart notice for both a pinned DLL that
+    // cannot be replaced and an incompatible COM API. Preserve that distinction
+    // in structured diagnostics, and never retry either through a timer.
+    if (text.find(L"已更新。请重启 Windows") != std::wstring_view::npos ||
+        text.find(L"has been updated. Please restart Windows") != std::wstring_view::npos)
+        return Error::CoreRestartRequired;
     // The pinned core uses this fixed English stage label; the HRESULT is
     // stable even when Windows localizes its accompanying description.
     if (text.find(L"Failed to initialize XAML Diagnostics.") == std::wstring_view::npos)
         return Error::None;
     std::wstring lower(text);
     for (auto& c : lower) c = static_cast<wchar_t>(std::towlower(c));
-    constexpr std::wstring_view code = L"0x80070005";
-    const auto at = lower.find(code);
-    if (at == std::wstring::npos) return Error::None;
-    const auto end = at + code.size();
-    return end == lower.size() || !std::iswxdigit(lower[end]) ? Error::CoreAccessDenied : Error::None;
+    for (const auto& [code, error] : {
+             std::pair{std::wstring_view(L"0x80070005"), Error::CoreAccessDenied},
+             std::pair{std::wstring_view(L"0x80070102"), Error::CoreAttachTimeout}}) {
+        const auto at = lower.find(code);
+        if (at != std::wstring::npos) {
+            const auto end = at + code.size();
+            if (end == lower.size() || !std::iswxdigit(lower[end])) return error;
+        }
+    }
+    return Error::None;
+}
+TaskbarCoreDiagnostics ReadTaskbarCoreDiagnostics(const std::filesystem::path& path, DWORD corePid, DWORD explorerPid) {
+    TaskbarCoreDiagnostics result;
+    result.transparency.effectStatus = "pending";
+    result.transparency.stage = "awaiting-core-report";
+    if (path.empty() || !path.is_absolute() || !corePid) return result;
+    try {
+        auto component = path.root_path();
+        for (const auto& part : path.relative_path()) {
+            if (part == L".." || part == L".") return result;
+            component /= part;
+            const auto attributes = GetFileAttributesW(component.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return result;
+        }
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error || size == 0 || size > 65536) return result;
+        WIN32_FILE_ATTRIBUTE_DATA info{};
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) return result;
+        FILETIME now{}; GetSystemTimeAsFileTime(&now);
+        const auto ticks = [](FILETIME value) {
+            return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime;
+        };
+        const auto current = ticks(now), written = ticks(info.ftLastWriteTime);
+        if (written > current + 10000000ULL || current > written + 50000000ULL) {
+            result.transparency.stage = "core-report-stale"; return result;
+        }
+        std::ifstream stream(path, std::ios::binary);
+        std::string bytes(static_cast<std::size_t>(size), '\0');
+        if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return result;
+        const auto json = nlohmann::json::parse(bytes, nullptr, false);
+        if (!json.is_object()) return result;
+        const auto integer = [&](const char* key, std::uint64_t maximum) -> std::optional<std::uint64_t> {
+            const auto it = json.find(key);
+            if (it == json.end() || !it->is_number_integer() || it->get<std::int64_t>() < 0) return {};
+            const auto value = it->get<std::uint64_t>();
+            return value <= maximum ? std::optional<std::uint64_t>{value} : std::nullopt;
+        };
+        if (integer("schemaVersion", 1) != 1 || integer("pid", MAXDWORD) != corePid) return result;
+        const auto reportedExplorer = integer("explorerPid", MAXDWORD);
+        if (!reportedExplorer || (explorerPid && *reportedExplorer != explorerPid)) return result;
+        const auto registered = integer("registeredTaskbars", 32), backgrounds = integer("backgrounds", 32), applied = integer("appliedTaskbars", 32);
+        if (!registered || !backgrounds || !applied || *applied > *backgrounds || *backgrounds > *registered) return result;
+        const auto effect = json.find("effectStatus"), stage = json.find("stage"), hr = json.find("hresult"), ready = json.find("serviceReady");
+        if (effect == json.end() || !effect->is_string() || stage == json.end() || !stage->is_string() ||
+            hr == json.end() || !hr->is_number_integer() || ready == json.end() || !ready->is_boolean()) return result;
+        const auto name = effect->get<std::string>();
+        if (name != "inactive" && name != "initializing" && name != "pending" && name != "applied" && name != "failed") return result;
+        const auto signedHr = hr->get<std::int64_t>();
+        if (signedHr < (std::numeric_limits<std::int32_t>::min)() || signedHr > (std::numeric_limits<std::int32_t>::max)()) return result;
+        const auto& stageText = stage->get_ref<const std::string&>();
+        if (stageText.size() > 96) return result;
+        for (const auto c : stageText) {
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                  c == '_' || c == '.' || c == ':' || c == '-')) return result;
+        }
+        const auto type = json.find("taskbarType");
+        if (type != json.end()) {
+            if (!type->is_string()) return result;
+            const auto value = type->get<std::string>();
+            if (value != "unknown" && value != "classic" && value != "mixed" && value != "xaml") return result;
+            result.transparency.taskbarType = value;
+        }
+        result.transparency.effectStatus = name;
+        result.transparency.stage = stage->get<std::string>();
+        result.transparency.hresult = static_cast<std::int32_t>(signedHr);
+        result.transparency.registeredTaskbars = static_cast<std::uint32_t>(*registered);
+        result.transparency.backgrounds = static_cast<std::uint32_t>(*backgrounds);
+        result.transparency.appliedTaskbars = static_cast<std::uint32_t>(*applied);
+        result.serviceReady = ready->get<bool>();
+        if (name == "applied" && (!result.serviceReady || !explorerPid || !*registered || *applied != *registered)) {
+            result.transparency.effectStatus = "pending";
+            result.transparency.stage = "invalid-effect-confirmation";
+            return result;
+        }
+        if (name == "failed") {
+            switch (static_cast<std::uint32_t>(signedHr)) {
+                case 0x80070005: result.error = Error::CoreAccessDenied; break;
+                case 0x80070102: result.error = Error::CoreAttachTimeout; break;
+                case 0x80070666: // ERROR_PRODUCT_VERSION
+                case 0x80070020: result.error = Error::CoreRestartRequired; break;
+                default: result.error = Error::CoreEffectUnconfirmed; break;
+            }
+        }
+        result.valid = true;
+    } catch (...) { /* An incomplete or replaced file is pending, never success. */ }
+    return result;
 }
 namespace {
+DWORD CurrentExplorerPid() {
+    DWORD pid = 0;
+    if (const auto window = FindWindowW(L"Shell_TrayWnd", nullptr)) GetWindowThreadProcessId(window, &pid);
+    return pid;
+}
 HWND CoreWindow(DWORD pid) {
     struct Search { DWORD pid; HWND window; } search{pid, nullptr};
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
@@ -123,15 +230,19 @@ struct TaskbarCoreProcess::Impl {
         for (;;) {
             if (!recovery && cancel) return Error::Cancelled;
             const auto state = api.wait(process, 0);
-            if (state == WAIT_OBJECT_0) { LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
+            if (state == WAIT_OBJECT_0) { CaptureFailure(); LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
             if (state != WAIT_TIMEOUT) return Error::CoreStart;
             const auto elapsed = GetTickCount64() - launchedAt;
-            if (reportedFailure == Error::None && CoreWindow(pid) && elapsed >= timings.readySettleMs) {
+            const auto report = CaptureFailure();
+            const bool serviceReady = report.valid && report.serviceReady;
+            if ((reportedFailure == Error::None || (serviceReady && !taskbar::RequiresExplicitRetry(reportedFailure.load()))) &&
+                (diagnosticsFile.empty() || serviceReady) &&
+                CoreWindow(pid) && elapsed >= timings.readySettleMs) {
                 ready = true; return Error::None;
             }
-            if (elapsed >= timings.startTimeoutMs) { diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms"); return FailureOr(Error::CoreStart); }
+            if (elapsed >= timings.startTimeoutMs) { diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms"); return FailureOr(diagnosticsFile.empty() ? Error::CoreStart : Error::CoreAttachTimeout); }
             const auto waited = api.wait(process, timings.waitSliceMs);
-            if (waited == WAIT_OBJECT_0) { LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
+            if (waited == WAIT_OBJECT_0) { CaptureFailure(); LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
             if (waited != WAIT_TIMEOUT) return Error::CoreStart;
         }
     }
@@ -139,10 +250,19 @@ struct TaskbarCoreProcess::Impl {
         const auto failure = reportedFailure.load();
         return failure == Error::None ? fallback : failure;
     }
+    TaskbarCoreDiagnostics CaptureFailure() {
+        const auto report = ReadTaskbarCoreDiagnostics(diagnosticsFile, pid, CurrentExplorerPid());
+        // A query of an already connected background can fail temporarily and
+        // recover on the next heartbeat. Do not turn it into a sticky launch
+        // failure; the independent effect status still reports that failure.
+        if (report.valid && !report.serviceReady && report.error != Error::None) reportedFailure = report.error;
+        else if (report.valid && report.serviceReady && !taskbar::RequiresExplicitRetry(reportedFailure.load())) reportedFailure = Error::None;
+        return report;
+    }
     Error Start(bool recovery) {
         // A known access failure will also fail a recovery launch. Keep its
         // journal, and wait for an explicit user retry instead of another box.
-        if (reportedFailure != Error::None) return reportedFailure.load();
+        if (taskbar::RequiresExplicitRetry(reportedFailure.load())) return reportedFailure.load();
         if (process) {
             const auto state = api.wait(process, 0);
             if (state == WAIT_TIMEOUT) {
@@ -156,6 +276,7 @@ struct TaskbarCoreProcess::Impl {
             if (state != WAIT_OBJECT_0) return Error::CoreStart;
         }
         Close();
+        reportedFailure = Error::None;
         if (!recovery && cancel) return Error::Cancelled;
         // Give Explorer's XAML taskbar time to appear rather than letting the
         // core fail on it; past the limit the core still starts and retries.
@@ -167,6 +288,8 @@ struct TaskbarCoreProcess::Impl {
         TaskbarCoreLaunch launch;
         const auto prepared = prepare ? prepare(recovery, launch) : Error::MissingPayload;
         if (prepared != Error::None) return prepared;
+        diagnosticsFile = launch.diagnosticsFile;
+        launchExplorerPid = CurrentExplorerPid();
         job = api.createJob(nullptr, nullptr);
         if (!job) return Error::CoreStart;
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -192,6 +315,7 @@ struct TaskbarCoreProcess::Impl {
         PROCESS_INFORMATION created{};
         auto command = std::wstring(L"\"") + launch.executable.wstring() + L"\"";
         if (!launch.arguments.empty()) command += L" " + launch.arguments;
+        if (!diagnosticsFile.empty()) command += L" --lume-status-file \"" + diagnosticsFile.wstring() + L"\"";
         // The kernel assigns the child to the kill-on-close job as part of
         // creation, including while suspended and before this call returns.
         const bool started = api.createProcess(launch.executable.c_str(), command.data(), nullptr, nullptr, FALSE,
@@ -222,7 +346,7 @@ struct TaskbarCoreProcess::Impl {
             if (completed) return Error::None;
         }
         if (!process && (previous || recoveryRequired)) {
-            if (reportedFailure != Error::None) return reportedFailure.load();
+            if (taskbar::RequiresExplicitRetry(reportedFailure.load())) return reportedFailure.load();
             const auto error = Start(true);
             if (error != Error::None) return error;
         }
@@ -245,6 +369,8 @@ struct TaskbarCoreProcess::Impl {
     TaskbarCoreProcessApi api;
     HANDLE process = nullptr, job = nullptr;
     DWORD pid = 0;
+    DWORD launchExplorerPid = 0;
+    std::filesystem::path diagnosticsFile;
     ULONGLONG launchedAt = 0;
     bool ready = false, closeRequested = false, recoveryRequired = false;
     static constexpr ULONGLONG XamlWaitMs = 15000;
@@ -262,5 +388,13 @@ Error TaskbarCoreProcess::Stop(bool previous) { return impl_->Stop(previous); }
 bool TaskbarCoreProcess::Alive() const { return impl_->Alive(); }
 bool TaskbarCoreProcess::Ready() const { return impl_->reportedFailure == Error::None && impl_->ready && !impl_->closeRequested && impl_->Alive(); }
 bool TaskbarCoreProcess::HasProcess() const { return impl_->process != nullptr; }
+taskbar::TransparencyStatus TaskbarCoreProcess::Transparency() const {
+    return ReadTaskbarCoreDiagnostics(impl_->diagnosticsFile, impl_->pid, CurrentExplorerPid()).transparency;
+}
+bool TaskbarCoreProcess::ReloadResolved() const {
+    const auto current = CurrentExplorerPid();
+    return impl_->reportedFailure == Error::CoreRestartRequired && impl_->launchExplorerPid &&
+        current && current != impl_->launchExplorerPid;
+}
 std::uintptr_t TaskbarCoreProcess::ExitSignal() const { return reinterpret_cast<std::uintptr_t>(impl_->process); }
 }  // namespace lume::platform::windows

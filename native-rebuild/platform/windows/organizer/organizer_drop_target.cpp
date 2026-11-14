@@ -10,10 +10,9 @@
 
 namespace lume::platform::windows {
 namespace {
-constexpr std::size_t kMaxFiles = 1024;
 constexpr std::size_t kMaxPath = 32767;
-constexpr std::size_t kMaxPayload = sizeof(DROPFILES) +
-    (kMaxFiles * (kMaxPath + 1) + 1) * sizeof(wchar_t);
+// Bound external drag memory, not the number of ordinary file references.
+constexpr std::size_t kMaxPayload = 64 * 1024 * 1024;
 
 struct OleLease final {
     HRESULT result = OleInitialize(nullptr);
@@ -30,6 +29,107 @@ struct GlobalLockGuard final {
     ~GlobalLockGuard() { if (data) GlobalUnlock(memory); }
     HGLOBAL memory;
     void* data;
+};
+
+struct PathMemoryBudget final {
+    bool Add(std::size_t bytes) {
+        // Include the terminator, allocator bookkeeping, and vector storage
+        // while growing (old, new, and spare string slots).
+        constexpr std::size_t overhead = 1 + 3 * sizeof(std::string) + 2 * sizeof(void*);
+        if (bytes > kMaxPayload - used || overhead > kMaxPayload - used - bytes) return false;
+        used += bytes + overhead;
+        return true;
+    }
+    std::size_t used = 0;
+};
+
+bool ValidShellIdList(const std::vector<unsigned char>& bytes) {
+    if (bytes.size() < sizeof(CIDA)) return false;
+    UINT count = 0;
+    std::memcpy(&count, bytes.data(), sizeof(count));
+    if (!count || count > (bytes.size() - 2 * sizeof(UINT)) / sizeof(UINT)) return false;
+    const auto headerBytes = (static_cast<std::size_t>(count) + 2) * sizeof(UINT);
+    std::size_t scannedBytes = 0;
+    PathMemoryBudget entries;
+    for (std::size_t i = 0; i <= count; ++i) {
+        // Reserve each child's metadata budget before the Shell constructs
+        // its item array, including when many offsets alias a tiny PIDL.
+        if (i && !entries.Add(0)) return false;
+        UINT offset = 0;
+        std::memcpy(&offset, bytes.data() + (i + 1) * sizeof(UINT), sizeof(offset));
+        std::size_t at = offset;
+        if (at < headerBytes) return false;
+        for (;;) {
+            if (at > bytes.size() || bytes.size() - at < sizeof(USHORT)) return false;
+            USHORT length = 0;
+            std::memcpy(&length, bytes.data() + at, sizeof(length));
+            const auto consumed = length ? length : sizeof(length);
+            if (consumed < sizeof(length) || consumed > bytes.size() - at ||
+                consumed > kMaxPayload - scannedBytes) return false;
+            scannedBytes += consumed;
+            if (!length) break;
+            at += length;
+        }
+    }
+    return true;
+}
+
+class ShellIdListData final : public IDataObject {
+public:
+    ShellIdListData(CLIPFORMAT format, std::vector<unsigned char> bytes)
+        : format_(format), bytes_(std::move(bytes)) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDataObject) return E_NOINTERFACE;
+        *out = static_cast<IDataObject*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = --references_;
+        if (!remaining) delete this;
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC* format) override {
+        return format && format->cfFormat == format_ && !format->ptd &&
+            format->dwAspect == DVASPECT_CONTENT && format->lindex == -1 &&
+            (format->tymed & TYMED_HGLOBAL) ? S_OK : DV_E_FORMATETC;
+    }
+    HRESULT STDMETHODCALLTYPE GetData(FORMATETC* format, STGMEDIUM* medium) override {
+        if (!medium) return E_POINTER;
+        *medium = {};
+        if (QueryGetData(format) != S_OK) return DV_E_FORMATETC;
+        const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes_.size());
+        if (!memory) return E_OUTOFMEMORY;
+        {
+            GlobalLockGuard locked(memory);
+            if (!locked.data) { GlobalFree(memory); return E_OUTOFMEMORY; }
+            std::memcpy(locked.data, bytes_.data(), bytes_.size());
+        }
+        medium->tymed = TYMED_HGLOBAL;
+        medium->hGlobal = memory;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC*, FORMATETC*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD, IEnumFORMATETC**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+    HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+private:
+    ~ShellIdListData() = default;
+    std::atomic<ULONG> references_{1};
+    CLIPFORMAT format_;
+    const std::vector<unsigned char> bytes_;
+};
+
+struct ShellShortcut final {
+    ~ShellShortcut() { CoTaskMemFree(id); }
+    bool Resolve(const std::wstring& parsingName);
+    bool Save() const;
+    PIDLIST_ABSOLUTE id = nullptr;
+    std::wstring folder, file;
 };
 
 DWORD AllowedEffect(DWORD allowed) noexcept {
@@ -53,12 +153,13 @@ bool ClientPixels(HWND window, POINTL screen, POINT& result) noexcept {
     return true;
 }
 
-bool Utf8Path(const wchar_t* path, std::size_t length, std::vector<std::string>* paths) {
+bool Utf8Path(const wchar_t* path, std::size_t length, std::vector<std::string>* paths,
+              PathMemoryBudget* budget = nullptr) {
     if (!length || length > kMaxPath) return false;
     const int units = static_cast<int>(length);
     const int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, units,
         nullptr, 0, nullptr, nullptr);
-    if (!bytes) return false;
+    if (!bytes || (budget && !budget->Add(static_cast<std::size_t>(bytes)))) return false;
     if (paths) {
         std::string text(static_cast<std::size_t>(bytes), '\0');
         if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, units,
@@ -68,7 +169,8 @@ bool Utf8Path(const wchar_t* path, std::size_t length, std::vector<std::string>*
     return true;
 }
 
-bool Utf8Path(const char* path, std::size_t length, std::vector<std::string>* paths) {
+bool Utf8Path(const char* path, std::size_t length, std::vector<std::string>* paths,
+              PathMemoryBudget* budget = nullptr) {
     if (!length || length > kMaxPath * sizeof(wchar_t)) return false;
     const int bytes = static_cast<int>(length);
     const int units = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, path, bytes, nullptr, 0);
@@ -76,19 +178,19 @@ bool Utf8Path(const char* path, std::size_t length, std::vector<std::string>* pa
     std::wstring wide(static_cast<std::size_t>(units), L'\0');
     if (MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, path, bytes, wide.data(), units) != units)
         return false;
-    return Utf8Path(wide.data(), wide.size(), paths);
+    return Utf8Path(wide.data(), wide.size(), paths, budget);
 }
 
 template<class Char>
 bool ReadList(const Char* list, std::size_t units, std::size_t& count,
               std::vector<std::string>* paths) {
     std::size_t at = 0, found = 0;
+    PathMemoryBudget budget;
     const std::size_t maxUnits = sizeof(Char) == sizeof(wchar_t) ? kMaxPath : kMaxPath * sizeof(wchar_t);
     while (at < units && list[at]) {
-        if (found == kMaxFiles) return false;
         std::size_t length = 0;
         while (length < units - at && list[at + length] && length <= maxUnits) ++length;
-        if (length == units - at || length > maxUnits || !Utf8Path(list + at, length, paths)) return false;
+        if (length == units - at || length > maxUnits || !Utf8Path(list + at, length, paths, &budget)) return false;
         ++found;
         at += length + 1;
     }
@@ -101,11 +203,41 @@ bool ReadShellPayload(IDataObject* data, std::size_t& count, std::vector<std::st
     FORMATETC format{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(CFSTR_SHELLIDLIST)), nullptr,
                       DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
     if (!format.cfFormat || data->QueryGetData(&format) != S_OK) return false;
+    std::vector<unsigned char> bytes;
+    {
+        Medium medium;
+        if (FAILED(data->GetData(&format, &medium.value)) || medium.value.tymed != TYMED_HGLOBAL ||
+            !medium.value.hGlobal) return false;
+        const auto payloadBytes = GlobalSize(medium.value.hGlobal);
+        if (payloadBytes < sizeof(CIDA) || payloadBytes > kMaxPayload) return false;
+        GlobalLockGuard locked(medium.value.hGlobal);
+        if (!locked.data) return false;
+        const auto* begin = static_cast<const unsigned char*>(locked.data);
+        bytes.assign(begin, begin + payloadBytes);
+    }
+    if (!ValidShellIdList(bytes)) return false;
+    const auto payloadBytes = bytes.size();
+    // Shell may call GetData again. Give it only the validated, owned snapshot,
+    // never the external provider that could return a different second block.
+    const std::shared_ptr<IDataObject> snapshot(new ShellIdListData(format.cfFormat, std::move(bytes)),
+        [](IDataObject* value) { value->Release(); });
     IShellItemArray* array = nullptr;
-    if (FAILED(SHCreateShellItemArrayFromDataObject(data, IID_PPV_ARGS(&array))) || !array) return false;
+    if (FAILED(SHCreateShellItemArrayFromDataObject(snapshot.get(), IID_PPV_ARGS(&array))) || !array) return false;
     struct ReleaseArray { IShellItemArray* value; ~ReleaseArray() { value->Release(); } } release{array};
     DWORD total = 0;
-    if (FAILED(array->GetCount(&total)) || !total || total > kMaxFiles) return false;
+    // Every CIDA entry requires at least an offset. Do not trust a count that
+    // cannot fit the bounded source block, even if the Shell exposes it.
+    if (FAILED(array->GetCount(&total)) || !total || total > payloadBytes / sizeof(UINT)) return false;
+    std::size_t decodedBytes = 0, found = 0;
+    PathMemoryBudget budget;
+    const auto consumePath = [&](const wchar_t* path, std::size_t& length) {
+        length = 0;
+        while (length <= kMaxPath && path[length]) ++length;
+        const auto bytes = (length + 1) * sizeof(wchar_t);
+        if (length > kMaxPath || bytes > kMaxPayload - decodedBytes) return false;
+        decodedBytes += bytes;
+        return true;
+    };
     for (DWORD i = 0; i < total; ++i) {
         IShellItem* item = nullptr;
         if (FAILED(array->GetItemAt(i, &item)) || !item) return false;
@@ -119,20 +251,27 @@ bool ReadShellPayload(IDataObject* data, std::size_t& count, std::vector<std::st
             PWSTR parsing = nullptr;
             if (FAILED(item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &parsing)) || !parsing) continue;
             struct FreeParsing { PWSTR value; ~FreeParsing() { CoTaskMemFree(value); } } freeParsing{parsing};
+            std::size_t length = 0;
+            if (!consumePath(parsing, length)) return false;
+            ShellShortcut shortcut;
+            if (!shortcut.Resolve(parsing)) continue;
+            // Preview the same output path on Enter and Drop. Only Drop writes
+            // the shortcut, after its UTF-8 storage has passed the shared budget.
+            if (!Utf8Path(shortcut.file.c_str(), shortcut.file.size(), nullptr, &budget)) return false;
             if (paths) {
-                const auto link = ShellLocationShortcut(parsing);
-                if (!link) continue;
-                paths->push_back(*link);
+                if (!shortcut.Save()) continue;
+                if (!Utf8Path(shortcut.file.c_str(), shortcut.file.size(), paths)) return false;
             }
-            ++count;
+            ++found;
             continue;
         }
         std::size_t length = 0;
-        while (length <= kMaxPath && path[length]) ++length;
-        if (!Utf8Path(path, length, paths)) return false;
-        ++count;
+        if (!consumePath(path, length) || !Utf8Path(path, length, paths, &budget)) return false;
+        ++found;
     }
-    return count != 0;
+    if (!found) return false;
+    count = found;
+    return true;
 }
 
 bool ReadPayload(IDataObject* data, std::size_t& count, std::vector<std::string>* paths = nullptr, bool locations = false) {
@@ -374,34 +513,43 @@ void OrganizerDropTarget::Detach() {
     detached.reset();
 }
 
-std::optional<std::string> ShellLocationShortcut(const std::wstring& parsingName) {
-    if (parsingName.empty() || parsingName.size() > 1024) return std::nullopt;
-    PIDLIST_ABSOLUTE id = nullptr;
-    if (FAILED(SHParseDisplayName(parsingName.c_str(), nullptr, &id, 0, nullptr)) || !id) return std::nullopt;
-    struct FreeId { PIDLIST_ABSOLUTE value; ~FreeId() { CoTaskMemFree(value); } } freeId{id};
+namespace {
+bool ShellShortcut::Resolve(const std::wstring& parsingName) {
+    if (parsingName.empty() || parsingName.size() > 1024) return false;
+    if (FAILED(SHParseDisplayName(parsingName.c_str(), nullptr, &id, 0, nullptr)) || !id) return false;
     PWSTR display = nullptr;
     std::wstring name;
     if (SUCCEEDED(SHGetNameFromIDList(id, SIGDN_NORMALDISPLAY, &display)) && display) { name = display; CoTaskMemFree(display); }
     for (auto& ch : name) if (ch < 32 || wcschr(L"<>:\"/\\|?*", ch)) ch = L'_';
     while (!name.empty() && (name.back() == L' ' || name.back() == L'.')) name.pop_back();
-    if (name.empty() || name.size() > 80) return std::nullopt;
+    if (name.empty() || name.size() > 80) return false;
     PWSTR local = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)) || !local) return std::nullopt;
-    std::wstring folder = std::wstring(local) + L"\\Lume\\shell-items";
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)) || !local) return false;
+    folder = std::wstring(local) + L"\\Lume\\shell-items";
     CoTaskMemFree(local);
+    file = folder + L"\\" + name + L".lnk";
+    return true;
+}
+
+bool ShellShortcut::Save() const {
     const int created = SHCreateDirectoryExW(nullptr, folder.c_str(), nullptr);
-    if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && created != ERROR_FILE_EXISTS) return std::nullopt;
-    const std::wstring file = folder + L"\\" + name + L".lnk";
+    if (created != ERROR_SUCCESS && created != ERROR_ALREADY_EXISTS && created != ERROR_FILE_EXISTS) return false;
     IShellLinkW* link = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) || !link) return std::nullopt;
+    if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link))) || !link) return false;
     struct ReleaseLink { IShellLinkW* value; ~ReleaseLink() { value->Release(); } } releaseLink{link};
     IPersistFile* persist = nullptr;
-    if (FAILED(link->SetIDList(id)) || FAILED(link->QueryInterface(IID_PPV_ARGS(&persist))) || !persist) return std::nullopt;
+    if (FAILED(link->SetIDList(id)) || FAILED(link->QueryInterface(IID_PPV_ARGS(&persist))) || !persist) return false;
     const HRESULT saved = persist->Save(file.c_str(), TRUE);
     persist->Release();
-    if (FAILED(saved)) return std::nullopt;
+    return SUCCEEDED(saved);
+}
+}
+
+std::optional<std::string> ShellLocationShortcut(const std::wstring& parsingName) {
+    ShellShortcut shortcut;
+    if (!shortcut.Resolve(parsingName) || !shortcut.Save()) return std::nullopt;
     std::vector<std::string> out;
-    if (!Utf8Path(file.c_str(), file.size(), &out) || out.empty()) return std::nullopt;
+    if (!Utf8Path(shortcut.file.c_str(), shortcut.file.size(), &out) || out.empty()) return std::nullopt;
     return out.front();
 }
 }

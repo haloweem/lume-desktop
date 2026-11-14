@@ -4,30 +4,75 @@
 #include <algorithm>
 #include <cwchar>
 #include <limits>
+#include <queue>
 namespace lume::platform::windows {
 namespace {int Key(calendar::Date d){return (d.year*12+d.month)*32+d.day;}}
-void CalendarTodoView::Update(todo::RepositorySnapshot snapshot,const todo::ILocalTimePort* time,todo::Millis now,std::optional<todo::Millis> projectionUntil){
-    snapshot_=std::move(snapshot);groups_.clear();
-    if(time){
-        const auto stored=snapshot_.tasks.size();
-        for(std::size_t i=0;i<stored;++i)
-            for(auto& next:todo::ProjectOccurrences(snapshot_.tasks[i],projectionUntil.value_or(now+732LL*86400000),1500,*time))
-                snapshot_.tasks.push_back(std::move(next));
+void CalendarTodoView::Update(todo::RepositorySnapshot snapshot,const todo::ILocalTimePort* time){
+    snapshot_=std::move(snapshot);time_=time;storedCount_=snapshot_.tasks.size();days_.clear();storedRows_.clear();Group();
+    if(!storedCount_)storedRows_=std::vector<std::size_t>{};
+}
+void CalendarTodoView::PrepareDays(std::vector<calendar::Date> days) const{
+    std::sort(days.begin(),days.end());days.erase(std::unique(days.begin(),days.end()),days.end());
+    if(days==days_)return;
+    days_=std::move(days);snapshot_.tasks.resize(storedCount_);storedRows_.clear();
+    if(time_)for(std::size_t i=0;i<storedCount_;++i){
+        auto projected=todo::ProjectOccurrencesForDays(snapshot_.tasks[i],days_,*time_);
+        for(auto& next:projected){snapshot_.tasks.push_back(std::move(next));storedRows_.push_back(i);}
     }
+    Group();
+}
+void CalendarTodoView::Group() const{
+    groups_.clear();sortedGroups_.clear();timeBlocks_.clear();blockTime_=nullptr;
     for(std::size_t i=0;i<snapshot_.tasks.size();++i){const auto& t=snapshot_.tasks[i];if(!t.deletedAt&&t.day)groups_[Key(*t.day)].push_back(i);}
     for(auto& entry:groups_)std::stable_sort(entry.second.begin(),entry.second.end(),[this](auto a,auto b){
         return snapshot_.tasks[a].completed<snapshot_.tasks[b].completed;
     });
 }
 std::size_t CalendarTodoView::Stored(std::size_t index)const{
-    if(index>=snapshot_.tasks.size()||!snapshot_.tasks[index].projected)return index;
-    const auto& id=snapshot_.tasks[index].id;
-    for(std::size_t i=0;i<snapshot_.tasks.size();++i)if(!snapshot_.tasks[i].projected&&snapshot_.tasks[i].id==id)return i;
-    return index;
+    return index>=storedCount_&&index-storedCount_<storedRows_.size()?storedRows_[index-storedCount_]:index;
 }
 const std::vector<std::size_t>& CalendarTodoView::ForDay(calendar::Date date)const{
     static const std::vector<std::size_t> empty;
     const auto found=groups_.find(Key(date));return found==groups_.end()?empty:found->second;
+}
+const std::vector<std::size_t>& CalendarTodoView::SortedForDay(calendar::Date date)const{
+    const auto& source=ForDay(date);if(source.empty())return source;
+    const auto key=Key(date);const auto found=sortedGroups_.find(key);if(found!=sortedGroups_.end())return found->second;
+    auto list=source;
+    std::stable_sort(list.begin(),list.end(),[this](auto x,auto y){const auto& p=snapshot_.tasks[x];const auto& q=snapshot_.tasks[y];
+        if(p.completed!=q.completed)return p.completed<q.completed;
+        return (p.schedule?p.schedule->startAt:INT64_MAX)<(q.schedule?q.schedule->startAt:INT64_MAX);});
+    return sortedGroups_.emplace(key,std::move(list)).first->second;
+}
+const std::vector<CalendarTimeBlock>& CalendarTodoView::TimeBlocksForDay(calendar::Date date,const todo::ILocalTimePort& time)const{
+    static const std::vector<CalendarTimeBlock> empty;
+    if(ForDay(date).empty())return empty;
+    if(blockTime_!=&time){timeBlocks_.clear();blockTime_=&time;}
+    const auto key=Key(date);const auto found=timeBlocks_.find(key);if(found!=timeBlocks_.end())return found->second;
+    std::vector<CalendarTimeBlock> blocks;
+    for(const auto i:SortedForDay(date)){
+        const auto& task=snapshot_.tasks[i];if(!task.schedule)continue;
+        const auto start=time.ToLocal(task.schedule->startAt),end=time.ToLocal(task.schedule->endAt);if(!start)continue;
+        const float first=start->date==date?start->hour*60.f+start->minute:0.f;
+        const float last=end&&end->date==date?end->hour*60.f+end->minute:1440.f;
+        blocks.push_back({i,first,std::max(last,first+15),0,1,start,end});
+    }
+    std::sort(blocks.begin(),blocks.end(),[](const auto& p,const auto& q){return p.start<q.start;});
+    for(std::size_t b=0;b<blocks.size();){
+        std::size_t e=b;float end=blocks[b].end;int lanes=0;
+        using Active=std::pair<float,int>;
+        std::priority_queue<Active,std::vector<Active>,std::greater<Active>> active;
+        std::priority_queue<int,std::vector<int>,std::greater<int>> free;
+        for(;e<blocks.size()&&(e==b||blocks[e].start<end);++e){
+            auto& block=blocks[e];
+            while(!active.empty()&&active.top().first<=block.start){free.push(active.top().second);active.pop();}
+            if(free.empty())block.lane=lanes++;else {block.lane=free.top();free.pop();}
+            active.emplace(block.end,block.lane);end=std::max(end,block.end);
+        }
+        for(std::size_t m=b;m<e;++m)blocks[m].lanes=lanes;
+        b=e;
+    }
+    return timeBlocks_.emplace(key,std::move(blocks)).first->second;
 }
 CalendarAgendaLayout CalculateAgendaLayout(const CalendarLayout& l,float width){
     CalendarAgendaLayout a;a.area=l.agenda;

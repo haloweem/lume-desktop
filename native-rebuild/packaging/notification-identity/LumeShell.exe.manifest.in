@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="@LUME_NOTIFICATION_IDENTITY_VERSION@" name="@LUME_NOTIFICATION_IDENTITY_NAME@" />
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="@LUME_NOTIFICATION_IDENTITY_PUBLISHER_XML@"
+        packageName="@LUME_NOTIFICATION_IDENTITY_NAME@"
+        applicationId="@LUME_NOTIFICATION_IDENTITY_APP_ID@" />
+</assembly>

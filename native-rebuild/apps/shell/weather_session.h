@@ -1,4 +1,5 @@
 #pragma once
+#include "apps/shell/material_selection_request.h"
 #include "core/ui/page_bridge.h"
 #include "core/weather/weather_preferences.h"
 #include "platform/windows/weather/weather_worker.h"
@@ -12,6 +13,7 @@ public:
         weather::Clock={});
     ~WeatherSession();
     bool Restore();
+    void SetMaterialSelectionHandler(MaterialSelectionHandler);
     // Keep the same weather worker alive for another view, without showing the widget.
     bool SetSharedConsumer(bool);
     std::optional<std::wstring> HandlePage(ui::PageCommand);

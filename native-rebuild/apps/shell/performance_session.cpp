@@ -14,15 +14,20 @@ struct PerformanceSession::Impl{
     Impl(HINSTANCE instance,std::string path,Notify notify,std::function<void()> settings,settings::IFileStore* files):
         path(std::move(path)),notify(std::move(notify)),openSettings(std::move(settings)),
         store(files?*files:localFiles,Limits),loaded(store.Load(this->path)),prefs(loaded.value),
-        window(instance,L"Lume 性能",Limits,WidgetWindowPorts{
+        window(instance,L"Lume 性能",Limits,Ports()),monitor([this]{
+            const auto hwnd=target.load();
+            if(hwnd&&!pending.exchange(true)&&!PostMessageW(hwnd,NativeWidgetWindow::UpdateMessage,0,0))pending=false;
+        }){}
+    WidgetWindowPorts Ports(){
+        WidgetWindowPorts ports{
             [this](WidgetCanvas& c,float w,float h){DrawPerformance(c,w,h,sample,sampleFailed);},
             [this](WidgetAction a,const auto& bounds){Native(a,bounds);},
             [this]{Updated();},
             [this]{if(!stopped&&!applying&&this->notify)this->notify(State(),false);}
-        }),monitor([this]{
-            const auto hwnd=target.load();
-            if(hwnd&&!pending.exchange(true)&&!PostMessageW(hwnd,NativeWidgetWindow::UpdateMessage,0,0))pending=false;
-        }){}
+        };
+        ports.contentVisibilityChanged=[this](bool visible){monitor.SetActive(visible);};
+        return ports;
+    }
     ~Impl(){Shutdown();}
     std::wstring State(bool applied=false,bool saved=false)const{
         return widget_session::StateJson({"performance",prefs.enabled,Running(),prefs.locked,prefs.frosted?"frosted-glass":"liquid-glass",window.MaterialState(),loaded.state,error,prefs.width,prefs.height,applied,saved});
@@ -73,19 +78,23 @@ struct PerformanceSession::Impl{
     }
     void Native(WidgetAction action,const widget::Preferences& bounds){
         if(stopped||applying)return;
+        const auto request=materialSelection;
+        if(request&&(action==WidgetAction::Liquid||action==WidgetAction::Frosted)){
+            request(action==WidgetAction::Liquid?ui::PageCommand::PerformanceLiquidGlass:ui::PageCommand::PerformanceFrostedGlass,window.Handle());return;
+        }
         if(action==WidgetAction::Settings){if(openSettings)openSettings();return;}
         const auto next=widget_session::ActionPreferences(action,prefs,bounds,Limits,false);
         if(!next)return;
         const bool ok=Apply(*next);if(notify)notify(State(),!ok);
     }
     void Updated(){
-        pending=false;if(stopped||!window.Handle())return;
+        pending=false;if(stopped||!window.ContentVisible())return;
         sample=monitor.Latest();const bool failed=!sample;
         const bool changed=failed!=sampleFailed;sampleFailed=failed;
         window.Paint();if(changed&&notify)notify(State(),false);
     }
     void Shutdown(){if(stopped)return;stopped=true;StopRuntime();}
-    std::string path;Notify notify;std::function<void()> openSettings;
+    std::string path;Notify notify;std::function<void()> openSettings;MaterialSelectionHandler materialSelection;
     LocalSettingsFileStore localFiles;widget::PreferencesStore store;widget::LoadedPreferences loaded;widget::Preferences prefs;
     std::optional<performance::Snapshot> sample;bool sampleFailed=false,stopped=false,applying=false;std::wstring error;
     std::atomic<HWND> target{nullptr};std::atomic<bool> pending{false};
@@ -95,6 +104,7 @@ PerformanceSession::PerformanceSession(HINSTANCE instance,std::string path,Notif
     impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),files)){}
 PerformanceSession::~PerformanceSession()=default;
 bool PerformanceSession::Restore(){return impl_->Restore();}
+void PerformanceSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->materialSelection=std::move(handler);}
 std::optional<std::wstring> PerformanceSession::HandlePage(ui::PageCommand command){return impl_->HandlePage(command);}
 std::wstring PerformanceSession::State()const{return impl_->State();}
 void PerformanceSession::Shutdown(){impl_->Shutdown();}

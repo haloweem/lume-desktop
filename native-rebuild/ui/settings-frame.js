@@ -3,22 +3,23 @@ import {t} from './localization.js';
 import {lumeIcon} from './lume-icons.js';
 
 // All component settings use the island's sidebar frame; services and commands
-// remain owned by each component. The island alone has extra content tabs.
-export function settingsFrame({title,description,tab,body,status='',error=false,scope='',backLabel=t('返回组件列表','Back to widgets'),variant=''}) {
+// remain owned by each component. Unfinished island pages stay out of navigation.
+export function settingsFrame({title,description,tab,body,status='',error=false,scope='',backLabel=t('返回组件列表','Back to widgets'),variant='',extraPages=[],navigationPages,pageTitle}) {
   const island=variant==='island';
-  const pages=island?[
-    ['home',t('首页','Home')],['music',t('音乐','Music')],['todo',t('待办','To-do')],['quick-launch',t('快捷启动','Quick launch')],
-    ['clock',t('时钟','Clock')],['notifications',t('通知','Notifications')],['settings',t('设置','Settings')],['details',t('详情','Details')]
-  ]:[['settings',t('设置','Settings')],['details',t('详情','Details')]];
+  // Music, quick launch and clock are hidden for now;
+  // their routes still render a placeholder if reached directly.
+  const pages=navigationPages??(island?[
+    ['home',t('首页','Home')],['todo',t('待办','To-do')],['notifications',t('通知','Notifications')],['settings',t('设置','Settings')],['details',t('详情','Details')]
+  ]:[...extraPages,['settings',t('设置','Settings')],['details',t('详情','Details')]]);
   const navigation=`<aside class="settings-side-nav" aria-label="${h(title)}">
     <button type="button" class="settings-side-nav__back lume-icon-button" data-action="back" aria-label="${h(backLabel)}" title="${h(backLabel)}">${lumeIcon('back')}</button>
     <nav class="settings-side-nav__links" role="tablist" aria-label="${h(title)}">
-      ${pages.map(([key,label])=>
-        `<button type="button" role="tab" aria-label="${h(label)}" title="${h(label)}" aria-selected="${tab===key}" data-tab="${key}">${lumeIcon(key,{selected:tab===key})}</button>`).join('')}
+      ${pages.map(([key,label,icon=key])=>
+        `<button type="button" role="tab" aria-label="${h(label)}" title="${h(label)}" aria-selected="${tab===key}" data-tab="${key}">${lumeIcon(icon,{selected:tab===key})}</button>`).join('')}
     </nav>
   </aside>`;
-  const regionLabel=tab==='settings'?t('设置',' settings'):tab==='home'?t('主页',' home'):t('详情',' details');
-  const heading=['settings','details'].includes(tab)?`<h1 class="settings-component-title">${h(title)}</h1>`:'';
+  const regionLabel=navigationPages?` ${pages.find(([key])=>key===tab)?.[1]||''}`:tab==='settings'?t('设置',' settings'):tab==='home'?t('主页',' home'):tab==='todo'?t('待办',' to-dos'):tab==='notifications'?t('通知',' notifications'):t('详情',' details');
+  const heading=pageTitle!==undefined||['settings','details'].includes(tab)?`<h1 class="settings-component-title">${h(pageTitle??title)}</h1>`:'';
   return `<div class="settings settings--sidebar${island?' settings--island':''}" data-settings-scope="${h(scope)}" aria-label="${h(title)}">${navigation}<div class="settings-card"><div class="settings-body" role="region" aria-label="${h(title)}${regionLabel}">${heading}${body}</div><p role="${error?'alert':'status'}" class="status ${error?'error':''}" ${status?'':'hidden'}>${h(status)}</p></div></div>`;
 }
 
