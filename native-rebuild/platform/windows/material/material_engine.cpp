@@ -214,6 +214,7 @@ LRESULT CALLBACK SurfaceWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
   if (message == lume::window_ids::GlassRestackMessage) {
     RemovePropW(hwnd, lume::window_ids::GlassRestackPendingProp);
     auto* glass = reinterpret_cast<GlassInstance*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (glass && glass->surface != hwnd) return 0;
     if (glass && !glass->stop && glass->frameReady && IsWindowVisible(glass->owner) && !IsIconic(glass->owner) &&
         !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp)) {
       lume::platform::windows::desktop_peek::SyncFromOwner(hwnd, glass->owner);
@@ -348,7 +349,7 @@ void RefreshLiveLens(GlassInstance* glass) {
   glass->lensHeight.store((std::max)(1, static_cast<int>(client.bottom - client.top) - inset), std::memory_order_relaxed);
 }
 
-RECT SurfaceCanvasBounds(GlassInstance* glass, const RECT& desktop) {
+RECT SurfaceCanvasBounds(GlassInstance* glass, const RECT& desktop, const RECT* existing = nullptr) {
   RECT body{glass->lensX.load(), glass->lensY.load(),
       glass->lensX.load() + glass->lensWidth.load(), glass->lensY.load() + glass->lensHeight.load()};
   const auto include = [&body](const RECT& value) {
@@ -406,6 +407,16 @@ RECT SurfaceCanvasBounds(GlassInstance* glass, const RECT& desktop) {
     InflateRect(&exact, 24, 24);
     RECT exactClipped{};
     if (!covers(exact, monitor) && IntersectRect(&exactClipped, &exact, &desktop)) clipped = exactClipped;
+  }
+  // Keep the window and its swap-chain origin fixed while the lens fits in
+  // the padded canvas. Moving the window immediately also moves the previous
+  // frame, including background pixels sampled at its old screen position.
+  if (existing && !covers(*existing, monitor) &&
+      existing->right - existing->left == clipped.right - clipped.left &&
+      existing->bottom - existing->top == clipped.bottom - clipped.top) {
+    InflateRect(&body, 24, 24);
+    RECT visible{};
+    if (IntersectRect(&visible, &body, &desktop) && covers(*existing, visible)) return *existing;
   }
   return clipped;
 }
@@ -475,10 +486,11 @@ bool DrawLens(GlassInstance* glass, ID3D11DeviceContext* context, const OutputCa
     values.readability[1] = glass->lightForeground ? 1.0f : 0.0f;
   }
   values.optical[0] = disc ? 0 : glass->innerRadius.load(std::memory_order_relaxed) * dpi;
-  const auto profile=glass->opticalProfile.load(std::memory_order_relaxed);
+  const auto requestedProfile=glass->opticalProfile.load(std::memory_order_relaxed);
+  const auto profile=requestedProfile==6 && (disc || glass->frosted) ? 1u : requestedProfile;
   // A negative shader marker keeps island geometry independent of Dock optics.
   values.optical[1] = profile==5?-(1.f+glass->islandShape.load(std::memory_order_relaxed)):static_cast<float>(profile);
-  values.optical[2] = profile==5?1.f:values.optical[1] > 2.5f ? 0.55f : values.optical[1] > 1.5f ? 0.92f : values.optical[1] > 0.5f ? 1.0f : 0.0f;
+  values.optical[2] = profile==5||profile==6?1.f:values.optical[1] > 2.5f ? 0.55f : values.optical[1] > 1.5f ? 0.92f : values.optical[1] > 0.5f ? 1.0f : 0.0f;
   values.optical[3] = glass->cornerRadius.load(std::memory_order_relaxed) * dpi;
   D3D11_MAPPED_SUBRESOURCE mapped = {};
   if (FAILED(context->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return false;
@@ -520,6 +532,108 @@ uint32_t SampleTexturePixel(ID3D11Device* device, ID3D11DeviceContext* context,
   return color;
 }
 
+struct GlassCanvas {
+  HWND window = nullptr;
+  ComPtr<IDXGISwapChain3> swapChain;
+  ComPtr<IDCompositionTarget> target;
+  ComPtr<IDCompositionVisual> visual;
+  ComPtr<IDCompositionEffectGroup> opacityEffect;
+  winrt::handle latency;
+  int width = 0, height = 0;
+  ComPtr<ID3D11Texture2D> backbuffer, feedTexture;
+  ComPtr<ID3D11RenderTargetView> renderTarget;
+  ComPtr<ID3D11ShaderResourceView> feedView;
+  bool fixedOrigin = false;
+
+  ~GlassCanvas() {
+    if (window) {
+      g_glassCaptureRegistry.UnregisterSurface(window);
+      DestroyWindow(window);
+    }
+  }
+
+  bool Place(const RECT& bounds) const {
+    return SetWindowPos(window, nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
+        bounds.bottom - bounds.top, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER) != FALSE;
+  }
+  void Register(HWND owner) const {
+    SetPropW(window, lume::window_ids::GlassSurfaceOwnerProp, owner);
+    g_glassCaptureRegistry.RegisterSurface(window, owner);
+  }
+  void Unregister() const {
+    RemovePropW(window, lume::window_ids::GlassSurfaceOwnerProp);
+    g_glassCaptureRegistry.UnregisterSurface(window);
+  }
+
+  HRESULT PrepareBuffers(ID3D11Device* device, int w, int h) {
+    const bool resize = width != w || height != h;
+    if (!resize && renderTarget && feedView) return S_OK;
+    renderTarget.Reset();
+    backbuffer.Reset();
+    feedView.Reset();
+    feedTexture.Reset();
+    HRESULT hr = resize ? swapChain->ResizeBuffers(2, w, h, DXGI_FORMAT_UNKNOWN,
+        DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) : S_OK;
+    // D3D11 rotates buffer zero after Present, so this view stays bound to
+    // the current back buffer without requesting a new view for every frame.
+    if (SUCCEEDED(hr)) hr = swapChain->GetBuffer(0, IID_PPV_ARGS(backbuffer.GetAddressOf()));
+    if (SUCCEEDED(hr)) hr = device->CreateRenderTargetView(backbuffer.Get(), nullptr, renderTarget.GetAddressOf());
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width = w;
+    description.Height = h;
+    description.ArraySize = description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.Usage = D3D11_USAGE_DEFAULT;
+    description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (SUCCEEDED(hr)) hr = device->CreateTexture2D(&description, nullptr, feedTexture.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = device->CreateShaderResourceView(feedTexture.Get(), nullptr, feedView.GetAddressOf());
+    if (SUCCEEDED(hr)) { width = w; height = h; }
+    return hr;
+  }
+
+  HRESULT Initialize(GlassInstance* glass, const RECT& bounds, IDXGIFactory2* factory,
+                     ID3D11Device* device, IDCompositionDevice* composition, int w, int h) {
+    const bool topmost = (GetWindowLongPtrW(glass->owner, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    window = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT |
+        WS_EX_TOOLWINDOW | (topmost ? WS_EX_TOPMOST : 0), lume::window_ids::GlassSurfaceClass,
+        L"Lume Liquid Glass", WS_POPUP, bounds.left, bounds.top, bounds.right - bounds.left,
+        bounds.bottom - bounds.top, nullptr, nullptr, MaterialModule(), glass);
+    if (!window) return E_FAIL;
+    if (!SetPropW(window, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE)) ||
+        !lume::platform::windows::PublishRegion(window, CreateRectRgn(0, 0, 0, 0))) return E_FAIL;
+    lume::platform::windows::desktop_peek::SyncFromOwner(window, glass->owner);
+    SetWindowDisplayAffinity(window, WDA_NONE);
+    DXGI_SWAP_CHAIN_DESC1 description{};
+    description.Width = w;
+    description.Height = h;
+    description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    description.BufferCount = 2;
+    description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    description.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+    description.Scaling = DXGI_SCALING_STRETCH;
+    description.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    ComPtr<IDXGISwapChain1> chain;
+    HRESULT hr = factory->CreateSwapChainForComposition(device, &description, nullptr, chain.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = chain.As(&swapChain);
+    if (SUCCEEDED(hr)) hr = swapChain->SetMaximumFrameLatency(1);
+    if (SUCCEEDED(hr)) hr = composition->CreateTargetForHwnd(window, TRUE, target.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = composition->CreateVisual(visual.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = composition->CreateEffectGroup(opacityEffect.GetAddressOf());
+    if (SUCCEEDED(hr)) hr = visual->SetContent(swapChain.Get());
+    if (SUCCEEDED(hr)) hr = target->SetRoot(visual.Get());
+    if (FAILED(hr)) return hr;
+    const HANDLE event = swapChain->GetFrameLatencyWaitableObject();
+    if (!event || event == INVALID_HANDLE_VALUE) return E_FAIL;
+    latency.attach(event);
+    width = w;
+    height = h;
+    return PrepareBuffers(device, w, h);
+  }
+};
+
 bool InitializeAndRun(GlassInstance* glass) {
   SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LogNative("InitializeAndRun");
@@ -543,40 +657,6 @@ bool InitializeAndRun(GlassInstance* glass) {
   const RECT desktopBounds{surfaceLeft, surfaceTop, surfaceLeft + surfaceWidth, surfaceTop + surfaceHeight};
   RefreshLiveLens(glass);
   RECT surfaceCanvas = SurfaceCanvasBounds(glass, desktopBounds);
-  const DWORD topmost=(GetWindowLongPtrW(glass->owner,GWL_EXSTYLE)&WS_EX_TOPMOST)?WS_EX_TOPMOST:0;
-  glass->surface = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | topmost,
-      lume::window_ids::GlassSurfaceClass, L"Lume Liquid Glass", WS_POPUP,
-      surfaceCanvas.left, surfaceCanvas.top, surfaceCanvas.right - surfaceCanvas.left,
-      surfaceCanvas.bottom - surfaceCanvas.top, nullptr, nullptr, MaterialModule(), glass);
-  if (!glass->surface) { SignalInitialization(glass, false); return false; }
-  // This is a composition canvas, never a fullscreen application. Windows'
-  // documented NonRudeHWND contract additionally opts it out before its first
-  // show. Keep the real HWND lens-sized too: Explorer builds that do not honor
-  // this hint must never see an invisible virtual-desktop-sized canvas.
-  if (!SetPropW(glass->surface, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE))) {
-    const DWORD error = GetLastError();
-    glass->lastError = error ? HRESULT_FROM_WIN32(error) : E_FAIL;
-    LogNative("NonRudeSurface", glass->lastError);
-    SignalInitialization(glass, false); return false;
-  }
-  lume::platform::windows::desktop_peek::SyncFromOwner(glass->surface, glass->owner);
-  // Publish an empty region before DComp
-  // sees it: a hidden launchpad prewarm otherwise starts with an unrestricted
-  // surface and can disrupt Explorer taskbar input on both monitors. The frame
-  // loop publishes the actual lens region before its first visible frame.
-  if (!lume::platform::windows::PublishRegion(glass->surface, CreateRectRgn(0, 0, 0, 0))) {
-    SignalInitialization(glass, false); return false;
-  }
-  // Screenshots must contain the visible material. Feedback is prevented by
-  // GlassScene's window-only SourcesBelow traversal, excluding this surface;
-  // lower native surfaces arrive through SurfaceFeed, never monitor capture.
-  SetWindowDisplayAffinity(glass->surface, WDA_NONE);
-  SetPropW(glass->surface, lume::window_ids::GlassSurfaceOwnerProp, reinterpret_cast<HANDLE>(glass->owner));
-  g_glassCaptureRegistry.RegisterSurface(glass->surface, glass->owner);
-  struct SurfaceRegistration {
-    HWND surface;
-    ~SurfaceRegistration() { g_glassCaptureRegistry.UnregisterSurface(surface); }
-  } surfaceRegistration{glass->surface};
   lume_glass::WindowEvents windowEvents(glass->wake);
   // Capture lower widget surfaces in Z-order, never the current lens itself.
   ComPtr<IDXGIFactory1> factory;
@@ -612,48 +692,30 @@ bool InitializeAndRun(GlassInstance* glass) {
   output.bounds = {surfaceLeft, surfaceTop, surfaceLeft + surfaceWidth, surfaceTop + surfaceHeight};
   ComPtr<IDXGIDevice> dxgiDevice;
   ComPtr<IDXGIFactory2> factory2;
-  ComPtr<IDXGISwapChain1> swapChain1;
   HRESULT dxgiResult = device.As(&dxgiDevice);
   HRESULT factory2Result = factory.As(&factory2);
   if (FAILED(dxgiResult) || FAILED(factory2Result)) { LogNative("QueryDCompInterfaces", FAILED(dxgiResult) ? dxgiResult : factory2Result); SignalInitialization(glass, false); return false; }
-  DXGI_SWAP_CHAIN_DESC1 swapDescription = {};
   RefreshLiveLens(glass);
-  const auto bufferSize = [](int size) { return ((size + 48 + 63) / 64) * 64; };
+  const auto bufferSize = [](int lens, int canvas = 0) { return (((std::max)(lens + 48, canvas) + 63) / 64) * 64; };
   int bufferWidth = bufferSize(glass->lensWidth);
   int bufferHeight = bufferSize(glass->lensHeight);
-  swapDescription.Width = static_cast<UINT>(bufferWidth);
-  swapDescription.Height = static_cast<UINT>(bufferHeight);
-  swapDescription.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  swapDescription.SampleDesc.Count = 1;
-  swapDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  swapDescription.BufferCount = 2;
-  swapDescription.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-  swapDescription.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-  swapDescription.Scaling = DXGI_SCALING_STRETCH;
-  swapDescription.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-  HRESULT swapResult = factory2->CreateSwapChainForComposition(device.Get(), &swapDescription, nullptr, swapChain1.GetAddressOf());
-  if (FAILED(swapResult)) { LogNative("CreateSwapChainForComposition", swapResult); SignalInitialization(glass, false); return false; }
-  LogNative("CreateSwapChainForComposition");
-  ComPtr<IDXGISwapChain3> swapChain;
-  ComPtr<IDXGISwapChain2> pacedSwapChain;
   ComPtr<IDCompositionDevice> compositionDevice;
-  ComPtr<IDCompositionTarget> compositionTarget;
-  ComPtr<IDCompositionVisual> compositionVisual;
-  ComPtr<IDCompositionEffectGroup> opacityEffect;
-  HRESULT swap3Result = swapChain1.As(&swapChain);
-  HRESULT swap2Result = swapChain1.As(&pacedSwapChain);
-  HRESULT latencyResult = swap2Result == S_OK ? pacedSwapChain->SetMaximumFrameLatency(1) : swap2Result;
+  auto activeCanvas = std::make_unique<GlassCanvas>();
+  std::unique_ptr<GlassCanvas> standbyCanvas;
   HRESULT compositionResult = DCompositionCreateDevice(dxgiDevice.Get(), IID_PPV_ARGS(compositionDevice.GetAddressOf()));
-  HRESULT targetResult = compositionResult == S_OK ? compositionDevice->CreateTargetForHwnd(glass->surface, TRUE, compositionTarget.GetAddressOf()) : compositionResult;
-  HRESULT visualResult = targetResult == S_OK ? compositionDevice->CreateVisual(compositionVisual.GetAddressOf()) : targetResult;
-  HRESULT effectResult = visualResult == S_OK ? compositionDevice->CreateEffectGroup(opacityEffect.GetAddressOf()) : visualResult;
-  HRESULT contentResult = effectResult == S_OK ? compositionVisual->SetContent(swapChain.Get()) : effectResult;
-  HRESULT rootResult = contentResult == S_OK ? compositionTarget->SetRoot(compositionVisual.Get()) : contentResult;
-  HRESULT commitResult = rootResult == S_OK ? compositionDevice->Commit() : rootResult;
-  if (FAILED(swap3Result) || FAILED(latencyResult) || FAILED(compositionResult) || FAILED(targetResult) || FAILED(visualResult) || FAILED(contentResult) || FAILED(rootResult) || FAILED(commitResult)) {
-    LogNative("DCompInit", FAILED(swap3Result) ? swap3Result : FAILED(latencyResult) ? latencyResult : FAILED(compositionResult) ? compositionResult : FAILED(targetResult) ? targetResult : FAILED(visualResult) ? visualResult : FAILED(contentResult) ? contentResult : FAILED(rootResult) ? rootResult : commitResult);
+  if (SUCCEEDED(compositionResult)) compositionResult = activeCanvas->Initialize(glass, surfaceCanvas,
+      factory2.Get(), device.Get(), compositionDevice.Get(), bufferWidth, bufferHeight);
+  if (SUCCEEDED(compositionResult)) compositionResult = compositionDevice->Commit();
+  if (FAILED(compositionResult)) {
+    LogNative("DCompInit", compositionResult);
     SignalInitialization(glass, false); return false;
   }
+  activeCanvas->Register(glass->owner);
+  glass->surface = activeCanvas->window;
+  struct ResetCanvasHandle {
+    GlassInstance* glass;
+    ~ResetCanvasHandle() { glass->surface = nullptr; }
+  } resetCanvasHandle{glass};
   LogNative("DCompInit");
   ComPtr<ID3D11VertexShader> vertexShader;
   ComPtr<ID3D11PixelShader> pixelShader;
@@ -709,41 +771,11 @@ bool InitializeAndRun(GlassInstance* glass) {
     LogNative("PipelineResources", FAILED(bufferResult) ? bufferResult : FAILED(samplerResult) ? samplerResult : rasterResult);
     SignalInitialization(glass, false); return false;
   }
-  // D3D11 automatically rotates buffer zero after Present; nonzero buffers
-  // cannot be opened as render targets (unlike a D3D12 swap chain).
-  ComPtr<ID3D11Texture2D> backbuffer;
-  ComPtr<ID3D11RenderTargetView> renderTarget;
-  ComPtr<ID3D11Texture2D> surfaceTexture;
-  ComPtr<ID3D11ShaderResourceView> surfaceView;
-  {
-    const HRESULT backResult = swapChain->GetBuffer(0, IID_PPV_ARGS(backbuffer.GetAddressOf()));
-    const HRESULT viewResult = SUCCEEDED(backResult) ? device->CreateRenderTargetView(backbuffer.Get(), nullptr, renderTarget.GetAddressOf()) : backResult;
-    if (FAILED(viewResult)) {
-      LogNative("BackBuffer", viewResult);
-      SignalInitialization(glass, false); return false;
-    }
-    D3D11_TEXTURE2D_DESC feedDesc = {};
-    feedDesc.Width = static_cast<UINT>(bufferWidth); feedDesc.Height = static_cast<UINT>(bufferHeight);
-    feedDesc.ArraySize = feedDesc.MipLevels = 1; feedDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    feedDesc.SampleDesc.Count = 1; feedDesc.Usage = D3D11_USAGE_DEFAULT;
-    feedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    const HRESULT feedTexture = device->CreateTexture2D(&feedDesc, nullptr, surfaceTexture.GetAddressOf());
-    const HRESULT feedView = SUCCEEDED(feedTexture)
-        ? device->CreateShaderResourceView(surfaceTexture.Get(), nullptr, surfaceView.GetAddressOf()) : feedTexture;
-    if (FAILED(feedView)) {
-      LogNative("SurfaceFeed", feedView);
-      SignalInitialization(glass, false); return false;
-    }
-  }
-  HANDLE frameLatencyWaitableObject = pacedSwapChain->GetFrameLatencyWaitableObject();
-  if (!frameLatencyWaitableObject || frameLatencyWaitableObject == INVALID_HANDLE_VALUE) {
-    SignalInitialization(glass, false); return false;
-  }
-  struct FrameLatencyLease { HANDLE value; ~FrameLatencyLease(){CloseHandle(value);} } latencyLease{frameLatencyWaitableObject};
   LogNative("ResourceInit");
   RefreshLiveLens(glass);
   SignalInitialization(glass, true);
   RECT previousRegion{}, previousScreenRegion{}, publishedRegion{};
+  bool keepCanvasOrigin = false;
   bool regionExact = false;
   float previousInnerRadius=-1;
   POINT presentedOrigin{}, renderOrigin{};
@@ -904,7 +936,7 @@ bool InitializeAndRun(GlassInstance* glass) {
     // material, once per refresh. Wait (at most half a refresh) for this
     // frame's submission before reading the lens, so glass and foreground
     // reach the screen on the same refresh instead of drifting by one.
-    if (syncPending && GetTickCount64() < motionUntil) {
+    if (syncPending && !keepCanvasOrigin && GetTickCount64() < motionUntil) {
       const auto deadline = vblankAt + std::chrono::duration<double, std::milli>(refreshMs / 2);
       for (auto now = std::chrono::steady_clock::now();
            glass->revision.load() == revisionAtVblank && now < deadline; now = std::chrono::steady_clock::now()) {
@@ -923,15 +955,31 @@ bool InitializeAndRun(GlassInstance* glass) {
     }
     syncPending = false;
     RefreshLiveLens(glass);
-    const RECT nextCanvas = SurfaceCanvasBounds(glass, desktopBounds);
-    if (!EqualRect(&surfaceCanvas, &nextCanvas)) {
-      if (!SetWindowPos(glass->surface, nullptr, nextCanvas.left, nextCanvas.top,
-          nextCanvas.right - nextCanvas.left, nextCanvas.bottom - nextCanvas.top,
-          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER)) {
-        const DWORD error = GetLastError();
-        glass->lastError = error ? HRESULT_FROM_WIN32(error) : E_FAIL;
-        break;
+    const int stageWidth = glass->stageWidth.load(std::memory_order_relaxed);
+    const float innerRadius = glass->innerRadius.load(std::memory_order_relaxed);
+    const RECT currentRegion = {glass->lensX - surfaceLeft - 24, glass->lensY - surfaceTop - 24,
+        glass->lensX + glass->lensWidth - surfaceLeft + 24, glass->lensY + glass->lensHeight - surfaceTop + 24};
+    const bool translated = !IsRectEmpty(&previousScreenRegion) &&
+        (currentRegion.left != previousScreenRegion.left || currentRegion.top != previousScreenRegion.top);
+    keepCanvasOrigin = stageWidth == 0 && innerRadius <= 0 && (keepCanvasOrigin || translated);
+    const RECT nextCanvas = SurfaceCanvasBounds(glass, desktopBounds, keepCanvasOrigin ? &surfaceCanvas : nullptr);
+    const bool boundsChanged = !EqualRect(&surfaceCanvas, &nextCanvas);
+    const bool replacingCanvas = keepCanvasOrigin && (boundsChanged || !activeCanvas->fixedOrigin) &&
+        IsWindowVisible(activeCanvas->window);
+    GlassCanvas* frameCanvas = activeCanvas.get();
+    if (replacingCanvas) {
+      if (!standbyCanvas) {
+        standbyCanvas = std::make_unique<GlassCanvas>();
+        const auto hr = standbyCanvas->Initialize(glass, nextCanvas, factory2.Get(), device.Get(), compositionDevice.Get(),
+            bufferSize(glass->lensWidth, nextCanvas.right - nextCanvas.left),
+            bufferSize(glass->lensHeight, nextCanvas.bottom - nextCanvas.top));
+        if (FAILED(hr)) { glass->lastError = hr; break; }
+      } else if (!standbyCanvas->Place(nextCanvas)) {
+        glass->lastError = E_FAIL; break;
       }
+      frameCanvas = standbyCanvas.get();
+    } else if (boundsChanged) {
+      if (!activeCanvas->Place(nextCanvas)) { glass->lastError = E_FAIL; break; }
       surfaceCanvas = nextCanvas;
     }
     const auto lensRead = std::chrono::steady_clock::now();
@@ -949,11 +997,8 @@ bool InitializeAndRun(GlassInstance* glass) {
     interactionTime = interactionNow; interactionX = nextInteractionX; interactionY = nextInteractionY;
     glass->interactionPressure = glass->interaction.pressure.value;
     glass->interactionMotion = std::hypot(glass->interaction.motionX.value, glass->interaction.motionY.value);
-    RECT currentRegion = {glass->lensX - surfaceLeft - 24, glass->lensY - surfaceTop - 24,
-        glass->lensX + glass->lensWidth - surfaceLeft + 24, glass->lensY + glass->lensHeight - surfaceTop + 24};
     RECT localRegion = currentRegion;
-    OffsetRect(&localRegion, surfaceLeft - surfaceCanvas.left, surfaceTop - surfaceCanvas.top);
-    const float innerRadius=glass->innerRadius.load(std::memory_order_relaxed);
+    OffsetRect(&localRegion, surfaceLeft - nextCanvas.left, surfaceTop - nextCanvas.top);
     const bool geometryChanged = !EqualRect(&localRegion, &previousRegion) || innerRadius!=previousInnerRadius;
     if (!EqualRect(&currentRegion, &previousScreenRegion) || geometryChanged) motionUntil = GetTickCount64() + 120;
     previousScreenRegion = currentRegion;
@@ -964,7 +1009,9 @@ bool InitializeAndRun(GlassInstance* glass) {
     const bool plain = innerRadius <= 0;
     RECT regionTarget = localRegion;
     bool publish = false;
-    if (!plain) {
+    if (replacingCanvas) {
+      publish = true;
+    } else if (!plain) {
       publish = geometryChanged;
     } else if (geometryChanged && presentedFrames > 0 && !IsRectEmpty(&publishedRegion)) {
       RECT grown{};
@@ -992,7 +1039,7 @@ bool InitializeAndRun(GlassInstance* glass) {
             {left+edge,top+edge,left+width-edge,top+height-edge},
             {left+width/2-hole,top+height/2-hole,left+width/2+hole,top+height/2+hole});
       }
-      if (!lume::platform::windows::PublishRegion(glass->surface,region)) {
+      if (!lume::platform::windows::PublishRegion(frameCanvas->window,region)) {
         glass->lastError=E_FAIL;glass->frameReady=false;
         ShowWindow(glass->surface,SW_HIDE);break;
       }
@@ -1015,46 +1062,28 @@ bool InitializeAndRun(GlassInstance* glass) {
     // grow, with headroom, so a resizing lens (an opening launchpad, a
     // spreading island) does not reallocate the swap chain every 64 px.
     const bool lensMoving = GetTickCount64() < motionUntil;
-    const auto nextSize = [&](int lens, int current, int limit) {
-      const int exact = bufferSize(lens);
+    const auto nextSize = [&](int lens, int current, int limit, int canvas) {
+      const int exact = bufferSize(lens, canvas);
       if (exact > current) return lensMoving ? (std::min)((std::max)(exact, bufferSize(lens + lens / 4)), bufferSize(limit)) : exact;
       return lensMoving ? current : exact;
     };
     // An explicit lens moves within its owner (with overshoot): size the
     // buffers for that whole stage at once rather than growing mid-motion.
-    const int stageWidth = glass->stageWidth.load(std::memory_order_relaxed);
     const int stageHeight = glass->stageHeight.load(std::memory_order_relaxed);
+    const int canvasWidth = keepCanvasOrigin ? nextCanvas.right - nextCanvas.left : 0;
+    const int canvasHeight = keepCanvasOrigin ? nextCanvas.bottom - nextCanvas.top : 0;
     const int nextWidth = stageWidth
-        ? (std::max)(bufferWidth, bufferSize(stageWidth + stageWidth / 5)) : nextSize(glass->lensWidth, bufferWidth, surfaceWidth);
+        ? (std::max)(bufferWidth, bufferSize(stageWidth + stageWidth / 5)) : nextSize(glass->lensWidth, bufferWidth, surfaceWidth, canvasWidth);
     const int nextHeight = stageWidth
-        ? (std::max)(bufferHeight, bufferSize(stageHeight + stageHeight / 5)) : nextSize(glass->lensHeight, bufferHeight, surfaceHeight);
-    if (nextWidth != bufferWidth || nextHeight != bufferHeight) {
-      context->OMSetRenderTargets(0, nullptr, nullptr);
-      renderTarget.Reset();
-      surfaceTexture.Reset();
-      surfaceView.Reset();
-      backbuffer.Reset();
-      const HRESULT resized = swapChain->ResizeBuffers(2, nextWidth, nextHeight,
-          DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
-      if (FAILED(resized)) { glass->lastError = resized; break; }
-      const HRESULT acquired = swapChain->GetBuffer(0, IID_PPV_ARGS(backbuffer.GetAddressOf()));
-      const HRESULT recreated = SUCCEEDED(acquired)
-          ? device->CreateRenderTargetView(backbuffer.Get(), nullptr, renderTarget.GetAddressOf()) : acquired;
-      const HRESULT shaderView = SUCCEEDED(recreated)
-          ? S_OK : recreated;
-      D3D11_TEXTURE2D_DESC feedDesc = {};
-      feedDesc.Width = static_cast<UINT>(nextWidth); feedDesc.Height = static_cast<UINT>(nextHeight);
-      feedDesc.ArraySize = feedDesc.MipLevels = 1; feedDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-      feedDesc.SampleDesc.Count = 1; feedDesc.Usage = D3D11_USAGE_DEFAULT;
-      feedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      const HRESULT feedTexture = SUCCEEDED(shaderView)
-          ? device->CreateTexture2D(&feedDesc, nullptr, surfaceTexture.GetAddressOf()) : shaderView;
-      const HRESULT feedView = SUCCEEDED(feedTexture)
-          ? device->CreateShaderResourceView(surfaceTexture.Get(), nullptr, surfaceView.GetAddressOf()) : feedTexture;
-      if (FAILED(recreated) || FAILED(feedView)) { glass->lastError = FAILED(recreated) ? recreated : feedView; break; }
-      bufferWidth = nextWidth; bufferHeight = nextHeight;
-      presentedFrames = 0;
-    }
+        ? (std::max)(bufferHeight, bufferSize(stageHeight + stageHeight / 5)) : nextSize(glass->lensHeight, bufferHeight, surfaceHeight, canvasHeight);
+    auto* swapChain = frameCanvas->swapChain.Get();
+    const bool resized = nextWidth != frameCanvas->width || nextHeight != frameCanvas->height;
+    if (resized) context->OMSetRenderTargets(0, nullptr, nullptr);
+    const HRESULT buffers = frameCanvas->PrepareBuffers(device.Get(), nextWidth, nextHeight);
+    if (FAILED(buffers)) { glass->lastError = buffers; break; }
+    bufferWidth = nextWidth;
+    bufferHeight = nextHeight;
+    if (resized && !replacingCanvas) presentedFrames = 0;
     glass->surfacePixels = bufferWidth * bufferHeight;
     // The image (Present) and the visual offset (Commit) reach DWM as two
     // separate updates. Moving the origin with the lens every frame let DWM show
@@ -1062,7 +1091,9 @@ bool InitializeAndRun(GlassInstance* glass) {
     // frame's motion and back. An explicit lens draws on a fixed origin centred
     // on its stage, so the offset holds still through the motion.
     renderOrigin = {currentRegion.left, currentRegion.top};
-    if (stageWidth) {
+    if (keepCanvasOrigin) {
+      renderOrigin = {nextCanvas.left - surfaceLeft, nextCanvas.top - surfaceTop};
+    } else if (stageWidth) {
       const POINT stage{glass->stageX.load(std::memory_order_relaxed) - surfaceLeft - (bufferWidth - stageWidth) / 2,
                         glass->stageY.load(std::memory_order_relaxed) - surfaceTop - (bufferHeight - stageHeight) / 2};
       if (currentRegion.left >= stage.x && currentRegion.top >= stage.y &&
@@ -1071,7 +1102,7 @@ bool InitializeAndRun(GlassInstance* glass) {
     }
     const int renderLeft = surfaceLeft + renderOrigin.x;
     const int renderTop = surfaceTop + renderOrigin.y;
-    ID3D11RenderTargetView* target = renderTarget.Get();
+    ID3D11RenderTargetView* target = frameCanvas->renderTarget.Get();
     D3D11_VIEWPORT viewport = {0, 0, static_cast<float>(bufferWidth), static_cast<float>(bufferHeight), 0, 1};
     const auto bindPipeline = [&] {
       context->OMSetRenderTargets(1, &target, nullptr);
@@ -1150,6 +1181,11 @@ bool InitializeAndRun(GlassInstance* glass) {
     context->ClearState();
     contextLock.unlock();
     if(glass->stop)break;
+    if (replacingCanvas && !scene.Presentable()) {
+      WaitForSingleObject(glass->wake->Handle(), 16);
+      continue;
+    }
+    if (!replacingCanvas && GetTickCount64() >= motionUntil) standbyCanvas.reset();
     const unsigned revision = glass->revision.load();
     if (presentedFrames >= 2 && GetTickCount64() >= motionUntil && !sceneChanged && !interactionDirty && revision == renderedRevision) {
       // Capture frames and window events wake each consumer independently.
@@ -1167,6 +1203,7 @@ bool InitializeAndRun(GlassInstance* glass) {
     // the frame slot: restarting the loop on each one made the glass miss
     // frames whenever something else on the desktop was animating.
     const ULONGLONG waitEnd = GetTickCount64() + 1000;
+    const HANDLE frameLatencyWaitableObject = frameCanvas->latency.get();
     DWORD wait = WAIT_TIMEOUT;
     for (;;) {
       const ULONGLONG now = GetTickCount64();
@@ -1183,6 +1220,7 @@ bool InitializeAndRun(GlassInstance* glass) {
         !GetPropW(glass->owner,lume::window_ids::LayerSuppressedProp);
     if(!IsWindow(glass->owner) || (wasVisible && !activeOwner))break;
     if (wait == WAIT_TIMEOUT) {
+      if (replacingCanvas) { glass->lastError = HRESULT_FROM_WIN32(ERROR_TIMEOUT); break; }
       ++glass->revision;
       if(frameRecovery.TimedOut(activeOwner)){
         const HRESULT error=HRESULT_FROM_WIN32(ERROR_TIMEOUT);
@@ -1303,23 +1341,17 @@ bool InitializeAndRun(GlassInstance* glass) {
         contentTexture.Reset();
       }
     }
-    if (surfaceTexture && surfaceView) {
-      context->OMSetRenderTargets(0, nullptr, nullptr);
-      context->CopyResource(surfaceTexture.Get(), backbuffer.Get());
-      const RECT feedBounds = {renderLeft, renderTop, renderLeft + bufferWidth, renderTop + bufferHeight};
-      g_glassCaptureRegistry.PublishSurface(glass->surface, feedBounds, surfaceView.Get());
-    }
+    const RECT feedBounds = {renderLeft, renderTop, renderLeft + bufferWidth, renderTop + bufferHeight};
+    context->OMSetRenderTargets(0, nullptr, nullptr);
+    context->CopyResource(frameCanvas->feedTexture.Get(), frameCanvas->backbuffer.Get());
+    if (!replacingCanvas) g_glassCaptureRegistry.PublishSurface(frameCanvas->window, feedBounds, frameCanvas->feedView.Get());
     if (glass->outputSampleRequested.exchange(false)) {
-      // The native surface is excluded from Windows screen capture. Unbind
-      // the render target before copying one diagnostic pixel from the actual
-      // swap-chain output so material tests do not mistake the raw desktop
-      // scene for the rendered glass.
-      context->OMSetRenderTargets(0, nullptr, nullptr);
+      // Sample the shader output rather than the input backdrop.
       const int sampleX = (std::max)(0, (std::min)(bufferWidth - 1,
           glass->lensX.load() - renderLeft + glass->lensWidth.load() / 2));
       const int sampleY = (std::max)(0, (std::min)(bufferHeight - 1,
           glass->lensY.load() - renderTop + glass->lensHeight.load() / 2));
-      glass->outputSampleColor = SampleTexturePixel(device.Get(), context.Get(), backbuffer.Get(), sampleX, sampleY);
+      glass->outputSampleColor = SampleTexturePixel(device.Get(), context.Get(), frameCanvas->backbuffer.Get(), sampleX, sampleY);
       ++glass->outputSamples;
     }
     glass->sources = scene.sourceCount;
@@ -1333,23 +1365,46 @@ bool InitializeAndRun(GlassInstance* glass) {
     glass->lastError = presented;
     if (FAILED(presented)) break;
     const float opacity = glass->opacity.load();
-    const POINT visualOrigin{renderLeft - surfaceCanvas.left, renderTop - surfaceCanvas.top};
-    if (visualOrigin.x != presentedOrigin.x || visualOrigin.y != presentedOrigin.y || presentedFrames == 0 || opacity != presentedOpacity) {
-      compositionVisual->SetOffsetX(static_cast<float>(visualOrigin.x));
-      compositionVisual->SetOffsetY(static_cast<float>(visualOrigin.y));
-      opacityEffect->SetOpacity(opacity);
-      compositionVisual->SetEffect(opacity < 1.f ? opacityEffect.Get() : nullptr);
+    const POINT visualOrigin{renderLeft - nextCanvas.left, renderTop - nextCanvas.top};
+    if (replacingCanvas || visualOrigin.x != presentedOrigin.x || visualOrigin.y != presentedOrigin.y || presentedFrames == 0 || opacity != presentedOpacity) {
+      frameCanvas->visual->SetOffsetX(static_cast<float>(visualOrigin.x));
+      frameCanvas->visual->SetOffsetY(static_cast<float>(visualOrigin.y));
+      frameCanvas->opacityEffect->SetOpacity(opacity);
+      frameCanvas->visual->SetEffect(opacity < 1.f ? frameCanvas->opacityEffect.Get() : nullptr);
       const HRESULT committed = compositionDevice->Commit();
       if (FAILED(committed)) { glass->lastError = committed; break; }
       presentedOrigin = visualOrigin;
       presentedOpacity = opacity;
     }
     ++presentedFrames;
+    frameCanvas->fixedOrigin = keepCanvasOrigin;
     interactionDirty = false;
     renderedRevision = revision;
     glass->frameReady = scene.Presentable();
     context->ClearState();
     contextLock.unlock();
+    if (replacingCanvas) {
+      // The old window stays in screen coordinates while the replacement's
+      // first frame reaches DWM. Switch visibility in one Win32 batch.
+      const HRESULT ready = compositionDevice->WaitForCommitCompletion();
+      if (FAILED(ready)) { glass->lastError = ready; break; }
+      if (glass->stop || !IsWindowVisible(glass->owner) || IsIconic(glass->owner) ||
+          GetPropW(glass->owner, lume::window_ids::LayerSuppressedProp)) break;
+      const HWND anchor = SurfaceInsertAfter(glass->owner, activeCanvas->window);
+      lume::platform::windows::desktop_peek::SyncFromOwner(frameCanvas->window, glass->owner);
+      constexpr UINT flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER;
+      auto batch = BeginDeferWindowPos(2);
+      if (batch) batch = DeferWindowPos(batch, activeCanvas->window, nullptr, 0, 0, 0, 0,
+          flags | SWP_HIDEWINDOW | SWP_NOZORDER);
+      if (batch) batch = DeferWindowPos(batch, frameCanvas->window, anchor, 0, 0, 0, 0, flags | SWP_SHOWWINDOW);
+      frameCanvas->Register(glass->owner);
+      g_glassCaptureRegistry.PublishSurface(frameCanvas->window, feedBounds, frameCanvas->feedView.Get());
+      if (!batch || !EndDeferWindowPos(batch)) { glass->lastError = E_FAIL; break; }
+      activeCanvas->Unregister();
+      glass->surface = frameCanvas->window;
+      activeCanvas.swap(standbyCanvas);
+      surfaceCanvas = nextCanvas;
+    }
     // Present(0)'s latency handle can signal immediately for discarded frames.
     // Wait on the owner's display outside the shared lock to bound submissions
     // to its real refresh rate, including when the widget changes monitors.
@@ -1410,7 +1465,7 @@ bool Valid(const LumeMaterialParameters* p) {
               p->size==LumeMaterialParametersV3Size || p->size==LumeMaterialParametersV4Size ||
               p->size==LumeMaterialParametersV5Size || p->size==LumeMaterialParametersV6Size ||
               p->size==((LumeMaterialParametersV6Size+7)&~7u) || p->size==LumeMaterialParametersV7Size || p->size==sizeof(*p))
-      && p->owner && IsWindow(p->owner) && p->opticalProfile<=5 && p->panelCount<=8
+      && p->owner && IsWindow(p->owner) && p->opticalProfile<=6 && p->panelCount<=8
       && (p->size==LumeMaterialParametersV1Size || (std::isfinite(p->cornerRadius) && p->cornerRadius>=0))
       && (p->size<LumeMaterialParametersV3Size || !p->sceneAnchor || IsWindow(p->sceneAnchor))
       && (p->size<LumeMaterialParametersV4Size || p->bottomInset<=4096)
@@ -1524,7 +1579,6 @@ void Run(GlassInstance* raw) {
       catch(const winrt::hresult_error& e){raw->lastError=e.code();SignalInitialization(raw,false);}
       catch(...){raw->lastError=E_FAIL;SignalInitialization(raw,false);}
       raw->initialized=false;
-      if(raw->surface){DestroyWindow(raw->surface);raw->surface=nullptr;}
       raw->scenePixels=0;raw->surfacePixels=0;raw->frameReady=false;
       raw->sources=0;raw->readySources=0;raw->desktopIconSources=0;raw->desktopIconReady=0;
       if(!retryAllowed){NotifyStatus(raw);break;}

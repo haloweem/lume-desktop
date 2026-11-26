@@ -8,7 +8,9 @@ import path from 'node:path';
 if(!process.argv[2])throw new Error('Usage: node tools/extract-music-modes.mjs <read-only upstream>');
 const upstream=path.resolve(process.argv[2]);
 const output=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../music-visualizers/reference');
-const require=createRequire(path.join(upstream,'package.json'));
+const snapshot=process.argv.includes('--snapshot');
+const dependencyRoot=path.resolve(process.env.LUME_LYRIC_BUILD_DEPS||upstream);
+const require=createRequire(path.join(dependencyRoot,'package.json'));
 let esbuild;
 try{esbuild=require('esbuild');}catch{
   esbuild=require('./node_modules/.pnpm/esbuild@0.25.12/node_modules/esbuild');
@@ -23,7 +25,7 @@ const modes={classic:'classic/Visualizer.tsx',cadenza:'cadenza/VisualizerCadenza
 const slash=value=>value.replaceAll('\\','/');
 const sha256=value=>createHash('sha256').update(value).digest('hex');
 const sourceHashes=new Map(),adaptations=[];
-const historyFile=relative=>path.join(upstream,relative);
+const historyFile=relative=>path.join(relative.startsWith('node_modules/')?dependencyRoot:upstream,relative);
 const historical=relative=>{
   const bytes=readFileSync(historyFile(relative));
   sourceHashes.set(slash(relative),sha256(bytes));
@@ -45,9 +47,11 @@ function statementNamed(relative,name) {
   return {statement:source.slice(statement.start,statement.end),declaration:statement.declarations.find(item=>item.id.name===name)};
 }
 const parser='src/utils/lyrics/parserCore.ts';
-const buildTimedWords=statementNamed(parser,'buildTimedWords').statement;
+const storedVirtual=name=>readFileSync(path.join(output,'source/generated',name+'.ts'),'utf8')
+  .replaceAll('H:/refactor/history/lume1.0.1/third_party/folia-major/upstream',slash(upstream));
+const buildTimedWords=snapshot?storedVirtual('timing').replace(/export \{buildTimedWords\};/,''):statementNamed(parser,'buildTimedWords').statement;
 virtual.set('reference:timing',`${buildTimedWords}\nexport {buildTimedWords};`);
-const defaultColor=statementNamed('src/stores/useSettingsUiStore.ts','DEFAULT_LYRICS_COLOR').declaration.init.value;
+const defaultColor=snapshot?'#ffffff':statementNamed('src/stores/useSettingsUiStore.ts','DEFAULT_LYRICS_COLOR').declaration.init.value;
 if(defaultColor!=='#ffffff')throw new Error('Review changed historical default lyric color');
 virtual.set('reference:defaults',`
 import {buildTimedWords} from 'reference:timing';
@@ -65,7 +69,7 @@ export function prepareLines(lines) {
   }));
 }
 `);
-const buildVisualizerTheme=statementNamed('src/components/app/presentation/buildVisualizerTheme.ts','buildVisualizerTheme').statement;
+const buildVisualizerTheme=snapshot?'':statementNamed('src/components/app/presentation/buildVisualizerTheme.ts','buildVisualizerTheme').statement;
 virtual.set('reference:preference-theme',`
 import {DEFAULT_THEME} from '${slash(historyFile('src/services/baseThemes.ts'))}';
 import {DEFAULT_SONNET_TUNING} from '${slash(historyFile('src/types.ts'))}';
@@ -81,6 +85,9 @@ export const themes=Object.freeze(Object.fromEntries(${JSON.stringify([...Object
 export function resolvePreferenceTheme(mode,preferences) {return preferences?build(mode,preferences):themes[mode];}
 `);
 virtual.set('reference:modes',`export const loaders={${Object.entries(modes).map(([name,file])=>`${JSON.stringify(name)}:()=>import(${JSON.stringify(slash(visualizer(file)))})`).join(',')}};`);
+if(snapshot)virtual.set('reference:preference-theme',storedVirtual('preference-theme'));
+const subtitleRoot=path.resolve(output,'../reference-next/source/upstream/src');
+virtual.set('reference:subtitle-position','export const usePlayerSubtitleBottomPx = hidden => hidden ? 32 : 112;');
 
 adaptations.push('Backported from Folia 0.7.21 (bf7f24a): Tilt segment handler runs in a layout effect; Sonnet display trees are destroyed node by node (Graphics contexts and GPU buffers released); Fume per-glyph measure cache is capped at 2048 entries.',
   'VisualizerShell alias retains original classes, ref, opacity, font stack and geometry; only external background, effects registry and system chrome removed.',
@@ -211,6 +218,8 @@ const sourcePlugin={name:'reference-leaf-boundary',setup(build){
     if(virtual.has(args.path))return {path:args.path,namespace:'reference'};
     if(args.path==='reference:fonts')return {path:historyFile('src/utils/fontStacks.ts')};
     if(args.path==='react-i18next')return {path:path.join(output,'src/bridges.js')};
+    if(/(?:^|\/)VisualizerSubtitleOverlay$/.test(args.path))return {path:path.join(subtitleRoot,'components/visualizer/VisualizerSubtitleOverlay.tsx')};
+    if(/hooks\/usePlayerBottomBarBottomPx$/.test(args.path))return {path:'reference:subtitle-position',namespace:'reference'};
     if(args.path.startsWith('.')){
       const full=slash(path.resolve(args.resolveDir,args.path)).replace(/\.[tj]sx?$/,'');
       if(aliases.has(full))return {path:aliases.get(full)};
@@ -223,6 +232,8 @@ const sourcePlugin={name:'reference-leaf-boundary',setup(build){
     if(relative.startsWith('../'))return;
     if(relative.startsWith('src/')&&forbiddenSource(relative))throw new Error(`App surface forbidden: ${relative}`);
     let contents=historical(relative);
+    if(relative.startsWith('src/components/visualizer/'))contents=contents.replaceAll('subtitleContentMode="translation"',
+      relative.includes('/sonnet/')?'subtitleContentMode={props.subtitleContentMode}':'subtitleContentMode={subtitleContentMode}');
     if(relative.startsWith('src/'))graphSource.set(relative,contents);
     for(const [before,after,count=1] of patches[relative]??[]){
       contents=contents.replaceAll('\r\n','\n');
@@ -240,7 +251,7 @@ const result=await esbuild.build({absWorkingDir:upstream,entryPoints,outdir:outp
   bundle:true,splitting:true,format:'esm',platform:'browser',target:['es2022'],jsx:'automatic',
   minify:false,metafile:true,write:false,legalComments:'eof',preserveSymlinks:true,
   chunkNames:'chunks/[name]-[hash]',entryNames:'[name]',
-  nodePaths:[path.join(upstream,'node_modules')],
+  nodePaths:[path.join(dependencyRoot,'node_modules')],
   define:{'process.env.NODE_ENV':'"production"','import.meta.env.DEV':'false'},
   plugins:[sourcePlugin],logLevel:'warning'});
 
@@ -277,8 +288,9 @@ const tailwindCss={};
 for(const name of ['theme.css','preflight.css'])tailwindCss[name]=historical(slash(path.relative(upstream,path.join(tailwindBase,name))));
 const compiler=await compile(`@layer theme, base, components, utilities;\n@layer theme {${tailwindCss['theme.css']}}\n@layer base {${tailwindCss['preflight.css']}}\n@layer utilities {@tailwind utilities;}`);
 const scanner=new Scanner({sources:[]});
+graphSource.set('lume-subtitle-overlay',readFileSync(path.join(subtitleRoot,'components/visualizer/VisualizerSubtitleOverlay.tsx'),'utf8'));
 const candidates=scanner.scanFiles([...graphSource.values(),readFileSync(path.join(output,'src/Shell.tsx'),'utf8')].map(content=>({content,extension:'tsx'})));
-const oldCss=postcss.parse(historical('src/index.css'));
+const oldCss=postcss.parse(snapshot?readFileSync(path.join(output,'reference.css'),'utf8'):historical('src/index.css'));
 const custom=[];
 oldCss.walkRules(rule=>{
   if(/^(?:\.hide-scrollbar|\.visualizer-overlay-scrollbar)(?:$|\b|:)/.test(rule.selector))custom.push(rule.toString());
@@ -286,15 +298,15 @@ oldCss.walkRules(rule=>{
 emit('reference.css',`${compiler.build(candidates)}\n${custom.join('\n')}\n:root{color-scheme:dark;}\nhtml,body,#reference-stage{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;}\nbody{color:#e4e4e7;font-family:Inter,sans-serif;}\n`);
 
 // Keep the corresponding original renderer sources with their source paths and checksums.
-for(const relative of graphSource.keys())emit(`source/upstream/${relative}`,readFileSync(historyFile(relative)));
+for(const relative of graphSource.keys())if(relative.startsWith('src/'))emit(`source/upstream/${relative}`,readFileSync(historyFile(relative)));
 for(const [name,contents] of virtual)emit(`source/generated/${name.replace('reference:','')}.ts`,contents);
 emit('source/build-metafile.json',JSON.stringify(result.metafile,null,2)+'\n');
-const sourceLicense=historical('LICENSE');emit('licenses/Folia-AGPL-3.0.txt',sourceLicense);
+const sourceLicense=snapshot?readFileSync(path.join(output,'licenses/Folia-AGPL-3.0.txt')):historical('LICENSE');emit('licenses/Folia-AGPL-3.0.txt',sourceLicense);
 const provenanceOnly=['src/components/visualizer/VisualizerShell.tsx',
   'src/components/visualizer/lumeTopVisualCompositor.ts',
   'src/components/liquid-glass/LiquidGlassWebGLSceneBridge.ts',parser,'src/stores/useSettingsUiStore.ts',
   'src/components/app/presentation/buildVisualizerTheme.ts'];
-for(const file of provenanceOnly)historical(file);
+for(const file of provenanceOnly)if(!snapshot||existsSync(historyFile(file)))historical(file);
 const packages=new Map();
 for(const input of inputPaths){
   const match=input.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/);
@@ -324,11 +336,11 @@ for(const name of ['tailwindcss','@tailwindcss/oxide','postcss','@babel/parser']
   for(const file of licenses)
     emit(`licenses/${name}/${file}`,historical(`node_modules/${name}/${file}`));
 }
-const esbuildBase=path.join(upstream,'node_modules/.pnpm',`esbuild@${esbuild.version}`,'node_modules/esbuild');
-const esbuildMetadata=JSON.parse(historical(slash(path.relative(upstream,path.join(esbuildBase,'package.json')))));
+const esbuildBase=path.dirname(require.resolve('esbuild/package.json'));
+const esbuildMetadata=JSON.parse(readFileSync(path.join(esbuildBase,'package.json'),'utf8'));
 packages.set('esbuild',{version:esbuild.version,license:esbuildMetadata.license,buildOnly:true,
   licenseMetadata:'esbuild/package.json',licenses:['esbuild/LICENSE.md']});
-for(const name of ['LICENSE.md','package.json'])emit(`licenses/esbuild/${name}`,historical(slash(path.relative(upstream,path.join(esbuildBase,name)))));
+for(const name of ['LICENSE.md','package.json'])emit(`licenses/esbuild/${name}`,readFileSync(path.join(esbuildBase,name)));
 for(const dependency of packages.values())dependency.compiledBytes=0;
 for(const bundle of Object.values(result.metafile.outputs))for(const [input,value] of Object.entries(bundle.inputs)){
   const name=input.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1];

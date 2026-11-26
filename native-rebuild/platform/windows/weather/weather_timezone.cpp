@@ -15,6 +15,7 @@ using Close = void (__cdecl*)(Calendar*);
 using SetMillis = void (__cdecl*)(Calendar*, double, ErrorCode*);
 using Get = std::int32_t (__cdecl*)(const Calendar*, std::int32_t, ErrorCode*);
 using Canonical = std::int32_t (__cdecl*)(const char16_t*, std::int32_t, char16_t*, std::int32_t, std::int8_t*, ErrorCode*);
+using WindowsZone = std::int32_t (__cdecl*)(const char16_t*, std::int32_t, const char*, char16_t*, std::int32_t, ErrorCode*);
 constexpr std::int32_t Gregorian = 1, ZoneOffset = 15, DstOffset = 16;
 template<class T> T Load(HMODULE module, const char* name) {
     const auto address = GetProcAddress(module, name);
@@ -37,6 +38,7 @@ struct WeatherTimezone::State {
     SetMillis setMillis = nullptr;
     Get get = nullptr;
     Canonical canonical = nullptr;
+    WindowsZone windowsZone = nullptr;
     Calendar* calendar = nullptr;
     std::string zone;
     State() {
@@ -47,6 +49,7 @@ struct WeatherTimezone::State {
         setMillis = Load<SetMillis>(module, "ucal_setMillis");
         get = Load<Get>(module, "ucal_get");
         canonical = Load<Canonical>(module, "ucal_getCanonicalTimeZoneID");
+        windowsZone = Load<WindowsZone>(module, "ucal_getTimeZoneIDForWindowsID");
     }
     ~State() {
         if (calendar && close) close(calendar);
@@ -74,6 +77,19 @@ struct WeatherTimezone::State {
 };
 WeatherTimezone::WeatherTimezone() : state_(std::make_unique<State>()) {}
 WeatherTimezone::~WeatherTimezone() = default;
+std::string WeatherTimezone::SystemZone() {
+    if (!state_->windowsZone) return {};
+    DYNAMIC_TIME_ZONE_INFORMATION zone{};
+    if (GetDynamicTimeZoneInformation(&zone) == TIME_ZONE_ID_INVALID || !zone.TimeZoneKeyName[0]) return {};
+    std::array<char16_t, 256> output{}; ErrorCode error = 0;
+    const auto size = state_->windowsZone(reinterpret_cast<const char16_t*>(zone.TimeZoneKeyName),
+        static_cast<std::int32_t>(wcslen(zone.TimeZoneKeyName)), nullptr, output.data(),
+        static_cast<std::int32_t>(output.size()), &error);
+    if (error > 0 || size <= 0 || size >= static_cast<std::int32_t>(output.size())) return {};
+    std::string result;
+    for (std::int32_t i = 0; i < size; ++i) { if (output[i] > 127) return {}; result.push_back(static_cast<char>(output[i])); }
+    return ValidZone(result) ? result : std::string{};
+}
 std::optional<std::string> WeatherTimezone::Local(weather::Millis utc, std::string_view zone) {
     if (utc < 0 || utc > 253402300799999LL || !state_->Select(zone)) return {};
     ErrorCode error = 0;

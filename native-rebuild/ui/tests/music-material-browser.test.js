@@ -501,6 +501,28 @@ test('production nine renderer boundaries capture real scenes; volatile 3D requi
     await writeFile(path.join(evidence,'renderers.json'),JSON.stringify(report,null,2)+'\n');
   }));
 
+test('Nebbia fog follows a wallpaper change without remounting', {skip:!enabled,timeout:30000},()=>harness(async({browser,base})=>{
+  const page=await browser.newPage({viewport:{width:700,height:450}});
+  try{
+    await page.goto(`${base}/fixture`);
+    await page.evaluate(async()=>{
+      const bg=document.getElementById('background');document.body.dataset.musicRoot='';bg.dataset.musicBackground='';bg.width=700;bg.height=450;
+      window.paintWallpaper=(id,color)=>{const ctx=bg.getContext('2d');ctx.fillStyle=color;ctx.fillRect(0,0,700,450);bg.dataset.musicBackgroundId=id;bg.dataset.musicBackgroundState='ready';bg.dataset.glassFrameVersion=String(Number(bg.dataset.glassFrameVersion||0)+1);bg.dispatchEvent(new Event('lume-glass-media-frame'));};
+      paintWallpaper('cool','#1040dc');
+      const {mountReference}=await import('/music-visualizers/reference-host.js'),{DEFAULT_MUSIC_PREFERENCES}=await import('/music-preference-values.js');
+      const state={lines:[{fullText:'Sample lyrics',startTime:0,endTime:12,words:[]}],current:{id:'sample',title:'Song',artist:'Artist'},currentTime:4,duration:12,activeLineIndex:0,visible:true,playing:true,preferences:{...DEFAULT_MUSIC_PREFERENCES,mode:'nebbia'}};
+      window.view=mountReference(document.getElementById('stage'),state,'nebbia');window.updateView=()=>view.update(state);
+      window.fogChroma=()=>{const c=document.querySelector('iframe')?.contentDocument?.querySelector('canvas[data-lumenic-liquid-glass-scene-effect]');if(!c)return 0;
+        const tiny=document.createElement('canvas');tiny.width=tiny.height=16;const ctx=tiny.getContext('2d');ctx.drawImage(c,0,0,16,16);const d=ctx.getImageData(0,0,16,16).data;
+        let total=0,weight=0;for(let i=0;i<d.length;i+=4){total+=(d[i]-d[i+2])*d[i+3];weight+=d[i+3];}return total/(weight||1);};
+    });
+    await page.waitForFunction(()=>{updateView();return fogChroma() < -3;},undefined,{timeout:10000});
+    await page.evaluate(()=>{window.originalCanvas=document.querySelector('iframe').contentDocument.querySelector('canvas[data-lumenic-liquid-glass-scene-effect]');paintWallpaper('warm','#dc4010');updateView();});
+    await page.waitForFunction(()=>{updateView();return fogChroma()>3;},undefined,{timeout:10000});
+    assert.equal(await page.evaluate(()=>originalCanvas===document.querySelector('iframe').contentDocument.querySelector('canvas[data-lumenic-liquid-glass-scene-effect]')),true);
+  }finally{await page.close();}
+}));
+
 test('parent-owned rain, snow and star-river canvases reach the material capture',
   {skip:!enabled,timeout:90000},()=>harness(async({browser,base})=>{
     const report=[];

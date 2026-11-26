@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/windows/display_monitors.h"
 #include "core/dynamic_island/island_model.h"
 #include "core/dynamic_island/compact_widgets.h"
 #include "core/dynamic_island/expanded_widgets.h"
@@ -49,6 +50,7 @@ enum class IslandSize { Small, Standard, Large };
 enum class IslandShape { Standard, Capsule };
 enum class IslandClockStyle { Simple, Progress, Digital, Date, Flip, Pixel };
 enum class IslandCalendarStyle { Default, ChineseAlmanac };
+enum class IslandCountdownStyle { Standard, Violet };
 // Playback includes an idle empty state; active reminders have their own view.
 enum class IslandPage { Music, Reminder };
 struct IslandTodo {
@@ -77,14 +79,7 @@ enum class IslandMaterial { None, Liquid, Frosted };
 enum class IslandAnimationSpeed { Slow, Normal, Fast };
 enum class IslandBounce { Subtle, Normal, Bouncy };
 inline unsigned SnapIslandHoverDelay(unsigned ms) { return ms<100?100:ms>1000?1000:((ms+25)/50)*50; }
-struct IslandMonitor {
-    std::wstring device;
-    RECT bounds{}, work{};
-    bool primary=false;
-};
-inline bool operator==(const IslandMonitor& a,const IslandMonitor& b) {
-    return a.device==b.device&&a.primary==b.primary&&EqualRect(&a.bounds,&b.bounds)&&EqualRect(&a.work,&b.work);
-}
+using IslandMonitor = DisplayMonitor;
 std::vector<IslandMonitor> ConnectedIslandMonitors();
 // User-facing visibility and layering choices.
 struct IslandDisplay {
@@ -101,15 +96,32 @@ struct IslandDisplay {
     IslandShape shape = IslandShape::Capsule;
     IslandClockStyle clockStyle = IslandClockStyle::Simple;
     IslandCalendarStyle calendarStyle = IslandCalendarStyle::Default;
+    int countdownDate = 0;       // Days since 1970-01-01; zero means unset.
+    bool countdownCountUp = false;
+    std::string countdownTitle;
+    bool countdownReminder = false;
     dynamic_island::CompactWidget leftWidget=dynamic_island::CompactWidget::None;
     dynamic_island::CompactWidget rightWidget=dynamic_island::CompactWidget::None;
     std::vector<dynamic_island::ExpandedWidget> expandedWidgets{dynamic_island::ExpandedWidget::Music};
+    IslandCountdownStyle countdownStyle = IslandCountdownStyle::Standard;
+    std::uint32_t countdownTextColor = 0x262626;
+    std::uint32_t countdownBackgroundColor = 0x2183c0;
+    std::uint32_t countdownSolidColor = 0x8264a5;
+    unsigned countdownTextAlpha = 255;
+    unsigned countdownBackgroundAlpha = 255;
+    unsigned countdownSolidAlpha = 255;
 };
 inline bool operator==(const IslandDisplay& a, const IslandDisplay& b) {
     return a.expandedWidgets==b.expandedWidgets&&a.screen==b.screen&&a.leftWidget==b.leftWidget&&a.rightWidget==b.rightWidget&&a.hideFullscreen == b.hideFullscreen && a.topmost == b.topmost &&
            a.hoverExpand == b.hoverExpand && a.hoverDelayMs == b.hoverDelayMs &&
            a.animationSpeed == b.animationSpeed && a.bounce == b.bounce && a.size == b.size && a.material == b.material &&
-           a.autoHide == b.autoHide && a.shape == b.shape && a.clockStyle == b.clockStyle && a.calendarStyle == b.calendarStyle;
+           a.autoHide == b.autoHide && a.shape == b.shape && a.clockStyle == b.clockStyle && a.calendarStyle == b.calendarStyle &&
+           a.countdownDate == b.countdownDate && a.countdownTitle == b.countdownTitle &&
+           a.countdownCountUp == b.countdownCountUp &&
+           a.countdownReminder == b.countdownReminder && a.countdownStyle == b.countdownStyle &&
+           a.countdownTextColor == b.countdownTextColor && a.countdownBackgroundColor == b.countdownBackgroundColor &&
+           a.countdownSolidColor == b.countdownSolidColor && a.countdownTextAlpha == b.countdownTextAlpha &&
+           a.countdownBackgroundAlpha == b.countdownBackgroundAlpha && a.countdownSolidAlpha == b.countdownSolidAlpha;
 }
 inline bool operator!=(const IslandDisplay& a, const IslandDisplay& b) { return !(a == b); }
 struct IslandPreviewFrame {
@@ -130,7 +142,8 @@ std::shared_ptr<const WidgetBitmap> DecodeMediaArtwork(const std::string&);
 class IslandWindow final {
 public:
     using Act = std::function<void(dynamic_island::Action)>;
-    IslandWindow(HINSTANCE, Act, std::function<bool()> notificationAllowed = {});
+    using EditWidget = std::function<void(dynamic_island::ExpandedWidget,HWND)>;
+    IslandWindow(HINSTANCE, Act, std::function<bool()> notificationAllowed = {}, EditWidget = {});
     ~IslandWindow();
     bool Start(const widget::Preferences&, const IslandDisplay& = {});
     // Bind this window to one screen; the session owns the all-screen group.

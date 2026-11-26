@@ -22,9 +22,10 @@ constexpr UINT_PTR DateTimer=0xA11;
 }
 struct TodayTodoSession::Impl {
     Impl(HINSTANCE instance,std::string path,Notify notify,std::function<void()> settings,
-         CalendarTodoPort todos,settings::IFileStore* files,Impl* owner=nullptr):
+         CalendarTodoPort todos,settings::IFileStore* files,
+         std::function<void(const std::string&,calendar::Date,HWND)> openTodoEditor,Impl* owner=nullptr):
         root(owner?owner:this),externalFiles(files),instance(instance),path(std::move(path)),notify(std::move(notify)),openSettings(std::move(settings)),
-        todos(std::move(todos)),
+        todos(std::move(todos)),openTodoEditor(std::move(openTodoEditor)),
         store(files?*files:localFiles,Limits),loaded(store.Load(this->path)),prefs(loaded.value),
         window(instance,L"Lume 今日待办",Limits,WidgetWindowPorts{
             [this](WidgetCanvas& c,float w,float h){view.Draw(c,w,h);},
@@ -88,7 +89,7 @@ struct TodayTodoSession::Impl {
                 childrenLoaded=true;
                 for(std::size_t i=0;i<children.size();++i){const auto childPath=path+".instance-"+std::to_string(i+1)+".json";
                     if(Files().Exists(childPath)||Files().Exists(childPath+".bak"))
-                        children[i]=std::make_unique<Impl>(instance,childPath,notify,openSettings,todos,&Files(),this);
+                        children[i]=std::make_unique<Impl>(instance,childPath,notify,openSettings,todos,&Files(),openTodoEditor,this);
                 }
             }
             for(auto& child:children)if(child&&!child->Restore())restored=false;
@@ -105,7 +106,7 @@ struct TodayTodoSession::Impl {
             const bool rollback=Runtime(previous);error=layer?L"layer":rollback?L"runtime":L"rollback";applying=false;return false;
         }
         if(next.enabled){
-            const auto bounds=widget::Clamped(window.Bounds(),Limits);next.x=bounds.x;next.y=bounds.y;next.placed=bounds.placed;
+            const auto bounds=widget::Clamped(window.PreferredBounds(),Limits);next.x=bounds.x;next.y=bounds.y;next.placed=bounds.placed;
             next.width=bounds.width;next.height=bounds.height;
         }
         if(!store.Save(path,next)){
@@ -234,6 +235,7 @@ struct TodayTodoSession::Impl {
         return result;
     }
     void OpenEditor(std::optional<todo::TaskView> task={}){
+        if(openTodoEditor){openTodoEditor(task?task->id:std::string{},view.Date(),window.Handle());return;}
         if(editor.IsOpen()){SetForegroundWindow(editor.Handle());return;}
         if(!todos.time||!todos.now||!todos.read)return;
         const auto snapshot=todos.read();
@@ -271,7 +273,7 @@ struct TodayTodoSession::Impl {
         if(stopped||path.empty()||!source.window.Handle())return;
         for(std::size_t i=0;i<children.size();++i){
             if(children[i]&&children[i]->prefs.enabled)continue;
-            if(!children[i])children[i]=std::make_unique<Impl>(instance,path+".instance-"+std::to_string(i+1)+".json",notify,openSettings,todos,&Files(),this);
+            if(!children[i])children[i]=std::make_unique<Impl>(instance,path+".instance-"+std::to_string(i+1)+".json",notify,openSettings,todos,&Files(),openTodoEditor,this);
             auto next=widget::Defaults(Limits);const auto bounds=source.window.Bounds();
             next.enabled=true;next.frosted=source.prefs.frosted;next.solid=source.prefs.solid;next.panelColor=source.prefs.panelColor;next.placed=true;
             const auto dpi=GetDpiForWindow(source.window.Handle());const int step=MulDiv(32*static_cast<int>(i+1),dpi,96);
@@ -327,7 +329,8 @@ struct TodayTodoSession::Impl {
     }
     void Shutdown(){if(stopped)return;stopped=true;*alive=false;for(auto& child:children)if(child)child->Shutdown();StopRuntime();}
     Impl* root;settings::IFileStore* externalFiles;bool childrenLoaded=false,menuOpen=false;
-    HINSTANCE instance;std::string path;Notify notify;std::function<void()> openSettings;CalendarTodoPort todos;MaterialSelectionHandler materialSelection;
+    HINSTANCE instance;std::string path;Notify notify;std::function<void()> openSettings;CalendarTodoPort todos;
+    std::function<void(const std::string&,calendar::Date,HWND)> openTodoEditor;MaterialSelectionHandler materialSelection;
     TodoSheetWindow editor;std::shared_ptr<bool> alive=std::make_shared<bool>(true);
     LocalSettingsFileStore localFiles;widget::PreferencesStore store;widget::LoadedPreferences loaded;widget::Preferences prefs;
     TodayTodoView view;bool stopped=false,applying=false,timer=false,refreshing=false;
@@ -335,8 +338,9 @@ struct TodayTodoSession::Impl {
     NativeWidgetWindow window;
     std::array<std::unique_ptr<Impl>,31> children;
 };
-TodayTodoSession::TodayTodoSession(HINSTANCE instance,std::string path,Notify notify,std::function<void()> settings,CalendarTodoPort todos,settings::IFileStore* files):
-    impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),std::move(todos),files)){}
+TodayTodoSession::TodayTodoSession(HINSTANCE instance,std::string path,Notify notify,std::function<void()> settings,CalendarTodoPort todos,settings::IFileStore* files,
+    std::function<void(const std::string&,calendar::Date,HWND)> openTodoEditor):
+    impl_(std::make_unique<Impl>(instance,std::move(path),std::move(notify),std::move(settings),std::move(todos),files,std::move(openTodoEditor))){}
 TodayTodoSession::~TodayTodoSession()=default;
 bool TodayTodoSession::Restore(){return impl_->Restore();}
 void TodayTodoSession::SetMaterialSelectionHandler(MaterialSelectionHandler handler){impl_->root->materialSelection=std::move(handler);}

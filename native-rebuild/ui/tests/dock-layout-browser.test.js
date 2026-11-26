@@ -7,7 +7,7 @@ import {createBrowserHarness} from './component-settings-browser.mjs';
 test('Dock layout controls work through the real page and native protocol',{
   skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:90000,
 },async()=>{
-  const output=fileURLToPath(new URL('../../../build-artifacts/dock-settings-icons-20261108/browser/',import.meta.url));
+  const output=fileURLToPath(new URL('../../../build-artifacts/native-rebuild/browser/dock-layout/',import.meta.url));
   const harness=await createBrowserHarness(output);
   try {
     for(const language of ['zh-CN','en'])for(const width of [1536,680]) {
@@ -16,7 +16,7 @@ test('Dock layout controls work through the real page and native protocol',{
         await page.addInitScript(({language})=>{
           const listeners=new Set();
           const state={version:1,type:'dock-state',enabled:true,running:true,material:'liquid-glass',
-            reflection:false,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,pinned:11,added:0,
+            reflection:false,systemTray:false,iconScale:100,position:50,positionMode:'center',positionOffset:0,bottomOffset:0,iconSpacing:10,pinned:11,added:0,
             launchpadScale:100,launchpadIconScale:100,
             materialStatus:'native-ready',loadStatus:'loaded',error:'',result:'snapshot',saved:false};
           const emit=data=>listeners.forEach(listener=>listener({data}));
@@ -34,6 +34,8 @@ test('Dock layout controls work through the real page and native protocol',{
                 if(window.dockFixture.fail){emit({...state,error:'save',result:'applied',saved:false});return;}
                 if(key==='reset')Object.assign(state,{iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100});
                 else if(['iconScale','position','bottomOffset','iconSpacing','launchpadScale','launchpadIconScale'].includes(key))state[key]=Number(value);
+                else if(key==='positionOffset')state[key]=Number(value);
+                else if(key==='positionMode')state[key]=value;
                 else if(['reflection','systemTray'].includes(key))state[key]=value==='true';
                 emit({...state,result:'applied',saved:true});
               },window.dockFixture.delay);
@@ -47,15 +49,14 @@ test('Dock layout controls work through the real page and native protocol',{
             await panel.locator(`[data-tab="${tab}"]`).click();
           assert.equal(await panel.locator(`[data-tab="${tab}"]`).getAttribute('aria-selected'),'true');
         };
-        const tabFor=id=>id.startsWith('dock-launchpad-')?'launchpad':'dock';
+        const tabFor=id=>id.startsWith('dock-launchpad-')?'settings':'dock';
         assert.deepEqual(await panel.locator('[role="tab"]').evaluateAll(buttons=>buttons.map(button=>button.dataset.tab)),
-          ['dock','launchpad','control-center','settings','details']);
+          ['dock','settings','details']);
         // Visiting categories must only change the displayed controls; opening
         // the generated icons must not change preferences or write native state.
         const beforeNavigation=await page.evaluate(()=>({state:structuredClone(dockFixture.state),
           writes:dockFixture.commands.filter(command=>typeof command==='string'&&command.startsWith('v1|dock|'))}));
-        for(const [tab,icon,label] of [['dock','dock','Dock'],['launchpad','launchpad',language==='en'?'Launchpad':'启动台'],
-          ['control-center','control-center',language==='en'?'Control center':'控制中心']]){
+        for(const [tab,icon,label] of [['dock','dock','Dock'],['settings','settings',language==='en'?'Settings':'设置']]){
           await selectTab(tab);
           assert.equal(await panel.locator('[role="tab"][aria-selected="true"]').count(),1);
           if(tab!=='dock')assert.equal(await panel.locator(`[data-tab="${tab}"]`).getAttribute('aria-label'),label);
@@ -91,7 +92,7 @@ test('Dock layout controls work through the real page and native protocol',{
         assert.match(await panel.locator('[data-tab="settings"] img').getAttribute('src'),/settings-selected-24\.png$/,
           'the existing settings entry keeps its gear icon');
         assert.equal(await page.locator('#dock-material').count(),1);
-        assert.equal(await page.locator('[data-action="dock-reflection"]').count(),1);
+        assert.equal(await page.locator('[data-action="dock-reflection"]').count(),0);
         assert.equal(await page.locator('[data-action="dock-reset"]').count(),1);
         assert.equal(await page.locator('#dock-icon-scale').count(),0,'layout controls have their own Dock category');
         await panel.locator('.settings-side-nav__links').evaluate(async nav=>{
@@ -115,6 +116,19 @@ test('Dock layout controls work through the real page and native protocol',{
           assert.ok(await page.evaluate(command=>window.dockFixture.commands.includes(command),`v1|dock|${field}|${value}`));
           assert.equal(await page.locator(`#${id}-number`).inputValue(),value,'slider syncs numeric input');
         }
+        await selectTab('dock');
+        await page.locator('[data-dock-position="left"]').click();
+        await page.waitForFunction(()=>window.dockFixture.state.positionMode==='left');
+        assert.ok(await page.locator('[data-dock-position-offset-row]').isVisible());
+        const offset=page.locator('#dock-position-offset-number');
+        await offset.fill('25');await offset.press('Enter');
+        await page.waitForFunction(()=>window.dockFixture.state.positionOffset===25);
+        assert.ok(await page.evaluate(()=>window.dockFixture.commands.includes('v1|dock|positionOffset|25')));
+        await page.locator('[data-dock-position="right"]').click();
+        await page.waitForFunction(()=>window.dockFixture.state.positionMode==='right');
+        await page.locator('[data-dock-position="center"]').click();
+        await page.waitForFunction(()=>window.dockFixture.state.positionMode==='center');
+        assert.ok(await page.locator('[data-dock-position-offset-row]').isHidden());
         for(const [id,value,key] of [['dock-icon-scale','81','iconScale'],['dock-bottom-offset','73','bottomOffset'],['dock-icon-spacing','17','iconSpacing'],['dock-launchpad-scale','97','launchpadScale'],['dock-launchpad-icon-scale','120','launchpadIconScale']]){
           await selectTab(tabFor(id));
           const field=page.locator(`#${id}-number`);await field.fill(value);
@@ -141,7 +155,7 @@ test('Dock layout controls work through the real page and native protocol',{
         assert.equal(await page.locator('#dock-launchpad-icon-scale').inputValue(),'50','failed save restores slider too');
         assert.equal(await page.evaluate(()=>window.dockFixture.state.launchpadIconScale),50);
         await page.evaluate(()=>{window.dockFixture.delay=0;window.dockFixture.fail=false;});
-        await selectTab('control-center');
+        await selectTab('settings');
         const centerToggle=panel.locator('[data-action="dock-system-tray"]');
         assert.equal(await centerToggle.getAttribute('aria-checked'),'false');
         await centerToggle.click();
@@ -149,7 +163,7 @@ test('Dock layout controls work through the real page and native protocol',{
         assert.equal(await centerToggle.getAttribute('aria-checked'),'true');
         assert.ok(await page.evaluate(()=>dockFixture.commands.includes('v1|dock|systemTray|true')),
           'the relocated control center toggle keeps its existing native command');
-        await selectTab('launchpad');
+        await selectTab('settings');
         assert.equal(await page.locator('#dock-launchpad-icon-scale-number').inputValue(),'50',
           'the native confirmed launchpad setting survives category navigation');
         await selectTab('settings');
@@ -159,7 +173,7 @@ test('Dock layout controls work through the real page and native protocol',{
         await page.locator('[data-action="dock-reset"]').click();
         await page.waitForFunction(()=>window.dockFixture.state.position===50&&window.dockFixture.state.iconSpacing===10);
         assert.equal(await page.locator('#dock-position').count(),0);
-        await selectTab('launchpad');
+        await selectTab('settings');
         assert.equal(await page.locator('#dock-launchpad-scale-number').inputValue(),'100');
         assert.equal(await page.locator('#dock-launchpad-icon-scale-number').inputValue(),'100',
           'Dock reset retains its existing cross-category defaults');

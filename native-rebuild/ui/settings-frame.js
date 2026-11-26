@@ -23,6 +23,11 @@ export function settingsFrame({title,description,tab,body,status='',error=false,
   return `<div class="settings settings--sidebar${island?' settings--island':''}" data-settings-scope="${h(scope)}" aria-label="${h(title)}">${navigation}<div class="settings-card"><div class="settings-body" role="region" aria-label="${h(title)}${regionLabel}">${heading}${body}</div><p role="${error?'alert':'status'}" class="status ${error?'error':''}" ${status?'':'hidden'}>${h(status)}</p></div></div>`;
 }
 
+export function settingsGroup(body,label='',{collapsible=false}={}) {
+  const group=collapsible?'details':'div',head=collapsible?'summary':'div';
+  return `<${group} class="settings-group">${label?`<${head} class="settings-group__head"><h2>${h(label)}</h2></${head}>`:''}<div class="settings-group__body">${body}</div></${group}>`;
+}
+
 export function settingsSelect(id,label,value,options,disabled=false) {
   const selected=options.find(option=>option[0]===value);
   return `<div class="setting-select"><button class="setting-select-trigger" id="${id}" type="button" role="combobox" aria-label="${h(label)}" aria-haspopup="listbox" aria-expanded="false" aria-controls="${id}-options" data-select="${id}" ${disabled?'disabled':''}><span>${h(selected?.[1]||'')}</span><svg viewBox="0 0 12 12" width="12" height="12"><path d="m2 4 4 4 4-4" fill="none" stroke="currentColor"/></svg></button><div class="setting-select-options" id="${id}-options" role="listbox" aria-label="${h(label)}" hidden>${options.map(([key,text])=>`<button type="button" role="option" aria-selected="${key===value}" data-select-value="${key}" data-select-owner="${id}">${h(text)}<span aria-hidden="true">${key===value?'✓':''}</span></button>`).join('')}</div></div>`;

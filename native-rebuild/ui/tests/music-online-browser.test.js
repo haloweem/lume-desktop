@@ -666,7 +666,7 @@ test('生产 app/bridge 接线：合成账号登录更新账户面板，隐藏�
     window.onlineCommands=()=>harness.commands.filter(value=>value?.scope==='music-online');
     window.accountRevision=0;
     window.accountsReply=(entries)=>harness.receive({version:1,type:'music-provider-account-state',revision:++accountRevision,
-      accounts:['netease','qq','kugou'].map(provider=>({provider,request:0,status:entries.includes(provider)?'signed-in':'signed-out',
+      accounts:['qq','netease','kugou','qishui'].map(provider=>({provider,request:0,status:entries.includes(provider)?'signed-in':'signed-out',
         phase:'',userId:entries.includes(provider)?provider+'-fixture':'',displayName:'Synthetic fixture',qrImage:'',qrText:'',error:''}))});
     window.onlineReply=command=>harness.receive({version:1,type:'music-online-state',...command,status:'ready',error:'',
       data:{tracks:[],playlists:[],recommendations:[],more:false}});

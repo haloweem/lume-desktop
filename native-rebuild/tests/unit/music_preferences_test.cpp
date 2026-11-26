@@ -65,11 +65,20 @@ Json V2Preferences() {
         {"glowColor", "#60a5fa"}};
     return value;
 }
-Json Preferences() {
+Json V3Preferences() {
     auto value = V2Preferences();
     value["version"] = 3;
     value["effectMode"] = "none";
     return value;
+}
+Json V4Preferences() {
+    auto value = V3Preferences();
+    value["version"] = 4;
+    value["subtitleContentMode"] = "translation";
+    return value;
+}
+Json Preferences() {
+    return V4Preferences();
 }
 Json Apply(std::uint64_t request = 1, std::uint64_t revision = 0) {
     return Json{{"version", 1}, {"scope", "music-preferences"}, {"action", "apply"},
@@ -90,8 +99,8 @@ std::string Disk(const Json& preferences, std::uint64_t revision) {
 }
 
 void Codec() {
-    Check(MusicPreferences{}.version == 3, "native preferences default to version 3");
-    Check(EncodeMusicPreferences({}) == Preferences(), "eight exact default fields with no effect and original Sonnet colors");
+    Check(MusicPreferences{}.version == 4, "native preferences default to version 4");
+    Check(EncodeMusicPreferences({}) == Preferences(), "nine exact default fields including subtitle content mode");
     MusicPreferences output;
     output.mode = "partita";
     const auto reject = [&](const Json& value) {
@@ -101,17 +110,20 @@ void Codec() {
               "invalid DTO is transactional");
     };
     for (const auto* field : {"version", "mode", "fontFamily", "animationIntensity",
-                             "lyricsFontColor", "lyricsKaraokeFillColor", "sonnetColors", "effectMode"}) {
+                             "lyricsFontColor", "lyricsKaraokeFillColor", "sonnetColors", "effectMode", "subtitleContentMode"}) {
         auto value = Preferences(); value.erase(field); reject(value);
         value = Preferences(); value[field] = nullptr; reject(value);
     }
     auto value = Preferences(); value["tuning"] = Json::object(); reject(value);
-    for (const auto& version : {Json(0), Json(4), Json(3.0), Json(true), Json("3")}) {
+    for (const auto& version : {Json(0), Json(5), Json(3.0), Json(true), Json("4")}) {
         value = Preferences(); value["version"] = version; reject(value);
     }
     value = Preferences(); value["mode"] = "cadenze"; reject(value);
     value["mode"] = "wallpaper"; reject(value);
     value = Preferences(); value["animationIntensity"] = "fast"; reject(value);
+    for (const auto* mode : {"", "transcription", "romanize", "translated"}) {
+        value = Preferences(); value["subtitleContentMode"] = mode; reject(value);
+    }
     for (const auto* color : {"#fff", "ffffff", "#ggffff", "#12345678", " #123456"}) {
         value = Preferences(); value["lyricsFontColor"] = color; reject(value);
         value = Preferences(); value["lyricsKaraokeFillColor"] = color; reject(value);
@@ -283,11 +295,11 @@ void EffectCodecAndEquality() {
             Check(threw, "typed encoder rejects an invalid effect instead of defaulting it");
         }
     }
-    for (const auto version : {0, 1, 2, 4}) {
+    for (const auto version : {0, 1, 2, 3}) {
         auto typed = changed; typed.version = version;
         auto output = original;
         Check(!NormalizeMusicPreferences(typed, output) && output == original,
-              "typed normalization only accepts v3 and does not migrate old typed values");
+              "typed normalization only accepts v4 and does not migrate old typed values");
         bool threw = false;
         try { static_cast<void>(EncodeMusicPreferences(typed)); }
         catch (const std::invalid_argument&) { threw = true; }
@@ -303,7 +315,7 @@ void LegacyMigration() {
     expected["mode"] = "sonnet"; expected["fontFamily"] = "Arial"; expected["animationIntensity"] = "calm";
     expected["lyricsFontColor"] = "#ab12ef"; expected["lyricsKaraokeFillColor"] = "#fedcba";
     MusicPreferences migrated;
-    Check(DecodeMusicPreferences(legacy, migrated) && migrated.version == 3 &&
+    Check(DecodeMusicPreferences(legacy, migrated) && migrated.version == 4 &&
           EncodeMusicPreferences(migrated) == expected, "v1 migration preserves globals and uses original Sonnet defaults");
     for (const auto* field : {"version", "mode", "fontFamily", "animationIntensity",
                              "lyricsFontColor", "lyricsKaraokeFillColor"}) {
@@ -332,7 +344,7 @@ void LegacyMigration() {
     const auto disk = Json::parse(files.data.at("p"));
     Check(state["revision"] == 9 && state["preferences"] == expected && disk["version"] == 1 &&
           disk["preferences"] == expected && files.data.at("p.bak") == retained.at("p"),
-          "legacy command saves canonical v3 under unchanged v1 store and state envelopes");
+          "legacy command saves canonical v4 under unchanged v1 store and state envelopes");
     Files backup; backup.data["p"] = "broken"; backup.data["p.bak"] = Disk(legacy, 8);
     MusicPreferencesSession recovered("p", backup);
     Check(Json::parse(recovered.State())["preferences"] == expected && backup.writes == 0,
@@ -346,13 +358,13 @@ void V2Migration() {
     legacy["sonnetColors"] = Json{{"lyricsFontColor", "#ABC123"}, {"karaokeFillColor", "#DEF456"},
         {"glowColor", "#789ABC"}};
     auto expected = legacy;
-    expected["version"] = 3; expected["effectMode"] = "none";
+    expected["version"] = 4; expected["effectMode"] = "none"; expected["subtitleContentMode"] = "translation";
     expected["lyricsFontColor"] = "#123abc"; expected["lyricsKaraokeFillColor"] = "#456def";
     expected["sonnetColors"] = Json{{"lyricsFontColor", "#abc123"}, {"karaokeFillColor", "#def456"},
         {"glowColor", "#789abc"}};
     MusicPreferences migrated;
-    Check(DecodeMusicPreferences(legacy, migrated) && migrated.version == 3 &&
-          EncodeMusicPreferences(migrated) == expected, "v2 migrates to no effect while preserving all colors and globals");
+    Check(DecodeMusicPreferences(legacy, migrated) && migrated.version == 4 &&
+          EncodeMusicPreferences(migrated) == expected, "v2 migrates while preserving colors and defaulting subtitle mode");
     const auto reject = [&](const Json& invalid) {
         const auto before = migrated;
         Check(!DecodeMusicPreferences(invalid, migrated) && migrated == before,
@@ -373,7 +385,7 @@ void V2Migration() {
     }
     auto invalid = legacy; invalid["sonnetColors"]["effectMode"] = "snow"; reject(invalid);
     invalid = legacy; invalid["extra"] = true; reject(invalid);
-    invalid = legacy; invalid["version"] = 3; reject(invalid);
+    invalid = legacy; invalid["version"] = 4; reject(invalid);
 
     Files files; files.data["p"] = Disk(legacy, 12);
     const auto retained = files.data;
@@ -385,7 +397,7 @@ void V2Migration() {
     const auto saved = Reply(session, apply);
     Check(saved["version"] == 1 && saved["revision"] == 13 && saved["preferences"] == expected &&
           Json::parse(files.data.at("p")) == Json({{"version", 1}, {"revision", 13}, {"preferences", expected}}) &&
-          files.data.at("p.bak") == retained.at("p"), "v2 command persists canonical v3 with exact v2 backup");
+          files.data.at("p.bak") == retained.at("p"), "v2 command persists canonical v4 with exact v2 backup");
     Files backup; backup.data["p"] = "broken"; backup.data["p.bak"] = retained.at("p");
     MusicPreferencesSession recovered("p", backup);
     Check(Json::parse(recovered.State())["preferences"] == expected && backup.writes == 0,
@@ -410,13 +422,14 @@ void Protocol() {
     value = Apply(); value["preferences"]["sonnetColors"]["glowColor"] = "#xyzxyz"; reject(value);
     value = Apply(); value["preferences"]["effectMode"] = "rain"; reject(value);
     value = Apply(); value["preferences"].erase("effectMode"); reject(value);
-    value = Apply(); value["preferences"]["version"] = 4; reject(value);
-    for (const auto& legacy : {LegacyPreferences(), V2Preferences()}) {
+    value = Apply(); value["preferences"]["subtitleContentMode"] = "romanization-only"; reject(value);
+    value = Apply(); value["preferences"]["version"] = 5; reject(value);
+    for (const auto& legacy : {LegacyPreferences(), V2Preferences(), V3Preferences()}) {
         value = Apply(); value["preferences"] = legacy;
         const auto migrated = DecodeMusicPreferencesCommand(value);
-        Check(migrated && EncodeMusicPreferences(*migrated->preferences)["effectMode"] == "none",
-              "wire v1 envelope migrates exact v1/v2 DTOs to no effect");
-        value["preferences"]["effectMode"] = "snow"; reject(value);
+        Check(migrated && EncodeMusicPreferences(*migrated->preferences)["subtitleContentMode"] == "translation",
+              "wire v1 envelope migrates old DTOs to the default subtitle mode");
+        value["preferences"]["subtitleContentMode"] = "both"; reject(value);
     }
     value = Snapshot(); value["request"] = 1; reject(value);
     value = Reset(1, 0); value["preferences"] = Preferences(); reject(value);
@@ -467,8 +480,9 @@ void Protocol() {
     MusicPreferencesMessage message;
     message.preferences.fontFamily = u8"\u5fae\u8f6f\u96c5\u9ed1";
     const auto messageJson = Json::parse(EncodeMusicPreferencesPageState(message));
-    Check(messageJson["version"] == 1 && messageJson["preferences"]["version"] == 3 &&
+    Check(messageJson["version"] == 1 && messageJson["preferences"]["version"] == 4 &&
           messageJson["preferences"]["effectMode"] == "none" &&
+          messageJson["preferences"]["subtitleContentMode"] == "translation" &&
           messageJson["preferences"]["sonnetColors"] == Preferences()["sonnetColors"] &&
           messageJson["preferences"]["fontFamily"] == message.preferences.fontFamily,
           "wide v1 state envelope carries canonical v3 preferences and Unicode");
@@ -670,7 +684,7 @@ void RecoveryAndVersions() {
     }
     Files appeared;
     MusicPreferencesSession fresh("p", appeared);
-    auto future = Json::parse(backup); future["preferences"]["version"] = 4;
+    auto future = Json::parse(backup); future["preferences"]["version"] = 5;
     appeared.data["p"] = future.dump();
     Check(Reply(fresh, Apply())["error"] == "load" && appeared.writes == 0, "late unsupported nested version protected");
     Files deepFuture;

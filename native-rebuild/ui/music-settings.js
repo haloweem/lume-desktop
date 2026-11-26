@@ -9,6 +9,7 @@ const escape=value=>String(value).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;
 const FONTS=[['','默认字体'],['Microsoft YaHei','微软雅黑'],['DengXian','等线'],['SimSun','宋体'],['SimHei','黑体'],['KaiTi','楷体'],['Arial','Arial'],['Segoe UI','Segoe UI']];
 const INTENSITY={calm:'平静',normal:'标准',chaotic:'混乱'};
 const EFFECTS=[['none','关闭'],['rain-window','雨窗'],['snow','雪天'],['star-river','星河']];
+const SUBTITLE_MODES=[['translation','译文'],['romanization','罗马音'],['both','双行'],['none','关闭']];
 const COLORS=[['lyricsFontColor','字体颜色'],['lyricsKaraokeFillColor','逐字颜色填充']];
 const SONNET_LABELS={lyricsFontColor:'字体颜色',karaokeFillColor:'逐字颜色填充',glowColor:'辉光颜色'};
 export const DEFAULT_MUSIC_BACKGROUND=Object.freeze({loaded:false,pending:false,media:null,error:''});
@@ -135,6 +136,17 @@ export function updateMusicSettings(root,state,{getFontLabel}={}) {
       option.setAttribute('aria-selected',String(option.dataset.musicEffect===(preferences.effectMode||'none')));
     }
     if(!state.loaded)setMusicEffectPickerOpen(root,false);
+  }
+  const globalSettings=root.querySelector('[data-music-panel-content="globalSettings"]');
+  if(globalSettings&&!root.querySelector('#music-subtitle-content-mode')) {
+    const row=root.ownerDocument.createElement('div');row.className='MusicSettingRow';
+    const label=root.ownerDocument.createElement('label');label.htmlFor='music-subtitle-content-mode';label.textContent='副字幕';
+    const select=root.ownerDocument.createElement('select');select.id='music-subtitle-content-mode';
+    select.dataset.musicPreference='subtitleContentMode';select.setAttribute('aria-label','副字幕内容');
+    for(const [value,text] of SUBTITLE_MODES){const option=root.ownerDocument.createElement('option');option.value=value;option.textContent=text;select.append(option);}
+    row.append(label,select);
+    const effectRow=root.querySelector('[data-music-effect-picker]')?.closest('.MusicSettingRow');
+    globalSettings.insertBefore(row,effectRow||null);
   }
   for(const field of root.querySelectorAll('[data-music-preference]')) {
     field.disabled=!state.loaded;

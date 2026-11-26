@@ -47,7 +47,7 @@ struct WidgetCanvas::State {
     using MetricKey=std::tuple<std::wstring,float,WidgetTextWeight,WidgetTextAlign,bool>;
     std::map<Key,std::unique_ptr<Com<IDWriteTextFormat>>> formats;
     std::map<MetricKey,float> metrics;
-    using WrappedKey=std::tuple<std::wstring,float,float,WidgetTextWeight>;
+    using WrappedKey=std::tuple<std::wstring,float,float,float,WidgetTextWeight,WidgetTextAlign>;
     struct WrappedLayout {
         Com<IDWriteTextLayout> layout;
         float height=0;
@@ -83,7 +83,8 @@ struct WidgetCanvas::State {
         if(found==formats.end()){
             if(formats.size()>=48)formats.clear();
             auto format=std::make_unique<Com<IDWriteTextFormat>>();
-            const auto face=serif?(chinese?L"SimSun":L"Georgia"):ui_font::Family(text);
+            // Lining figures keep every day/count digit on the same baseline.
+            const auto face=serif?(chinese?L"SimSun":L"Times New Roman"):ui_font::Family(text);
             if(FAILED(factories->write->CreateTextFormat(face,nullptr,static_cast<DWRITE_FONT_WEIGHT>(weight),
                 DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",format->Put())))return nullptr;
             (*format)->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -93,18 +94,25 @@ struct WidgetCanvas::State {
         }
         return found->second->value;
     }
-    const WrappedLayout* Wrapped(const std::wstring& text,float wrapWidth,float size,WidgetTextWeight weight){
-        const WrappedKey key{text,wrapWidth,size,weight};
+    const WrappedLayout* Wrapped(const std::wstring& text,float wrapWidth,float maxHeight,float size,
+                                 WidgetTextWeight weight,WidgetTextAlign align){
+        const WrappedKey key{text,wrapWidth,maxHeight,size,weight,align};
         if(const auto found=wrappedLayouts.find(key);found!=wrappedLayouts.end())return found->second.get();
-        const auto format=Format(size,weight,WidgetTextAlign::Left,text);if(!format)return nullptr;
+        const auto format=Format(size,weight,align,text);if(!format)return nullptr;
         auto value=std::make_unique<WrappedLayout>();DWRITE_TEXT_METRICS textMetrics{};
         if(FAILED(factories->write->CreateTextLayout(text.data(),static_cast<UINT32>(text.size()),format,
-                wrapWidth,100000,value->layout.Put()))||
+                wrapWidth,maxHeight>0?maxHeight:100000.f,value->layout.Put()))||
            FAILED(value->layout->SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK))||
-           FAILED(value->layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR))||
-           FAILED(value->layout->GetMetrics(&textMetrics)))return nullptr;
+           FAILED(value->layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)))return nullptr;
+        if(maxHeight>0){
+            Com<IDWriteInlineObject> ellipsis;
+            const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};
+            if(FAILED(factories->write->CreateEllipsisTrimmingSign(format,ellipsis.Put()))||
+               FAILED(value->layout->SetTrimming(&trimming,ellipsis.value)))return nullptr;
+        }
+        if(FAILED(value->layout->GetMetrics(&textMetrics)))return nullptr;
         value->height=textMetrics.height;
-        if(wrappedLayouts.size()>=8)wrappedLayouts.clear();
+        if(wrappedLayouts.size()>=256)wrappedLayouts.clear();
         return wrappedLayouts.emplace(key,std::move(value)).first->second.get();
     }
 };
@@ -204,18 +212,19 @@ float WidgetCanvas::MeasureText(const std::wstring& text,float size,WidgetTextWe
     s.metrics.emplace(key,value);
     return value;
 }
-float WidgetCanvas::MeasureWrappedText(const std::wstring& text,float width,float size,WidgetTextWeight weight){
+float WidgetCanvas::MeasureWrappedText(const std::wstring& text,float width,float size,WidgetTextWeight weight,WidgetTextAlign align){
     auto& s=*state_;
     if(!s.drawing||text.empty()||!std::isfinite(width)||width<=0||!std::isfinite(size)||size<=0)return 0;
-    const auto layout=s.Wrapped(text,width,size,weight);
+    const auto layout=s.Wrapped(text,width,0,size,weight,align);
     return layout?layout->height:0;
 }
-void WidgetCanvas::WrappedText(const std::wstring& text,WidgetRect r,float size,std::uint32_t rgb,float alpha,WidgetTextWeight weight){
+void WidgetCanvas::WrappedText(const std::wstring& text,WidgetRect r,float size,std::uint32_t rgb,float alpha,
+                               WidgetTextWeight weight,WidgetTextAlign align,bool trim){
     auto& s=*state_;
     if(!s.drawing||text.empty()||!std::isfinite(r.x)||!std::isfinite(r.y)||
        !std::isfinite(r.width)||r.width<=0||!std::isfinite(r.height)||r.height<=0||
        !std::isfinite(size)||size<=0||!std::isfinite(alpha)||alpha<=0)return;
-    const auto layout=s.Wrapped(text,r.width,size,weight);if(!layout)return;
+    const auto layout=s.Wrapped(text,r.width,trim?r.height:0,size,weight,align);if(!layout)return;
     s.target->PushAxisAlignedClip(Rect(r),D2D1_ANTIALIAS_MODE_ALIASED);
     s.Color(0,.12f*alpha);
     s.target->DrawTextLayout(D2D1::Point2F(r.x,r.y+1),layout->layout.value,s.brush.value,D2D1_DRAW_TEXT_OPTIONS_CLIP);

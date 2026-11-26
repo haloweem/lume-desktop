@@ -768,6 +768,16 @@ select {
   color: rgba(255, 255, 255, 0.85);
   background: transparent;
 }
+.dock-shortcut-field {display:flex;align-items:center;gap:6px;width:min(240px,100%);min-width:0;height:36px;padding:0 7px 0 10px;border:1px solid rgba(255,255,255,.1);background:#111216;}
+.dock-shortcut-record {flex:1;min-width:0;height:32px;padding:0;border:0;background:transparent;color:rgba(255,255,255,.9);font:inherit;font-size:13px;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dock-shortcut-record[data-empty] {color:rgba(255,255,255,.48);}
+.dock-shortcut-record:hover:not(:disabled),.dock-shortcut-record:focus-visible {color:#fff;}
+.dock-shortcut-field:focus-within {border-color:var(--beauty-accent);}
+.dock-shortcut-record:disabled {cursor:default;}
+.dock-shortcut-clear {display:grid;place-items:center;flex:0 0 18px;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:#969ba2;color:#282b30;font-size:15px;line-height:1;}
+.dock-shortcut-clear:hover:not(:disabled) {background:#c4c8ce;}
+.dock-shortcut-clear:disabled {opacity:.45;}
+.dock-shortcut-error {flex-basis:100%;color:#ff7875;font-size:12px;line-height:1.4;text-align:end;}
 .status,
 .availability {
   font-size: 12px;

@@ -35,7 +35,7 @@ template<class T> T LoadProc(HMODULE module, const char* name) {
 #pragma warning(push)
 #pragma warning(disable : 4995)
 #endif
-std::optional<Location> LegacyLocation(const Cancellation& cancel) {
+std::optional<DeviceFix> LegacyLocation(const Cancellation& cancel) {
     if (cancel.Cancelled()) return {};
     using Initialize = HRESULT(WINAPI*)(LPVOID, DWORD);
     using Uninitialize = void(WINAPI*)();
@@ -86,16 +86,18 @@ std::optional<Location> LegacyLocation(const Cancellation& cancel) {
     double latitude = 0, longitude = 0;
     if (FAILED(latLong->GetLatitude(&latitude)) || FAILED(latLong->GetLongitude(&longitude)))
         return {};
-    return Location{latitude, longitude, {}, {}};
+    // This deprecated API cannot identify an IP/default source. It must not
+    // become a high-confidence device anchor.
+    return DeviceFix{Location{latitude, longitude, {}, {}}};
 }
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
-// Windows.Devices.Geolocation positions from nearby Wi-Fi (or GPS), so a VPN
-// or proxy cannot move it. Requires the system location service and "let
+// Windows.Devices.Geolocation may use GPS, Wi-Fi, IP or a configured default.
+// Preserve its source, accuracy and sample age for the resolver. Requires "let
 // desktop apps access your location". combase is loaded on demand, as ole32
 // is above. Waits at most about 12 seconds on the weather worker.
-std::optional<Location> GeolocatorLocation(const Cancellation& cancel) {
+std::optional<DeviceFix> GeolocatorLocation(const Cancellation& cancel) {
     if (cancel.Cancelled()) return {};
     namespace geo = ABI::Windows::Devices::Geolocation;
     namespace foundation = ABI::Windows::Foundation;
@@ -130,7 +132,7 @@ std::optional<Location> GeolocatorLocation(const Cancellation& cancel) {
     if (SUCCEEDED(geolocator->get_LocationStatus(&status)) &&
         (status == geo::PositionStatus_Disabled || status == geo::PositionStatus_NotAvailable)) return {};
     foundation::TimeSpan maximumAge{}, timeout{};
-    maximumAge.Duration = 30LL * 60 * 10000000;  // 100 ns units
+    maximumAge.Duration = 15LL * 60 * 10000000;  // 100 ns units
     timeout.Duration = 10LL * 10000000;
     Microsoft::WRL::ComPtr<foundation::IAsyncOperation<geo::Geoposition*>> operation;
     if (FAILED(geolocator->GetGeopositionAsyncWithAgeAndTimeout(maximumAge, timeout, operation.GetAddressOf())))
@@ -154,9 +156,25 @@ std::optional<Location> GeolocatorLocation(const Cancellation& cancel) {
         return {};
     geo::BasicGeoposition basic{};
     if (FAILED(point->get_Position(&basic))) return {};
-    return Location{basic.Latitude, basic.Longitude, {}, {}};
+    DeviceFix fix; fix.location = {basic.Latitude, basic.Longitude, {}, {}};
+    foundation::DateTime timestamp{};
+    if (FAILED(coordinate->get_Accuracy(&fix.accuracyMeters)) || FAILED(coordinate->get_Timestamp(&timestamp))) return {};
+    fix.sampledAt = timestamp.UniversalTime / 10000 - 11644473600000LL;
+    Microsoft::WRL::ComPtr<geo::IGeocoordinateWithPositionData> data;
+    geo::PositionSource source = geo::PositionSource_Unknown;
+    if (SUCCEEDED(coordinate.As(&data)) && SUCCEEDED(data->get_PositionSource(&source))) {
+        switch (source) {
+        case geo::PositionSource_Satellite: fix.source = DeviceLocationSource::Satellite; break;
+        case geo::PositionSource_WiFi: fix.source = DeviceLocationSource::Wifi; break;
+        case geo::PositionSource_Cellular: fix.source = DeviceLocationSource::Cellular; break;
+        case geo::PositionSource_IPAddress: fix.source = DeviceLocationSource::Ip; break;
+        case geo::PositionSource_Default: fix.source = DeviceLocationSource::Default; break;
+        default: break;
+        }
+    }
+    return fix;
 }
-std::optional<Location> SystemLocation(const Cancellation& cancel) {
+std::optional<DeviceFix> SystemLocation(const Cancellation& cancel) {
     if (cancel.Cancelled() || !HasExistingCapabilityAccess(L"location")) return {};
     if (auto location = GeolocatorLocation(cancel)) return location;
     if (cancel.Cancelled()) return {};
@@ -237,7 +255,10 @@ public:
               HttpTransport{[this](const auto& request, const auto& cancel) { return http_.Get(request, cancel); }}),
           location_(transport_, clock_, local_, SimplifyWeatherPlaceName,
               options.systemLocation ? DeviceLocation{[](Millis, const Cancellation& cancel) { return SystemLocation(cancel); }} : DeviceLocation{},
-              options.environment ? *options.environment : LocationEnvironment{SystemCountries(), SystemLocalTime},
+              options.environment ? *options.environment : LocationEnvironment{SystemCountries(), SystemLocalTime, [this] {
+                  if (!timezone_) timezone_ = std::make_unique<WeatherTimezone>();
+                  return timezone_->SystemZone();
+              }},
               LocationStore{[this] { return Read(WeatherCacheKind::Location); },
                             [this](std::string_view text) { return Write(WeatherCacheKind::Location, text); }}),
           provider_(transport_, clock_, local_) {
@@ -257,7 +278,8 @@ public:
     WeatherFetch Fetch(std::string_view city, const Cancellation& cancel) override {
         if (cancel.Cancelled()) return {{{}, ProviderError::Cancelled, 0}, false};
         const auto position = location_.Resolve(city, cancel);
-        if (!position.location) return {{{}, position.error, 0}, false};
+        if (!position.location) return {{{}, position.error == ProviderError::Cancelled ?
+            ProviderError::Cancelled : ProviderError::InvalidLocation, 0}, false};
         auto result = provider_.Fetch(city, *position.location, cancel);
         if (cancel.Cancelled()) return {{{}, ProviderError::Cancelled, 0}, false};
         if (result.snapshot) {

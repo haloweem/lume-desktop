@@ -42,6 +42,7 @@ public:
     // user's original auto-hide state once neither owner needs it.
     void SetAutoHideDemand(bool value) { autoHideDemand_ = value; }
     bool AutoHideDemand() const { return autoHideDemand_; }
+    void SetTrayReveal(bool value) { trayReveal_ = value; }
     bool Tick();
     // Read back/maintain hiding while a transparency failure is paused. Never
     // launches, stops or resets a core, and preserves the transparency error.
@@ -73,7 +74,9 @@ private:
     bool running_ = false, initialRecovery_ = false, startedCore_ = false;
     bool initialCoreRecovery_ = false;
     bool hideApplied_ = false;
+    bool observingAutoHide_ = false, yieldedAutoHide_ = false;
     bool autoHideDemand_ = false;
+    bool trayReveal_ = false;
     bool orphansRepaired_ = false;
 };
 }  // namespace lume::taskbar

@@ -2,6 +2,7 @@
 #include "platform/windows/organizer/organizer_text.h"
 #include "platform/windows/organizer/organizer_view.h"
 #include "platform/windows/organizer/organizer_icons.h"
+#include "platform/windows/widget_ui/LumeWidgetMenu.h"
 #include "platform/windows/material/material_api.h"
 #include "composed_corners_test.h"
 #include "unique_test_directory.h"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 namespace {
 using namespace lume;
 void Expect(bool ok,const char* why){if(std::getenv("LUME_ORGANIZER_TRACE"))std::cout<<why<<std::endl;if(!ok){std::cerr<<why<<'\n';std::exit(1);}}
@@ -492,7 +494,12 @@ int LargeCollection(){
         Expect(!session.AddPaths({extra.u8string()})&&session.Snapshot().collections.front().items.size()==1100&&
             files.data.at("large.json")==saved&&session.Running(),"failed save rolls back a large collection and its live runtime");
         files.fail=false;
-        SendMessageW(session.Handle(),WM_COMMAND,5,0);Pump();
+        SendMessageW(session.Handle(),WM_COMMAND,5,0);
+        // The tail-cell click below uses settled coordinates. A fitted panel
+        // near the monitor edge reveals those cells from the old strip first.
+        const auto settled=GetTickCount64()+400;
+        while(GetTickCount64()<settled){Pump();MsgWaitForMultipleObjects(0,nullptr,FALSE,16,QS_ALLINPUT);}
+        Pump();
         const auto hwnd=session.Handle();RECT bounds{};GetClientRect(hwnd,&bounds);
         const auto dpi=GetDpiForWindow(hwnd);
         const float width=static_cast<float>(bounds.right)*96/(dpi?dpi:96);
@@ -618,10 +625,97 @@ int SelectionDismiss(){
     std::filesystem::remove(directory);
     return 0;
 }
+int DeleteConfirmation(){
+    using namespace platform::windows;
+    const auto directory=UniqueTestDirectory(std::filesystem::temp_directory_path()/"LumeOrganizerDelete");
+    const auto first=directory/L"first.txt",second=directory/L"second.txt";
+    std::ofstream(first)<<"first";std::ofstream(second)<<"second";
+    Files files;
+    shell::OrganizerSession session(GetModuleHandleW(nullptr),"delete.json",{},[]{},&files,
+        [](HWND,const std::wstring&){return true;},{},false,{directory.wstring()});
+    session.HandlePage(ui::PageCommand::OrganizerEnable);
+    Expect(session.AddPaths({first.u8string(),second.u8string()}),"collect isolated deletion fixtures");
+    const HWND hwnd=session.Handle();
+    const auto layout=LayoutOrganizer(420,392,session.Snapshot().collections.front());
+    const auto respond=[&](const wchar_t* prompt,int button){
+        std::thread driver([&]{
+            const auto deadline=GetTickCount64()+5000;
+            while(GetTickCount64()<deadline){
+                const HWND dialog=GetLastActivePopup(hwnd);
+                if(GetWindow(dialog,GW_OWNER)==hwnd && FindWindowExW(dialog,nullptr,L"Static",prompt)){
+                    const auto defaultId=SendMessageW(dialog,DM_GETDEFID,0,0);
+                    Expect(HIWORD(defaultId)==DC_HASDEFID && LOWORD(defaultId)==IDCANCEL,"cancel is the default choice");
+                    Expect(std::filesystem::exists(first)&&std::filesystem::exists(second),"files remain until confirmation");
+                    PostMessageW(dialog,WM_COMMAND,button,0);
+                    return;
+                }
+                Sleep(10);
+            }
+            Expect(false,"expected the owned deletion confirmation dialog");
+        });
+        SendMessageW(hwnd,WM_COMMAND,LumeWidgetMenu::OrganizerDeleteIcon,0);
+        driver.join();
+    };
+    Click(hwnd,layout.cells.at(0).bounds);
+    const auto writes=files.writes;
+    respond(L"要将桌面上的“first.txt”移入回收站吗？",IDCANCEL);
+    Expect(files.writes==writes && session.Snapshot().collections.front().items.size()==2 &&
+        std::filesystem::exists(first),"cancel preserves the desktop file and reference");
+    const auto next=Point(hwnd,layout.cells.at(1).bounds);
+    SendMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON|MK_CONTROL,next);
+    SendMessageW(hwnd,WM_LBUTTONUP,MK_CONTROL,next);
+    respond(L"要将选中的 2 个桌面项目移入回收站吗？",IDOK);
+    Expect(session.Snapshot().collections.front().items.empty() && !std::filesystem::exists(first) &&
+        !std::filesystem::exists(second),"confirm recycles both selected files and removes their references");
+    session.Shutdown();
+    std::filesystem::remove(directory);
+    return 0;
+}
+int DisplayPreferencesRegression(){
+    using ui::PageCommand;
+    Files files;organizer::Store store(files,platform::windows::OrganizerPathKey);
+    MONITORINFO monitor{sizeof(monitor)};
+    Expect(GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitor)!=FALSE,"read isolated restore work area");
+    auto seed=organizer::Defaults();auto& collection=seed.collections.front();collection.enabled=true;
+    const organizer::Bounds preferred{GetSystemMetrics(SM_XVIRTUALSCREEN)+GetSystemMetrics(SM_CXVIRTUALSCREEN)+2000,
+        GetSystemMetrics(SM_YVIRTUALSCREEN)+GetSystemMetrics(SM_CYVIRTUALSCREEN)+1000,420,392};collection.bounds=preferred;
+    const auto same=[](const auto& a,const auto& b){return a.x==b.x&&a.y==b.y&&a.width==b.width&&a.height==b.height;};
+    Expect(store.Save("display-restore.json",seed),"seed preferred placement from an absent display");
+    {
+        shell::OrganizerSession session(GetModuleHandleW(nullptr),"display-restore.json",{},[]{},&files);
+        Expect(session.Restore()&&session.Handle(),"restore organizer on a reachable fallback display");
+        RECT live{};GetWindowRect(session.Handle(),&live);
+        if(live.left==preferred.x&&live.top==preferred.y)std::cerr<<"fallback bounds="<<live.left<<','<<live.top<<" preferred="<<preferred.x<<','<<preferred.y<<'\n';
+        Expect(live.left!=preferred.x||live.top!=preferred.y,"fallback is drawn within the connected work area");
+        for(auto command:{PageCommand::OrganizerLiquidGlass,PageCommand::OrganizerFrostedGlass,PageCommand::OrganizerDisable,PageCommand::OrganizerEnable}){
+            Expect(session.HandlePage(command).has_value(),"appearance and lifecycle changes apply while temporarily displaced");
+            const auto actual=organizer::Find(session.Snapshot(),"default")->bounds;
+            const auto stored=store.Load("display-restore.json");
+            const auto saved=organizer::Find(stored.value,"default")->bounds;
+            Expect(actual&&saved&&same(*actual,preferred)&&same(*saved,preferred),"unrelated saves never replace preferred coordinates with fallback position");
+        }
+        const auto window=session.Handle();
+        Expect(SetWindowPos(window,nullptr,monitor.rcWork.left+100,monitor.rcWork.top+100,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER)!=FALSE,"move organizer to an intentional new position");
+        SendMessageW(window,WM_EXITSIZEMOVE,0,0);GetWindowRect(window,&live);
+        const auto changed=organizer::Find(session.Snapshot(),"default")->bounds;
+        Expect(changed&&changed->x==live.left&&changed->y==live.top,"completed user move replaces the remembered position");
+        const auto stored=store.Load("display-restore.json");const auto saved=organizer::Find(stored.value,"default")->bounds;
+        Expect(saved&&same(*saved,*changed),"new intentional position is really persisted");
+        session.Shutdown();
+    }
+    Pump();std::cout<<"PASS organizer preferred placement persists through fallback, material changes, disable/enable and user moves\n";return 0;
+}
 int main(int argc,char** argv){
     using ui::PageCommand;using namespace platform::windows;
+    if(argc==2&&std::string(argv[1])=="--display-restore"){
+        const auto name=L"LumeOrganizerDisplayRestore-"+std::to_wstring(GetCurrentProcessId());
+        const auto desktop=CreateDesktopW(name.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);Expect(desktop!=nullptr,"create isolated organizer desktop");
+        int result=1;std::thread run([&]{Expect(SetThreadDesktop(desktop)!=FALSE,"bind non-input organizer desktop");Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"isolated organizer COM");result=DisplayPreferencesRegression();CoUninitialize();});
+        run.join();CloseDesktop(desktop);return result;
+    }
     Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM");
     if(argc==2&&std::string(argv[1])=="--selection-dismiss"){const auto result=SelectionDismiss();CoUninitialize();return result;}
+    if(argc==2&&std::string(argv[1])=="--delete-confirmation"){const auto result=DeleteConfirmation();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--material-unavailable"){
         const auto result=MaterialUnavailable();CoUninitialize();return result;
     }
@@ -634,7 +728,7 @@ int main(int argc,char** argv){
     if(argc==2&&std::string(argv[1])=="--grouped-close"){const auto result=GroupedClose();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--batch-drop"){const auto result=BatchDrop();CoUninitialize();return result;}
     if(argc==2&&std::string(argv[1])=="--large-collection"){const auto result=LargeCollection();CoUninitialize();return result;}
-    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop|--large-collection|--selection-dismiss]");
+    Expect(argc==1,"Usage: lume-organizer-session-test [--material-unavailable|--material-feedback|--editor-material|--grouped-close|--batch-drop|--large-collection|--selection-dismiss|--delete-confirmation]");
     Expect(OrganizerPathKey(u8"C:\\ÉCOLE.TXT")==OrganizerPathKey(u8"c:\\école.txt"),"Unicode path identity");
     Expect(OrganizerSearchKey(u8"ＡＢＣ　报告")=="abc "+std::string(u8"报告"),"NFKC search matching");
     {
@@ -653,7 +747,7 @@ int main(int argc,char** argv){
         "expanded organizer search uses the launchpad's pill glass panel");
     searchCollection.mode=organizer::Mode::Collapsed;
     searchLayout=LayoutOrganizer(OrganizerCollapsedWidth,OrganizerCollapsedHeight,searchCollection,searchView);
-    Expect(OrganizerSearchPanels(searchLayout,searchView).size()==1,
+    Expect(OrganizerSearchPanels(searchLayout,searchView).empty(),
         "collapsed organizer never adds an offscreen search input panel");
     }
     wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);
@@ -946,9 +1040,9 @@ int main(int argc,char** argv){
         const auto root=session.Handle();
         const auto collection=[&]()->const organizer::Collection& {return *organizer::Find(session.Snapshot(),"default");};
         auto layout=LayoutOrganizer(420,392,collection());
-        Expect(std::abs(layout.cells[0].bounds.width-57.4f)<.01f&&layout.cells[0].bounds.height==60&&
+        Expect(std::abs(layout.cells[0].bounds.width-57.4f)<.01f&&layout.cells[0].bounds.height>=90&&
                layout.viewport.y==65&&layout.cells[0].bounds.y==67,
-            "70 percent icon-grid track size keeps header spacing");
+            "70 percent icons keep their width and header spacing with room for multiline names");
         Click(root,layout.cells[0].bounds);
         Expect(opened.empty(),"single click selects without opening the target");
         SendMessageW(root,WM_KEYDOWN,VK_RETURN,0);
@@ -1000,6 +1094,10 @@ int main(int argc,char** argv){
         SendMessageW(root,WM_COMMAND,4,0);
         RECT rectangle{};GetWindowRect(root,&rectangle);
         const auto dpi=static_cast<int>(GetDpiForWindow(root));
+        const auto deadline=GetTickCount64()+1500;
+        while(rectangle.bottom-rectangle.top!=MulDiv(OrganizerCollapsedHeight,dpi,96)&&GetTickCount64()<deadline){
+            MsgWaitForMultipleObjects(0,nullptr,FALSE,16,QS_ALLINPUT);Pump();GetWindowRect(root,&rectangle);
+        }
         Expect(collection().mode==organizer::Mode::Collapsed&&
             MulDiv(rectangle.right-rectangle.left,96,dpi)==OrganizerCollapsedWidth&&
             MulDiv(rectangle.bottom-rectangle.top,96,dpi)==OrganizerCollapsedHeight,"collapse command displays only the compact header");

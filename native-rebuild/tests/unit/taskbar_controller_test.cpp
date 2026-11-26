@@ -106,6 +106,13 @@ int main() {
         p.hideBehavior = HideBehavior::FullyHidden;
         Check(c.Apply(p) && hidden.fullyHidden && hidden.autoHide && c.Journal().hiddenTaskbars.size() == 2,
               "full hiding applies to primary and secondary taskbars without transparency");
+        c.SetTrayReveal(true);
+        Check(c.Tick()&&!hidden.fullyHidden&&!hidden.autoHide&&c.Journal().preferences==p&&
+              c.Journal().hiddenTaskbars.empty()&&hidden.starts==0,
+              "tray access restores full hiding and auto-hide without changing preferences or starting transparency");
+        c.SetTrayReveal(false);
+        Check(c.Tick()&&hidden.fullyHidden&&hidden.autoHide&&c.Journal().hiddenTaskbars.size()==2,
+              "ending tray access restores hiding with durable original window state");
         hidden.fullyHidden = false;
         Check(c.Tick() && hidden.fullyHidden && c.Journal().hiddenTaskbars[0].visible,
               "Explorer reveal is suppressed without overwriting original visibility");
@@ -139,6 +146,22 @@ int main() {
         Controller afterCrash(hiddenStore, "taskbar.json", hidden);
         Check(afterCrash.Tick() && !hidden.fullyHidden && !afterCrash.Snapshot().pendingRecovery,
               "disabled startup recovers full hiding from a previous process");
+    }
+    for (const auto mode : {Mode::Classic, Mode::Windows11X64}) {
+        Files nativeFiles; RecordStore nativeStore(nativeFiles); Port port; port.files=&nativeFiles; port.mode=mode;
+        port.autoHide=true;
+        Controller c(nativeStore,"taskbar.json",port);
+        Preferences p; p.enabled=true;
+        Check(c.Apply(p) && port.autoHide && !c.Journal().ownsAutoHide, "transparency leaves native auto-hide alone");
+        p.autoHideTaskbar=true;
+        Check(c.Apply(p) && !c.Journal().ownsAutoHide, "matching native setting is not owned");
+        port.autoHide=false;
+        Check(c.Tick() && c.Tick() && !port.autoHide && !c.Snapshot().effectiveAutoHide && !c.Journal().ownsAutoHide,
+              "native change supersedes maintenance without repeated writes");
+        p.autoHideTaskbar=false; Check(c.Apply(p), "explicit hide request withdrawn");
+        p.autoHideTaskbar=true;
+        Check(c.Apply(p) && port.autoHide && c.Journal().ownsAutoHide && c.Shutdown() && !port.autoHide,
+              "explicit re-enable takes ownership and restores only its own change");
     }
     Files files; Port port; port.files = &files; RecordStore store(files);
     {
@@ -249,7 +272,7 @@ int main() {
             Check(c.Journal().preferences == hidden && c.Journal().hiddenTaskbars.size() == 1 && denied.starts == 0,
                   "hiding preference is durable even when transparency cannot acquire");
             const auto starts = denied.starts, stops = denied.stops, resets = denied.resetFailures;
-            denied.autoHide = false; denied.fullyHidden = false;
+            denied.fullyHidden = false;
             Check(c.MaintainHiding() && denied.autoHide && denied.fullyHidden && c.Snapshot().hideApplied &&
                   c.Snapshot().error == failure && !c.Snapshot().running && denied.starts == starts &&
                   denied.stops == stops && denied.resetFailures == resets,
@@ -309,7 +332,7 @@ int main() {
         Check(!stale.Apply(enabled) && shared.data.at("taskbar.json") == active && peer.writes == 0,
               "busy peer cannot overwrite active ownership with stale preferences");
         peer.acquireError = Error::None; peer.autoHide = true;
-        Check(stale.Apply(enabled) && stale.Journal().ownsAutoHide && !stale.Journal().originalAutoHide,
+        Check(stale.Apply(enabled) && !stale.Journal().ownsAutoHide && !peer.autoHide,
               "ownership acquisition reloads and recovers latest journal before capturing baseline");
         Check(stale.Shutdown() && !peer.autoHide, "recovered baseline remains intact");
     }

@@ -1,6 +1,7 @@
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include <windows.h>
 #include <objbase.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -207,6 +208,28 @@ int main(){
         canvas.Text(L"Ordinary 中文 UI",{8,8,160,24},12,0xffffff);
         Expect(canvas.Finish(translated)&&translated.pixels==reference.pixels,
                "serif rendering parameters do not leak into ordinary UI text");
+    }
+    {
+        WidgetCanvas canvas;WidgetBitmap frame;
+        for(const unsigned dpi:{96u,120u,144u,192u})for(const float size:{38.f,54.f,82.f}){
+            unsigned highest=1000,lowest=0,firstBaseline=1000,lastBaseline=0;
+            for(wchar_t digit=L'0';digit<=L'9';++digit){
+                Expect(canvas.Begin(120,120,dpi),"lining digit frame begins");
+                canvas.SerifText(std::wstring(1,digit),{0,0,120,120},size,0xffffff,1,WidgetTextWeight::Bold);
+                Expect(canvas.Finish(frame),"lining digit frame finishes");
+                unsigned top=frame.height,bottom=0;
+                for(unsigned y=0;y<frame.height;++y)for(unsigned x=0;x<frame.width;++x){
+                    if((frame.pixels[y*frame.width+x]>>24)<128)continue;
+                    top=std::min(top,y);bottom=std::max(bottom,y);
+                }
+                Expect(top<bottom,"every digit has visible ink");
+                highest=std::min(highest,top);lowest=std::max(lowest,top);
+                firstBaseline=std::min(firstBaseline,bottom);lastBaseline=std::max(lastBaseline,bottom);
+            }
+            const unsigned tolerance=(dpi+95)/96;
+            Expect(lowest-highest<=tolerance&&lastBaseline-firstBaseline<=tolerance,
+                   "all ten serif digits share cap height and baseline across widget sizes and DPI");
+        }
     }
     CoUninitialize();
     std::cout<<"widget canvas cache and transparent foreground passed\n";

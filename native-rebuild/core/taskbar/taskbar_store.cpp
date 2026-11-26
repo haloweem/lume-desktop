@@ -33,6 +33,7 @@ const char* ErrorName(Error error) {
         case Error::CoreRestartRequired: return "core-restart-required";
         case Error::CoreAttachTimeout: return "core-attach-timeout";
         case Error::CoreEffectUnconfirmed: return "core-effect-unconfirmed";
+        case Error::CoreFailure: return "core-failure";
     }
     return "unknown";
 }

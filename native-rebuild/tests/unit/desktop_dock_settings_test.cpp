@@ -58,6 +58,9 @@ struct Probe {
         Check(stored.is_object()&&stored.contains("showRunning")&&stored.value("showRunning",!expected)==expected,
               "real WebView toggle writes the selected running-area value to disk");
         if(!stored.is_object())return;
+        Check(stored.value("animation",false) && !stored.value("animateClose",true) &&
+              stored.value("animationDuration",0)==580,"Dock animation settings survive reopening the native WebView");
+        Check(stored.value("runningPreview",false),"preview style survives hiding and reopening the running section");
         Check(stored.value("enabled",false)&&stored.value("controlCenter",false)&&stored.value("lumeVisible",false)&&
               stored.value("pinned",std::vector<std::string>{})==pinned,
               "running-area setting preserves enabled Dock, control center and fixed application order");
@@ -72,9 +75,9 @@ struct Probe {
             Check(initialDefault,"legacy preferences reach WebView with running area enabled by default");
             Check(enabled&&!showRunning&&controlCenter&&pinnedCount==pinned.size(),
                   "real settings click updates native state while retaining fixed controls");
-            // Two pins, fixed Lume, launchpad, control center and its separator;
+            // Two pins, fixed Lume, launchpad, Start, control center and its separator;
             // running apps, duplicate running Lume and their separator disappear.
-            Check(visibleItems==pinned.size()+4,"native Dock hides its running section and retains the control-center separator");
+            Check(visibleItems==pinned.size()+5,"native Dock hides its running section and retains the control-center separator");
             dock=DockWindow();Check(dock&&IsWindow(dock),"Dock window remains alive with running area hidden");
             CheckStored(false);
             phase=1;app->CloseManager();closedAt=GetTickCount64();
@@ -85,7 +88,7 @@ struct Probe {
             Check(reopenedDisabled,"reopened real WebView receives the persisted disabled setting before the next click");
             Check(showRunning&&enabled&&controlCenter&&pinnedCount==pinned.size(),
                   "reopened settings switch restores the native running area");
-            Check(visibleItems>pinned.size()+4,"manager's running Lume entry returns when running area is enabled");
+            Check(visibleItems>pinned.size()+5,"manager's running Lume entry returns when running area is enabled");
             Check(DockWindow()==dock,"settings reopen and toggle reuse the same native Dock window");
             CheckStored(true);
             Check(!app->ClockRunning()&&!app->CalendarRunning(),"Dock settings do not enable unrelated widgets");
@@ -109,7 +112,7 @@ int main(){
     seed.controlCenter=seed.lumeVisible=true;
     std::string encoded;
     Check(dock::Encode(seed,encoded),"encode isolated Dock preferences");
-    auto legacy=nlohmann::json::parse(encoded);legacy.erase("showRunning");
+    auto legacy=nlohmann::json::parse(encoded);legacy.erase("showRunning");legacy.erase("runningPreview");
     {std::ofstream output(probe.preferences,std::ios::binary);output<<legacy.dump();}
     shell::DesktopApplicationOptions options;options.verification=true;
     options.clockPreferencesPath=(root/L"clock.json").u8string();
@@ -132,7 +135,7 @@ int main(){
     options.dock.preferencesPath=probe.preferences.u8string();
     options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let clicked=false;
+      let clicked=false,requestedPreview=false,requestedAnimation=false,requestedDuration=false,requestedClose=false;
       const act=()=>{
         if(clicked)return;
         const section=document.querySelector('[data-settings-scope="dock"]');
@@ -141,6 +144,29 @@ int main(){
         if(settings&&settings.getAttribute('aria-selected')!=='true'){settings.click();return;}
         const toggle=section.querySelector('[data-action="dock-show-running"]');
         if(!toggle||toggle.disabled||toggle.getAttribute('aria-disabled')==='true')return;
+        if(toggle.getAttribute('aria-checked')==='true'){
+          const motion=section.querySelector('[data-action="dock-animation"]');
+          if(motion.getAttribute('aria-checked')!=='true'){
+            if(!requestedAnimation){requestedAnimation=true;motion.click();}
+            return;
+          }
+          const duration=section.querySelector('#dock-animation-duration');
+          if(duration.dataset.confirmed!=='580'){
+            if(!requestedDuration){requestedDuration=true;duration.value=580;duration.dispatchEvent(new Event('change',{bubbles:true}));}
+            return;
+          }
+          const close=section.querySelector('[data-action="dock-animateClose"]');
+          if(close.getAttribute('aria-checked')!=='false'){
+            if(!requestedClose){requestedClose=true;close.click();}
+            return;
+          }
+          const preview=section.querySelector('[data-dock-running-preview="true"]');
+          if(!preview||preview.disabled||preview.getAttribute('aria-disabled')==='true')return;
+          if(preview.getAttribute('aria-pressed')!=='true'){
+            if(!requestedPreview){requestedPreview=true;preview.click();}
+            return;
+          }
+        }
         // First visit changes the native default true to false; the recreated
         // WebView must read persisted false and changes it back to true.
         clicked=true;toggle.click();

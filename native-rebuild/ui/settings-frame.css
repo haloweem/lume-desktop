@@ -1,4 +1,17 @@
-/* Shared component sidebar, derived from the Dynamic Island frame. */
+/* Desktop styles and the widget catalog share the Dynamic Island palette. */
+.DesktopBeautyLayout, .settings--sidebar:not(.settings--island) {
+  --beauty-accent: #5b7bea;
+  --beauty-panel: #191b20;
+  --beauty-control: #25282e;
+  --choice-selected: var(--beauty-accent);
+  --choice-selected-purple: var(--beauty-accent);
+  --choice-accent: var(--beauty-accent);
+  --choice-surface: var(--beauty-control);
+}
+:is(.DesktopBeautyLayout, .settings--sidebar:not(.settings--island)) .switch[aria-checked="true"],
+:is(.DesktopBeautyLayout, .settings--sidebar:not(.settings--island)) .Toggle .switch.checked { background: var(--beauty-accent); }
+.DesktopBeautyLayout .Card:focus-within { border-color: var(--beauty-accent); }
+.DesktopBeautyLayout .OpenButton:focus-visible { outline-color: var(--beauty-accent); }
 .settings--sidebar {
   --component-outer: var(--lume-page-background);
   --component-nav: var(--lume-page-background);
@@ -13,6 +26,7 @@
   overflow: hidden;
   background: var(--component-outer);
 }
+.settings--sidebar:not(.settings--island) { --component-control: var(--beauty-control); }
 .settings--sidebar .settings-side-nav,
 .settings--sidebar .settings-card {
   min-width: 0;
@@ -96,7 +110,7 @@
 .settings-side-nav__links button[aria-selected="true"] {
   border-color: transparent;
   color: #fff;
-  background: #5b7bea;
+  background: var(--beauty-accent);
   box-shadow: none;
 }
 .settings-side-nav__links svg {
@@ -140,6 +154,18 @@
   max-width: 860px;
   margin-inline: 0;
 }
+.settings--sidebar:not(.settings--island) .settings-body .setting-row {
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  max-width: 620px;
+  min-width: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
 .settings--sidebar .settings-body .setting-row {
   padding: 0;
   border: 0;
@@ -147,6 +173,82 @@
   background: transparent;
   margin-bottom: 28px;
 }
+.settings--sidebar:not(.settings--island) .settings-body .setting-row:has(.setting-select-trigger[aria-expanded="true"]) { z-index: 1; }
+.settings--sidebar:not(.settings--island) .settings-body .setting-row::before {
+  position: absolute;
+  z-index: -1;
+  inset: -10px;
+  border: 1px solid rgba(255,255,255,.035);
+  border-radius: 14px;
+  background: var(--beauty-panel);
+  content: "";
+  pointer-events: none;
+}
+.settings--sidebar:not(.settings--island) .settings-body .setting-row[hidden] { display: none; }
+.island-appearance__head,
+.settings-group__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 2px 10px; }
+.island-appearance__head h2,
+.settings-group__head h2 { margin: 0; color: #e7ebf3; font-size: 13px; font-weight: 600; }
+summary.settings-group__head { list-style: none; cursor: pointer; }
+summary.settings-group__head::-webkit-details-marker { display: none; }
+summary.settings-group__head::after { content: ''; width: 6px; height: 6px; margin-inline-end: 4px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(-45deg); }
+details[open] > summary.settings-group__head::after { transform: rotate(45deg); }
+.island-appearance__body,
+.settings-group__body { padding: 4px 12px; border-radius: 14px; background: var(--beauty-panel, #191b20); }
+.settings-group { max-width: 620px; margin-bottom: 8px; }
+[data-settings-scope="dock"] .settings-group { max-width: 444px; }
+[data-settings-scope="dock"] .settings-group + .settings-group { margin-top: 20px; }
+.dock-material-row .island-appearance__segments { flex-wrap: wrap; justify-content: flex-end; max-width: 68%; }
+.dock-material-row [data-dock-material] { flex: 0 0 auto; }
+.dock-display-row .island-appearance__segments,
+.dock-position-row .island-appearance__segments { flex-wrap: wrap; justify-content: flex-end; max-width: 68%; }
+.dock-display-row [data-dock-screen],
+.dock-position-row [data-dock-position] { flex: 0 0 auto; }
+[data-dock-running-style][hidden], .dock-summon-shortcut-row[hidden], [data-dock-position-offset-row][hidden] { display: none !important; }
+.island-appearance__row,
+.settings--sidebar:not(.settings--island) .settings-group .setting-row { padding: 12px 0; margin: 0; }
+.island-appearance__row + .island-appearance__row,
+.settings--sidebar:not(.settings--island) .settings-group .setting-row + .setting-row { border-top: 1px dotted rgba(255,255,255,.13); }
+.settings--sidebar:not(.settings--island) .settings-group .setting-row::before { content: none; }
+.settings--sidebar:not(.settings--island) .settings-group .setting-range { margin: 0; }
+.island-appearance__label,
+.settings--sidebar:not(.settings--island) .setting-row > :is(label,.setting-row__label),
+.settings--sidebar:not(.settings--island) .setting-range-head label { font-size: 13px; font-weight: 500; color: #f0f2f6; }
+.settings--sidebar:not(.settings--island) .setting-row > :is(label,.setting-row__label) { flex: 1 1 60px; min-width: 0; overflow-wrap: anywhere; }
+.settings--sidebar:not(.settings--island) .setting-row > :is(.setting-select,.dock-shortcut-field) { width: min(240px,62%); }
+.settings--sidebar:not(.settings--island) .setting-row > .radial-recorder-status { flex-basis: 100%; text-align: end; }
+.settings--sidebar:not(.settings--island) .settings-body .setting-help,
+.settings--sidebar:not(.settings--island) .settings-body .island-option small,
+.settings--sidebar:not(.settings--island) .settings-body .island-animation__hint,
+.settings--sidebar:not(.settings--island) .settings-body [data-island-component-hint],
+.settings--sidebar:not(.settings--island) .settings-body [data-expanded-empty],
+.settings--sidebar:not(.settings--island) .settings-body [data-expanded-limit],
+.settings--sidebar:not(.settings--island) .settings-body .in-page-head p,
+.settings--sidebar:not(.settings--island) .settings-body .in-module__head p,
+.settings--sidebar:not(.settings--island) .settings-body .in-row__text small,
+.settings--sidebar:not(.settings--island) .settings-body .island-compact-selection__hint { display: none !important; }
+.settings--sidebar:not(.settings--island) .setting-row > [data-setting-range] { width: 100%; grid-template-columns: minmax(0,1fr) minmax(0,2fr); align-items: center; column-gap: 12px; }
+.settings--sidebar:not(.settings--island) .setting-row .setting-range-head { display: contents; }
+.settings--sidebar:not(.settings--island) .setting-row .setting-range-head label { grid-area: 1 / 1 / span 3; overflow-wrap: anywhere; }
+.settings--sidebar:not(.settings--island) .setting-row .setting-range-head output { grid-area: 1 / 2; min-width: 0; }
+.settings--sidebar:not(.settings--island) .setting-row :is(.setting-range-controls,.setting-range-scale) { grid-column: 2; }
+.settings--sidebar:not(.settings--island) .setting-row .setting-range-controls { grid-template-columns: minmax(0,1fr) auto; gap: 10px; }
+.settings--sidebar:not(.settings--island) .setting-row .setting-range-entry .setting-number { width: 58px; }
+.settings--sidebar:not(.settings--island) .settings-body .reset-row { max-width: 620px; margin-top: 8px; padding: 8px 0; border: 0; text-align: right; }
+.settings--sidebar:not(.settings--island)[data-settings-scope="dock"] .settings-body .reset-row { max-width: 444px; }
+.settings--sidebar:not(.settings--island) .settings-body .reset-row .reset { border-radius: 999px; }
+.settings--sidebar:not(.settings--island) .setting-select-trigger,
+.settings--sidebar:not(.settings--island) .setting-number,
+.settings--sidebar:not(.settings--island) .calendar-color-control,
+.settings--sidebar:not(.settings--island) .dock-shortcut-field { border-radius: 8px; }
+.settings--sidebar:not(.settings--island) .settings-body .setting-select-trigger:is(:hover,:focus-visible,[aria-expanded="true"]) { border-color: var(--beauty-accent); }
+.settings--sidebar:not(.settings--island) .setting-range input[type="range"]:not([data-island-hover-delay])::-webkit-slider-runnable-track { background: linear-gradient(to right,var(--beauty-accent) 0 var(--range-progress),rgba(255,255,255,.18) var(--range-progress) 100%); }
+.settings--sidebar:not(.settings--island) .setting-range input[type="range"]::-webkit-slider-thumb { background-color: var(--beauty-accent); }
+.settings--sidebar:not(.settings--island) .setting-range input[type="range"]::-moz-range-thumb,
+.settings--sidebar:not(.settings--island) .setting-range input[type="range"]:not([data-island-hover-delay])::-moz-range-progress { background-color: var(--beauty-accent); }
+.settings--sidebar:not(.settings--island) .setting-range input[type="range"]:focus-visible { outline-color: var(--beauty-accent); }
+.settings--sidebar:not(.settings--island) .setting-number:focus-visible,
+.settings--sidebar:not(.settings--island) .settings-choice__trigger:focus-visible { outline-color: var(--beauty-accent); }
 .settings--sidebar .settings-body .setting-row + .setting-row { margin-top: 0; }
 .settings--sidebar .settings-body .setting-row,
 .settings--sidebar .settings-body .reset-row { margin-inline: 0; }

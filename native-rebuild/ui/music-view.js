@@ -7,7 +7,7 @@ import {MUSIC_PANEL_TABS,updateMusicPlayerPanel} from './music-player-panel.js';
 import {mountMusicBackground} from './music-background-view.js';
 import {mountMusicEffects} from './music-effects.js';
 import {copySongInfo} from './music-cover-actions.js';
-import {mountMusicProviderAccountView} from './music-provider-account.js';
+import {mountMusicProviderAccountView,MUSIC_PROVIDERS} from './music-provider-account.js';
 import {createMusicWallpaperGallery} from './music-wallpaper-gallery.js';
 import {openMusicPlaylistSelection} from './music-playlist-selection.js';
 import {musicTrackLiked,canLikeMusicTrack} from './music-online.js';
@@ -800,7 +800,7 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
       render({screen:'home',panel:'',nav:'recommendations',playlistId:'',query:'',search:'',listQuery:'',listSearchOpen:false});
     }
     else if(action==='insert-next' && rowId) {
-      if(/^(netease|qq|kugou):/.test(rowId)&&!button.closest('[data-music-panel="queue"]'))online?.request('insertNext',{id:rowId});
+      if(MUSIC_PROVIDERS.some(provider=>rowId.startsWith(`${provider}:`))&&!button.closest('[data-music-panel="queue"]'))online?.request('insertNext',{id:rowId});
       else command('insertNext',{id:rowId},started);
     } else if(action==='remove-track'&&rowId)command('removeFromQueue',{id:rowId},started);
     else if(action==='like'&&rowId&&canLikeMusicTrack(library,rowId))online?.request('like',{id:rowId,
@@ -1129,7 +1129,7 @@ export function mountMusicView(root, {snapshot = initialMusicState(), viewState,
 
   render();
   accountView=mountMusicProviderAccountView(root,providerAccount,{onSelect:provider=>online?.select(provider),
-    onSync:provider=>{online?.select(provider);online?.refresh();}});
+    onSync:()=>online?.refresh()});
   function canLoadMore(target) {
     return !disposed&&owned(target)&&!document.hidden&&nativeVisible&&state.pageVisible&&
       library.signedIn&&!library.loading&&!library.busy&&!library.error&&library.more&&

@@ -1,6 +1,6 @@
 
 import {buildTimedWords} from 'reference:timing';
-import {annotateLyricLines} from 'H:/refactor/history/lume1.0.1/third_party/folia-major/upstream/src/utils/lyrics/renderHints.ts';
+import {annotateLyricLines} from 'H:/refactor/workspace/lume1.0.7/native-rebuild/ui/music-visualizers/reference/source/upstream/src/utils/lyrics/renderHints.ts';
 export {themes} from 'reference:preference-theme';
 export function prepareLines(lines) {
   return annotateLyricLines(lines.map(line=>{

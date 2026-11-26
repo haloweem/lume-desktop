@@ -1,0 +1,1 @@
+var r=(e,n,i)=>i===void 0?{type:"number",min:e,max:n}:{type:"number",min:e,max:n,step:i},o={type:"boolean"},s=e=>({type:"choice",options:e}),u=(e,n,i,t)=>typeof e=="number"&&Number.isFinite(e)?Math.min(t,Math.max(i,e)):n,a=e=>({...e,read:n=>n?.[e.mode]??e.defaults});export{r as a,o as b,s as c,u as d,a as e};

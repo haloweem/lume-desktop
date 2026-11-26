@@ -9,7 +9,7 @@ const ui=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const reference=path.join(ui,'music-visualizers','reference');
 const modes=['classic','cadenza','partita','fume','tilt','monet','sonnet'];
 const availableModes=['partita','fume','sonnet','gallery','3d','lumiere','cadenza','tilt','cappella','diorama','pendolo','classic','tempera'];
-const defaults={version:3,mode:'partita',fontFamily:'',animationIntensity:'normal',lyricsFontColor:'#ffffff',lyricsKaraokeFillColor:'#ffffff',effectMode:'none',
+const defaults={version:4,subtitleContentMode:'translation',mode:'partita',fontFamily:'',animationIntensity:'normal',lyricsFontColor:'#ffffff',lyricsKaraokeFillColor:'#ffffff',effectMode:'none',
   sonnetColors:{lyricsFontColor:'#ffffff',karaokeFillColor:'#38bdf8',glowColor:'#60a5fa'}};
 
 test('bounded preferences are atomic, retained across ticks and structural only on change',async()=>{
@@ -32,7 +32,7 @@ test('bounded preferences are atomic, retained across ticks and structural only 
   for(const fontFamily of ['a'.repeat(128),'\u4e2d'.repeat(42)+'ab','\ud83c\udfb5'.repeat(32)])
     assert.doesNotThrow(()=>reducer.update({preferences:{...defaults,fontFamily}}));
   const missing={...defaults};delete missing.mode;
-  for(const preferences of [null,[],{},missing,{...defaults,extra:true},{...defaults,version:4},
+  for(const preferences of [null,[],{},missing,{...defaults,extra:true},{...defaults,version:5},
     {...defaults,mode:'unknown'},...['monet'].map(mode=>({...defaults,mode})),
     {...defaults,animationIntensity:'fast'},{...defaults,fontFamily:1},
     ...['a'.repeat(129),'\u4e2d'.repeat(43),'\ud83c\udfb5'.repeat(33),'A\nB','A\u007fB','A\u0085B',

@@ -34,6 +34,14 @@ bool Id(std::string_view id) {
         id.find_first_not_of("0123456789", 6) == std::string_view::npos;
 }
 
+bool OnlineTrack(const music::Track& track) {
+    if (track.id.size() > 128 || track.source != "online:" + track.id ||
+        track.id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:-.") != std::string::npos) return false;
+    for (const std::string_view prefix : {"netease:", "qq:", "kugou:", "qishui:"})
+        if (track.id.size() > prefix.size() && track.id.compare(0, prefix.size(), prefix) == 0) return true;
+    return false;
+}
+
 bool Replacement(Action action) {
     return action == Action::Play || action == Action::Restore;
 }
@@ -58,15 +66,27 @@ bool Compact(music::MusicSnapshot& snapshot) {
         (snapshot.repeat != music::RepeatMode::None && snapshot.repeat != music::RepeatMode::One &&
             snapshot.repeat != music::RepeatMode::All) ||
         (!snapshot.queue.empty() && snapshot.currentIndex >= snapshot.queue.size())) return false;
-    std::set<std::string> ids;
-    for (auto& track : snapshot.queue) {
-        if (!Id(track.id) || !ids.insert(track.id).second) return false;
-        auto id = std::move(track.id);
-        track = {};
-        track.id = std::move(id);
-    }
     const auto current = snapshot.queue.empty() ? std::string{} : snapshot.queue[snapshot.currentIndex].id;
     if (snapshot.current && snapshot.current->id != current) return false;
+    std::set<std::string> ids;
+    std::vector<music::Track> local;
+    std::size_t currentIndex = 0;
+    for (std::size_t i = 0; i < snapshot.queue.size(); ++i) {
+        const auto& track = snapshot.queue[i];
+        if (!ids.insert(track.id).second) return false;
+        if (!Id(track.id)) {
+            if (!OnlineTrack(track)) return false;
+            continue;
+        }
+        if (i < snapshot.currentIndex) ++currentIndex;
+        local.push_back({});
+        local.back().id = track.id;
+    }
+    // Online tracks cannot be restored without an account lease, but must not
+    // prevent volume, mute and playback-mode preferences from being saved.
+    snapshot.queue = std::move(local);
+    snapshot.currentIndex = snapshot.queue.empty() ? 0 : std::min(currentIndex, snapshot.queue.size() - 1);
+    if (snapshot.queue.empty() || snapshot.queue[snapshot.currentIndex].id != current) snapshot.position = 0;
     snapshot.current.reset();
     if (snapshot.queue.empty()) { snapshot.currentIndex = 0; snapshot.position = 0; }
     snapshot.playing = false;

@@ -6,7 +6,9 @@
 #include "platform/windows/widget_ui/desktop_level.h"
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/dock/dock_slots.h"
+#include "platform/windows/dock/dock_animation_targets.h"
 #include "platform/windows/organizer/organizer_drop_target.h"
+#include "platform/windows/organizer/organizer_text.h"
 #include <algorithm>
 #include <objbase.h>
 #include <windowsx.h>
@@ -20,6 +22,18 @@ using lume::dock::Item;
 using lume::dock::Kind;
 namespace {
 int failures = 0;
+HWND FixtureWindow(const wchar_t* className) {
+    struct Search { const wchar_t* name; HWND found; } search{className, nullptr};
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM parameter) -> BOOL {
+        auto& search = *reinterpret_cast<Search*>(parameter);
+        wchar_t name[128]{};
+        GetClassNameW(window, name, 128);
+        if (wcscmp(name, search.name) != 0) return TRUE;
+        search.found = window;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.found;
+}
 void Check(bool ok, const char* text) { if (!ok) { std::cerr << "FAIL: " << text << '\n'; ++failures; } }
 void Pump(DWORD milliseconds = 0) {
     const auto end = GetTickCount64() + milliseconds;
@@ -212,10 +226,9 @@ int main() {
     const auto movedMiddleLeft = drag(3, -(pitch * 2 + pitch / 4));
     Check(movedMiddleLeft == std::tuple<std::size_t, std::size_t, std::size_t>{3, 0, 1},
           "middle pinned icon moves one place left across Lume");
-    // Right-side icons never become pinned by dragging across the separator.
     Check(drag(6, (centre[2] + centre[3]) / 2 - centre[6]) ==
-              std::tuple<std::size_t, std::size_t, std::size_t>{99, 99, 99},
-          "dragging a running program across the separator never changes pinned items");
+              std::tuple<std::size_t, std::size_t, std::size_t>{6, 1, 0},
+          "a running program dropped between pinned apps reports their insertion slot");
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);
     Pump(800);
     Check(std::abs(dock.ScaleOf(2) - 1) < .01f, "leaving the dock returns icons to rest");
@@ -234,12 +247,16 @@ int main() {
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);Pump(600);
     DockAppearance appearance;
     appearance.transparent = true;
-    appearance.position = 0; appearance.bottomOffset = 80; appearance.iconSpacing = 24;
+    appearance.positionMode = lume::dock::PositionLeft;
+    appearance.positionOffset = 0;
+    appearance.bottomOffset = 80; appearance.iconSpacing = 24;
     Check(dock.Show(items, appearance), "custom position and spacing apply");Pump(800);
     const RECT custom = dock.ScreenBounds(), customIcon = dock.IconBounds(2), nextCustomIcon = dock.IconBounds(3);
     const int effectiveDpi = static_cast<int>(GetDpiForWindow(dock.Handle()));
-    Check(custom.left < bounds.left && std::abs(custom.bottom - (bounds.bottom - MulDiv(80, effectiveDpi, 96))) <= 2,
-          "the Dock moves up and stays centred");
+    const auto centreX = [](const RECT& rect) { return (rect.left + rect.right) / 2; };
+    Check(centreX(custom) < centreX(bounds) && std::abs(custom.left - monitor.rcWork.left) <= 2 &&
+          std::abs(custom.bottom - (bounds.bottom - MulDiv(80, effectiveDpi, 96))) <= 2,
+          "the Dock moves up and aligns to the left");
     Check(std::abs((nextCustomIcon.left - customIcon.left) - MulDiv(82, effectiveDpi, 96)) <= 2,
           "actual resting icon pitch follows the selected spacing");
     SendMessageW(dock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, IconAt(dock, 2));
@@ -247,11 +264,25 @@ int main() {
     Check(activated == 2, "custom-position icon remains clickable");
     Check(drag(2, MulDiv(190, effectiveDpi, 96)) == std::tuple<std::size_t, std::size_t, std::size_t>{2, 2, 0},
           "drag reordering uses the custom icon spacing");
-    appearance.position = 100;
-    Check(dock.Show(items, appearance), "an old right position still shows");Pump(800);
+    const int centeredBarLeft = monitor.rcWork.left +
+        ((monitor.rcWork.right - monitor.rcWork.left) - (custom.right - custom.left)) / 2;
+    appearance.positionOffset = 25;
+    Check(dock.Show(items, appearance), "left offset moves toward the centre");Pump(800);
+    Check(std::abs(dock.ScreenBounds().left - (monitor.rcWork.left + centeredBarLeft) / 2) <= 2,
+          "left offset gradually moves the visible Dock toward the centre");
+    appearance.positionOffset = 50;
+    Check(dock.Show(items, appearance), "left offset can reach the centre");Pump(800);
+    const RECT leftCentered = dock.ScreenBounds();
+    Check(std::abs(leftCentered.left - centeredBarLeft) <= 2, "50 percent left offset reaches the centre");
+    appearance.positionMode = lume::dock::PositionRight;
+    appearance.positionOffset = 0;
+    Check(dock.Show(items, appearance), "right alignment applies");Pump(800);
     const RECT right = dock.ScreenBounds();
-    Check(std::abs(right.left - custom.left) <= 2 && right.right <= monitor.rcWork.right && custom.left >= monitor.rcWork.left,
-          "an old horizontal position is ignored: the Dock stays centred");
+    Check(centreX(right) > centreX(bounds) && std::abs(right.right - monitor.rcWork.right) <= 2,
+          "right offset zero aligns the Dock to the right work-area edge");
+    appearance.positionOffset = 50;
+    Check(dock.Show(items, appearance), "right offset can reach the centre");Pump(800);
+    Check(std::abs(centreX(dock.ScreenBounds()) - centreX(bounds)) <= 2, "50 percent right offset reaches the centre");
     appearance = {};
     Check(dock.Show(items, appearance), "restore default Dock appearance");Pump(800);
     const RECT restored = dock.ScreenBounds();
@@ -310,6 +341,43 @@ int main() {
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0);Pump(700);
     Check(moved == std::tuple<std::size_t, std::size_t, std::size_t>{1, 1, 0},
           "pinned drag past B keeps the primary preview order");
+    const std::vector<Item> edgeItems{{Kind::Launchpad, {}, "Launchpad"}, {Kind::StartMenu, {}, "Start"},
+        {Kind::Pinned, "C:\\Apps\\a.exe", "A", false, 0}, {Kind::Pinned, "C:\\Apps\\b.exe", "B", false, 1}};
+    DockAppearance edgeLook;
+    edgeLook.transparent = true;
+    for (const auto edge : {lume::dock::Edge::Top, lume::dock::Edge::Left, lume::dock::Edge::Right, lume::dock::Edge::Bottom}) {
+        edgeLook.edge = edge;
+        Check(dock.Show(edgeItems, edgeLook), "render the Dock at each edge");
+        Pump(120);
+        const auto bar = dock.ScreenBounds();
+        const bool vertical = lume::dock::Vertical(edge);
+        const auto first = dock.IconBounds(0), second = dock.IconBounds(1);
+        const LONG inset = edge == lume::dock::Edge::Left ? bar.left - monitor.rcWork.left :
+                           edge == lume::dock::Edge::Right ? monitor.rcWork.right - bar.right :
+                           edge == lume::dock::Edge::Top ? bar.top - monitor.rcWork.top : monitor.rcWork.bottom - bar.bottom;
+        Check(inset >= 0 && inset < 50, "dock bar is contained and close to its chosen work-area edge");
+        // The newly inserted Start icon can still be growing. Compare the
+        // baseline facing the chosen screen edge, which is fixed at every scale.
+        const LONG baselineDelta = edge == lume::dock::Edge::Left ? first.left - second.left :
+                                   edge == lume::dock::Edge::Right ? first.right - second.right :
+                                   edge == lume::dock::Edge::Top ? first.top - second.top : first.bottom - second.bottom;
+        Check((vertical ? first.bottom < second.bottom : first.right < second.right) && std::abs(baselineDelta) <= 1,
+              "start follows launchpad on the correct axis");
+        const auto click = IconAt(dock, 1);
+        activated = DockWindow::None;
+        SendMessageW(dock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, click);
+        SendMessageW(dock.Handle(), WM_LBUTTONUP, 0, click);
+        Check(activated == 1, "start icon is clickable on the chosen edge");
+    }
+    edgeLook.edge = lume::dock::Edge::Right;
+    Check(dock.Show(edgeItems, edgeLook), "right-edge drag fixture shows");
+    const auto dragStart = IconAt(dock, 2), dragEnd = IconAt(dock, 3);
+    const auto destination = MAKELPARAM(GET_X_LPARAM(dragEnd), GET_Y_LPARAM(dragEnd) + 12);
+    moved = {99, 99, 99};
+    SendMessageW(dock.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, dragStart);
+    SendMessageW(dock.Handle(), WM_MOUSEMOVE, MK_LBUTTON, destination);
+    SendMessageW(dock.Handle(), WM_LBUTTONUP, 0, destination);
+    Check(std::get<0>(moved) == 2 && std::get<1>(moved) == 1, "right-edge drag reorders along the vertical axis");
     dock.Stop();
     Check(!dock.Handle() && !dock.BarHandle(), "stop destroys both windows");
     {
@@ -382,7 +450,7 @@ int main() {
         };
         const int away = static_cast<int>(160 * Scale(out.Handle()));
         Check(dragUp(1, away, false), "a pinned icon dragged above the Dock is marked for removal");
-        HWND ghost = FindWindowW(L"LumeNativeDockDragIcon", nullptr);
+        HWND ghost = FixtureWindow(L"LumeNativeDockDragIcon");
         Check(ghost && IsWindowVisible(ghost), "the dragged icon follows the pointer outside the Dock");
         RECT ghostRect{};GetWindowRect(ghost, &ghostRect);RECT layer{};GetWindowRect(out.Handle(), &layer);
         Check(ghostRect.top < layer.top, "the dragged icon is drawn above the Dock's own window");
@@ -434,7 +502,7 @@ int main() {
         if (const char* hold = std::getenv("LUME_DOCK_HOLD_MS")) Pump(static_cast<DWORD>(std::atoi(hold)));
         {   // Resting the pointer on it shows a larger live preview above the Dock.
             SendMessageW(thumbs.Handle(), WM_MOUSEMOVE, 0, IconAt(thumbs, 3));Pump(700);
-            HWND preview = FindWindowW(L"LumeNativeDockPreview", nullptr);
+            HWND preview = FixtureWindow(L"LumeNativeDockPreview");
             RECT previewRect{}, barRect{};
             if (preview) GetWindowRect(preview, &previewRect);
             GetWindowRect(thumbs.BarHandle(), &barRect);
@@ -444,7 +512,7 @@ int main() {
             // Passing over it quickly and leaving the Dock never leaves a preview behind.
             SendMessageW(thumbs.Handle(), WM_MOUSEMOVE, 0, IconAt(thumbs, 3));Pump(60);
             SendMessageW(thumbs.Handle(), WM_MOUSELEAVE, 0, 0);Pump(700);
-            preview = FindWindowW(L"LumeNativeDockPreview", nullptr);
+            preview = FixtureWindow(L"LumeNativeDockPreview");
             Check(!preview || !IsWindowVisible(preview), "a preview never appears after the pointer has left");
         }
         withWindow.pop_back();withWindow.pop_back();
@@ -455,7 +523,66 @@ int main() {
             Pump(1700);thumbs.Paint();
             Check(!lume::platform::windows::dock_slots::Find(source, 0, kept, thumbPorts.slotsName.c_str()), "and then forgets it");
         }
+        ShowWindow(source, SW_SHOWNOACTIVATE);
+        withWindow.push_back({Kind::Separator});
+        withWindow.push_back({Kind::Running, "C:/Apps/a.exe", "A", true});
+        withWindow.back().window = reinterpret_cast<std::uint64_t>(source);
+        Check(thumbs.Show(withWindow, thumbLook), "running preview mode shows");
+        Pump(350);
+        Check(thumbs.HasThumbnail(3) && !thumbs.HasThumbnail(1), "running preview uses DWM while its pin stays an icon");
+        withWindow.back().window = 0;
+        Check(thumbs.Show(withWindow, thumbLook) && !thumbs.HasThumbnail(3), "icon mode releases the running preview");
+        thumbLook.animation=true;
+        withWindow[1].animationWindows={reinterpret_cast<std::uint64_t>(source)};
+        withWindow.back().animationWindows=withWindow[1].animationWindows;
+        for (const auto edge : {lume::dock::Edge::Bottom,lume::dock::Edge::Top,lume::dock::Edge::Left,lume::dock::Edge::Right}) {
+            thumbLook.edge=edge;
+            Check(thumbs.Show(withWindow,thumbLook) && thumbs.SummonTemporarily(),"show fixture Dock on the selected edge");
+            Pump(180);
+            dock_animation::Destination landing{};
+            const RECT icon=thumbs.IconBounds(3);
+            Check(dock_animation::Find(source,GetCurrentProcessId(),landing) &&
+                  landing.edge==static_cast<LONG>(edge) && EqualRect(&landing.rect,&icon),
+                  "the visible running icon publishes its actual rectangle on each edge");
+            thumbs.RestoreDesktopLayer();
+        }
+        withWindow.resize(2);
+        Check(thumbs.Show(withWindow,thumbLook) && thumbs.SummonTemporarily(),"show only the pinned application");
+        Pump(180);
+        dock_animation::Destination pin{};
+        const RECT pinRect=thumbs.IconBounds(1);
+        Check(dock_animation::Find(source,GetCurrentProcessId(),pin) && EqualRect(&pin.rect,&pinRect),
+              "a pinned application provides the target with the running section off");
+        wchar_t executable[32768]{};
+        Check(GetModuleFileNameW(nullptr,executable,32768) != 0,"read fixture executable");
+        Item group{Kind::Collection, "collection:fixture", "Fixture group"};
+        group.collectionPrograms = {OrganizerUtf8(executable)};
+        Item running{Kind::Running, group.collectionPrograms.front(), "Fixture", true};
+        running.animationWindows = {reinterpret_cast<std::uint64_t>(source)};
+        Check(thumbs.Show({group,running},thumbLook) && thumbs.SummonTemporarily(),"show group and running copy");
+        Pump(600);
+        const auto runningRect=thumbs.IconBounds(1);
+        Check(dock_animation::Find(source,GetCurrentProcessId(),pin) && EqualRect(&pin.rect,&runningRect),
+              "visible running entry wins over its collection on a window transition");
+        for (std::size_t clicked : {1u, 0u}) {
+            thumbs.RecordAppClick(clicked, running.path);
+            Check(dock_animation::Find(source,GetCurrentProcessId(),pin,true,true) && EqualRect(&pin.rect,&runningRect),
+                  "both running and collection clicks record the visible running tile");
+        }
+        Check(thumbs.Show({group},thumbLook),"turn off the running area");
+        Pump(600);
+        const auto onlyGroup=thumbs.IconBounds(0);
+        Check(dock_animation::Find(source,GetCurrentProcessId(),pin) && EqualRect(&pin.rect,&onlyGroup),
+              "cold launch finds the group before window enumeration");
+        group.collectionPrograms.clear();
+        group.animationWindows = running.animationWindows;
+        Check(thumbs.Show({group},thumbLook) && dock_animation::Find(source,GetCurrentProcessId(),pin) &&
+              EqualRect(&pin.rect,&onlyGroup),"a hosted member also targets the group");
+        group.animationWindows.clear();
+        Check(thumbs.Show({group},thumbLook) && !dock_animation::Find(source,GetCurrentProcessId(),pin),
+              "removing the member withdraws its target");
         thumbs.Stop();
+        Check(!dock_animation::Find(source,GetCurrentProcessId(),pin),"stopping the Dock withdraws the target");
         DestroyWindow(source);
     }
 

@@ -23,6 +23,7 @@ struct Job {
 bool SavesPreferences(const Job& job) {
     return !job.restore && (job.command.action == ApplicationSettingsAction::Language ||
         job.command.action == ApplicationSettingsAction::BalancedMode ||
+        job.command.action == ApplicationSettingsAction::ChooseGame || job.command.action == ApplicationSettingsAction::RemoveGame ||
         job.command.action == ApplicationSettingsAction::InterfaceScale ||
         job.command.action == ApplicationSettingsAction::Autostart ||
         job.command.action == ApplicationSettingsAction::SetWallpaperDirectory);
@@ -33,7 +34,7 @@ struct UpdateCompletion {
 };
 // The settings page only reads these; the picker runs on the UI thread and the
 // chosen directory is applied by the worker like the other preference writes.
-std::string ChooseFolder(HWND owner, const wchar_t* title, const std::string& initial) {
+std::string ChooseSettingsPath(HWND owner, const wchar_t* title, const std::string& initial, bool game=false) {
     std::string chosen;
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     IFileOpenDialog* dialog = nullptr;
@@ -41,7 +42,9 @@ std::string ChooseFolder(HWND owner, const wchar_t* title, const std::string& in
                                    IID_PPV_ARGS(&dialog)))) {
         DWORD options = 0;
         if (SUCCEEDED(dialog->GetOptions(&options)))
-            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+            dialog->SetOptions(options | (game ? FOS_FILEMUSTEXIST : FOS_PICKFOLDERS) | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        const COMDLG_FILTERSPEC filter{L"*.exe",L"*.exe"};
+        if (game) dialog->SetFileTypes(1,&filter);
         dialog->SetTitle(title);
         if (!initial.empty()) {
             IShellItem* folder = nullptr;
@@ -267,6 +270,23 @@ struct ApplicationSettingsSession::Impl {
         if (job.restore) service->Restore();
         else switch (job.command.action) {
         case ApplicationSettingsAction::Language: service->SetLanguage(job.command.language); break;
+        case ApplicationSettingsAction::ChooseGame:
+        case ApplicationSettingsAction::RemoveGame: {
+            auto programs=service->State().preferences.gamePrograms;
+            if (job.command.action==ApplicationSettingsAction::ChooseGame) {
+                const auto selected=std::filesystem::u8path(job.command.directory);
+                if (_wcsicmp(selected.extension().c_str(),L".exe")!=0) break;
+                if (std::any_of(programs.begin(),programs.end(),[&](const auto& entry){
+                    return !_wcsicmp(std::filesystem::u8path(entry).c_str(),selected.c_str());
+                })) break;
+                programs.push_back(job.command.directory);
+            } else {
+                if (job.command.gameIndex>=programs.size()) break;
+                programs.erase(programs.begin()+job.command.gameIndex);
+            }
+            service->SetGamePrograms(std::move(programs));
+            break;
+        }
         case ApplicationSettingsAction::BalancedMode: service->SetBalancedMode(job.command.flag); break;
         case ApplicationSettingsAction::Autostart: service->SetAutostart(job.command.flag); break;
         case ApplicationSettingsAction::SetWallpaperDirectory:
@@ -430,7 +450,7 @@ std::optional<std::wstring> ApplicationSettingsSession::HandlePage(const ui::App
     switch (command.action) {
     case ApplicationSettingsAction::Snapshot: return State();
     case ApplicationSettingsAction::ChooseWallpaperDirectory: {
-        const auto chosen = ChooseFolder(owner ? owner : impl_->window, L"选择壁纸下载目录", impl_->wallpaperRoot);
+        const auto chosen = ChooseSettingsPath(owner ? owner : impl_->window, L"选择壁纸下载目录", impl_->wallpaperRoot);
         if (chosen.empty()) return State();
         ui::ApplicationSettingsPageCommand write;
         write.action = ApplicationSettingsAction::SetWallpaperDirectory;
@@ -439,12 +459,19 @@ std::optional<std::wstring> ApplicationSettingsSession::HandlePage(const ui::App
         return State();
     }
     case ApplicationSettingsAction::ChooseDataDirectory: {
-        const auto chosen = ChooseFolder(owner ? owner : impl_->window, L"选择用户数据目录", impl_->dataRoot);
+        const auto chosen = ChooseSettingsPath(owner ? owner : impl_->window, L"选择用户数据目录", impl_->dataRoot);
         if (chosen.empty() || !impl_->setDataDirectory) return State();
         // Persisted now, moved at the next launch; the current folder stays in use.
         impl_->setDataDirectory(chosen);
         return State();
     }
+    case ApplicationSettingsAction::ChooseGame: {
+        auto next=command;
+        next.directory=ChooseSettingsPath(owner,Preferences().language=="en" ? L"Select game executable" : L"选择游戏主程序",{},true);
+        if (!next.directory.empty()) impl_->Enqueue({false,std::move(next)});
+        return State();
+    }
+    case ApplicationSettingsAction::RemoveGame:
     case ApplicationSettingsAction::Language:
     case ApplicationSettingsAction::InterfaceScale:
     case ApplicationSettingsAction::BalancedMode:

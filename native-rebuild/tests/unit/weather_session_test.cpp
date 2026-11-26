@@ -138,6 +138,7 @@ int main(){
         const int calls=requests;session.HandlePage(PageCommand::WeatherFrostedGlass);Pump(30);
         Expect(session.Snapshot().window.frosted&&requests==calls,"material change retains weather backend and avoids fetch");
         block=true;session.HandlePage(PageCommand::WeatherRefresh);Pump(25);
+        Expect(session.Snapshot().city=="auto"&&session.Snapshot().window.frosted,"explicit refresh releases a hidden legacy fixed-city choice while retaining appearance");
         const auto closePoint=MAKELPARAM(rect.right-MulDiv(16,static_cast<int>(dpi),96),MulDiv(14,static_cast<int>(dpi),96));
         const auto beforeClose=requests.load();const auto start=GetTickCount64();
         SendMessageW(hwnd,WM_MOUSEMOVE,0,closePoint);
@@ -162,7 +163,7 @@ int main(){
     }
     {
         shell::WeatherSession restored(GetModuleHandleW(nullptr),"weather.json",{},[]{},&files,factory,clock);
-        Expect(restored.Restore()&&restored.Running()&&restored.Snapshot().city=="shanghai"&&restored.Snapshot().window.frosted,"saved city, appearance and enabled restored");
+        Expect(restored.Restore()&&restored.Running()&&restored.Snapshot().city=="auto"&&restored.Snapshot().window.frosted,"relocated city mode, appearance and enabled restored");
         shell::PerformanceSession performance(GetModuleHandleW(nullptr),"performance.json",{},[]{},&files);
         shell::AlmanacSession almanac(GetModuleHandleW(nullptr),"almanac.json",{},[]{},&files);
         performance.HandlePage(PageCommand::PerformanceEnable);almanac.HandlePage(PageCommand::AlmanacEnable);

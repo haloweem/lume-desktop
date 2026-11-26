@@ -34,8 +34,9 @@ int main() {
           std::string(ErrorName(Error::CoreAttachTimeout)) == "core-attach-timeout" &&
           std::string(ErrorName(Error::CoreEffectUnconfirmed)) == "core-effect-unconfirmed",
           "integration failures keep their own protocol codes");
-    Check(RequiresExplicitRetry(Error::CoreRestartRequired) && !RequiresExplicitRetry(Error::CoreAttachTimeout),
-          "a module requiring reload cannot enter an automatic restart loop while transient attach timeouts remain bounded retries");
+    Check(RequiresExplicitRetry(Error::CoreRestartRequired) && RequiresExplicitRetry(Error::CoreAttachTimeout) &&
+          RequiresExplicitRetry(Error::CoreFailure),
+          "failed initialization and fatal dialogs cannot enter an automatic restart loop");
     Record source; source.preferences.enabled = true; source.preferences.autoHideTaskbar = true;
     source.ownsAutoHide = true; source.ownsCore = true;
     source.appearances = {{0x123456789ULL, 12345, 0x1122334455667788ULL, 3, UINT32_MAX, 0xabcdef, 1}};

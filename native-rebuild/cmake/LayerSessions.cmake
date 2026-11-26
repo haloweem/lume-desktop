@@ -36,6 +36,8 @@ lume_enable_native_warnings(lume-music-library)
 
 add_library(lume-music-accounts STATIC
   apps/shell/music_provider_account_session.cpp
+  platform/windows/folia_music_runtime.cpp
+  platform/windows/folia_runtime_download.cpp
   platform/windows/music_provider_http.cpp
   platform/windows/music_login_diagnosis.cpp
   platform/windows/music_provider_crypto.cpp
@@ -48,7 +50,7 @@ add_library(lume-music-accounts STATIC
 target_include_directories(lume-music-accounts PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(lume-music-accounts PUBLIC cxx_std_17)
 target_compile_definitions(lume-music-accounts PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-target_link_libraries(lume-music-accounts PRIVATE winhttp bcrypt crypt32 ws2_32)
+target_link_libraries(lume-music-accounts PRIVATE winhttp bcrypt crypt32 ws2_32 shell32 lume-music-host-client)
 lume_enable_native_warnings(lume-music-accounts)
 
 add_library(lume-music-online STATIC

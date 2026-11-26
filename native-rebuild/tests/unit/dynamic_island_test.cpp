@@ -7,6 +7,7 @@
 #include "platform/windows/dynamic_island/notification_display_policy.h"
 #include "platform/windows/dynamic_island/island_performance_card.h"
 #include "platform/windows/dynamic_island/island_clock_card.h"
+#include "core/calendar/calendar_date.h"
 #include "vendor/nlohmann/json.hpp"
 #include <objbase.h>
 #include <gdiplus.h>
@@ -68,9 +69,9 @@ void CALLBACK SelectSettings(HWND,UINT,UINT_PTR timer,DWORD){
         return TRUE;
     },reinterpret_cast<LPARAM>(&menu));
     Check(menu&&IsWindowVisible(menu),"explicit island context menu is visible");
-    // Settings, Reset and Close are the menu's final three commands.
+    // Settings immediately precedes Close.
     PostMessageW(menu,WM_KEYDOWN,VK_END,1);
-    PostMessageW(menu,WM_KEYDOWN,VK_UP,1);PostMessageW(menu,WM_KEYDOWN,VK_UP,1);
+    PostMessageW(menu,WM_KEYDOWN,VK_UP,1);
     PostMessageW(menu,WM_KEYDOWN,VK_RETURN,1);
 }
 nlohmann::json State(const shell::DynamicIslandSession& s){return nlohmann::json::parse(s.State());}
@@ -258,7 +259,7 @@ void CheckAnimationSettings(){
 void CheckExpandedWidgets(){
     using namespace platform::windows;
     using W=dynamic_island::ExpandedWidget;
-    unsigned valid=0,legacyValid=0,clockValid=0,fiveValid=0;
+    unsigned valid=0,legacyValid=0,clockValid=0,fiveValid=0,countdownValid=0,countdownFiveValid=0;
     for(unsigned code=0;code<=dynamic_island::ExpandedLayoutMaximum;++code){
         std::vector<W> values{W::Music};
         const bool accepted=dynamic_island::DecodeExpandedLayout(code,values);
@@ -274,23 +275,37 @@ void CheckExpandedWidgets(){
             }else if(code<=dynamic_island::ExpandedLayoutClockMaximum){
                 ++clockValid;
                 Check(dynamic_island::HasExpandedWidget(values,W::Clock),"only layouts containing clock use the extension range");
-            }else{
+            }else if(code<dynamic_island::ExpandedLayoutCountdownOffset){
                 ++fiveValid;
                 Check(values.size()==5,"the new permutation range always decodes five distinct widgets");
+            }else if(code<dynamic_island::ExpandedLayoutCountdownFiveOffset){
+                ++countdownValid;
+                Check(dynamic_island::HasExpandedWidget(values,W::Countdown),"new layouts in the base-8 range contain countdown");
+            }else{
+                ++countdownFiveValid;
+                Check(values.size()==5&&dynamic_island::HasExpandedWidget(values,W::Countdown),
+                      "new five-widget permutations contain countdown");
             }
         }
         else Check(values==std::vector<W>{W::Music},"bad layout leaves the previous selection untouched");
     }
-    Check(valid==1237&&legacyValid==206&&clockValid==311&&fiveValid==720,
-          "all 517 existing codes remain unchanged and 720 distinct five-widget layouts are canonical");
+    Check(valid==3620&&legacyValid==206&&clockValid==311&&fiveValid==720&&countdownValid==583&&countdownFiveValid==1800,
+          "old layouts remain unchanged and all countdown layout encodings are canonical");
     std::vector<W> original;
     Check(dynamic_island::DecodeExpandedLayout(53,original)&&original==std::vector<W>{W::Music,W::CalendarWeather,W::Todos},
           "legacy music-calendar-todos layout 53 is unchanged");
     Check(dynamic_island::EncodeExpandedLayout({W::Clock})==1302&&
           dynamic_island::EncodeExpandedLayout({W::Music,W::Clock})==1309,
           "clock-only and mixed clock layouts have the shared versioned encoding");
+    Check(dynamic_island::EncodeExpandedLayout({W::Countdown})==4424&&
+          dynamic_island::EncodeExpandedLayout({W::Countdown,W::Music})==4474&&
+          dynamic_island::EncodeExpandedLayout({W::Countdown,W::Clock,W::Todos,W::System,W::Focus})==dynamic_island::ExpandedLayoutMaximum,
+          "countdown layouts use a new range while retaining the five-widget limit");
+    Check(ui::ParsePageCommand(L"v1|dynamicIsland|countdownDate|2932896")==PageCommand::IslandCountdownDateLast&&
+          ui::ParsePageCommand(L"v1|dynamicIsland|countdownDate|2932897")==PageCommand::Invalid,
+          "countdown target dates are bounded by the supported calendar range");
     for(const auto& invalid:std::vector<std::vector<W>>{{W::Clock,W::Clock},{W::Music,W::CalendarWeather,W::Focus,W::System,W::Todos,W::Clock},
-          {static_cast<W>(6)},{static_cast<W>(-1)}})
+          {static_cast<W>(7)},{static_cast<W>(-1)}})
         Check(dynamic_island::EncodeExpandedLayout(invalid)>dynamic_island::ExpandedLayoutMaximum,"invalid widget selections cannot produce a valid code");
     for(const auto* value:{L"01",L"1296",L"1297",L"1303",L"1344",L"4417",L"-1",L"1.0",L"6|extra"})
         Check(ui::ParsePageCommand(std::wstring(L"v1|dynamicIsland|expandedLayout|")+value)==PageCommand::Invalid,"noncanonical layouts are rejected");
@@ -668,6 +683,48 @@ void CheckExpandedWidgets(){
     const auto paired=window.Preview(display,true);
     SaveFrame(renderer.Render(paired,display,{}),L"expanded-music-calendar-preview.png");
     window.ReleasePreview();
+    display.expandedWidgets={W::Countdown};
+    display.countdownTitle="New Year 还有";
+    SYSTEMTIME countdownToday{};GetLocalTime(&countdownToday);
+    display.countdownDate=calendar::DaysSinceUnixEpoch({countdownToday.wYear,countdownToday.wMonth,countdownToday.wDay})+189;
+    window.SetDisplay(display);window.Settle();
+    GetClientRect(before,&rect);
+    Check(rect.right*20>=rect.bottom*23,"countdown card keeps the reference landscape aspect ratio");
+    SaveFrame(window.Frame(),L"expanded-countdown.png");
+    const auto countdownPreview=window.Preview(display,true);
+    const auto countdownScene=renderer.Render(countdownPreview,display,{});
+    SaveFrame(countdownScene,L"expanded-countdown-preview.png");
+    const auto referenceBluePixels=std::count_if(countdownScene.pixels.begin(),countdownScene.pixels.end(),[](std::uint32_t p){
+        return (p&0x00ffffff)==0x2183c0;
+    });
+    Check(referenceBluePixels>500,"countdown default header matches the supplied blue in the native preview");
+    window.ReleasePreview();
+    for(const auto style:{IslandCountdownStyle::Violet}){
+        display.countdownStyle=style;
+        window.SetDisplay(display);window.Settle();
+        const auto frame=window.Frame();
+        const std::uint32_t background=0xf0ecf4;
+        std::uint32_t left=frame.width,top=frame.height,right=0,bottom=0;bool found=false;
+        for(std::uint32_t y=0;y<frame.height;++y)for(std::uint32_t x=0;x<frame.width;++x){
+            if((frame.pixels[static_cast<std::size_t>(y)*frame.width+x]&0xffffff)!=background)continue;
+            found=true;left=std::min(left,x);right=std::max(right,x);top=std::min(top,y);bottom=std::max(bottom,y);
+        }
+        const auto cardWidth=right-left+1,cardHeight=bottom-top+1;
+        Check(found&&cardWidth*100>=cardHeight*210&&cardWidth*100<=cardHeight*235,
+              "horizontal countdown style renders at the compact 20:9 ratio");
+        const auto colored=std::count_if(frame.pixels.begin(),frame.pixels.end(),[background](std::uint32_t pixel){return (pixel&0xffffff)==background;});
+        Check(colored>500,"each horizontal style draws its own native background");
+        SaveFrame(frame,L"expanded-countdown-violet.png");
+    }
+    display.countdownStyle=IslandCountdownStyle::Standard;display.countdownTextColor=0xc00089;display.countdownBackgroundColor=0x388561;
+    window.SetDisplay(display);window.Settle();
+    const auto recolored=window.Frame();
+    for(const auto color:{display.countdownTextColor,display.countdownBackgroundColor})
+        Check(std::count_if(recolored.pixels.begin(),recolored.pixels.end(),[color](std::uint32_t pixel){return (pixel&0xffffff)==color;})>100,
+            "saved countdown font and header colors reach the native card");
+    SaveFrame(recolored,L"expanded-countdown-colors.png");
+    display.countdownStyle=IslandCountdownStyle::Violet;display.countdownSolidColor=0xc00089;window.SetDisplay(display);window.Settle();
+    SaveFrame(window.Frame(),L"expanded-countdown-solid-pink.png");
     window.Stop();
 }
 void CheckClockRendering(){
@@ -1589,6 +1646,20 @@ void Scenario(){
         Click(hwnd,114,128);Click(hwnd,258,128);Check(controls==3&&last==dynamic_island::Action::Next,"previous next route controls");
         Check(State(session)["hideFullscreen"]==true&&State(session)["size"]=="standard","default display options");
         Check(State(session)["shape"]=="capsule","legacy preferences retain floating capsule by default");
+        Check(session.SaveCountdownSettings({"距离新年还有",0,false}),"countdown title settings save through the native session");
+        Check(State(session)["countdownTitle"]=="距离新年还有","dynamic island state preserves UTF-8 countdown titles");
+        Check(!session.CountdownSettings().countUp,"countdown remains the default for older and new preferences");
+        auto countdownColors=session.CountdownSettings();countdownColors.textColor=0xc00089;countdownColors.backgroundColor=0x388561;countdownColors.solidColor=0x5655ae;
+        countdownColors.textAlpha=190;countdownColors.backgroundAlpha=128;countdownColors.solidAlpha=80;countdownColors.countUp=true;
+        Check(session.SaveCountdownSettings(countdownColors),"countdown color-only changes save atomically");
+        const auto colorJson=nlohmann::json::parse(files.values["island-display.json"]);
+        Check(colorJson["countdownTextColor"]==0xc00089&&colorJson["countdownBackgroundColor"]==0x388561&&colorJson["countdownSolidColor"]==0x5655ae,
+            "all countdown colors persist in the existing display preferences");
+        Check(colorJson["countdownTextAlpha"]==190&&colorJson["countdownBackgroundAlpha"]==128&&colorJson["countdownSolidAlpha"]==80,
+            "custom color opacity persists with RGB values");
+        Check(colorJson["countdownCountUp"]==true,"positive-day mode persists with the countdown settings");
+        files.fail=true;countdownColors.solidColor=0xffffff;
+        Check(!session.SaveCountdownSettings(countdownColors)&&session.CountdownSettings().solidColor==0x5655ae,"failed color save restores the previous appearance");files.fail=false;
         session.HandlePage(PageCommand::IslandShapeStandard);Pump(900);
         {RECT at{};GetWindowRect(session.Handle(),&at);MONITORINFO monitor{sizeof(monitor)};
          GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitor);
@@ -1607,6 +1678,22 @@ void Scenario(){
         session.HandlePage(PageCommand::IslandTopmostOff);
         Check(session.Running()&&!(GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"desktop layer option recreates a non-topmost window");
         session.HandlePage(PageCommand::IslandTopmostOn);session.HandlePage(PageCommand::IslandSizeStandard);session.HandlePage(PageCommand::IslandHoverOff);
+        {
+            RECT island{};GetWindowRect(session.Handle(),&island);
+            const auto overlay=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,L"STATIC",L"Screenshot overlay",WS_POPUP,
+                island.left,island.top,island.right-island.left,island.bottom-island.top,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            Check(overlay!=nullptr,"create a topmost screenshot overlay probe");
+            if(overlay){
+                SetWindowPos(overlay,HWND_TOPMOST,island.left,island.top,island.right-island.left,island.bottom-island.top,
+                    SWP_NOACTIVATE|SWP_SHOWWINDOW);
+                Pump(1400);
+                bool overlayAboveIsland=false;
+                for(HWND item=GetWindow(session.Handle(),GW_HWNDPREV);item;item=GetWindow(item,GW_HWNDPREV))
+                    if(item==overlay){overlayAboveIsland=true;break;}
+                Check(overlayAboveIsland,"the island does not reclaim the topmost position over a screenshot overlay");
+                DestroyWindow(overlay);
+            }
+        }
         session.HandlePage(PageCommand::IslandHideFullscreenOff);
         Check(State(session)["hideFullscreen"]==false&&State(session)["topmost"]==true&&
               (GetWindowLongPtrW(session.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"island-only layering and fullscreen choices apply to the actual native window");
@@ -1630,6 +1717,10 @@ void Scenario(){
     {
         shell::DynamicIslandSession restored(GetModuleHandleW(nullptr),options,&files);
         Check(restored.Restore()&&restored.Running()&&restored.Snapshot().locked,"enabled and locked survive restart");
+        const auto colors=restored.CountdownSettings();
+        Check(colors.textColor==0xc00089&&colors.backgroundColor==0x388561&&colors.solidColor==0x5655ae&&
+              colors.textAlpha==190&&colors.backgroundAlpha==128&&colors.solidAlpha==80&&colors.countUp,
+              "countdown custom colors and opacity survive restart");
         Check(State(restored)["topmost"]==true&&State(restored)["hideFullscreen"]==true&&State(restored)["hover"]==false&&
               State(restored)["autoHide"]==false&&State(restored)["material"]=="none"&&State(restored)["shape"]=="standard",
               "display options including unchecked auto-hide survive restart");restored.Shutdown();
@@ -1642,13 +1733,13 @@ void Scenario(){
         Files legacyFiles;
         auto legacyOptions=options;legacyOptions.preferencesPath="legacy.json";
         const auto display=nlohmann::json{{"version",1},{"topmost",false},{"autoHide",false},
-            {"size","large"},{"material","liquid-glass"},
+            {"size","large"},{"material","liquid-glass"},{"countdownStyle","anniversary"},
             {"customization",{{"customIcons",true},{"overview",true},{"left",{{"widget","clock"},{"style","capsule"}}}}}}.dump()+std::string(4500,' ');
         legacyFiles.values["legacy-display.json"]=display;
         shell::DynamicIslandSession legacy(GetModuleHandleW(nullptr),legacyOptions,&legacyFiles);
         Check(legacy.Restore()&&!legacy.Running(),"legacy side/workspace settings never activate a disabled island");
         const auto state=State(legacy);
-        Check(!state.contains("customization")&&state["size"]=="large"&&state["material"]=="liquid-glass"&&
+        Check(!state.contains("customization")&&state["size"]=="large"&&state["material"]=="liquid-glass"&&state["countdownStyle"]=="standard"&&
               state["topmost"]==false&&state["autoHide"]==false,"legacy customization is ignored while ordinary display settings survive");
         Check(legacyFiles.values["legacy-display.json"]==display,"loading legacy settings does not rewrite user data");
         Check(legacy.HandlePage(PageCommand::IslandSizeSmall).has_value(),"ordinary settings remain editable");

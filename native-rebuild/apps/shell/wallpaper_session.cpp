@@ -192,6 +192,13 @@ struct WallpaperSession::Impl {
     Json frames;
     bool framesLoaded=false;
     std::map<std::uint64_t,std::uint64_t> lastPrivate;
+    // Foreground observations renew this lease. A missed exit or a stalled
+    // shell UI cannot leave playback parked indefinitely. The wallpaper actor
+    // independently continues its normal per-display coverage checks.
+    static constexpr ULONGLONG GameLeaseMs=8000;
+    std::atomic<ULONGLONG> gameIdleUntil{0};
+    bool GameIdle() const {return GetTickCount64()<gameIdleUntil.load();}
+
     bool Inactive()const{return locked.load()||suspended.load()||displayOff.load();}
     ULONGLONG Interval(ULONGLONG normal)const{
         if(options.verification&&options.verificationParent&&options.verificationRecoveryMilliseconds)
@@ -559,7 +566,7 @@ struct WallpaperSession::Impl {
             }
         }
         const auto monitor=std::find_if(displays.begin(),displays.end(),[&](const auto& d){return d.id==pref.display;});
-        const bool autoPause=Inactive()||((balancedMode||preferences.pauseFullscreen)&&
+        const bool autoPause=GameIdle()||Inactive()||((balancedMode||preferences.pauseFullscreen)&&
             monitor!=displays.end()&&Covered(*monitor));
         const auto previousPlayer=controller->PlayerIdentity(pref.display);
         const auto refreshGeneration=gpuRefreshGeneration.load();
@@ -893,7 +900,8 @@ struct WallpaperSession::Impl {
     }
     void Poll() {
         const auto now=GetTickCount64();
-        const bool inactive=Inactive();
+        const bool gaming=GameIdle();
+        const bool inactive=gaming||Inactive();
         const auto generation=resumeGeneration.load();
         const bool resumed=generation!=observedResumeGeneration;
         observedResumeGeneration=generation;
@@ -918,7 +926,7 @@ struct WallpaperSession::Impl {
             auto& pausedSince=systemPausedSince[pref.display];
             if(shouldPause){if(!pausedSince)pausedSince=now;}else pausedSince=0;
             const auto entry=library.Find(pref.wallpaperId);
-            if(shouldPause&&pausedSince&&now-pausedSince>=Interval(ParkAfterMs)&&entry&&
+            if(shouldPause&&pausedSince&&now-pausedSince>=Interval(gaming ? 2000 : ParkAfterMs)&&entry&&
                 entry->item.kind==lume::wallpaper::MediaKind::Video){
                 // The Windows sign-in still remains in place. Reclaim the GPU,
                 // decoder and process during long display-off/locked periods;
@@ -1279,6 +1287,11 @@ WallpaperSession::WallpaperSession(HINSTANCE instance,WallpaperSessionOptions op
     :impl_(std::make_unique<Impl>(instance,std::move(options),std::move(notify))){}
 WallpaperSession::~WallpaperSession(){Shutdown();}
 bool WallpaperSession::Restore(){return impl_->Restore();}
+void WallpaperSession::SetGameIdle(bool idle){
+    const auto now=GetTickCount64();
+    const auto until=impl_->gameIdleUntil.exchange(idle ? now+Impl::GameLeaseMs : 0);
+    if ((until>now)!=idle && impl_->wake) SetEvent(impl_->wake);
+}
 bool WallpaperSession::SetBalancedMode(bool enabled){return impl_->SetBalancedMode(enabled);}
 void WallpaperSession::HandlePage(const ui::WallpaperPageCommand& command,HWND owner) {
     if(impl_->stopping)return;

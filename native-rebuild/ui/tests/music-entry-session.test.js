@@ -18,7 +18,7 @@ const snapshot = (session, id) => normalizeMusicState({
 
 // Every new queue bumps the host session. The view must keep sending commands
 // for the newest session instead of the one it was mounted with.
-test('music commands follow the newest session after a new song starts', () => {
+test('music commands follow the newest session and account selection reaches the online catalog', () => {
   const dom = new JSDOM('<main id="content"></main>', {url:'https://lume.local/', pretendToBeVisual:true});
   // jsdom has no canvas; backgrounds and visualizers only need a no-op context.
   const inert = new Proxy(function(){}, {get:(target, key) => key === Symbol.toPrimitive ? () => 0 : inert, apply:() => inert, construct:() => inert});
@@ -29,12 +29,14 @@ test('music commands follow the newest session after a new song starts', () => {
     if (dom.window[key] !== undefined) globalThis[key] = key === 'window' ? dom.window : dom.window[key];
   globalThis.requestAnimationFrame ??= callback => setTimeout(callback, 0);
   globalThis.cancelAnimationFrame ??= handle => clearTimeout(handle);
-  const sent = [];
+  const sent = [], accountsSent = [], onlineSent = [];
   const accept = () => true;
   const bridge = {
     music:(action, fields) => { sent.push({action, ...fields}); return true; },
     musicBackground:accept, musicDesktop:accept, musicDropFiles:accept, musicFontAssets:accept, musicFonts:accept,
-    musicLibrary:accept, musicOnline:accept, musicPreferences:accept, musicProviderAccount:accept,
+    musicLibrary:accept, musicPreferences:accept,
+    musicOnline:(action,fields)=>{onlineSent.push({action,...fields});return true;},
+    musicProviderAccount:(action,fields)=>{accountsSent.push({action,...fields});return true;},
     subscribe:() => () => {},
   };
   const notices = [];
@@ -53,6 +55,18 @@ test('music commands follow the newest session after a new song starts', () => {
     assert.ok(command, `toggle reaches the host (notices: ${JSON.stringify(notices)})`);
     assert.equal(command.session, 2, 'the command carries the current session');
     assert.equal(notices.includes('音乐操作暂不可用'), false, 'no "unavailable" notice while playback works');
+    assert.equal(runtime.receive({version:1,type:'music-provider-account-state',revision:1,
+      accounts:['qq','netease','kugou','qishui'].map(provider=>({provider,request:0,
+        status:['qq','netease'].includes(provider)?'signed-in':'signed-out',phase:'',
+        userId:['qq','netease'].includes(provider)?`${provider}-user`:'',displayName:provider,qrImage:'',qrText:'',error:''}))}),true);
+    runtime.setViewState({screen:'player',panel:'lyrics',panelTab:'account'});
+    dom.window.document.querySelector('[data-music-provider-manage]').click();
+    dom.window.document.querySelector('[data-provider-select="qq"]').click();
+    assert.equal(onlineSent.filter(command=>command.action==='home').at(-1)?.provider,'qq',
+      'clicking a retained account selects and loads that platform catalog');
+    runtime.close();runtime.render(snapshot(2,'qq:second'));
+    assert.equal(accountsSent.some(command=>['begin','logout'].includes(command.action)),false,
+      'switching accounts and reopening the music page neither logs out nor starts QR authorization');
   } finally {
     runtime.dispose?.();
     for (const [key, descriptor] of previous) {

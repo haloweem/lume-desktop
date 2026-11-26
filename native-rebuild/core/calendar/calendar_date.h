@@ -35,6 +35,7 @@ bool IsValidDate(Date date) noexcept;
 int DaysInMonth(int year, int month) noexcept;  // Zero for invalid year/month.
 int Weekday(Date date) noexcept;              // Sunday = 0; invalid = -1.
 int DayOfYear(Date date) noexcept;            // January 1 = 1; invalid = 0.
+int DaysSinceUnixEpoch(Date date) noexcept;  // Invalid dates return zero.
 std::optional<Date> AddDays(Date date, int offset) noexcept;
 
 // Always 42 consecutive cells, with weekStartsOn in [0, 6]. Invalid inputs return

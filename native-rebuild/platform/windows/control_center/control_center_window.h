@@ -1,6 +1,8 @@
 #pragma once
+#include "core/dock/dock_model.h"
 #include <windows.h>
 #include <memory>
+#include <functional>
 
 namespace lume::platform::windows {
 namespace control_center { class PanelWorker; }
@@ -14,13 +16,14 @@ class ControlCenterWindow final {
     // or an opaque dark panel for "none".
     enum class Material { Liquid, Frosted, None };
     ControlCenterWindow();
-    explicit ControlCenterWindow(std::shared_ptr<control_center::PanelWorker> worker);
+    explicit ControlCenterWindow(std::shared_ptr<control_center::PanelWorker> worker, std::function<bool(HWND,const wchar_t*)> openSettings = {});
     ~ControlCenterWindow();
     ControlCenterWindow(const ControlCenterWindow &) = delete;
     ControlCenterWindow &operator=(const ControlCenterWindow &) = delete;
     // anchor: the control center icon on screen. Opens above it, or closes
     // when already open. A click that just closed the panel does not reopen it.
-    bool Toggle(HINSTANCE instance, HWND owner, RECT anchor, Material material = Material::Liquid);
+    bool Toggle(HINSTANCE instance, HWND owner, RECT anchor, Material material = Material::Liquid,
+                dock::Edge edge = dock::Edge::Bottom);
     // Read one system snapshot asynchronously into a hidden lightweight HWND.
     // No browser/canvas/material is created and no hidden polling is retained.
     bool Prewarm(HINSTANCE instance, HWND owner, Material material = Material::Liquid);
@@ -29,9 +32,10 @@ class ControlCenterWindow final {
     HWND Handle() const noexcept;
     static void SetEnglish(bool english);
   private:
-    bool Create(HINSTANCE instance, HWND owner, RECT anchor, Material material, bool show);
+    bool Create(HINSTANCE instance, HWND owner, RECT anchor, Material material, bool show, dock::Edge edge = dock::Edge::Bottom);
     struct Impl;
     std::shared_ptr<Impl> impl_;
     std::shared_ptr<control_center::PanelWorker> worker_;
+    std::function<bool(HWND,const wchar_t*)> openSettings_;
 };
 }  // namespace lume::platform::windows

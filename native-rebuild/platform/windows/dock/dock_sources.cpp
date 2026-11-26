@@ -1,8 +1,16 @@
 #include "platform/windows/dock/dock_sources.h"
+#include "platform/windows/dock/dock_animation_targets.h"
+#include "platform/windows/lume_window_ids.h"
 #include "platform/windows/organizer/organizer_text.h"
+#include "platform/windows/shell_location.h"
+#include "platform/windows/windows_settings.h"
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <propkey.h>
+#include <exdisp.h>
+#include <shldisp.h>
+#include <wrl/client.h>
 #include <dwmapi.h>
 #include <algorithm>
 #include <cstdint>
@@ -33,6 +41,29 @@ std::wstring ImagePath(DWORD pid) {
     path.resize(size);
     return path;
 }
+std::wstring HostedSettings(HWND frame, DWORD hostPid) {
+    if (WindowsSettingsImage().empty()) return {};
+    // A minimized Settings frame retains its AppUserModelID even when Windows
+    // detaches the CoreWindow and suspends the app.
+    Microsoft::WRL::ComPtr<IPropertyStore> properties;
+    if (SUCCEEDED(SHGetPropertyStoreForWindow(frame, IID_PPV_ARGS(&properties)))) {
+        PROPVARIANT id{};
+        const bool settings = SUCCEEDED(properties->GetValue(PKEY_AppUserModel_ID, &id)) &&
+            id.vt == VT_LPWSTR && id.pwszVal && _wcsicmp(id.pwszVal, WindowsSettingsAppId) == 0;
+        PropVariantClear(&id);
+        if (settings) return WindowsSettingsImage();
+    }
+    struct Search { DWORD host; bool found = false; } search{hostPid};
+    EnumChildWindows(frame, [](HWND child, LPARAM data) -> BOOL {
+        auto& result = *reinterpret_cast<Search*>(data);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(child, &pid);
+        if (!pid || pid == result.host || _wcsicmp(ImagePath(pid).c_str(), WindowsSettingsImage().c_str()) != 0) return TRUE;
+        result.found = true;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.found ? WindowsSettingsImage() : std::wstring{};
+}
 std::wstring Description(const std::wstring& path) {
     DWORD ignored = 0;
     const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
@@ -59,8 +90,12 @@ bool TaskbarWindow(HWND window) {
     if (GetWindow(window, GW_OWNER) && !(extended & WS_EX_APPWINDOW)) return false;
     if ((extended & WS_EX_TOOLWINDOW) && !(extended & WS_EX_APPWINDOW)) return false;
     if ((extended & WS_EX_NOACTIVATE) && !(extended & WS_EX_APPWINDOW)) return false;
-    BOOL cloaked = FALSE;
-    if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return false;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_CLOAKED,&cloaked,sizeof(cloaked))) && cloaked) {
+        // Keep the same Dock item while its real window is hidden behind
+        // the Genie surface. Shell cloaks (e.g. another desktop) still win.
+        if (cloaked != DWM_CLOAKED_APP || !GetPropW(window,window_ids::AnimationOwnerProperty)) return false;
+    }
     if (!GetWindowTextLengthW(window)) return false;
     wchar_t name[64]{};
     GetClassNameW(window, name, 64);
@@ -70,7 +105,70 @@ bool TaskbarWindow(HWND window) {
     GetWindowThreadProcessId(window, &pid);
     return pid && pid != GetCurrentProcessId();
 }
-struct Window { HWND handle; std::string key; std::wstring image; };
+using Microsoft::WRL::ComPtr;
+struct Window { HWND handle; std::string key, target, name; bool explorer; };
+
+void ResolveExplorerLocations(std::vector<Window>& windows) {
+    std::map<HWND, Window*> explorer;
+    for (auto& window : windows)
+        if (window.explorer) explorer.emplace(window.handle, &window);
+    if (explorer.empty()) return;
+    ComPtr<IShellWindows> shell;
+    if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+                               IID_PPV_ARGS(&shell)))) return;
+    long count = 0;
+    if (FAILED(shell->get_Count(&count))) return;
+    std::map<HWND, std::pair<const wchar_t*, std::string>> locations;
+    for (long index = 0; index < count; ++index) {
+        VARIANT item{};
+        item.vt = VT_I4;
+        item.lVal = index;
+        ComPtr<IDispatch> entry;
+        ComPtr<IWebBrowserApp> browser;
+        SHANDLE_PTR handle = 0;
+        if (shell->Item(item, &entry) != S_OK || !entry || FAILED(entry.As(&browser)) ||
+            FAILED(browser->get_HWND(&handle))) continue;
+        const HWND frame = GetAncestor(reinterpret_cast<HWND>(handle), GA_ROOT);
+        const auto found = explorer.find(frame);
+        if (found == explorer.end()) continue;
+        ComPtr<IServiceProvider> services;
+        ComPtr<IShellBrowser> shellBrowser;
+        HWND tab = nullptr;
+        if (SUCCEEDED(entry.As(&services)) &&
+            SUCCEEDED(services->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&shellBrowser))) &&
+            SUCCEEDED(shellBrowser->GetWindow(&tab)) && tab && !IsWindowVisible(tab)) continue;
+        auto [candidate, unique] = locations.try_emplace(frame);
+        if (!unique) {
+            candidate->second = {};
+            continue;
+        }
+        ComPtr<IDispatch> document;
+        ComPtr<IShellFolderViewDual> view;
+        ComPtr<Folder> folder;
+        ComPtr<Folder2> folderDetails;
+        ComPtr<FolderItem> location;
+        if (FAILED(browser->get_Document(&document)) || !document || FAILED(document.As(&view)) ||
+            FAILED(view->get_Folder(&folder)) || !folder || FAILED(folder.As(&folderDetails)) ||
+            FAILED(folderDetails->get_Self(&location)) || !location) continue;
+        BSTR path = nullptr;
+        location->get_Path(&path);
+        const auto* system = path ? DockShellLocation(path) : nullptr;
+        SysFreeString(path);
+        if (!system) continue;
+        BSTR name = nullptr;
+        location->get_Name(&name);
+        candidate->second = {system, name ? OrganizerUtf8(name) : std::string{}};
+        SysFreeString(name);
+    }
+    for (auto& [frame, location] : locations) {
+        if (!location.first || location.second.empty()) continue;
+        auto& window = *explorer.at(frame);
+        window.target = OrganizerUtf8(location.first);
+        window.key = PathKey(window.target);
+        window.name = std::move(location.second);
+    }
+}
+
 std::vector<Window> Windows() {
     std::vector<Window> windows;
     std::map<DWORD, std::wstring> images;
@@ -82,19 +180,29 @@ std::vector<Window> Windows() {
         GetWindowThreadProcessId(window, &pid);
         auto found = state.second->find(pid);
         if (found == state.second->end()) found = state.second->emplace(pid, ImagePath(pid)).first;
-        const auto& image = found->second;
-        // Store apps are hosted by ApplicationFrameHost, whose icon is not the app's.
-        if (image.empty() || _wcsicmp(std::filesystem::path(image).filename().c_str(), L"ApplicationFrameHost.exe") == 0)
-            return TRUE;
-        state.first->push_back({window, PathKey(OrganizerUtf8(image)), image});
+        const auto& process = found->second;
+        const bool hosted = _wcsicmp(std::filesystem::path(process).filename().c_str(), L"ApplicationFrameHost.exe") == 0;
+        const auto image = hosted ? HostedSettings(window, pid) : process;
+        if (image.empty()) return TRUE;
+        const auto normalized = organizer::NormalizeLocalPath(OrganizerUtf8(image));
+        if (!normalized) return TRUE;
+        const bool explorer = _wcsicmp(std::filesystem::path(image).filename().c_str(), L"explorer.exe") == 0;
+        wchar_t name[64]{};
+        if (explorer) GetClassNameW(window, name, ARRAYSIZE(name));
+        state.first->push_back({window, PathKey(*normalized), *normalized, {},
+                                explorer && (wcscmp(name, L"CabinetWClass") == 0 || wcscmp(name, L"ExploreWClass") == 0)});
         return TRUE;
     }, reinterpret_cast<LPARAM>(&context));
+    ResolveExplorerLocations(windows);
     return windows;
 }
 }  // namespace
 
 std::string PathKey(std::string_view path) { return OrganizerPathKey(path); }
 std::string SearchKey(std::string_view text) { return OrganizerSearchKey(text); }
+bool IsWindowsSettings(const std::string& path) {
+    return !WindowsSettingsImage().empty() && _wcsicmp(OrganizerWide(path).c_str(), WindowsSettingsImage().c_str()) == 0;
+}
 
 std::vector<std::string> DesktopPaths() {
     std::vector<std::string> paths;
@@ -122,9 +230,18 @@ std::string ShortcutTarget(const std::string& path) {
         IPersistFile* file = nullptr;
         if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&file)))) {
             wchar_t target[MAX_PATH * 4]{};
-            if (SUCCEEDED(file->Load(wide.c_str(), STGM_READ)) &&
-                SUCCEEDED(link->GetPath(target, ARRAYSIZE(target), nullptr, 0)) && target[0]) {
+            const bool loaded = SUCCEEDED(file->Load(wide.c_str(), STGM_READ));
+            if (loaded && SUCCEEDED(link->GetPath(target, ARRAYSIZE(target), nullptr, 0)) && target[0]) {
                 if (const auto normalized = organizer::NormalizeLocalPath(OrganizerUtf8(target))) result = *normalized;
+            } else if (loaded) {
+                PIDLIST_ABSOLUTE id = nullptr;
+                if (SUCCEEDED(link->GetIDList(&id)) && id) {
+                    PWSTR parsing = nullptr;
+                    if (SUCCEEDED(SHGetNameFromIDList(id, SIGDN_DESKTOPABSOLUTEPARSING, &parsing)) && parsing)
+                        if (const auto* location = DockShellLocation(parsing)) result = OrganizerUtf8(location);
+                    CoTaskMemFree(parsing);
+                }
+                CoTaskMemFree(id);
             }
             file->Release();
         }
@@ -140,10 +257,14 @@ std::vector<dock::RunningApp> RunningApps() {
     static std::map<std::string, std::uint64_t> firstSeen;
     static std::uint64_t nextSequence = 1;
     std::vector<std::pair<std::uint64_t, dock::RunningApp>> ordered;
-    std::map<std::string, bool> seen;
+    std::map<std::string, std::size_t> seen;
     const auto windows = Windows();
     for (const auto& window : windows) {
-        if (!seen.emplace(window.key, true).second) continue;
+        const auto [entry, first] = seen.emplace(window.key, ordered.size());
+        if (!first) {
+            ordered[entry->second].second.windows.push_back(reinterpret_cast<std::uint64_t>(window.handle));
+            continue;
+        }
         auto sequence = firstSeen.find(window.key);
         if (sequence == firstSeen.end()) {
             if (firstSeen.size() > 512) {
@@ -152,19 +273,20 @@ std::vector<dock::RunningApp> RunningApps() {
             }
             sequence = firstSeen.emplace(window.key, nextSequence++).first;
         }
-        const auto normalized = organizer::NormalizeLocalPath(OrganizerUtf8(window.image));
-        if (!normalized) continue;
+        const auto frontWindow = reinterpret_cast<std::uint64_t>(window.handle);
+        if (!window.name.empty()) {
+            ordered.push_back({sequence->second, {window.target, window.name, false, frontWindow, {frontWindow}}});
+            continue;
+        }
         // Version resources are file reads; the Dock refreshes every few seconds.
-        static std::map<std::wstring, std::wstring> descriptions;
-        auto cached = descriptions.find(window.image);
+        static std::map<std::string, std::wstring> descriptions;
+        auto cached = descriptions.find(window.target);
         if (cached == descriptions.end()) {
             if (descriptions.size() > 512) descriptions.clear();
-            cached = descriptions.emplace(window.image, Description(window.image)).first;
+            cached = descriptions.emplace(window.target, Description(OrganizerWide(window.target))).first;
         }
         const auto& name = cached->second;
-        dock::RunningApp app{*normalized, name.empty() ? dock::EntryName(*normalized) : OrganizerUtf8(name)};
-        // Running programs keep their icon. (asWindows hides it when the Dock
-        // shows window thumbnails instead; that mode is off, see DockSession.)
+        dock::RunningApp app{window.target, name.empty() ? dock::EntryName(window.target) : OrganizerUtf8(name), false, frontWindow, {frontWindow}};
         ordered.push_back({sequence->second, std::move(app)});
     }
     std::stable_sort(ordered.begin(), ordered.end(),
@@ -175,7 +297,8 @@ std::vector<dock::RunningApp> RunningApps() {
     return apps;
 }
 
-std::vector<dock::ProgramWindow> ProgramWindows() {
+std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable) {
+    const auto key = PathKey(executable);
     // Each window keeps the place it first appeared in while it exists, so
     // thumbnails do not reshuffle when windows are activated.
     static std::map<HWND, std::uint64_t> since;
@@ -186,13 +309,11 @@ std::vector<dock::ProgramWindow> ProgramWindows() {
         const auto found = since.find(window.handle);
         const auto sequence = found != since.end() ? found->second : nextSequence++;
         still[window.handle] = sequence;
-        const auto normalized = organizer::NormalizeLocalPath(OrganizerUtf8(window.image));
-        if (!normalized) continue;
+        if ((!executable.empty() && window.key != key) || ordered.size() >= 48) continue;
         wchar_t title[256]{};
         GetWindowTextW(window.handle, title, 256);
-        ordered.push_back({sequence, {*normalized, OrganizerUtf8(title), reinterpret_cast<std::uint64_t>(window.handle),
+        ordered.push_back({sequence, {window.target, OrganizerUtf8(title), reinterpret_cast<std::uint64_t>(window.handle),
                                       IsIconic(window.handle) != FALSE}});
-        if (ordered.size() >= 48) break;
     }
     since = std::move(still);
     std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -200,25 +321,27 @@ std::vector<dock::ProgramWindow> ProgramWindows() {
     for (auto& entry : ordered) result.push_back(std::move(entry.second));
     return result;
 }
-std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable) {
-    const auto key = PathKey(executable);
-    std::vector<dock::ProgramWindow> result;
-    for (const auto& window : ProgramWindows())
-        if (PathKey(window.executable) == key) result.push_back(window);
-    return result;
-}
+std::vector<dock::ProgramWindow> ProgramWindows() { return ProgramWindowsFor({}); }
 
-namespace { bool BringForward(HWND window); }
+namespace {
+bool BringForward(HWND window, bool animateActivation = false);
+bool MinimizeFromDock(HWND window, bool animate) {
+    // A foreign-thread ShowWindow can minimize without a transition on the window's GUI thread.
+    if (animate && PostMessageW(window, WM_SYSCOMMAND, SC_MINIMIZE, 0)) return true;
+    ShowWindow(window, SW_MINIMIZE);
+    return true;
+}
+}
 bool FocusWindow(std::uint64_t handle) {
     const auto window = reinterpret_cast<HWND>(handle);
     return IsWindow(window) && BringForward(window);
 }
 
-bool ActivateWindow(std::uint64_t handle) {
+bool ActivateWindow(std::uint64_t handle, bool animateActivation) {
     const auto window = reinterpret_cast<HWND>(handle);
     if (!IsWindow(window)) return false;
-    if (!IsIconic(window) && GetForegroundWindow() == window) { ShowWindow(window, SW_MINIMIZE); return true; }
-    return BringForward(window);
+    if (!IsIconic(window) && GetForegroundWindow() == window) return MinimizeFromDock(window, animateActivation);
+    return BringForward(window, animateActivation);
 }
 
 namespace {
@@ -226,11 +349,24 @@ namespace {
 // launcher's real UI is often an owned window). Returns whether the window
 // is now on screen; false means it could not even be restored (for example
 // an elevated program), so the caller may start the program instead.
-bool BringForward(HWND window) {
+bool BringForward(HWND window, bool animateActivation) {
     HWND target = GetLastActivePopup(window);
     if (!target || !IsWindowVisible(target) || !IsWindowEnabled(target)) target = window;
-    if (IsIconic(window)) ShowWindow(window, SW_RESTORE);
-    if (target != window && IsIconic(target)) ShowWindow(target, SW_RESTORE);
+    if (animateActivation && (IsIconic(window) || IsIconic(target) || GetForegroundWindow() != target)) {
+        // Prepare both minimized and background windows before their native activation.
+        SendMessageTimeoutW(window, dock_animation::ActivatedMessage(), 0, 0, SMTO_ABORTIFHUNG, 200, nullptr);
+    }
+    const auto restore = [animateActivation](HWND hwnd) {
+        if (!IsIconic(hwnd)) return;
+        // Let the app's own UI thread perform its restore, as with a title-bar command.
+        if (animateActivation) {
+            SendMessageTimeoutW(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0, SMTO_ABORTIFHUNG, 250, nullptr);
+            if (!IsIconic(hwnd)) return;
+        }
+        ShowWindow(hwnd, SW_RESTORE);
+    };
+    restore(window);
+    if (target != window) restore(target);
     if (SetForegroundWindow(target) || GetForegroundWindow() == target) return true;
     // The foreground lock can refuse a request that came from the Dock click;
     // join the input queue of the current foreground thread and retry once.
@@ -245,7 +381,7 @@ bool BringForward(HWND window) {
 }
 }  // namespace
 
-bool ActivateProgram(const std::string& executable) {
+bool ActivateProgram(const std::string& executable, bool animateActivation) {
     const auto key = PathKey(executable);
     std::vector<HWND> mine;
     for (const auto& window : Windows())
@@ -255,11 +391,11 @@ bool ActivateProgram(const std::string& executable) {
     const auto current = std::find(mine.begin(), mine.end(), foreground);
     HWND target = mine.front();
     if (current != mine.end()) {
-        if (mine.size() == 1) { ShowWindow(foreground, SW_MINIMIZE); return true; }
+        if (mine.size() == 1) return MinimizeFromDock(foreground, animateActivation);
         // EnumWindows is top-down: the next window is the one behind the current.
         target = std::next(current) == mine.end() ? mine.front() : *std::next(current);
     }
-    return BringForward(target);
+    return BringForward(target, animateActivation);
 }
 
 bool CloseProgram(const std::string& executable) {
@@ -272,6 +408,7 @@ bool CloseProgram(const std::string& executable) {
 
 bool IsRecycleBin(const std::string& path) {
     const auto wide = OrganizerWide(path);
+    if (wide == RecycleBinLocation) return true;
     PIDLIST_ABSOLUTE recycle = nullptr;
     if (FAILED(SHGetKnownFolderIDList(FOLDERID_RecycleBinFolder, 0, nullptr, &recycle)) || !recycle) return false;
     PIDLIST_ABSOLUTE target = nullptr;

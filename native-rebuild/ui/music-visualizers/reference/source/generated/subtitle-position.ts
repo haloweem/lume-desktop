@@ -1,0 +1,1 @@
+export const usePlayerSubtitleBottomPx = hidden => hidden ? 32 : 112;

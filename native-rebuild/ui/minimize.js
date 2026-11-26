@@ -40,9 +40,9 @@ export function minimizeNotice(state,{previousStatus,hasInlineStatus=false}={}) 
 }
 export function minimizePage(state,tab='settings') {
   const p=state.minimize,busy=['saving','loading'].includes(state.minimizeStatus);
-  const row=(label,help,control)=>`<div class="setting-row"><div><label>${label}</label><p class="setting-help">${help}</p></div>${control}</div>`;
-  const toggleRow=(label,help,key)=>row(label,help,toggle(p[key],label,`minimize-${key}`,busy));
-  const numberRow=(label,help,key,min,max)=>`<div class="setting-row"><div><label for="minimize-${key}">${label}</label><p class="setting-help">${help}</p></div><input class="setting-number" id="minimize-${key}" type="number" min="${min}" max="${max}" step="1" value="${p[key]}" ${busy?'disabled':''}></div>`;
+  const row=(label,control)=>`<div class="setting-row"><label>${label}</label>${control}</div>`;
+  const toggleRow=(label,_help,key)=>row(label,toggle(p[key],label,`minimize-${key}`,busy));
+  const numberRow=(label,_help,key,min,max)=>`<div class="setting-row"><label for="minimize-${key}">${label}</label><input class="setting-number" id="minimize-${key}" type="number" min="${min}" max="${max}" step="1" value="${p[key]}" ${busy?'disabled':''}></div>`;
   const body=tab==='settings'?
     numberRow(t('动画时长（毫秒）','Animation duration (ms)'),t('神奇效果动画的持续时间，范围为 50 至 2000 毫秒','Genie effect duration, from 50 to 2000 ms'),'durationMs',50,2000)+
     toggleRow(t('还原窗口时播放动画','Animate window restoration'),t('从任务栏还原窗口时，反向播放神奇效果动画','Reverse the Genie effect when restoring windows from the taskbar'),'restore')+
@@ -50,7 +50,7 @@ export function minimizePage(state,tab='settings') {
     toggleRow(t('多显示器支持（实验性）','Multiple displays (experimental)'),t('在窗口所在显示器上播放动画，并以该显示器的任务栏边缘为目标','Animate on the window display, toward its taskbar edge'),'multiMonitor')+
     toggleRow(t('显示自动隐藏的任务栏','Show auto-hidden taskbar'),t('最小化时短暂显示自动隐藏的任务栏，动画结束后再允许任务栏收回','Briefly reveal the taskbar while minimizing; allow it to hide after the animation'),'unhideTaskbar')+
     numberRow(t('任务栏显示时长（毫秒）','Taskbar reveal duration (ms)'),t('自动隐藏模式下延迟最小化前的任务栏显示时间，范围为 0 至 5000 毫秒','Show the auto-hidden taskbar before minimizing, from 0 to 5000 ms'),'unhideDurationMs',0,5000)+
-    row(t('动画样式','Animation style'),t('现代样式使用平滑网格变形；经典样式呈现传统神奇效果，资源占用更低','Modern uses smooth mesh deformation; Classic uses the traditional Genie effect with fewer resources'),settingsSelect('minimize-engine',t('动画样式','Animation style'),p.engine,engines(),busy))+
+    row(t('动画样式','Animation style'),settingsSelect('minimize-engine',t('动画样式','Animation style'),p.engine,engines(),busy))+
     `<div class="reset-row"><button class="reset" data-action="minimize-reset" ${busy?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<p>${t('为顶层窗口提供 macOS 神奇效果的最小化、还原与打开动画；子窗口、尺寸过小的窗口和隐藏窗口会被跳过。','Use macOS Genie effects to minimize, restore and open top-level windows. Child, very small and hidden windows are skipped.')}</p><p>${t('展开动画默认开启，可能短暂闪烁，也可能无法捕获无边框应用；多显示器支持为实验性选项，默认关闭。','The open animation is on by default; it may briefly flicker or fail to capture frameless apps. Multiple-display support is experimental and off by default.')}</p><p>${t('动画期间临时关闭目标窗口的系统过渡效果，结束后恢复。使用亚克力或半透明效果的窗口，在动画快照中可能显示为不透明。','System transitions for the target window are temporarily disabled during animation and restored afterward. Acrylic or translucent windows may appear opaque in animation snapshots.')}</p><p>${t('恢复默认会恢复原版动画参数，并保留当前功能启用状态。关闭功能或退出 Lume 会停止动画服务。','Restoring defaults resets animation parameters while keeping the current feature enable state. Disabling the feature or exiting Lume stops the animation service.')}</p>`;
   return settingsFrame({title:t('macOS 最小化动画','macOS minimize animation'),description:t('为窗口提供流畅的 macOS 神奇效果最小化、还原与打开动画。','Smooth macOS Genie effects for minimizing, restoring and opening windows.'),

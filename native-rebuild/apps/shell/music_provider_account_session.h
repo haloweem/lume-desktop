@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 
+namespace lume::platform::windows { class FoliaMusicRuntime; }
 namespace lume::shell {
 struct MusicProviderAccountCommand {
     std::string action;
@@ -29,6 +30,10 @@ struct MusicProviderAccountOptions {
     // fetch that failed on the network is retried once after 300ms.
     std::chrono::milliseconds scannedLifetime{60000};
     std::chrono::milliseconds beginRetryDelay{300};
+    std::shared_ptr<platform::windows::FoliaMusicRuntime> runtime;
+    // Deterministic preparation seam for account lifecycle tests; production uses runtime.
+    std::function<void(const music::auth::Cancelled&,
+        const std::function<void(std::string_view)>&)> prepareRuntime;
 };
 
 // Native-only, revocable identity snapshot. Never serialize into page messages.

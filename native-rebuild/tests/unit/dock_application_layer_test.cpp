@@ -239,6 +239,15 @@ int Scenario() {
     const HWND foreground = GetForegroundWindow();
     Check(dock.Show(items, true), "show Dock with raised desktop host");
     BelowApplication(dock, browser, "Dock stays below maximized browser despite raised desktop host");
+    Check(dock.SummonTemporarily(), "configured summon temporarily raises the Dock");
+    Check((GetWindowLongPtrW(dock.Handle(), GWL_EXSTYLE) & WS_EX_TOPMOST) &&
+          (GetWindowLongPtrW(dock.BarHandle(), GWL_EXSTYLE) & WS_EX_TOPMOST),
+          "temporary summon raises both Dock layers together");
+    dock.RestoreDesktopLayer();
+    Check(WaitFor([&] { return !(GetWindowLongPtrW(dock.Handle(), GWL_EXSTYLE) & WS_EX_TOPMOST) &&
+                              !(GetWindowLongPtrW(dock.BarHandle(), GWL_EXSTYLE) & WS_EX_TOPMOST) &&
+                              desktop_level::Above(browser, dock.Handle()); }),
+          "dismissing summon restores the Dock below the foreground application");
     Check(GetForegroundWindow() == foreground, "initial placement preserves foreground");
     HWND settings=Window(L"LumeProbeWindowedSettings",{100,100,700,600},WS_OVERLAPPEDWINDOW);
     ShowWindow(settings,SW_SHOW);SetForegroundWindow(settings);
@@ -530,6 +539,21 @@ int Scenario() {
         SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
         Check(!IsWindowVisible(dock.Handle())&&!IsWindowVisible(dock.BarHandle()),
               "foreground fullscreen protection still hides the Dock pair");
+        SetWindowLongPtrW(browser,GWL_STYLE,WS_POPUP);
+        SetWindowPos(browser,HWND_TOP,info.rcMonitor.left,info.rcMonitor.top,
+            info.rcMonitor.right-info.rcMonitor.left,info.rcMonitor.bottom-info.rcMonitor.top,
+            SWP_FRAMECHANGED|SWP_SHOWWINDOW|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+        Check(dock.SummonTemporarily(),"temporary summon bypasses fullscreen protection");
+        Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle())&&
+              (GetWindowLongPtrW(dock.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST)&&
+              (GetWindowLongPtrW(dock.BarHandle(),GWL_EXSTYLE)&WS_EX_TOPMOST)&&
+              !Suppressed(dock.Handle())&&!Suppressed(dock.BarHandle())&&
+              desktop_level::Above(dock.Handle(),browser)&&desktop_level::Above(dock.BarHandle(),browser),
+              "summoned Dock layers rise above the fullscreen browser");
+        dock.RestoreDesktopLayer();SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
+        Check(!IsWindowVisible(dock.Handle())&&!IsWindowVisible(dock.BarHandle()),
+              "dismissing summon restores fullscreen protection");
+        ShowWindow(browser,SW_HIDE);
         policy={};Update(policy);
         SendMessageW(dock.Handle(),desktop_level::Message(),0,0);
         Check(IsWindowVisible(dock.Handle())&&IsWindowVisible(dock.BarHandle()),

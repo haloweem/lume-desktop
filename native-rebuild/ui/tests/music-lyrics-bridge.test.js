@@ -22,6 +22,8 @@ test("music lyrics wire message validates as a bounded independent host message"
   assert.equal(validHostMessage({...message,lines:[
     {...line(1,3),translation:"翻译"},line(2,4),
   ]}),true,"provider overlap and translations remain valid");
+  assert.equal(validHostMessage({...message,lines:[{...line(1,3),translation:"翻译",romanization:"luó mǎ yīn"}]}),true,
+    "Folia romanization reaches the renderer boundary");
   assert.equal(validHostMessage({...message, lines: [line(2, 1)]}), false,
     "descending line time is rejected");
   assert.equal(validHostMessage({...message, lines: Array.from({length: 2000}, (_, i) => line(i, i + 1))}), true);
@@ -55,6 +57,7 @@ test("lyrics bridge rejects extra fields, malformed timing and excessive decoded
     {lines:[line(-1, 2)]}, {lines:[line(1, Infinity)]}, {lines:[line(1, NaN)]}, {lines:[line(1, 86401)]},
     {lines:[line(1, 1)]}, {lines:[line(2, 3), line(1, 2)]},
     {lines:[{...line(1, 2), translation:"x".repeat(4097)}]}, {lines:[{...line(1, 2), extra:true}]},
+    {lines:[{...line(1,2),romanization:"x".repeat(4097)}]},
     {lines:[{...line(1,2),words:[{startTime:0,endTime:2,text:"bad"}]}]},
     {lines:[{...line(1,2),words:[{startTime:1,endTime:3,text:"bad"}]}]},
     {lines:[{...line(1,2),words:[{startTime:1,endTime:2,text:"bad",source:"private"}]}]},

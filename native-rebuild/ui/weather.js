@@ -16,7 +16,7 @@ export function weatherStatus(state) {
     rollback:t('天气组件恢复失败，请重新启用组件','Could not restore the weather widget. Enable it again.'),
   }[state.weatherError] || t('天气配置读取失败，当前使用默认设置；尚未保存','Could not load weather settings. Using defaults; not yet saved.');
   if(state.weatherLoadStatus==='recovered')return t('已从备份恢复天气配置，尚未保存到主配置','Weather settings restored from backup; not yet saved to the main configuration.');
-  if(state.weatherMaterialStatus==='transparent-fallback')return t('材质暂不可用，当前为透明显示','Material unavailable. Using a transparent fallback.');
+  if(state.weatherMaterialStatus==='transparent-fallback')return t('当前使用兼容材质','Using a compatible material.');
   if(!state.weather.enabled)return '';
   if(state.weatherData.error)return state.weatherData.hasWeather?t('天气更新失败，显示上次天气','Weather update failed. Showing the last available weather.'):t('定位或天气不可用，请稍后刷新','Location or weather unavailable. Refresh later.');
   if(state.weatherData.loading)return t('正在获取天气...','Fetching weather...');

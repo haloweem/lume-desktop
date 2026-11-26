@@ -1,6 +1,6 @@
 
-import {DEFAULT_THEME} from 'H:/refactor/history/lume1.0.1/third_party/folia-major/upstream/src/services/baseThemes.ts';
-import {DEFAULT_SONNET_TUNING} from 'H:/refactor/history/lume1.0.1/third_party/folia-major/upstream/src/types.ts';
+import {DEFAULT_THEME} from 'H:/refactor/workspace/lume1.0.7/native-rebuild/ui/music-visualizers/reference/source/upstream/src/services/baseThemes.ts';
+import {DEFAULT_SONNET_TUNING} from 'H:/refactor/workspace/lume1.0.7/native-rebuild/ui/music-visualizers/reference/source/upstream/src/types.ts';
 export {resolveThemeFontStack} from 'reference:fonts';
 const buildVisualizerTheme = ({
     appStyle,

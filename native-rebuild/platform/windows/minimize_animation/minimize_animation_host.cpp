@@ -1,5 +1,7 @@
 #include "platform/windows/minimize_animation/minimize_animation_ipc.h"
 #include <filesystem>
+#include <dwmapi.h>
+#include "dock_genie_renderer.h"
 using namespace lume::platform::windows::minimize_detail;
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
@@ -22,7 +24,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         static_cast<LONG>(created.dwHighDateTime)==state->ownerTimeHigh;
     DWORD error=ERROR_INVALID_HANDLE;
     InterlockedExchange(&state->hostPid,static_cast<LONG>(GetCurrentProcessId()));
-    if (stop && ready && ownerValid) {
+    using lume::platform::windows::dock_genie::Renderer;
+    std::unique_ptr<Renderer> renderer;
+    if (Read(state->dockOnly)) {
+        renderer=std::make_unique<Renderer>();
+        if (!renderer->Start(*state)) error=ERROR_NOT_SUPPORTED;
+    }
+    if (stop && ready && ownerValid && error!=ERROR_NOT_SUPPORTED) {
         std::wstring path(32768,L'\0');
         const auto size=GetModuleFileNameW(nullptr,path.data(),static_cast<DWORD>(path.size()));
         path.resize(size);
@@ -45,7 +53,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     if (!error) {
         HANDLE waits[]={stop,owner}; bool quit=false;
         while (!quit) {
-            const DWORD result=MsgWaitForMultipleObjects(2,waits,FALSE,INFINITE,QS_ALLINPUT);
+            const bool animating=renderer && renderer->Playing();
+            const DWORD result=MsgWaitForMultipleObjectsEx(2,waits,animating?0:INFINITE,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+            if (result==WAIT_TIMEOUT && animating) {
+                renderer->Frame();
+                if (renderer->Playing() && FAILED(DwmFlush())) Sleep(8);
+                continue;
+            }
             if (result!=WAIT_OBJECT_0+2) break;
             MSG msg{};
             while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) {
@@ -74,6 +88,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         Sleep(10);
     }
     const bool outstanding=ActiveWorkers(*state) || ActiveEntries(*state);
+    renderer.reset();
     if (hookModule) FreeLibrary(hookModule);
     for (HANDLE h:{stop,ready,owner}) if (h) CloseHandle(h);
     UnmapViewOfFile(state); CloseHandle(mapping);

@@ -18,11 +18,12 @@ const text={
     supportCreate:'生成诊断报告',supportLogs:'打开日志文件夹',supportWorking:'正在生成诊断报告…',
     supportCopy:'复制诊断信息',supportCopying:'正在收集诊断信息…',supportCopied:'诊断信息已复制，可直接粘贴到评论区或聊天里。',
     supportChecks:'启动自检',supportChecking:'正在检查…',supportCheckOk:'正常',supportCheckProblem:'异常',supportCheckUnknown:'未知',supportFix:'建议：',
+    supportHelp:'解决方式请查看',supportDocument:'官方bug解决文档',
     supportDone:'已保存到桌面：{file}，请把这个文件发给我们。',supportFailed:'生成失败：{error}',supportUnavailable:'当前无法生成诊断报告。',
     language:'语言',languageDescription:'选择 Lume 的显示语言。',balancedMode:'均衡模式',
     interfaceScale:'界面缩放',interfaceScaleRatio:'缩放比例',
     interfaceScaleDescription:'等比例调整管理界面的窗口、文字和控件大小，默认 75%。',
-    balancedDescription:'动态壁纸以 30 fps 播放，全屏时自动暂停。',autostartLabel:'开机时自动启动 Lume',
+    balancedDescription:'动态壁纸以 30 fps 播放。',autostartLabel:'开机时自动启动 Lume',
     dataFolder:'用户数据目录',dataFolderDescription:'账号、待办、音乐库和设置保存在这里；更改后会在下次启动时搬移并生效。',
     wallpaperFolder:'壁纸下载目录',wallpaperFolderDescription:'壁纸文件保存在这里；更改后从下次启动开始，只影响之后下载的壁纸。',
     changeFolder:'更改…',
@@ -57,11 +58,12 @@ const text={
     supportCreate:'Create diagnostic report',supportLogs:'Open log folder',supportWorking:'Creating the diagnostic report…',
     supportCopy:'Copy diagnostic info',supportCopying:'Collecting diagnostic info…',supportCopied:'Diagnostic info copied. Paste it into a comment or chat.',
     supportChecks:'Startup self-check',supportChecking:'Checking…',supportCheckOk:'OK',supportCheckProblem:'Problem',supportCheckUnknown:'Unknown',supportFix:'Suggestion: ',
+    supportHelp:'For solutions, see',supportDocument:'Official bug troubleshooting guide',
     supportDone:'Saved to your desktop: {file}. Please send this file to us.',supportFailed:'Could not create the report: {error}',supportUnavailable:'The diagnostic report is not available right now.',
     language:'Language',languageDescription:'Choose the display language for Lume.',balancedMode:'Balanced mode',
     interfaceScale:'Interface scale',interfaceScaleRatio:'Scale',
     interfaceScaleDescription:'Scale the manager window, text and controls together. Default: 75%.',
-    balancedDescription:'Play animated wallpapers at 30 fps and pause them in fullscreen.',autostartLabel:'Start Lume with Windows',
+    balancedDescription:'Play animated wallpapers at 30 fps.',autostartLabel:'Start Lume with Windows',
     dataFolder:'User data folder',dataFolderDescription:'Account, to-dos, music library and settings are stored here. A change is moved and applied at the next launch.',
     wallpaperFolder:'Wallpaper folder',wallpaperFolderDescription:'Wallpaper files are stored here. A change applies from the next launch and only to wallpapers downloaded afterwards.',
     changeFolder:'Change…',
@@ -175,7 +177,9 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     <button type="button" data-support-action="open-logs"><span class="application-settings__glyph" aria-hidden="true">&#xE838;</span><span data-settings-text="supportLogs"></span></button></div>
     <p class="application-settings__diagnostics-events" data-support-status role="status"></p>
     <div class="application-settings__field"><div class="application-settings__label" data-settings-text="supportChecks"></div>
-    <div class="application-settings__diagnostics-evidence" data-support-checks></div></div></div>
+    <div class="application-settings__diagnostics-evidence" data-support-checks></div></div>
+    <p class="application-settings__support-help"><span data-settings-text="supportHelp"></span>
+    <a href="https://www.lumedesktop.com/bugs.html" target="_blank" rel="noopener" data-support-action="open-help" data-settings-text="supportDocument"></a></p></div>
     <div class="application-settings__panel application-settings__diagnostics" data-settings-panel="diagnostics" hidden>
     <div class="application-settings__diagnostics-intro"><div class="application-settings__label" data-settings-text="diagnostics"></div>
     <p class="application-settings__description" data-settings-text="diagnosticDescription"></p>
@@ -195,7 +199,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     </div>
     <div class="application-settings__panel application-settings__about" data-settings-panel="about" hidden>
     <div class="application-settings__brand"><div class="application-settings__logo">${LUME_LOGO}</div><div class="application-settings__brand-name">LumeDesktop</div>
-    <div class="application-settings__version"><span data-settings-text="version"></span> 1.1.3</div>
+    <div class="application-settings__version"><span data-settings-text="version"></span> 1.1.4</div>
     <div class="application-settings__update-actions">${['checkUpdate','downloadUpdate','installUpdate'].map(action=>`<button type="button" data-settings-action="${action}">${action==='checkUpdate'?REFRESH_ICON:`<span class="application-settings__glyph" aria-hidden="true">${action==='downloadUpdate'?'&#xE896;':'&#xE74E;'}</span>`}<span data-settings-text="${action}"></span></button>`).join('')}</div>
     <div data-update-status role="status" aria-live="polite"></div><progress data-update-progress max="100" hidden></progress></div>
     <div class="application-settings__copyright">Copyright 2026 LumeDesktop · <button type="button" class="application-settings__legal" data-settings-legal data-settings-text="agreement"></button></div><div class="application-settings__legal-text" data-settings-legal-text hidden></div></div></div>
@@ -407,7 +411,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     return true;
   }
   const onClick=event=>{
-    const button=event.target.closest?.('button');
+    const button=event.target.closest?.('button, a[data-support-action]');
     if(!button || !root.contains(button) || button.closest('[hidden]'))return;
     if(button.hasAttribute('data-settings-back')) {hide();onBack();return;}
     if(button.hasAttribute('data-settings-legal')) {
@@ -420,6 +424,7 @@ export function mountApplicationSettings(host,{bridge,onBack=()=>{},onLanguage=(
     if(button.dataset.settingsAction && !button.disabled && button.getAttribute('aria-disabled')!=='true')
       request(button.dataset.settingsAction);
     if(button.dataset.supportAction) {
+      event.preventDefault();
       if((button.dataset.supportAction==='create'||button.dataset.supportAction==='copy')&&supportBusy)return;
       const note=$('[data-support-note]')?.value?.slice(0,1000) || '';
       let sent=false;

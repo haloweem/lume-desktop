@@ -188,29 +188,50 @@ void ForgetCreatedProfile(const std::wstring& ssid) {
     Wlan wlan;
     if (wlan.ok) WlanDeleteProfile(wlan.handle, &wlan.interfaceId, ssid.c_str(), nullptr);
 }
-std::vector<Device> PairedDevices() {
+static std::vector<Device> EnumerateBluetooth(bool includeUnpaired) {
     using namespace winrt::Windows::Devices;
     std::vector<Device> out;
     std::set<std::wstring> seen;
-    const auto add = [&](const winrt::hstring& selector) {
+    const auto add = [&](const winrt::hstring& selector, bool paired) {
         try {
             const auto devices = Enumeration::DeviceInformation::FindAllAsync(selector, {L"System.Devices.Aep.IsConnected"},
                                                                               Enumeration::DeviceInformationKind::AssociationEndpoint).get();
             for (const auto& device : devices) {
                 std::wstring name(device.Name());
-                if (name.empty() || !seen.insert(name).second) continue;
+                if (name.empty() || (!paired && !device.Pairing().CanPair())) continue;
+                if (!seen.insert(std::wstring(device.Id())).second) continue;
                 bool connected = false;
                 if (const auto value = device.Properties().TryLookup(L"System.Devices.Aep.IsConnected"))
                     connected = winrt::unbox_value_or<bool>(value, false);
-                out.push_back({name, connected});
+                out.push_back({std::move(name), connected, std::wstring(device.Id()), paired});
             }
         } catch (...) {}
     };
-    add(Bluetooth::BluetoothDevice::GetDeviceSelectorFromPairingState(true));
-    add(Bluetooth::BluetoothLEDevice::GetDeviceSelectorFromPairingState(true));
-    std::stable_sort(out.begin(), out.end(), [](const Device& a, const Device& b) { return a.connected && !b.connected; });
+    add(Bluetooth::BluetoothDevice::GetDeviceSelectorFromPairingState(true), true);
+    add(Bluetooth::BluetoothLEDevice::GetDeviceSelectorFromPairingState(true), true);
+    if (includeUnpaired) {
+        add(Bluetooth::BluetoothDevice::GetDeviceSelectorFromPairingState(false), false);
+        add(Bluetooth::BluetoothLEDevice::GetDeviceSelectorFromPairingState(false), false);
+    }
+    std::stable_sort(out.begin(), out.end(), [](const Device& a, const Device& b) {
+        return a.connected != b.connected ? a.connected : a.paired && !b.paired;
+    });
     if (out.size() > 30) out.resize(30);
     return out;
+}
+std::vector<Device> PairedDevices() { return EnumerateBluetooth(false); }
+std::vector<Device> BluetoothDevices() { return EnumerateBluetooth(true); }
+bool PairDevice(const std::wstring& id) {
+    using namespace winrt::Windows::Devices::Enumeration;
+    try {
+        const auto device = DeviceInformation::CreateFromIdAsync(id, nullptr, DeviceInformationKind::AssociationEndpoint).get();
+        if (!device) return false;
+        const auto pairing = device.Pairing();
+        if (pairing.IsPaired()) return true;
+        if (!pairing.CanPair()) return false;
+        const auto status = pairing.PairAsync().get().Status();
+        return status == DevicePairingResultStatus::Paired || status == DevicePairingResultStatus::AlreadyPaired;
+    } catch (...) { return false; }
 }
 std::uint32_t AccentColor() {
     try {

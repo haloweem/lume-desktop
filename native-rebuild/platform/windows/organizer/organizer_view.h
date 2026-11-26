@@ -20,12 +20,13 @@ struct OrganizerViewState {
     std::vector<std::size_t> visible;
     std::optional<std::size_t> selected;
     float scroll=0;
+    float unfold=1.f; // Title strip to full panel. Item geometry stays at its final layout.
+    bool folding=false; // Keep drawing the expanded contents until the visible pane has closed.
     // 多选与完整顺序预览；搜索过滤时 visible 优先于 order。
     std::vector<std::size_t> selection;
     std::vector<std::size_t> order;
     // 标签组：两个及以上标题时，标题栏改为可横向滚动的标签条。
     std::vector<std::wstring> tabs;
-    std::vector<organizer::Accent> tabAccents;
     std::size_t activeTab=0;
     std::optional<std::size_t> hoverTab,liftedTab,dropTab;
     // While a lifted tab is over its own strip: the slot (0..tabs) it would take.
@@ -49,7 +50,6 @@ struct OrganizerLayout {
 };
 float OrganizerTabWidth(const std::wstring&);
 // RGB marker color; None is 0 and adds no drawing to the original appearance.
-std::uint32_t OrganizerAccentColor(organizer::Accent);
 OrganizerLayout LayoutOrganizer(float width,float height,const organizer::Collection&,const OrganizerViewState& = {});
 std::vector<LumeMaterialPanel> OrganizerSearchPanels(const OrganizerLayout&,const OrganizerViewState&);
 using OrganizerImage=std::function<std::shared_ptr<const WidgetBitmap>(const organizer::Item&)>;

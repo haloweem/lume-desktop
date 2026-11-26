@@ -6,3 +6,4 @@
 #define IDM_LUME_WIDGET_LOCK                         4109
 #define IDM_LUME_WIDGET_CENTER                       4110
 #define IDM_LUME_WIDGET_POSITION                     4111
+#define IDM_LUME_WIDGET_CENTER_HORIZONTAL            4112

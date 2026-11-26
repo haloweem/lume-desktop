@@ -24,6 +24,7 @@ struct CrashFixtureState {
 };
 HANDLE observedJob = nullptr, observedProcess = nullptr;
 bool memberAtCreation = false, failObservedWait = false;
+std::atomic_bool observedChildCreated{false};
 CrashFixtureState* crashFixture = nullptr;
 HANDLE WINAPI ObserveCreateJob(LPSECURITY_ATTRIBUTES attributes, LPCWSTR name) {
     observedJob = CreateJobObjectW(attributes, name); return observedJob;
@@ -38,6 +39,7 @@ BOOL WINAPI ObserveCreateProcess(LPCWSTR application, LPWSTR command,
         BOOL member = FALSE;
         memberAtCreation = IsProcessInJob(created->hProcess, observedJob, &member) && member;
         observedProcess = created->hProcess;
+        observedChildCreated = true;
         if (crashFixture) {
             FILETIME birth{}, end{}, kernel{}, user{};
             GetProcessTimes(created->hProcess, &birth, &end, &kernel, &user);
@@ -71,10 +73,11 @@ int CrashImmediatelyAfterChildCreation(const char* name) {
     crashFixture = static_cast<CrashFixtureState*>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(CrashFixtureState)));
     if (!crashFixture) return 4;
     std::atomic_bool cancel{false};
+    TaskbarCoreTimings timings; timings.xamlWaitMs = 0;
     TaskbarCoreProcess core(cancel, [](bool, TaskbarCoreLaunch& launch) {
         launch.executable = FixtureExecutable(); launch.arguments = L"--taskbar-kernel-fixture";
         return Error::None;
-    }, {}, ObservedApi());
+    }, timings, ObservedApi());
     core.Start();
     return 5;
 }
@@ -86,6 +89,7 @@ bool AtomicProcessRegression() {
     std::atomic_bool cancel{false};
     TaskbarCoreTimings timings; timings.startTimeoutMs = 0; timings.readySettleMs = 0;
     timings.waitSliceMs = 1; timings.stopTimeoutMs = 20;
+    timings.xamlWaitMs = 0;
     HANDLE retained = nullptr;
     {
         int launches = 0;
@@ -115,11 +119,12 @@ bool AtomicProcessRegression() {
     HANDLE child = nullptr;
     {
         TaskbarCoreTimings ownerTimings; ownerTimings.startTimeoutMs = 3000;
+        ownerTimings.xamlWaitMs = 0;
         TaskbarCoreProcess owner(cancel, [&](bool, TaskbarCoreLaunch& launch) {
             launch.executable = FixtureExecutable(); launch.arguments = L"--taskbar-atomic-owner-crash " + name;
             return Error::None;
         }, ownerTimings);
-        expect(owner.Start() == Error::CoreExited, "fixture owner crashes immediately after suspended child creation");
+        expect(owner.Start() == Error::CoreFailure, "fixture owner crashes immediately after suspended child creation");
         expect(state->child != 0 && state->memberAtCreation,
                "abrupt owner death cannot fall between child creation and job ownership");
         if (state->child) {
@@ -198,7 +203,8 @@ public:
         if (cancel) return Error::Cancelled;
         if (shared.startError != Error::None) {
             const auto error = shared.startError.load();
-            if (error == Error::CoreAccessDenied) blocked = error;
+            if (error == Error::CoreAccessDenied || error == Error::CoreFailure || error == Error::CoreAttachTimeout)
+                blocked = error;
             return error;
         }
         core = true; return Error::None;
@@ -293,7 +299,8 @@ void RetryRegression(const TaskbarPaths& paths) {
         Check(Wait([&] { return state.starts == 3; }, 700), "Explorer restart notification permits an immediate retry");
         Check(runtime.Shutdown() && !state.autoHide, "failed startup still restores independent auto-hide ownership");
     }
-    for (const auto failure : {Error::FrameworkInstall, Error::CoreAccessDenied, Error::CoreRestartRequired}) {
+    for (const auto failure : {Error::FrameworkInstall, Error::CoreAccessDenied, Error::CoreRestartRequired,
+                               Error::CoreFailure, Error::CoreAttachTimeout}) {
         Files files; Shared state; state.startError = failure;
         TaskbarRuntime runtime(paths, {}, &files,
             [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
@@ -306,8 +313,8 @@ void RetryRegression(const TaskbarPaths& paths) {
         Check(state.starts == 1 && state.resets == 1,
               "framework/access failure waits for explicit retry despite timer and shell events");
         state.autoHide = false;
-        Check(Wait([&] { return state.autoHide.load(); }, 1700) && state.starts == 1,
-              "periodic independent hiding survives a blocked transparency core without retrying it");
+        Check(Wait([&] { return !runtime.Snapshot().state.effectiveAutoHide; }, 1700) && !state.autoHide.load() && state.starts == 1,
+              "periodic independent hiding yields to a native change without retrying the blocked core");
         state.startError = Error::None;
         Check(runtime.Apply(on) && Wait([&] { return runtime.Snapshot().state.running; }),
               "explicit user retry can start after the environment is repaired");
@@ -324,19 +331,25 @@ void RetryRegression(const TaskbarPaths& paths) {
               "verified Explorer replacement permits one retry without repeated user toggles");
         Check(runtime.Shutdown(), "reloaded module retains normal restore behavior");
     }
-    {
-        Files files; Shared state; state.startError = Error::CoreAccessDenied;
+    for (const auto failure : {Error::CoreAccessDenied, Error::CoreFailure, Error::CoreAttachTimeout}) {
+        Files files; Shared state; state.startError = failure;
         TaskbarRuntime runtime(paths, {}, &files,
             [&](const auto&, const auto& cancel) { return std::make_unique<Port>(state, cancel); });
         Check(runtime.Apply(on) && Wait([&] { return state.starts == 1 && !runtime.Snapshot().applying; }),
-              "synthetic access failure owns an independent auto-hide change");
+              "synthetic terminal failure owns an independent auto-hide change");
+        Check(runtime.RevealForTray(200) && Wait([&] { return !state.autoHide && !runtime.Snapshot().applying; }) &&
+              Wait([&] { return state.autoHide.load(); }) && state.starts == 1,
+              "tray reveal and lease expiry never restart a terminal transparency failure");
+        Check(runtime.RequireAutoHide(true) && Wait([&] { return !runtime.Snapshot().applying; }) &&
+              runtime.RequireAutoHide(false) && Wait([&] { return !runtime.Snapshot().applying; }) && state.starts == 1,
+              "Dock hiding demand changes never unlock a terminal core failure");
         Check(runtime.Apply({}) && Wait([&] {
             const auto snapshot = runtime.Snapshot();
             return !snapshot.applying && !snapshot.state.preferences.enabled;
         }) && state.starts == 1 && state.resets == 1 && !state.autoHide,
-              "disabling never clears an access failure or retries its initialization");
+              "disabling never clears a terminal failure or retries its initialization");
         Check(!runtime.Shutdown() && !state.autoHide && state.starts == 1,
-              "blocked shutdown restores auto-hide without relaunching a denied core");
+              "blocked shutdown restores auto-hide without relaunching a failed core");
         RecordStore store(files);
         const auto journal = store.Load(paths.stateFile).record;
         Check(journal.ownsCore && !journal.ownsAutoHide && runtime.Snapshot().state.pendingRecovery,
@@ -366,6 +379,7 @@ Resources Sample() {
 }
 struct FixtureWindow {
     UINT closeDelay = 1;
+    int exitCode = 0;
     bool closing = false;
     std::filesystem::path statusFile;
     unsigned proofTicks = 0;
@@ -396,11 +410,12 @@ LRESULT CALLBACK CoreFixtureWindow(HWND window, UINT message, WPARAM w, LPARAM l
         MoveFileExW(temporary.c_str(), fixture->statusFile.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
         return 0;
     }
-    if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
+    if (message == WM_DESTROY) { PostQuitMessage(fixture ? fixture->exitCode : 0); return 0; }
     return DefWindowProcW(window, message, w, l);
 }
-int RunCoreFixture(bool neverReady, std::filesystem::path statusFile = {}) {
+int RunCoreFixture(bool neverReady, std::filesystem::path statusFile = {}, int exitCode = 0) {
     FixtureWindow fixture; fixture.closeDelay = 350;
+    fixture.exitCode = exitCode;
     fixture.statusFile = std::move(statusFile);
     WNDCLASSEXW type{}; type.cbSize = sizeof(type); type.hInstance = GetModuleHandleW(nullptr);
     type.lpfnWndProc = CoreFixtureWindow;
@@ -415,12 +430,73 @@ int RunCoreFixture(bool neverReady, std::filesystem::path statusFile = {}) {
     if (IsWindow(window)) DestroyWindow(window);
     return static_cast<int>(message.wParam);
 }
+bool PopupDialogRegression() {
+    std::atomic_bool cancel{false};
+    TaskbarCoreTimings timings;
+    timings.startTimeoutMs = 3000; timings.readySettleMs = 0;
+    timings.waitSliceMs = 10; timings.stopTimeoutMs = 1000;
+    timings.xamlWaitMs = 0;
+    int launches = 0;
+    bool popup = true;
+    TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+        ++launches;
+        launch.executable = FixtureExecutable();
+        launch.arguments = popup ? L"--taskbar-popup-fixture" : L"--taskbar-core-fixture delayed-close";
+        return Error::None;
+    }, timings);
+    Check(core.Start() == Error::CoreFailure && launches == 1,
+          "a real isolated core dialog is classified as one terminal failure");
+    Check(Wait([&] { return !core.Alive(); }, 2500),
+          "production dialog guard dismisses the private child's error dialog");
+    Check(core.Start() == Error::CoreFailure && launches == 1,
+          "a dismissed core dialog cannot trigger another start");
+    Check(core.Stop(true) == Error::CoreFailure && launches == 1,
+          "recovery after a dismissed core dialog does not relaunch it");
+    core.ResetFailure(); popup = false;
+    Check(core.Start() == Error::None && launches == 2,
+          "explicit retry after the dialog failure starts a repaired fixture");
+    Check(core.Stop(false) == Error::None && launches == 2,
+          "repaired fixture shuts down without a replacement process");
+    return true;
+}
+bool RunPopupRegressionOnPrivateDesktop() {
+    wchar_t path[32768]{};
+    Check(GetModuleFileNameW(nullptr, path, 32768) != 0, "locate popup regression executable");
+    const std::wstring desktopName = L"LumeTaskbarPopupRegression." + std::to_wstring(GetCurrentProcessId());
+    HDESK desktop = CreateDesktopW(desktopName.c_str(), nullptr, nullptr, 0,
+        GENERIC_ALL, nullptr);
+    Check(desktop != nullptr, "create private popup regression desktop");
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+    startup.lpDesktop = const_cast<LPWSTR>(desktopName.c_str());
+    PROCESS_INFORMATION process{};
+    std::wstring command = L"\"" + std::wstring(path) + L"\" --popup-regression-worker";
+    const bool started = CreateProcessW(path, command.data(), nullptr, nullptr, FALSE,
+        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE;
+    if (!started) {
+        CloseDesktop(desktop);
+        Check(false, "launch popup regression worker on private desktop");
+    }
+    if (started) {
+        const auto result = WaitForSingleObject(process.hProcess, 15000);
+        if (result != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 97);
+            WaitForSingleObject(process.hProcess, 1000);
+        }
+        DWORD code = 1; GetExitCodeProcess(process.hProcess, &code);
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+        CloseDesktop(desktop);
+        Check(result == WAIT_OBJECT_0, "popup regression worker exits on its private desktop");
+        Check(code == 0, "popup regression worker passes its isolated assertions");
+    }
+    return started;
+}
 bool ProcessLifecycleRegression() {
     wchar_t path[32768]{};
     Check(GetModuleFileNameW(nullptr, path, 32768) != 0, "locate isolated core fixture executable");
     std::atomic_bool cancel{false};
     TaskbarCoreTimings timings; timings.startTimeoutMs = 2000; timings.readySettleMs = 0;
     timings.waitSliceMs = 10; timings.stopTimeoutMs = 80;
+    timings.xamlWaitMs = 0;
     bool passed = true;
     const auto expect = [&](bool value, const char* text) {
         if (!value) { passed = false; std::cerr << "FAIL: " << text << '\n'; }
@@ -435,32 +511,141 @@ bool ProcessLifecycleRegression() {
            "upstream handshake timeout has its own diagnostic");
     for (const auto text : {L"Failed to initialize XAML Diagnostics. 0x800401E3", L"Other stage: 0x80070005",
                             L"Failed to initialize XAML Diagnostics. 0x800700050"})
-        expect(TaskbarCoreDialogError(text) == Error::None, "other stages/codes retain their original retry behavior");
-    {
+        expect(TaskbarCoreDialogError(text) == Error::CoreFailure, "unknown XAML dialog failures become terminal until explicit retry");
+    expect(TaskbarCoreDialogError(L"") == Error::CoreFailure,
+           "an already verified core dialog with empty text still becomes terminal");
+    for (const auto dialogError : {Error::CoreFailure, Error::CoreAttachTimeout,
+                                  Error::CoreRestartRequired, Error::CoreAccessDenied}) {
         // The input below is synthetic test data. This child exits normally;
         // it never calls XAML Diagnostics or requests access to Explorer.
         int launches = 0;
-        std::atomic<Error> failure{Error::CoreAccessDenied};
+        std::atomic<Error> failure{dialogError};
+        const auto statusFile = std::filesystem::temp_directory_path() /
+            (L"lume-taskbar-dialog-status-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+             std::to_wstring(static_cast<int>(dialogError)) + L".json");
         TaskbarCoreProcessApi api;
-        api.readDialogFailure = [&](DWORD) { return failure.load(); };
+        api.readDialogFailure = [&](DWORD pid) {
+            DWORD explorer = 0; GetWindowThreadProcessId(FindWindowW(L"Shell_TrayWnd", nullptr), &explorer);
+            std::ofstream stream(statusFile, std::ios::binary | std::ios::trunc);
+            stream << nlohmann::json{{"schemaVersion", 1}, {"pid", pid}, {"explorerPid", explorer},
+                {"serviceReady", true}, {"effectStatus", "pending"}, {"stage", "synthetic-ready-after-dialog"},
+                {"hresult", 0}, {"registeredTaskbars", 1}, {"backgrounds", 1}, {"appliedTaskbars", 0}}.dump();
+            return failure.load();
+        };
         auto failureTimings = timings; failureTimings.stopTimeoutMs = 1000;
+        failureTimings.readySettleMs = 800;
         bool healthy = false;
         TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
             ++launches; launch.executable = path;
             launch.arguments = healthy ? L"--taskbar-core-fixture delayed-close" : L"--taskbar-synthetic-exit";
+            if (!healthy) launch.diagnosticsFile = statusFile;
             return Error::None;
         }, failureTimings, api);
-        expect(core.Start() == Error::CoreAccessDenied && !core.Alive(),
-               "synthetic denial survives the child's normal exit");
-        expect(core.Stop(true) == Error::CoreAccessDenied && !core.HasProcess() && launches == 1,
-               "restoration never relaunches a core already known to be denied");
-        expect(core.Stop(true) == Error::CoreAccessDenied && core.Start(true) == Error::CoreAccessDenied && launches == 1,
-               "repeated recovery requests preserve the failure without another process");
+        expect(core.Start() == dialogError && launches == 1,
+               "synthetic dialog failure is terminal");
+        failure = Error::None;
+        expect(core.Transparency().stage == "synthetic-ready-after-dialog" && !core.Ready(),
+               "matched ready status is readable but cannot acknowledge a dialog-blocked core");
+        expect(core.Start() == dialogError && launches == 1,
+               "ready status and cleared source input cannot unlock a dialog failure");
+        expect(core.Stop(true) == dialogError && launches == 1,
+               "restoration never relaunches a core after a dialog failure");
+        expect(Wait([&] { return !core.Alive(); }, 1500), "synthetic dialog child exits normally");
+        expect(core.Stop(true) == dialogError && core.Start(true) == dialogError && launches == 1,
+               "recovery remains blocked after the dialog child's exit");
         failure = Error::None; healthy = true; core.ResetFailure();
         expect(core.Start() == Error::None && core.Ready() && launches == 2,
                "explicit retry permits a repaired environment to start");
         expect(core.Stop(false) == Error::None && !core.HasProcess(),
                "successful explicit retry still performs normal shutdown");
+        std::error_code removed; std::filesystem::remove(statusFile, removed);
+    }
+    {
+        int launches = 0;
+        TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+            ++launches; launch.executable = path; launch.arguments = L"--taskbar-synthetic-exit";
+            return Error::None;
+        }, timings);
+        expect(core.Start() == Error::CoreFailure && launches == 1,
+               "unreported child exit is terminal even when no dialog was sampled");
+        expect(core.Start() == Error::CoreFailure && core.Stop(true) == Error::CoreFailure &&
+               core.Start(true) == Error::CoreFailure && launches == 1,
+               "an early manually dismissed dialog or unknown exit cannot relaunch through recovery");
+    }
+    {
+        // Reset must retire the already exited child before forgetting its
+        // failure. Otherwise Stop(true) reads that child's still-fresh failed
+        // report and silently locks the explicitly requested recovery again.
+        const auto statusFile = std::filesystem::temp_directory_path() /
+            (L"lume-taskbar-reset-recovery-" + std::to_wstring(GetCurrentProcessId()) + L".json");
+        int launches = 0; bool healthy = false;
+        TaskbarCoreProcessApi api;
+        api.readDialogFailure = [&](DWORD pid) {
+            if (healthy) return Error::None;
+            DWORD explorer = 0; GetWindowThreadProcessId(FindWindowW(L"Shell_TrayWnd", nullptr), &explorer);
+            std::ofstream stream(statusFile, std::ios::binary | std::ios::trunc);
+            stream << nlohmann::json{{"schemaVersion", 1}, {"pid", pid}, {"explorerPid", explorer},
+                {"serviceReady", false}, {"effectStatus", "failed"}, {"stage", "synthetic-old-failure"},
+                {"hresult", static_cast<std::int32_t>(0x800401E3u)},
+                {"registeredTaskbars", 0}, {"backgrounds", 0}, {"appliedTaskbars", 0}}.dump();
+            return Error::CoreFailure;
+        };
+        auto recoveryTimings = timings; recoveryTimings.stopTimeoutMs = 1000;
+        TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+            ++launches; launch.executable = path;
+            launch.arguments = healthy ? L"--taskbar-core-fixture delayed-close" : L"--taskbar-synthetic-exit";
+            if (!healthy) launch.diagnosticsFile = statusFile;
+            return Error::None;
+        }, recoveryTimings, api);
+        expect(core.Start() == Error::CoreFailure && Wait([&] { return !core.Alive(); }, 1500),
+               "reset-recovery fixture leaves a fresh failed report and an exited child");
+        healthy = true; core.ResetFailure();
+        expect(core.Stop(true) == Error::None && launches == 2 && !core.HasProcess(),
+               "explicit reset permits healthy recovery without rereading the old child's failure");
+        std::error_code removed; std::filesystem::remove(statusFile, removed);
+    }
+    {
+        std::atomic_bool attemptCancelled{false};
+        int launches = 0;
+        observedChildCreated = false;
+        TaskbarCoreProcess core(attemptCancelled, [&](bool, TaskbarCoreLaunch& launch) {
+            ++launches; launch.executable = path; launch.arguments = L"--taskbar-synthetic-exit";
+            return Error::None;
+        }, timings, ObservedApi());
+        std::thread cancellation([&] {
+            if (Wait([&] { return observedChildCreated.load(); })) attemptCancelled = true;
+        });
+        const auto first = core.Start(); cancellation.join();
+        expect(first == Error::Cancelled && launches == 1,
+               "first startup can be cancelled while its owned child is alive");
+        expect(Wait([&] { return !core.Alive(); }, 1500),
+               "cancelled fixture child exits before the next request");
+        attemptCancelled = false;
+        expect(core.Start() == Error::CoreFailure && launches == 1,
+               "ordinary start after cancelled child's exit cannot discard it and launch again");
+        expect(core.Stop(true) == Error::CoreFailure && launches == 1,
+               "cancelled-child exit also remains locked through recovery");
+    }
+    for (const bool delayedExit : {false, true}) {
+        int launches = 0;
+        auto shutdownTimings = timings; shutdownTimings.stopTimeoutMs = delayedExit ? 80 : 1000;
+        TaskbarCoreProcess core(cancel, [&](bool, TaskbarCoreLaunch& launch) {
+            ++launches; launch.executable = path; launch.arguments = L"--taskbar-core-fixture fail-close";
+            return Error::None;
+        }, shutdownTimings);
+        expect(core.Start() == Error::None && core.Ready(), "nonzero shutdown fixture first becomes ready");
+        if (delayedExit) {
+            expect(core.Stop(false) == Error::CoreStop,
+                   "delayed nonzero shutdown first exceeds its normal stop deadline");
+            expect(Wait([&] { return !core.Alive(); }, 1500), "delayed failed shutdown actually exits");
+            expect(core.Start() == Error::CoreFailure && launches == 1,
+                   "ordinary start cannot replace a delayed nonzero shutdown child");
+        } else {
+            expect(core.Stop(false) == Error::CoreFailure && launches == 1,
+                   "nonzero child exit during requested shutdown becomes terminal");
+        }
+        expect(core.Stop(true) == Error::CoreFailure && core.Start(true) == Error::CoreFailure && launches == 1,
+               "failed requested shutdown cannot restart the child through recovery");
     }
     HANDLE containedChild = nullptr;
     {
@@ -541,6 +726,15 @@ bool DiagnosticReportRegression() {
     Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreRestartRequired, "DLL sharing violation requests one explicit reload");
     sample["hresult"] = static_cast<std::int32_t>(0x80070102); write(sample);
     Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreAttachTimeout, "structured wait timeout is recognized");
+    sample["serviceReady"] = false;
+    for (const auto code : {0x800401E3u, 0x80004005u}) {
+        sample["hresult"] = static_cast<std::int32_t>(code); write(sample);
+        Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreFailure,
+              "failed initialization without a known HRESULT requires explicit retry");
+    }
+    sample["serviceReady"] = true; write(sample);
+    Check(ReadTaskbarCoreDiagnostics(file, 123, 456).error == Error::CoreEffectUnconfirmed,
+          "a ready service's transient effect-query failure is not an initialization failure");
     sample["effectStatus"] = "pending"; sample["hresult"] = 0; write(sample);
     const auto handle = CreateFileW(file.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     Check(handle != INVALID_HANDLE_VALUE, "open own synthetic heartbeat for staleness test");
@@ -554,6 +748,7 @@ bool DiagnosticReportRegression() {
         std::atomic_bool cancel{false};
         TaskbarCoreTimings limits; limits.startTimeoutMs = 2000; limits.readySettleMs = 0;
         limits.stopTimeoutMs = 1000; limits.waitSliceMs = 10;
+        limits.xamlWaitMs = 0;
         TaskbarCoreProcess process(cancel, [&](bool, TaskbarCoreLaunch& launch) {
             launch.executable = FixtureExecutable(); launch.arguments = L"--taskbar-status-fixture";
             launch.diagnosticsFile = file; return Error::None;
@@ -569,9 +764,31 @@ bool DiagnosticReportRegression() {
     return true;
 }
 int main(int count, char** args) {
+    if (count == 2 && !std::strcmp(args[1], "--popup-regression-worker")) {
+        wchar_t desktop[256]{}; DWORD bytes = 0;
+        Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+            desktop, sizeof(desktop), &bytes) &&
+            std::wstring_view(desktop).find(L"LumeTaskbarPopupRegression.") == 0,
+            "real popup fixture runs only on its explicitly created private desktop");
+        return PopupDialogRegression() ? 0 : 1;
+    }
+    if (count == 2 && !std::strcmp(args[1], "--popup-regression-only"))
+        return RunPopupRegressionOnPrivateDesktop() ? 0 : 1;
+    if (count == 2 && !std::strcmp(args[1], "--taskbar-popup-fixture")) {
+        wchar_t desktop[256]{}; DWORD bytes = 0;
+        Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+            desktop, sizeof(desktop), &bytes) &&
+            std::wstring_view(desktop).find(L"LumeTaskbarPopupRegression.") == 0,
+            "real core error dialog cannot be displayed on the input desktop");
+        MessageBoxW(nullptr,
+            L"Failed to initialize XAML Diagnostics.\n\n0x800401E3: Operation unavailable",
+            L"Lume Taskbar Core - Error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        return 0;
+    }
     if (count == 4 && !std::strcmp(args[1], "--taskbar-status-fixture") && !std::strcmp(args[2], "--lume-status-file"))
         return RunCoreFixture(false, std::filesystem::u8path(args[3]));
-    if (count == 2 && !std::strcmp(args[1], "--taskbar-synthetic-exit")) { Sleep(900); return 0; }
+    if ((count == 2 || (count == 4 && !std::strcmp(args[2], "--lume-status-file"))) &&
+        !std::strcmp(args[1], "--taskbar-synthetic-exit")) { Sleep(900); return 0; }
     if (count == 2 && !std::strcmp(args[1], "--taskbar-kernel-fixture")) { Sleep(15000); return 0; }
     if (count == 3 && !std::strcmp(args[1], "--taskbar-atomic-owner-crash"))
         return CrashImmediatelyAfterChildCreation(args[2]);
@@ -581,10 +798,12 @@ int main(int count, char** args) {
         return passed ? 0 : 1;
     }
     if (count == 3 && !std::strcmp(args[1], "--taskbar-core-fixture"))
-        return RunCoreFixture(!std::strcmp(args[2], "never-ready"));
+        return RunCoreFixture(!std::strcmp(args[2], "never-ready"), {},
+            !std::strcmp(args[2], "fail-close") ? 7 : 0);
     Check(AtomicProcessRegression(), "atomic non-graphical subprocess regressions");
     Check(ProcessLifecycleRegression(), "real subprocess lifecycle regressions");
     Check(DiagnosticReportRegression(), "structured effect report regressions");
+    Check(RunPopupRegressionOnPrivateDesktop(), "real core popup regression on a private desktop");
     Files files; Shared shared; std::atomic_int notifications{0};
     TaskbarPaths paths{"taskbar.json", {}, {}};
     {
@@ -666,6 +885,11 @@ int main(int count, char** args) {
           "auto-hide demand hides the taskbar on a worker while the module is disabled");
     Check(shared.starts == startsBeforeDemand && !runtime.Snapshot().state.preferences.enabled,
           "demand never starts transparency or changes saved preferences");
+    Check(runtime.RevealForTray(250)&&Wait([&]{return !shared.autoHide.load()&&!runtime.Snapshot().applying;}),
+          "explicit tray action temporarily overrides Dock hiding asynchronously");
+    Check(Wait([&]{return shared.autoHide.load();})&&shared.starts==startsBeforeDemand&&
+          !runtime.Snapshot().state.preferences.enabled,
+          "expired tray visibility lease restores hiding and retains disabled transparency");
     Check(runtime.RequireAutoHide(false) &&
           Wait([&] { const auto s = runtime.Snapshot(); return !shared.autoHide && !s.worker && !s.applying; }),
           "withdrawn demand restores the taskbar and releases the worker");

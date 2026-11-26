@@ -1,5 +1,5 @@
 
-import {DEFAULT_THEME} from 'H:/refactor/workspace/lume1.0.7/build-artifacts/folia-upstream/src/services/baseThemes.ts';
+import {DEFAULT_THEME} from 'H:/refactor/workspace/lume1.0.7/build-artifacts/folia-lyrics-snapshot-0721/src/services/baseThemes.ts';
 export {resolveThemeFontStack} from 'reference:fonts';
 function build(mode,preferences) {
   const color=preferences?.lyricsFontColor||'#ffffff';
@@ -22,5 +22,5 @@ function cappellaBubbles(color) {
   const light=0.2126*r+0.7152*g+0.0722*b>0.4;
   return light?{secondaryColor:'#27272a',accentColor:'#71717a'}:{secondaryColor:'#f4f4f5',accentColor:'#a1a1aa'};
 }
-export const themes=Object.freeze(Object.fromEntries(["cappella","diorama","pendolo","tempera"].map(mode=>[mode,build(mode)])));
+export const themes=Object.freeze(Object.fromEntries(["cappella","diorama","pendolo","tempera","nebbia","hanabi","machi"].map(mode=>[mode,build(mode)])));
 export function resolvePreferenceTheme(mode,preferences) {return preferences?build(mode,preferences):themes[mode];}

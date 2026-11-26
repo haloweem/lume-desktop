@@ -43,6 +43,8 @@ class Boundary extends React.Component<any,{failed:boolean}> {
 
 function Stage({state}:any) {
   const theme=useMemo(()=>resolvePreferenceTheme(mode,state.preferences),[state.preferences]);
+  const subtitleContentMode=state.preferences?.subtitleContentMode||'translation';
+  host.dataset.referenceSubtitleMode=subtitleContentMode;
   useEffect(()=>{
     // Historical Word components subscribe after mounting. dirty publishes even an unchanged time,
     // so mounting in the middle of a paused line does not leave them in their invisible waiting pose.
@@ -55,7 +57,7 @@ function Stage({state}:any) {
     coverUrl={localArtwork(current?.artwork,new URL('../../music.html',location.href).href)}
     seed={current?.id||current?.source||current?.title||`geometry-${mode}`}
     paused={!state.playing} staticMode={false} isPreviewMode={false} background={background}
-    showText={true} lyricsFontScale={1} subtitleFontScale={1} subtitleContentMode="translation" />;
+    showText={true} lyricsFontScale={1} subtitleFontScale={1} subtitleContentMode={subtitleContentMode} />;
 }
 
 function render() {

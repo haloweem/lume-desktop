@@ -14,7 +14,11 @@ import path from 'node:path';
 if(!process.argv[2])throw new Error('Usage: node tools/extract-music-modes-next.mjs <read-only upstream>');
 const upstream=path.resolve(process.argv[2]);
 const output=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../music-visualizers/reference-next');
-const require=createRequire(path.join(upstream,'package.json'));
+const snapshot=process.argv.includes('--snapshot');
+const dependencyRoot=path.resolve(process.env.LUME_LYRIC_BUILD_DEPS||upstream);
+const latest=path.resolve(process.env.LUME_FOLIA_NEW_SOURCE||upstream);
+const previous=JSON.parse(readFileSync(path.join(output,'manifest.json'),'utf8'));
+const require=createRequire(path.join(dependencyRoot,'package.json'));
 let esbuild;
 try{esbuild=require('esbuild');}catch{
   if(!process.env.LUME_ESBUILD)throw new Error('Set LUME_ESBUILD to esbuild/lib/main.js');
@@ -25,20 +29,27 @@ const {compile}=require('tailwindcss');
 const {Scanner}=require('@tailwindcss/oxide');
 const postcss=require('postcss');
 
-const modes={cappella:'cappella/VisualizerCappella.tsx',diorama:'diorama/VisualizerDiorama.tsx',pendolo:'pendolo/VisualizerPendolo.tsx',tempera:'tempera/VisualizerTempera.tsx'};
+const modes={cappella:'cappella/VisualizerCappella.tsx',diorama:'diorama/VisualizerDiorama.tsx',pendolo:'pendolo/VisualizerPendolo.tsx',tempera:'tempera/VisualizerTempera.tsx',
+  nebbia:'nebbia/VisualizerNebbia.tsx',hanabi:'hanabi/VisualizerHanabi.tsx',machi:'machi/VisualizerMachi.tsx'};
 const slash=value=>value.replaceAll('\\','/');
 const sha256=value=>createHash('sha256').update(value).digest('hex');
 const sourceHashes=new Map();
-const upstreamFile=relative=>path.join(upstream,relative);
+const upstreamFile=relative=>path.join(relative.startsWith('node_modules/')?dependencyRoot:upstream,relative);
 const read=relative=>{
   const bytes=readFileSync(upstreamFile(relative));
   sourceHashes.set(slash(relative),sha256(bytes));
   return bytes.toString('utf8');
 };
-const visualizer=relative=>upstreamFile(`src/components/visualizer/${relative}`);
+const visualizer=relative=>path.join(/^(nebbia|hanabi|machi)\//.test(relative)?latest:upstream,`src/components/visualizer/${relative}`);
 const referenceSrc=path.resolve(output,'../reference/src');
 
 function declaration(relative,name) {
+  if(snapshot&&relative==='src/utils/lyrics/parserCore.ts') {
+    const generated=readFileSync(path.join(output,'source/generated/parser.ts'),'utf8');
+    const ast=parse(generated,{sourceType:'module',plugins:['typescript']});
+    const node=ast.program.body.find(node=>node.type==='VariableDeclaration'&&node.declarations.some(item=>item.id.name===name));
+    return generated.slice(node.start,node.end);
+  }
   const source=read(relative),ast=parse(source,{sourceType:'module',plugins:['typescript','jsx']});
   const statement=ast.program.body.map(node=>node.type==='ExportNamedDeclaration'?node.declaration:node)
     .find(node=>node?.type==='VariableDeclaration'&&node.declarations.some(item=>item.id.name===name));
@@ -61,7 +72,7 @@ export const DRUM_KICK = 0, DRUM_SNARE = 1, DRUM_HAT = 2;
 export const getDrumHits = () => null;`);
 virtual.set('next:visualizer-settings',`import {DEFAULT_SMART_BEAT_SETTINGS} from '${slash(upstreamFile('src/types.ts'))}';
 // Lume has no Folia visualizer settings store; renderers see the default settings.
-const state = {smartBeat: DEFAULT_SMART_BEAT_SETTINGS};
+const state = {smartBeat: DEFAULT_SMART_BEAT_SETTINGS, lyricRenderQuality:{scale:1,antialias:'auto'}};
 export const useVisualizerSettingsStore = selector => selector ? selector(state) : state;
 useVisualizerSettingsStore.getState = () => state;
 useVisualizerSettingsStore.subscribe = () => () => {};`);
@@ -113,6 +124,10 @@ export const themes=Object.freeze(Object.fromEntries(${JSON.stringify(Object.key
 export function resolvePreferenceTheme(mode,preferences) {return preferences?build(mode,preferences):themes[mode];}`);
 virtual.set('reference:modes',`export const loaders={${Object.entries(modes).map(([name,file])=>
   `${JSON.stringify(name)}:()=>import(${JSON.stringify(slash(visualizer(file)))})`).join(',')}};`);
+virtual.set('reference:new-defaults',`export {DEFAULT_HANABI_TUNING} from '${slash(visualizer('hanabi/types.ts'))}';
+export {DEFAULT_MACHI_TUNING} from '${slash(visualizer('machi/types.ts'))}';`);
+virtual.set('next:subtitle-position','export const usePlayerSubtitleBottomPx = hidden => hidden ? 32 : 112; export const usePlayerSubtitleYieldsToDock = () => false;');
+virtual.set('next:app-view',`export const useAppViewStore = selector => selector({view:'player'});`);
 
 const adaptations=[
   'VisualizerShell resolves to the reference stage Shell: original classes, ref, opacity and font stack; the Folia app background, stage layers, player chrome and hotspots are not part of the stage.',
@@ -164,11 +179,78 @@ const patches={
      "    private lumeRefreshed = false;\n    private renderFrame = () => {\n        this.lumeRefreshed = false;\n        if (this.destroyed) return;"],
   ],
 };
+// The glass reads these canvases after presentation, including while paused.
+const sceneMark="setAttribute('data-lumenic-liquid-glass-scene-effect','true')";
+const newStagePatches={
+  'src/components/visualizer/machi/createMachiRuntime.ts':[
+    ['new THREE.WebGLRenderer({ antialias: false,','new THREE.WebGLRenderer({ preserveDrawingBuffer: true, antialias: false,'],
+    ['options.host.appendChild(canvas);',`canvas.${sceneMark}; options.host.appendChild(canvas);`],
+  ],
+  'src/components/visualizer/nebbia/nebbiaGl.ts':[
+    ['preserveDrawingBuffer: false','preserveDrawingBuffer: true'],
+    ['private palette:',`private backdrop = parent.document.querySelector<HTMLCanvasElement>('canvas[data-music-background]');
+    private swatch = document.createElement('canvas');
+    private paperTexture: WebGLTexture | null = null;
+    private paperVersion = '';
+    private paperTime = -Infinity;
+    private palette:`],
+    ["'uSeeThrough', 'uMistTint'","'uSeeThrough', 'uMistTint', 'uWallpaper'"],
+    ['gl.uniform3fv(U.uMistTint, this.mistTint);',`gl.uniform3fv(U.uMistTint, this.mistTint);
+        if (this.seeThrough) {
+            const bg = this.backdrop, now = performance.now();
+            gl.activeTexture(gl.TEXTURE0 + 14);
+            if (!this.paperTexture) {
+                this.paperTexture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D,this.paperTexture);
+                gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+                gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([110,110,110,255]));
+                this.swatch.width=128; this.swatch.height=72;
+            } else gl.bindTexture(gl.TEXTURE_2D,this.paperTexture);
+            const version=bg?.dataset.glassFrameVersion;
+            if (bg?.width && bg.height && version!==this.paperVersion && now-this.paperTime>=100) {
+                this.paperVersion=version; this.paperTime=now;
+                const ctx=this.swatch.getContext('2d')!;
+                const br=bg.getBoundingClientRect(), fr=window.frameElement?.getBoundingClientRect();
+                if(fr && br.width && br.height) ctx.drawImage(bg,(fr.left-br.left)*bg.width/br.width,(fr.top-br.top)*bg.height/br.height,fr.width*bg.width/br.width,fr.height*bg.height/br.height,0,0,128,72);
+                else ctx.drawImage(bg,0,0,128,72);
+                gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,this.swatch);
+            }
+            gl.uniform1i(U.uWallpaper,14);
+        }`],
+  ],
+  'src/components/visualizer/nebbia/nebbiaShaders.ts':[
+    ['uniform bool uSeeThrough;', 'uniform sampler2D uWallpaper; uniform bool uSeeThrough;'],
+    ['vec3 haze = vec3(0.70, 0.74, 0.78);',`vec3 paper = uSeeThrough ? texture(uWallpaper,vUv).rgb : vec3(0.0);
+  vec3 haze = uSeeThrough ? mix(paper,vec3(1.0),0.2) : vec3(0.70, 0.74, 0.78);`],
+    ['fog = uMistTint * alpha;', 'fog = mix(paper,vec3(0.07),0.55) * alpha;'],
+    ['fog += uLa * uSpotI', 'fog += (uSeeThrough ? haze : uLa) * uSpotI'],
+    ['lens = scene(vec2(ruv.x * aspect, ruv.y), 0.006);','lens = uSeeThrough ? texture(uWallpaper,ruv).rgb : scene(vec2(ruv.x * aspect, ruv.y), 0.006);'],
+  ],
+  'src/components/visualizer/nebbia/createNebbiaRuntime.ts':[
+    ['input.host.appendChild(this.canvas);',`this.canvas.${sceneMark}; input.host.appendChild(this.canvas);`],
+    ['this.gl.onSpriteReady = () => this.requestFrame();',`this.gl.onSpriteReady = () => this.requestFrame();
+            parent.document.querySelector('canvas[data-music-background]')?.addEventListener('lume-glass-media-frame',this.paperFrame);`],
+    ['    destroy() {',`    private paperFrame = () => { if(this.paused) this.requestFrame(); };
+    destroy() {
+        parent.document.querySelector('canvas[data-music-background]')?.removeEventListener('lume-glass-media-frame',this.paperFrame);`],
+  ],
+  'src/components/visualizer/hanabi/createHanabiPixiRuntime.ts':[
+    ['this.options.host.appendChild(this.app.canvas);',`this.app.canvas.${sceneMark}; this.app.canvas.lumeMaterialSceneRefresh = () => this.app.renderer.render(this.app.stage); this.options.host.appendChild(this.app.canvas);`],
+  ],
+};
 
 const forbidden=/(?:^|\/)(?:App\.[tj]sx?|electron|providers?|accounts?)(?:\/|$)|components\/app\/|services\/(?:onlineMusic|db|appDatabase|repositories|analysis)\b|(?:^|\/)node:/i;
 const graphSource=new Map();
+virtual.set('next:vocal',`export const VOCAL_FPS=50,getVocalEnvelope=()=>null;`);
+virtual.set('next:gpu',`export const isGpuAnalysisActive=()=>false;`);
+virtual.set('next:strokes',`export const loadNebbiaStrokes=async()=>null,getNebbiaStrokeMedians=()=>null;`);
+virtual.set('next:select',`export const CustomSelectMenu=()=>null,customSelectOptionId=(id,i)=>id+'-option-'+i,optionsPerPage=()=>0,menuHeightOf=()=>0;`);
 const plugin={name:'reference-next-boundary',setup(build){
   build.onResolve({filter:/.*/},args=>{
+    if(args.path.endsWith('/nebbiaStrokes'))return {path:'next:strokes',namespace:'reference'};
+    for(const [suffix,key] of [['/analysis/vocalEnvelope','vocal'],['/analysis/gpuActivity','gpu'],['/CustomSelectMenu','select']])if(args.path.endsWith(suffix))return {path:'next:'+key,namespace:'reference'};
     if(virtual.has(args.path))return {path:args.path,namespace:'reference'};
     if(args.path==='reference:fonts')return {path:upstreamFile('src/utils/fontStacks.ts')};
     if(args.path==='react-i18next')return {path:path.join(referenceSrc,'bridges.js')};
@@ -178,23 +260,27 @@ const plugin={name:'reference-next-boundary',setup(build){
     if(/services\/temperaLayerImages$/.test(args.path))return {path:'next:tempera-images',namespace:'reference'};
     if(/stores\/useVisualizerSettingsStore$/.test(args.path))return {path:'next:visualizer-settings',namespace:'reference'};
     if(/analysis\/drumHits$/.test(args.path))return {path:'next:drum-hits',namespace:'reference'};
+    if(/hooks\/usePlayerBottomBarBottomPx$/.test(args.path))return {path:'next:subtitle-position',namespace:'reference'};
+    if(/stores\/useAppViewStore$/.test(args.path))return {path:'next:app-view',namespace:'reference'};
     if(/lyrics\/parserCore$/.test(args.path))return {path:'next:parser',namespace:'reference'};
     if(args.path.startsWith('virtual:'))throw new Error(`Unhandled Vite virtual module ${args.path} from ${args.importer}`);
     if(args.path.startsWith('node:'))throw new Error(`Node runtime import forbidden: ${args.path}`);
   });
   build.onLoad({filter:/.*/,namespace:'reference'},args=>({contents:virtual.get(args.path),loader:'ts',resolveDir:upstream}));
   build.onLoad({filter:/\.[cm]?[jt]sx?$/},args=>{
-    const relative=slash(path.relative(upstream,args.path));
+    const newer=args.path.startsWith(latest+path.sep);
+    const relative=slash(path.relative(newer?latest:upstream,args.path));
     if(relative.startsWith('../'))return;
     if(relative.startsWith('src/')&&forbidden.test(relative))throw new Error(`App surface forbidden: ${relative}`);
-    let contents=read(relative);
+    let contents=newer?readFileSync(args.path,'utf8'):read(relative);
+    if(newer)sourceHashes.set('v0.7.29/'+relative,sha256(contents));
     if(relative.startsWith('src/')){
       globImports=[];
       contents=expandGlobs(contents,args.path);
       if(globImports.length)contents=globImports.join('\n')+'\n'+contents;
-      graphSource.set(relative,contents);
+      graphSource.set(newer?'v0.7.29/'+relative:relative,contents);
     }
-    for(const [before,after,count=1] of patches[relative]??[]){
+    for(const [before,after,count=1] of (newer?newStagePatches:patches)[relative]??[]){
       contents=contents.replaceAll('\r\n','\n');
       if(contents.split(before).length!==count+1)throw new Error(`Upstream patch drift: ${relative}`);
       contents=contents.replaceAll(before,after);
@@ -211,7 +297,7 @@ const result=await esbuild.build({absWorkingDir:upstream,entryPoints,outdir:outp
   minify:true,metafile:true,write:false,legalComments:'eof',
   chunkNames:'chunks/[name]-[hash]',entryNames:'[name]',assetNames:'assets/[name]-[hash]',
   loader:{'.png':'file','.jpg':'file','.jpeg':'file','.gif':'file','.webp':'file','.svg':'file'},
-  nodePaths:[path.join(upstream,'node_modules')],
+  nodePaths:[path.join(dependencyRoot,'node_modules')],
   define:{'process.env.NODE_ENV':'"production"','import.meta.env.DEV':'false','import.meta.env.PROD':'true'},
   plugins:[plugin],logLevel:'warning'});
 
@@ -249,9 +335,10 @@ postcss.parse(read('src/index.css')).walkRules(rule=>{
 emit('reference.css',`${compiler.build(candidates)}\n${custom.join('\n')}\n:root{color-scheme:dark;}\nhtml,body,#reference-stage{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;}\nbody{color:#e4e4e7;font-family:Inter,sans-serif;}\n`);
 
 // Corresponding sources, generated adapters and licences.
-for(const relative of graphSource.keys())emit(`source/upstream/${relative}`,readFileSync(upstreamFile(relative)));
+for(const relative of graphSource.keys())emit(`source/upstream/${relative}`,readFileSync(relative.startsWith('v0.7.29/')?path.join(latest,relative.slice(8)):upstreamFile(relative)));
 for(const [name,contents] of virtual)emit(`source/generated/${name.replace(/^[a-z]+:/,'')}.ts`,contents);
 emit('licenses/Folia-AGPL-3.0.txt',read('LICENSE'));
+emit('licenses/nebbia/raindrop-MIT.txt',readFileSync(path.join(latest,'src/components/visualizer/nebbia/nebbiaRaindrop.LICENSE.txt')));
 const packages=new Map();
 for(const input of inputPaths){
   const match=input.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/);
@@ -282,7 +369,7 @@ const upstreamRevision=(()=>{try{
 }catch{return 'unknown';}})();
 const adapters=Object.fromEntries(['src/entry.tsx','src/protocol.js','index.html','../../music-preference-values.js','../reference/src/protocol.js'].map(file=>[file,sha256(readFileSync(path.join(output,file)))]));
 const manifest={schema:1,builder:'esbuild',builderVersion:esbuild.version,
-  upstream:'https://github.com/chthollyphile/folia-major',upstreamVersion:JSON.parse(read('package.json')).version,upstreamRevision,
+  upstream:'https://github.com/chthollyphile/folia-major',upstreamVersion:snapshot?previous.upstreamVersion:JSON.parse(read('package.json')).version,upstreamRevision:snapshot?previous.upstreamRevision:upstreamRevision,newModesUpstreamVersion:'0.7.29',
   modes:Object.keys(modes),
   entries:Object.fromEntries(Object.entries(modes).map(([mode,file])=>[mode,`src/components/visualizer/${file}`])),
   dependencies:Object.fromEntries([...packages].sort(([a],[b])=>a.localeCompare(b,'en'))),

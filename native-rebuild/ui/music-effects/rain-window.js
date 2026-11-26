@@ -27,7 +27,7 @@ export async function loadRainWindow(document, signal) {
   signal.throwIfAborted();
   return (host, state, options) => mountEffectCanvas(host, 'rain-window', canvas => {
     const release = createRainWindowEffect(canvas, {
-      background: state.scene.canvas, dropColor, dropAlpha, onError: options?.onError,
+      background: state.scene.canvas, dropColor, dropAlpha, foreground:host.dataset.effectLayer==='foreground', onError: options?.onError,
     }, RAIN_WINDOW_SETTINGS);
     if (!release) throw new Error('Rain Window could not initialize');
     return {update() {}, dispose: release};

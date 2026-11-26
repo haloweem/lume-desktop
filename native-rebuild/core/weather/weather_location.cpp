@@ -12,11 +12,8 @@ namespace lume::weather {
 namespace {
 using Json = nlohmann::json;
 constexpr Millis Minute = 60000;
-// A system fix is refreshed every 30 minutes; a desktop rarely moves, so an
-// IP fix lasts 6 hours. Failed or unconfirmed lookups retry after 10 minutes.
-constexpr Millis DeviceTtl = 30 * Minute, IpTtl = 6 * Hour, RetryTtl = 10 * Minute;
-// For a day after a system fix, IP results cannot replace it.
-constexpr Millis DeviceHold = Day;
+constexpr Millis DeviceTtl = 15 * Minute, IpTtl = 30 * Minute, RetryTtl = 10 * Minute;
+constexpr Millis DeviceHold = 2 * Hour, MaxStale = Day, PendingTtl = 30 * Minute;
 // Results this close count as the same place.
 constexpr double NearKm = 50;
 constexpr std::size_t LocationMaxBytes = 64 * 1024, StoreMaxBytes = 4096;
@@ -112,8 +109,8 @@ std::string Upper(std::string text) {
 Json Request(const HttpTransport& transport, std::string url, const Cancellation& cancel, bool direct = false) {
     Check(cancel);
     HttpRequest request{std::move(url),
-        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.1.3 (desktop weather)"}},
-        12000, LocationMaxBytes};
+        {{"Accept", "application/json"}, {"User-Agent", "Lume/1.1.4 (desktop weather)"}},
+        direct ? 4000u : 6000u, LocationMaxBytes};
     request.direct = direct;
     auto reply = transport(request, cancel);
     Check(cancel);
@@ -126,6 +123,13 @@ Json Request(const HttpTransport& transport, std::string url, const Cancellation
     if (!result.is_object()) throw std::runtime_error("Location response object");
     return result;
 }
+}
+bool ReliableDeviceFix(const DeviceFix& fix, Millis now) {
+    const bool source = fix.source == DeviceLocationSource::Satellite ||
+        fix.source == DeviceLocationSource::Wifi || fix.source == DeviceLocationSource::Cellular;
+    return source && ValidLocation(fix.location) && std::isfinite(fix.accuracyMeters) &&
+        fix.accuracyMeters > 0 && fix.accuracyMeters <= 10000 &&
+        fix.sampledAt > 0 && now >= fix.sampledAt && now - fix.sampledAt <= 15 * Minute;
 }
 WeatherLocation::WeatherLocation(HttpTransport t, Clock c, LocalTime l, PlaceNormalizer n, DeviceLocation d,
                                  LocationEnvironment e, LocationStore s)
@@ -142,18 +146,31 @@ void WeatherLocation::Restore() {
         const auto text = store_.load();
         if (!text || text->empty() || text->size() > StoreMaxBytes) return;
         const auto value = Json::parse(*text);
-        if (!value.is_object() || value.value("version", 0) != 1) return;
+        const auto version = value.value("version", 0);
+        if (!value.is_object() || (version != 1 && version != 2)) return;
         Trusted trusted;
         trusted.location = {value.at("latitude").get<double>(), value.at("longitude").get<double>(),
                             Name(Field(value, "name")), Field(value, "timezone")};
         const auto origin = Field(value, "origin");
         if (origin != "device" && origin != "ip") return;
-        trusted.origin = origin == "device" ? Origin::Device : Origin::Ip;
+        // Old device caches contain no accuracy/source evidence. Revalidate them.
+        trusted.origin = version == 2 && origin == "device" ? Origin::Device : Origin::Ip;
         trusted.at = value.at("at").get<Millis>();
-        if (trusted.location.name.empty() || trusted.location.timezone.empty() || !ValidLocation(trusted.location))
+        const auto now = clock_();
+        if (trusted.location.name.empty() || trusted.location.timezone.empty() || !ValidLocation(trusted.location) ||
+            trusted.at <= 0 || now < trusted.at || now - trusted.at >= MaxStale)
             return;
         // Restored only as the anchor and fallback; the next Resolve still looks again.
         trusted_ = std::move(trusted);
+        if (version == 2 && value.contains("pending") && value["pending"].is_object()) {
+            const auto& p = value["pending"];
+            Location candidate{p.at("latitude").get<double>(), p.at("longitude").get<double>(),
+                               Name(Field(p, "name")), Field(p, "timezone")};
+            const auto at = p.at("at").get<Millis>();
+            if (ValidLocation(candidate) && at > 0 && now >= at && now - at <= PendingTtl) {
+                pending_ = std::move(candidate); pendingAt_ = at;
+            }
+        }
     } catch (...) {}
 }
 void WeatherLocation::Accept(Location location, Origin origin, Millis now) {
@@ -161,12 +178,17 @@ void WeatherLocation::Accept(Location location, Origin origin, Millis now) {
     pending_.reset();
     checkedAt_ = now;
     validUntil_ = now + (origin == Origin::Device ? DeviceTtl : IpTtl);
-    if (!store_.save) return;
+    Persist();
+}
+void WeatherLocation::Persist() {
+    if (!store_.save || !trusted_) return;
     try {
-        const Json value{{"version", 1}, {"latitude", trusted_->location.latitude},
+        Json value{{"version", 2}, {"latitude", trusted_->location.latitude},
                          {"longitude", trusted_->location.longitude}, {"name", trusted_->location.name},
                          {"timezone", trusted_->location.timezone},
-                         {"origin", origin == Origin::Device ? "device" : "ip"}, {"at", now}};
+                         {"origin", trusted_->origin == Origin::Device ? "device" : "ip"}, {"at", trusted_->at}};
+        if (pending_) value["pending"] = {{"latitude", pending_->latitude}, {"longitude", pending_->longitude},
+            {"name", pending_->name}, {"timezone", pending_->timezone}, {"at", pendingAt_}};
         store_.save(value.dump());
     } catch (...) {}
 }
@@ -176,6 +198,10 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
     if (city != "auto") return {NamedLocation(city), ProviderError::None};
     Restore();
     const auto now = clock_();
+    if (trusted_ && (now < trusted_->at || now - trusted_->at >= MaxStale)) {
+        trusted_.reset(); pending_.reset(); validUntil_ = 0;
+    }
+    if (pending_ && (now < pendingAt_ || now - pendingAt_ > PendingTtl)) pending_.reset();
     if (trusted_ && now >= checkedAt_ && now < validUntil_) return {trusted_->location, ProviderError::None};
     // Keeps the trusted location for now and looks again after a short wait.
     const auto keep = [&]() -> LocationResult {
@@ -191,8 +217,10 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
             const Location probe{0, 0, result, "UTC"};
             return result.empty() || !ValidLocation(probe) ? std::string(u8"当前位置") : result;
         };
-        const auto finish = [&](Location location) -> std::optional<Location> {
+        const auto finish = [&](Location location, bool device = false) -> std::optional<Location> {
             if (!ValidLocation(location)) return {};
+            if (device && location.timezone.empty() && environment_.timezone)
+                location.timezone = environment_.timezone();
             if (location.timezone.empty() || !local_ || !local_(now, location.timezone))
                 location.timezone = "UTC";
             auto chinese = Name(location.name, true);
@@ -226,13 +254,14 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
             location.name = normalize(chinese.empty() ? std::string(u8"当前位置") : chinese);
             return location;
         };
-        // The system fix uses nearby Wi-Fi, which a VPN cannot move: accept it at once.
+        // Windows can also return IP/default locations. Only precise fresh fixes
+        // may skip IP corroboration and acquire the short device hold.
         if (device_) {
             try {
                 const auto location = device_(now, cancel);
                 Check(cancel);
-                if (location) {
-                    if (const auto resolved = finish(*location)) {
+                if (location && ReliableDeviceFix(*location, now)) {
+                    if (const auto resolved = finish(location->location, true)) {
                         Check(cancel);
                         Accept(*resolved, Origin::Device, clock_());
                         return {trusted_->location, ProviderError::None};
@@ -261,6 +290,7 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
             }
             return true;
         };
+        std::vector<Location> candidates;
         for (const auto* url : {"https://api.ip.sb/geoip", "https://ipinfo.io/json"}) {
             try {
                 const auto value = Request(transport_, url, cancel, true);
@@ -289,20 +319,33 @@ LocationResult WeatherLocation::Resolve(std::string_view city, const Cancellatio
                 if (!latitude || !longitude) continue;
                 const Location candidate{*latitude, *longitude, name, Field(value, "timezone")};
                 if (!ValidLocation(candidate) || !plausible(value, candidate.timezone)) continue;
-                // A far move needs the same answer twice in a row.
-                if (trusted_ && DistanceKm(trusted_->location, candidate) > NearKm) {
-                    if (!pending_ || DistanceKm(*pending_, candidate) > NearKm) {
-                        pending_ = candidate;
-                        return keep();
-                    }
-                }
-                const auto resolved = finish(candidate);
-                if (!resolved) continue;
-                Check(cancel);
-                Accept(*resolved, Origin::Ip, clock_());
-                return {trusted_->location, ProviderError::None};
+                candidates.push_back(candidate);
             } catch (const Cancelled&) { throw; } catch (const std::exception&) {}
             Check(cancel);
+        }
+        if (candidates.empty()) { pending_.reset(); Persist(); return keep(); }
+        const bool agreement = candidates.size() == 2 && DistanceKm(candidates[0], candidates[1]) <= NearKm;
+        Location candidate = candidates.front();
+        if (candidates.size() == 2 && !agreement) {
+            // Two disagreeing providers are not evidence that the user moved.
+            const auto near = std::find_if(candidates.begin(), candidates.end(), [&](const auto& item) {
+                return trusted_ && DistanceKm(trusted_->location, item) <= NearKm;
+            });
+            if (near == candidates.end()) { pending_.reset(); Persist(); return keep(); }
+            candidate = *near;
+        }
+        if (trusted_ && DistanceKm(trusted_->location, candidate) > NearKm && !agreement) {
+            if (!pending_ || DistanceKm(*pending_, candidate) > NearKm || now - pendingAt_ < Minute) {
+                if (!pending_ || DistanceKm(*pending_, candidate) > NearKm) {
+                    pending_ = candidate; pendingAt_ = now; Persist();
+                }
+                return keep();
+            }
+        }
+        const auto resolved = finish(candidate);
+        if (resolved) {
+            Check(cancel); Accept(*resolved, Origin::Ip, clock_());
+            return {trusted_->location, ProviderError::None};
         }
     } catch (const Cancelled&) { return {{}, ProviderError::Cancelled}; }
     return keep();

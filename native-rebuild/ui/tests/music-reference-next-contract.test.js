@@ -9,7 +9,7 @@ const reference=fileURLToPath(new URL('../music-visualizers/reference-next/',imp
 const manifest=JSON.parse(readFileSync(path.join(reference,'manifest.json'),'utf8'));
 
 test('newer Folia renderers are listed with their upstream revision',()=>{
-  assert.deepEqual(manifest.modes,['cappella','diorama','pendolo','tempera']);
+  assert.deepEqual(manifest.modes,['cappella','diorama','pendolo','tempera','nebbia','hanabi','machi']);
   assert.match(manifest.upstreamRevision,/^[0-9a-f]{40}$/);
   for(const mode of manifest.modes)assert.ok(manifest.modeBytes[mode]>0,mode);
 });

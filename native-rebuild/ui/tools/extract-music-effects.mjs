@@ -159,6 +159,7 @@ ${body}
 
 function rainSource() {
   let text = original(`${effects}rainWindowPhysics.js`);
+  text = replace(text,'createProgram(gl, VERT_SRC, FRAG_SRC)',`createProgram(gl, VERT_SRC, resources.foreground ? FRAG_SRC.replace('fragColor = blend(bg, fg);','fragColor = fg;') : FRAG_SRC)`);
   // Scope sprite canvases per runtime so two hosts cannot dispose each other's sprites.
   text = replace(text, 'const createRainWindowEffect = (function() {', 'const createRainWindowEffect = function(canvas, resources, settings) { return (function() {');
   text = replace(text, '})()\n;', '})()(canvas, resources, settings);\n};');

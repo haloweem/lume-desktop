@@ -1,4 +1,5 @@
 #include "core/ui/page_bridge.h"
+#include "core/dock/dock_model.h"
 #include "core/dynamic_island/expanded_widgets.h"
 
 namespace lume::ui {
@@ -36,19 +37,26 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     constexpr NumericCommand numericCommands[] {
         {L"v1|dynamicIsland|leftWidget|",0,30,PageCommand::IslandLeftWidgetFirst},
         {L"v1|dynamicIsland|rightWidget|",0,30,PageCommand::IslandRightWidgetFirst},
+        {L"v1|dock|screen|",0,64,PageCommand::DockScreenFirst},
         {L"v1|dynamicIsland|screen|",0,64,PageCommand::IslandScreenFirst},
         {L"v1|dynamicIsland|hoverDelayMs|",100,1000,PageCommand::IslandHoverDelayFirst},
         {L"v1|dynamicIsland|expandedLayout|",0,dynamic_island::ExpandedLayoutMaximum,PageCommand::IslandExpandedLayoutFirst},
+        {L"v1|dynamicIsland|countdownDate|",0,2932896,PageCommand::IslandCountdownDateFirst},
         {L"v1|minimize|durationMs|",50,2000,PageCommand::MinimizeDurationFirst},
         {L"v1|minimize|unhideDurationMs|",0,5000,PageCommand::MinimizeUnhideDurationFirst},
         {L"v1|radial|shortcut|",1,4095,PageCommand::RadialShortcutFirst},
+        {L"v1|dock|summonShortcut|",0,4095,PageCommand::DockSummonShortcutFirst},
         {L"v1|dock|iconScale|",50,120,PageCommand::DockIconScaleFirst},
         {L"v1|organizer|iconScale|",50,120,PageCommand::OrganizerIconScaleFirst},
         {L"v1|dock|position|",0,100,PageCommand::DockPositionFirst},
+        {L"v1|dock|positionOffset|",0,50,PageCommand::DockPositionOffsetFirst},
         {L"v1|dock|bottomOffset|",0,160,PageCommand::DockBottomOffsetFirst},
         {L"v1|dock|iconSpacing|",4,24,PageCommand::DockIconSpacingFirst},
+        {L"v1|dock|animationDuration|",50,2000,PageCommand::DockAnimationDurationFirst},
         {L"v1|dock|launchpadScale|",60,140,PageCommand::DockLaunchpadScaleFirst},
         {L"v1|dock|launchpadIconScale|",50,120,PageCommand::DockLaunchpadIconScaleFirst},
+        {L"v1|dock|reflectionRatio|",0,100,PageCommand::DockReflectionRatioFirst},
+        {L"v1|dock|reflectionTransparency|",0,100,PageCommand::DockReflectionTransparencyFirst},
         {L"v1|spectrum|size|",50,300,PageCommand::SpectrumSizeFirst},
         {L"v1|spectrum|pulse|barWidth|",2,24,PageCommand::SpectrumPulseBarWidthFirst},
         {L"v1|spectrum|pulse|barGap|",0,12,PageCommand::SpectrumPulseBarGapFirst},
@@ -60,7 +68,7 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
     for(const auto& command:numericCommands) {
         if(message.substr(0,command.prefix.size())!=command.prefix)continue;
         const auto number=message.substr(command.prefix.size());
-        if(number.empty()||number.size()>4||(number.size()>1&&number.front()==L'0'))return PageCommand::Invalid;
+        if(number.empty()||number.size()>7||(number.size()>1&&number.front()==L'0'))return PageCommand::Invalid;
         int value=0;
         for(const auto ch:number) {
             if(ch<L'0'||ch>L'9')return PageCommand::Invalid;
@@ -68,6 +76,7 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         }
         if(value<command.minimum||value>command.maximum)return PageCommand::Invalid;
         if(command.first==PageCommand::RadialShortcutFirst&&!ValidRadialShortcut(value))return PageCommand::Invalid;
+        if(command.first==PageCommand::DockSummonShortcutFirst&&!dock::ValidSummonShortcut(static_cast<unsigned>(value)))return PageCommand::Invalid;
         if(command.first==PageCommand::IslandExpandedLayoutFirst){
             std::vector<dynamic_island::ExpandedWidget> layout;
             if(!dynamic_island::DecodeExpandedLayout(static_cast<unsigned>(value),layout))return PageCommand::Invalid;
@@ -125,6 +134,8 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dynamicIsland|clockStyle|pixel",PageCommand::IslandClockPixel},
         {L"v1|dynamicIsland|calendarStyle|default",PageCommand::IslandCalendarDefault},
         {L"v1|dynamicIsland|calendarStyle|chinese-almanac",PageCommand::IslandCalendarChineseAlmanac},
+        {L"v1|dynamicIsland|countdownStyle|standard",PageCommand::IslandCountdownStandard},
+        {L"v1|dynamicIsland|countdownStyle|violet",PageCommand::IslandCountdownViolet},
         {L"v1|dynamicIsland|resetAppearance",PageCommand::IslandResetAppearance},
         {L"v1|dynamicIsland|animationSpeed|slow",PageCommand::IslandAnimationSlow},
         {L"v1|dynamicIsland|animationSpeed|normal",PageCommand::IslandAnimationNormal},
@@ -247,13 +258,38 @@ PageCommand ParsePageCommand(std::wstring_view message) noexcept {
         {L"v1|dock|material|liquid-glass", PageCommand::DockLiquidGlass},
         {L"v1|dock|material|frosted-glass", PageCommand::DockFrostedGlass},
         {L"v1|dock|reset", PageCommand::DockReset},
+        {L"v1|dock|positionMode|center", PageCommand::DockPositionModeCenter},
+        {L"v1|dock|positionMode|left", PageCommand::DockPositionModeLeft},
+        {L"v1|dock|positionMode|right", PageCommand::DockPositionModeRight},
+        {L"v1|dock|edge|bottom", PageCommand::DockEdgeBottom},
+        {L"v1|dock|edge|top", PageCommand::DockEdgeTop},
+        {L"v1|dock|edge|left", PageCommand::DockEdgeLeft},
+        {L"v1|dock|edge|right", PageCommand::DockEdgeRight},
+        {L"v1|dock|launchpadEnabled|true", PageCommand::DockLaunchpadEnable},
+        {L"v1|dock|launchpadEnabled|false", PageCommand::DockLaunchpadDisable},
+        {L"v1|dock|showStartMenu|true", PageCommand::DockStartMenuOn},
+        {L"v1|dock|showStartMenu|false", PageCommand::DockStartMenuOff},
         {L"v1|dock|material|none", PageCommand::DockNoMaterial},
         {L"v1|dock|reflection|true", PageCommand::DockReflectionOn},
         {L"v1|dock|reflection|false", PageCommand::DockReflectionOff},
+        {L"v1|dock|animation|true", PageCommand::DockAnimationOn},
+        {L"v1|dock|animation|false", PageCommand::DockAnimationOff},
+        {L"v1|dock|animateRestore|true", PageCommand::DockAnimateRestoreOn},
+        {L"v1|dock|animateRestore|false", PageCommand::DockAnimateRestoreOff},
+        {L"v1|dock|animateLaunch|true", PageCommand::DockAnimateLaunchOn},
+        {L"v1|dock|animateLaunch|false", PageCommand::DockAnimateLaunchOff},
+        {L"v1|dock|animateClose|true", PageCommand::DockAnimateCloseOn},
+        {L"v1|dock|animateClose|false", PageCommand::DockAnimateCloseOff},
+        {L"v1|dock|runningPreview|false", PageCommand::DockRunningIcons},
+        {L"v1|dock|runningPreview|true", PageCommand::DockRunningPreviews},
         {L"v1|dock|showRunning|true", PageCommand::DockShowRunningOn},
         {L"v1|dock|showRunning|false", PageCommand::DockShowRunningOff},
         {L"v1|dock|systemTray|true", PageCommand::DockSystemTrayOn},
         {L"v1|dock|systemTray|false", PageCommand::DockSystemTrayOff},
+        {L"v1|dock|summonEnabled|true", PageCommand::DockSummonEnable},
+        {L"v1|dock|summonEnabled|false", PageCommand::DockSummonDisable},
+        {L"v1|dock|summonCapture|true", PageCommand::DockSummonCaptureBegin},
+        {L"v1|dock|summonCapture|false", PageCommand::DockSummonCaptureEnd},
     };
     // Exact string_view equality also rejects embedded NUL and other controls.
     for (const auto& entry : commands) {

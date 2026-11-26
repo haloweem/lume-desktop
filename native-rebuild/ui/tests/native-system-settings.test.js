@@ -49,7 +49,7 @@ test('taskbar state validates the asynchronous schema without saved/result field
   for(const error of ['load','save','busy','unsupported','missing-payload','payload-integrity','conflict',
     'discover','read-appearance','apply-appearance','read-auto-hide','apply-auto-hide','core-start',
     'core-exited','core-stop','cancelled','recovery','watch','system-effects-disabled','runtime','read-visibility','apply-visibility','framework-install','core-access-denied',
-    'core-restart-required','core-attach-timeout','core-effect-unconfirmed'])
+    'core-restart-required','core-attach-timeout','core-effect-unconfirmed','core-failure'])
     assert.equal(validHostMessage(taskbarMessage({error})),true,error);
   for(const fields of [{enabled:1},{applying:'false'},{pendingRecovery:null},{taskbars:-1},{taskbars:1.5},{taskbars:33},
     {revision:-1},{revision:Number.MAX_SAFE_INTEGER+1},{mode:'unknown'},{loadStatus:'recovered'},
@@ -94,7 +94,7 @@ test('taskbar effect evidence crosses the bridge without treating core liveness 
 });
 
 test('taskbar reload, timeout and hiding have independent truthful notices',()=>{
-  for(const [error,detail] of [['core-restart-required',/重启 Windows/],['core-attach-timeout',/0x80070102/]]) {
+  for(const [error,detail] of [['core-restart-required',/重启 Windows/],['core-attach-timeout',/0x80070102/],['core-failure',/已停止自动重试/]]) {
     const state=reduce(initialState(),{type:'host',message:taskbarMessage({revision:1,enabled:true,running:false,
       loadStatus:'loaded',error,autoHideTaskbar:true,hideApplied:true,effectiveAutoHide:true})});
     assert.equal(state.taskbarStatus,'error');

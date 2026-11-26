@@ -151,6 +151,20 @@ void TabStrip(){
     Check(Difference(plain,tabs,{44,18,320,36},96)>200,"tab strip pixels differ from the single title");
     Check(Difference(plain,tabs,single.viewport,96)==0,"tabs leave the icon grid pixels unchanged");
 }
+void WrappedNames(){
+    auto collection=Collection();
+    collection.title="Desktop applications and files";
+    collection.items.front().name="LiquidDesktop Manager";
+    const auto first=LayoutOrganizer(420,392,collection).cells.front().bounds;
+    const auto before=Paint(collection,{},nullptr);
+    collection.items.front().name="LiquidDesktop Settings";
+    const auto after=Paint(collection,{},nullptr);
+    Check(Difference(before,after,{first.x,first.y+73,first.width,first.height-73},96)>20,
+        "the displayed grid label includes text on a line below the old one-line label");
+    Check(HitOrganizer(420,392,collection,first.x+first.width/2,first.y+first.height-4).index==0&&
+        HitOrganizer(420,392,collection,first.x+first.width/2,first.y+first.height-4).kind==OrganizerHit::Kind::Item,
+        "the wrapped label is part of the item hit target");
+}
 void CollapsedHeader(){
     auto collection=Collection();collection.mode=lume::organizer::Mode::Collapsed;
     collection.title=u8"收纳文件和常用快捷方式";
@@ -162,17 +176,16 @@ void CollapsedHeader(){
     Check(Same(layout.header,{0,0,width,height})&&layout.searchInput.width==0,
         "the whole compact bar is a header and has no hidden search input");
     Check(HitOrganizer(width,height,collection,layout.title.x+10,22,view).kind==OrganizerHit::Kind::Title&&
-        HitOrganizer(width,height,collection,layout.search.x+10,22,view).kind==OrganizerHit::Kind::Search&&
+        layout.search.width==0 && HitOrganizer(width,height,collection,width-22,22,view).kind!=OrganizerHit::Kind::Search&&
         HitOrganizer(width,height,collection,18,22,view).kind==OrganizerHit::Kind::Header&&
         HitOrganizer(width,height,collection,120,height+1,view).kind==OrganizerHit::Kind::None,
         "compact title, search, dragging margin and outside hit regions stay separate");
     const auto panels=OrganizerSearchPanels(layout,view);
-    Check(panels.size()==1&&panels[0].x==layout.search.x&&panels[0].y>=0&&
-        panels[0].y+panels[0].height<=height,"only the in-bar search button requests an extra glass panel");
+    Check(panels.empty(),"collapsed strip has no search glass");
     auto grouped=TabView({L"桌面",L"文件",L"工作资料",L"游戏",L"更长的标签名称"},4);
     const auto overflow=LayoutOrganizer(width,height,collection,grouped);
     Check(overflow.tabs.size()==5&&overflow.maxTabScroll>0&&
-        overflow.tabStrip.x+overflow.tabStrip.width<overflow.search.x,
+        overflow.tabStrip.x+overflow.tabStrip.width<=width,
         "compact groups preserve a scrollable tab strip beside search");
     grouped.tabScroll=overflow.maxTabScroll;
     const auto scrolled=LayoutOrganizer(width,height,collection,grouped);
@@ -215,11 +228,6 @@ void CollapsedHeader(){
 }
 void AccentMarkers(){
     using lume::organizer::Accent;
-    Check(OrganizerAccentColor(Accent::None)==0,"no accent adds no color to the original drawing");
-    std::set<std::uint32_t> colors;
-    for(const auto accent:{Accent::Blue,Accent::Green,Accent::Amber,Accent::Rose,Accent::Purple})
-        Check(OrganizerAccentColor(accent)&&colors.insert(OrganizerAccentColor(accent)).second,
-            "each optional accent has its own RGB marker color");
     for(const bool collapsed:{false,true})for(const unsigned dpi:{96u,144u}){
         auto collection=Collection();
         if(collapsed)collection.mode=lume::organizer::Mode::Collapsed;
@@ -236,25 +244,10 @@ void AccentMarkers(){
         auto colored=collection;colored.accent=Accent::Blue;
         const auto blue=paint(colored,{});
         const auto coloredLayout=LayoutOrganizer(width,height,colored);
-        Check(Difference(plain,blue,layout.header,dpi)>100&&Same(layout.title,coloredLayout.title)&&
-            Same(layout.search,coloredLayout.search)&&Same(layout.viewport,coloredLayout.viewport),
-            "accent changes only header appearance and preserves all layout regions");
-        CheckClip(blue,plain,layout.header,dpi);
-        const auto before=HitOrganizer(width,height,collection,layout.title.x+5,layout.title.y+10);
-        const auto after=HitOrganizer(width,height,colored,layout.title.x+5,layout.title.y+10);
-        Check(before.kind==after.kind&&before.index==after.index,"accent never changes title hit behavior");
-        colored.accent=Accent::None;
-        Check(paint(colored,{}).pixels==plain.pixels,"clearing an accent restores the exact default pixels");
-        auto tabs=TabView({L"桌面",L"文件"},0);const auto baseTabs=paint(collection,tabs);
-        tabs.tabAccents={Accent::None,Accent::None};
-        Check(paint(collection,tabs).pixels==baseTabs.pixels,"explicit uncolored tabs keep the exact original appearance");
-        const auto tabLayout=LayoutOrganizer(width,height,collection,tabs);
-        tabs.tabAccents={Accent::Green,Accent::Rose};const auto markedTabs=paint(collection,tabs);
-        const auto markedLayout=LayoutOrganizer(width,height,collection,tabs);
-        Check(Difference(baseTabs,markedTabs,tabLayout.tabStrip,dpi)>20&&
-            Same(tabLayout.tabs[0],markedLayout.tabs[0])&&Same(tabLayout.tabs[1],markedLayout.tabs[1]),
-            "independent tab markers are visible inside unchanged tab hit bounds");
-        CheckClip(markedTabs,baseTabs,tabLayout.tabStrip,dpi);
+        Check(plain.pixels==blue.pixels && Same(layout.title,coloredLayout.title),
+              "legacy marker settings do not tint the organizer");
+        const auto tabs=TabView({L"桌面",L"文件"},0);
+        Check(paint(collection,tabs).pixels==paint(colored,tabs).pixels,"legacy marker settings do not tint tabs");
     }
 }
 void CaptureVisuals(const std::filesystem::path& directory){
@@ -278,8 +271,7 @@ void CaptureVisuals(const std::filesystem::path& directory){
         auto compact=collection;compact.mode=lume::organizer::Mode::Collapsed;compact.title=u8"工作资料";
         compact.accent=grouped?lume::organizer::Accent::Green:lume::organizer::Accent::Blue;
         OrganizerViewState view;
-        if(grouped){view=TabView({L"工作",L"文件"},0);
-            view.tabAccents={lume::organizer::Accent::Green,lume::organizer::Accent::Rose};}
+        if(grouped)view=TabView({L"工作",L"文件"},0);
         WidgetCanvas canvas;WidgetBitmap bitmap;
         Check(canvas.Begin(OrganizerCollapsedWidth,OrganizerCollapsedHeight,144),"accent compact capture begins");
         canvas.Rounded({0,0,OrganizerCollapsedWidth,OrganizerCollapsedHeight},10,0x273342,.96f);
@@ -597,9 +589,13 @@ void HoverEdges(){
     };
     for(const bool list:{false,true})for(const unsigned dpi:{96u,120u,144u,192u}){
         collection.layout=list?lume::organizer::Layout::List:lume::organizer::Layout::Icons;
-        const auto layout=LayoutOrganizer(420,392,collection);const auto viewport=layout.viewport;
+        const auto initial=LayoutOrganizer(420,392,collection);const auto viewport=initial.viewport;
         const auto targets=list?std::vector<std::size_t>{0,5}:std::vector<std::size_t>{0,3,8,11};
         for(const auto index:targets){
+            OrganizerViewState view;
+            const auto original=initial.cells[index].bounds;
+            view.scroll=std::max(0.f,original.y+original.height-(viewport.y+viewport.height));
+            const auto layout=LayoutOrganizer(420,392,collection,view);
             const auto r=layout.cells[index].bounds;
             Check(r.x>=viewport.x&&r.y>=viewport.y&&r.x+r.width<=viewport.x+viewport.width&&
                 r.y+r.height<=viewport.y+viewport.height,"edge hover fixture has a fully visible original cell");
@@ -611,7 +607,7 @@ void HoverEdges(){
             Check(Near(cell.scale,1.28f)&&Near(cell.lift,5)&&Same(cell.bounds,r),
                 "edge handling preserves maximum hover scale and original cell geometry");
             const OrganizerImage image=[&](const auto& item){return item.id==collection.items[index].id?magenta:transparent;};
-            const auto actual=Paint(collection,{},&frame,dpi,image);
+            const auto actual=Paint(collection,view,&frame,dpi,image);
             const float side=(list?24.f:44.f)*cell.scale;
             const WidgetRect expected{std::clamp(center.x-side/2,viewport.x,viewport.x+viewport.width-side),
                 std::clamp(center.y-cell.lift-side/2,viewport.y,viewport.y+viewport.height-side),side,side};
@@ -619,7 +615,7 @@ void HoverEdges(){
             Check(canvas.Begin(420,392,dpi)&&canvas.ImageBitmap(magenta,expected)&&canvas.Finish(reference),
                 "uncropped reference icon is drawn at full hover size without any clip");
             Check(ink(actual)==ink(reference),"fully visible edge cells retain every pixel of the maximum-size hover icon");
-            CheckClip(actual,Paint(collection,{},nullptr,dpi,image),viewport,dpi);
+            CheckClip(actual,Paint(collection,view,nullptr,dpi,image),viewport,dpi);
         }
         OrganizerViewState partial;partial.scroll=17;
         const auto partialLayout=LayoutOrganizer(420,392,collection,partial);
@@ -711,7 +707,7 @@ int main(int argc,char** argv){
         CompositeOver(0xff12ab34u,0xff204060u)==0xff12ab34u,
         "BMP compositing respects premultiplied transparent, half-alpha and opaque BGRA pixels");
     LayoutAndSelection();
-    PointerAndDrag();SpringsAndIdentity();HoverAndReduced();ExternalArrival();HoverEdges();Pixels();TabStrip();CollapsedHeader();AccentMarkers();
+    PointerAndDrag();SpringsAndIdentity();HoverAndReduced();ExternalArrival();HoverEdges();Pixels();TabStrip();WrappedNames();CollapsedHeader();AccentMarkers();
     Check(VerifyOrganizerViewport(),"existing viewport pixels and hit tests pass without motion");
     if(capture)CaptureVisuals(std::filesystem::u8path(argv[2]));
     CoUninitialize();std::cout<<"PASS organizer motion, direct drag, interruption, settle, identity and real canvas pixels\n";

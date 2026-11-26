@@ -1,0 +1,1 @@
+export const CustomSelectMenu=()=>null,customSelectOptionId=(id,i)=>id+'-option-'+i,optionsPerPage=()=>0,menuHeightOf=()=>0;

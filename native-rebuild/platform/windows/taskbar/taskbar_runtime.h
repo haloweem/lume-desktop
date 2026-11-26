@@ -28,6 +28,9 @@ public:
     // Keeps Explorer's taskbar auto-hidden while true, independently of the
     // user's taskbar preferences; false hands control back to them.
     bool RequireAutoHide(bool);
+    // Temporarily reveal the real notification area through the owning worker.
+    // Saved preferences stay unchanged; normal hiding resumes after the lease.
+    bool RevealForTray(unsigned milliseconds = 10000);
     bool Shutdown();
     TaskbarRuntimeStatus Snapshot() const;
 private:

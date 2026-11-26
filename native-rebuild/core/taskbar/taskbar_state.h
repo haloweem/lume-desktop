@@ -21,11 +21,12 @@ enum class Error {
     Discover, ReadAppearance, ApplyAppearance, ReadAutoHide, ApplyAutoHide,
     CoreStart, CoreExited, CoreStop, Cancelled, Recovery, Watch, SystemEffectsDisabled,
     ReadVisibility, ApplyVisibility, FrameworkInstall, CoreAccessDenied,
-    CoreRestartRequired, CoreAttachTimeout, CoreEffectUnconfirmed
+    CoreRestartRequired, CoreAttachTimeout, CoreEffectUnconfirmed, CoreFailure
 };
 inline bool RequiresExplicitRetry(Error error) {
     return error == Error::FrameworkInstall || error == Error::CoreAccessDenied ||
-           error == Error::CoreRestartRequired;
+           error == Error::CoreRestartRequired || error == Error::CoreAttachTimeout ||
+           error == Error::CoreFailure;
 }
 const char* ErrorName(Error);
 const char* ModeName(Mode);

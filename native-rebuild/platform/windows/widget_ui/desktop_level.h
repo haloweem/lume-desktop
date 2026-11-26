@@ -115,6 +115,29 @@ inline bool IsDesktopForegroundWindow(HWND window, HWND host) {
     return shellPid && shellPid == hostPid && shellPid == windowPid &&
         GetClassNameW(window, name, 32) && (!wcscmp(name, L"Progman") || !wcscmp(name, L"WorkerW"));
 }
+inline bool OwnDesktopInteraction(HWND window) {
+    window=GetAncestor(window,GA_ROOT);
+    for(unsigned depth=0;window&&depth<16;++depth) {
+        DWORD pid=0;GetWindowThreadProcessId(window,&pid);
+        if(pid!=GetCurrentProcessId())return false;
+        const auto found=window_layer::windows.find(window);
+        if(found!=window_layer::windows.end()) {
+            if(window_layer::ResidentDesktop(found->second))return true;
+            if(found->second.owner){window=found->second.owner;continue;}
+        }
+        if(IsDesktopWidget(window))return true;
+        const HWND surfaceOwner=SurfaceOwner(window);
+        window=surfaceOwner?surfaceOwner:GetWindow(window,GW_OWNER);
+    }
+    return false;
+}
+inline bool IsDesktopInteractionForeground(HWND window,HWND host) {
+    // Opening a widget's menu continues an existing desktop interaction. It
+    // does not bring back applications that Explorer covered with Win+D. A
+    // menu reached from an application must not create that exemption.
+    return IsDesktopForegroundWindow(window,host)||
+        (host&&foregroundDesktop==host&&OwnDesktopInteraction(window));
+}
 inline bool DesktopForeground(HWND host = Host()) {
     const HWND foreground = GetForegroundWindow();
     if (!host) return false;
@@ -439,7 +462,7 @@ inline void RequestAllImpl(bool immediate, HWND (WINAPI* foreground)()) {
         const DWORD thread = GetWindowThreadProcessId(window, &pid);
         if (pid != GetCurrentProcessId() || (!IsWindowVisible(window) && !window_layer::WantsDesktop(window)) ||
             !IsDesktopWidget(window)) return TRUE;
-        if (request.direct && thread == GetCurrentThreadId() && IsDesktopForegroundWindow(request.foreground(), Host()))
+        if (request.direct && thread == GetCurrentThreadId() && IsDesktopInteractionForeground(request.foreground(), Host()))
             SendMessageW(window, Message(), 0, 0);
         else PostMessageW(window, Message(), 0, 0);
         return TRUE;
@@ -456,7 +479,7 @@ public:
     Watcher(const Watcher&) = delete;
     Watcher& operator=(const Watcher&) = delete;
     ~Watcher() { Stop(); }
-    bool Start(HINSTANCE instance) {
+    bool Start(HINSTANCE instance, bool protectFullscreen = true) {
         if (window_) return true;
         if (current_) return false;
         WNDCLASSEXW wc{}; wc.cbSize = sizeof(wc); wc.hInstance = instance;
@@ -470,7 +493,7 @@ public:
         current_ = this;
         window_layer::applicationCeiling=[] { return ApplicationCeiling(Host()); };
         window_layer::desktopForeground=[] { return DesktopForeground(Host()); };
-        window_layer::Start();
+        window_layer::Start(protectFullscreen);
         SetTimer(window_, PolicyTimer, 250, nullptr);
         Hook();
         // A clicked widget is lifted above other windows. Once the user moves on
@@ -530,7 +553,7 @@ private:
         if (GetAncestor(window, GA_PARENT) != GetDesktopWindow()) return;
         wchar_t name[16]{};
         if (!GetClassNameW(window, name, 16) || (wcscmp(name, L"WorkerW") && wcscmp(name, L"Progman"))) return;
-        if (IsDesktopForegroundWindow(GetForegroundWindow(), Host())) {
+        if (IsDesktopInteractionForeground(GetForegroundWindow(), Host())) {
             window_layer::Refresh();
             RequestAll(true);
         }
@@ -545,9 +568,9 @@ public:
         window_layer::Refresh();
         const bool wasDesktop = foregroundDesktop != nullptr;
         const HWND host = Host();
-        foregroundDesktop = IsDesktopForegroundWindow(window, host) ? host : nullptr;
+        foregroundDesktop = IsDesktopInteractionForeground(window, host) ? host : nullptr;
         if (foregroundDesktop) {
-            selectedWidget = nullptr;
+            if(IsDesktopForegroundWindow(window,host))selectedWidget = nullptr;
             RequestAll(true);
             if (current_) {
                 SetTimer(current_->window_, SettleTimer, SettleMs, nullptr);
@@ -577,14 +600,19 @@ private:
         if (!self) return DefWindowProcW(window, message, w, l);
         if (message == PolicyMessage || (message == WM_TIMER && w == PolicyTimer)) {
             self->policyPending_=false;
-            window_layer::Refresh(); return 0;
+            window_layer::Refresh();
+            if(self->slowPolicy_!=window_layer::balancedIdle) {
+                self->slowPolicy_=window_layer::balancedIdle;
+                SetTimer(window,PolicyTimer,self->slowPolicy_ ? 1500 : 250,nullptr);
+            }
+            return 0;
         }
         if (message == self->taskbarCreated_ && self->taskbarCreated_) {
             self->Hook(); self->Sweep(); return 0;
         }
         if (message == WM_TIMER && w == DesktopTimer) {
             // Stop if the foreground left the desktop without an event reaching us.
-            if (IsDesktopForegroundWindow(GetForegroundWindow(), Host())) RequestAll();
+            if (IsDesktopInteractionForeground(GetForegroundWindow(), Host())) RequestAll();
             else { foregroundDesktop = nullptr; KillTimer(window, DesktopTimer); RequestAll(); }
             return 0;
         }
@@ -605,6 +633,6 @@ private:
     DWORD hookProcess_ = 0;
     UINT taskbarCreated_ = 0;
     unsigned sweeps_ = 0;
-    bool policyPending_ = false;
+    bool policyPending_ = false, slowPolicy_ = false;
 };
 }  // namespace lume::platform::windows::desktop_level

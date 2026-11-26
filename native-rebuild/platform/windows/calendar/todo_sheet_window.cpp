@@ -6,6 +6,7 @@
 #include "platform/windows/calendar/calendar_todo_picker.h"
 #include "platform/windows/rounded_window_surface.h"
 #include "platform/windows/widget_ui/ui_font.h"
+#include "platform/windows/widget_ui/LumeWidgetColorPicker.h"
 #include "platform/windows/widget_ui/direct_write_text.h"
 #include "platform/windows/widget_ui/window_layer_policy.h"
 #include <commctrl.h>
@@ -24,13 +25,12 @@ namespace {
 using Json = nlohmann::json;
 constexpr wchar_t kClass[] = L"LumeTodoSheetWindow", kBodyClass[] = L"LumeTodoSheetBody";
 constexpr int kWidth = 560, kHeight = 820;
-constexpr UINT_PTR kFloatTimer = 1;
 constexpr COLORREF kPaper=RGB(28,28,32),kInput=RGB(38,38,43),kBorder=RGB(51,51,56),
     kText=RGB(241,241,242),kDim=RGB(155,155,157),kFaint=RGB(101,101,103),kAccent=RGB(91,123,234),kFooter=RGB(25,25,28);
 enum Id { Title=101, Notes=105, SaveButton=106, CancelButton, CloseButton,
     Pending=110, Complete, AllDay, Timed, Date, Days, LessDays, MoreDays,
     Reminder, Repeat, More, StepInput, AddStep, DeleteButton, StartTime, EndTime,
-    Today, Tomorrow, Weekend, Monday, ColorFirst=140, StepFirst=1000 };
+    Today, Tomorrow, Weekend, Monday, ColorFirst=140, CountdownText=160, CountdownBackground=180, CountUp=182, CountDown=183, StepFirst=1000 };
 constexpr std::array<const char*,6> kColorNames{"none","red","orange","yellow","green","blue"};
 constexpr COLORREF kColors[]{CLR_INVALID,RGB(255,105,97),RGB(255,163,72),RGB(245,214,92),RGB(107,216,155),RGB(101,180,255)};
 constexpr std::array<const char*,5> kRepeats{"none","daily","weekdays","weekly","monthly"};
@@ -83,6 +83,9 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
     HINSTANCE instance=nullptr;
     unsigned dpi=96;
     float width=560,height=820,scroll=0,contentHeight=0,viewportHeight=0;
+    bool countdown=false;
+    bool countdownReminder=false;
+    std::optional<CountdownAppearance> countdownAppearance,originalAppearance;
     bool en=false,ownerWasEnabled=false,closing=false,busy=false,more=false,initializing=true,creationFailed=false;
     const todo::ILocalTimePort* time=nullptr;
     todo::Command seed;
@@ -94,7 +97,8 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
     Json draft,original;
     std::wstring feedback;
     std::unique_ptr<todo_ui::Surface> surface;
-    CalendarTodoPicker picker;
+    CalendarTodoPicker picker{true};
+    int activePicker=0;
     std::map<int,SYSTEMTIME> dates;
     std::map<int,std::vector<std::wstring>> choices;
     std::map<int,int> selections;
@@ -120,6 +124,7 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         if(draft["date"]=="")draft["date"]=todo::SheetDate(day);
         if(draft["time"]=="")draft["time"]="09:00";
         if(draft["end"]=="")draft["end"]="10:00";
+        countdownReminder=countdown&&existing&&existing->reminder.kind!=todo::ReminderKind::None;
         original=draft;more=!draft["notes"].get<std::string>().empty()||!draft["subtasks"].empty();
     }
     HWND Add(int id,const wchar_t* kind,const std::wstring& text,DWORD style=0) {
@@ -161,6 +166,10 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         SendMessageW(step.title,EM_SETLIMITTEXT,500,0);
         step.remove=Button(id+2,L"×");steps.push_back(std::move(step));
     }
+    void FooterControls() {
+        Button(SaveButton,existing?T(L"保存",L"Save"):T(L"添加任务",L"Add task"));Button(CancelButton,T(L"取消",L"Cancel"));
+        Button(CloseButton,L"×");if(!countdown)Button(DeleteButton,T(L"删除",L"Delete"));
+    }
     bool CreateControls() {
         INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_DATE_CLASSES};if(!InitCommonControlsEx(&controls))return false;
         calendar::Preferences appearance;appearance.textColor.rgb=0xffffff;
@@ -175,13 +184,24 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         if(!viewport||!form)return false;
         Add(Title,L"EDIT",todo_ui::Wide(draft["title"].get<std::string>()),ES_AUTOHSCROLL);
         SendMessageW(Get(Title),EM_SETLIMITTEXT,500,0);
-        SendMessageW(Get(Title),EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(en?L"Task name":L"输入任务名称"));
+        SendMessageW(Get(Title),EM_SETCUEBANNER,TRUE,reinterpret_cast<LPARAM>(countdown?(en?L"Event name":L"输入事件名称"):(en?L"Task name":L"输入任务名称")));
         titleFont=CreateFontW(-todo_ui::Px(16,dpi),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,ui_font::Family(L"待办"));
         SendMessageW(Get(Title),WM_SETFONT,reinterpret_cast<WPARAM>(titleFont),TRUE);
+        DateControl(Date,false);
+        if(countdown){
+            Button(CountUp,T(L"正数日",L"Count up"));Button(CountDown,T(L"倒数日",L"Countdown"));
+            Button(Reminder,T(L"提醒",L"Reminder"));
+            if(countdownAppearance){
+                if(!countdownAppearance->singleColor)Button(CountdownText,T(L"字体颜色",L"Text color"));
+                Button(CountdownBackground,countdownAppearance->singleColor?T(L"颜色",L"Color"):T(L"背景颜色",L"Background color"));
+            }
+            FooterControls();
+            return !creationFailed;
+        }
         Button(Pending,T(L"待办",L"To do"));Button(Complete,T(L"已完成",L"Done"));
         for(int i=0;i<6;++i)Button(ColorFirst+i,T(L"颜色标签",L"Colour"));
         Button(AllDay,T(L"全天",L"All day"));Button(Timed,T(L"指定时间",L"At a time"));
-        DateControl(Date,false);DateControl(StartTime,true);DateControl(EndTime,true);
+        DateControl(StartTime,true);DateControl(EndTime,true);
         Add(Days,L"EDIT",std::to_wstring(draft["days"].get<int>()),ES_NUMBER|ES_CENTER);SendMessageW(Get(Days),EM_SETLIMITTEXT,3,0);
         Button(LessDays,L"−");Button(MoreDays,L"+");
         Button(Today,T(L"今天",L"Today"));Button(Tomorrow,T(L"明天",L"Tomorrow"));
@@ -208,8 +228,7 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         Button(AddStep,T(L"添加",L"Add"));
         Add(Notes,L"EDIT",todo_ui::Wide(draft["notes"].get<std::string>()),ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL);
         SendMessageW(Get(Notes),EM_SETLIMITTEXT,10000,0);
-        Button(SaveButton,existing?T(L"保存",L"Save"):T(L"添加任务",L"Add task"));Button(CancelButton,T(L"取消",L"Cancel"));
-        Button(CloseButton,L"×");Button(DeleteButton,T(L"删除",L"Delete"));
+        FooterControls();
         return !creationFailed&&std::all_of(tabs.begin(),tabs.end(),[](HWND control){return IsWindow(control)!=FALSE;});
     }
     void Move(HWND control,CalendarRect rect,bool visible=true) {
@@ -223,39 +242,56 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         RECT client{};GetClientRect(window,&client);width=client.right*96.f/dpi;height=client.bottom*96.f/dpi;
         const float inner=std::max(160.f,width-48),half=(inner-14)/2;
         viewportHeight=std::max(40.f,height-196);labels.clear();frames.clear();
-        Move(viewport,{24,103,inner,viewportHeight});
+        const float bodyTop=countdown?68.f:103.f;
+        viewportHeight+=103.f-bodyTop;
+        Move(viewport,{24,bodyTop,inner,viewportHeight});
         float y=0;
         const auto edit=[&](int id,CalendarRect rect,bool visible=true){const float inset=id==Title?16.f:12.f;
             const float vertical=id==Title?10.f:8.f;Move(Get(id),{rect.x+inset,rect.y+vertical,rect.width-2*inset,rect.height-2*vertical},visible);if(visible)frames.push_back(rect);};
         edit(Title,{0,y,inner,52});y+=68;
-        const float colorLeft=existing?half+14:0;
-        if(existing){LabelAt(T(L"状态",L"Status"),y,0,half);statusFrame={0,y+24,half,42};
-            Move(Get(Pending),{4,y+28,(half-8)/2,34});Move(Get(Complete),{half/2,y+28,(half-8)/2,34});}
-        else {ShowWindow(Get(Pending),SW_HIDE);ShowWindow(Get(Complete),SW_HIDE);}
-        LabelAt(T(L"颜色标签",L"Colour"),y,colorLeft,half);y+=24;
-        for(int i=0;i<6;++i)Move(Get(ColorFirst+i),{colorLeft+i*36.f,y,36,42});y+=58;
-        LabelAt(T(L"排期",L"Schedule"),y);y+=24;
-        scheduleFrame={0,y,inner,42};Move(Get(AllDay),{4,y+4,(inner-8)/2,34});Move(Get(Timed),{inner/2,y+4,(inner-8)/2,34});y+=58;
-        LabelAt(T(L"日期",L"Date"),y,0,half);LabelAt(T(L"持续天数",L"Duration"),y,half+14,half);y+=24;
-        Move(Get(Date),{0,y,half,42});durationFrame={half+14,y,half,42};Move(Get(LessDays),{half+16,y+4,34,34});
-        Move(Get(Days),{half+54,y+8,std::max(30.f,half-116),26});Move(Get(MoreDays),{inner-36,y+4,34,34});y+=54;
-        float quickX=0;for(int i=0;i<4;++i){const float quickWidth=en?(i>1?100.f:68.f):(i>1?66.f:54.f);Move(Get(Today+i),{quickX,y,quickWidth,30});quickX+=quickWidth+8;}y+=42;
-        const bool timed=!draft["allDay"].get<bool>();
-        if(timed){LabelAt(T(L"开始",L"Starts"),y,0,half);LabelAt(T(L"结束",L"Ends"),y,half+14,half);y+=24;}
-        Move(Get(StartTime),{0,y,half,42},timed);Move(Get(EndTime),{half+14,y,half,42},timed);if(timed)y+=58;
-        hintFrame={0,y,inner,34};y+=50;
-        LabelAt(T(L"提醒",L"Reminder"),y,0,half);LabelAt(T(L"重复",L"Repeat"),y,half+14,half);y+=24;
-        Move(Get(Reminder),{0,y,half,42});Move(Get(Repeat),{half+14,y,half,42});y+=58;
-        moreLine=y;Move(Get(More),{-8,y+15,inner+16,36});y+=65;
-        if(more){LabelAt(T(L"子任务",L"Sub-steps"),y);y+=24;}
-        for(auto& step:steps){Move(step.check,{0,y,28,34},more);edit(GetDlgCtrlID(step.title),{36,y,inner-72,34},more);Move(step.remove,{inner-28,y,28,34},more);if(more)y+=42;}
-        edit(StepInput,{0,y,inner-76,42},more);Move(Get(AddStep),{inner-68,y,68,42},more);
-        if(more){y+=58;LabelAt(T(L"备注",L"Notes"),y);y+=24;}
-        edit(Notes,{0,y,inner,100},more);if(more)y+=116;
+        if(countdown){
+            Move(Get(CountUp),{0,y,inner/2-4,34});Move(Get(CountDown),{inner/2+4,y,inner/2-4,34});y+=42;
+            LabelAt(countdownAppearance&&countdownAppearance->countUp?T(L"起始日",L"Start date"):T(L"目标日",L"Target date"),y+12,0,half);
+            Move(Get(Date),{half,y,inner-half,42});y+=56;
+            Move(Get(Reminder),{0,y,inner,34});y+=42;
+            if(countdownAppearance){
+                const auto colorRow=[&](int id,const std::wstring& label){
+                    LabelAt(label,y+12,0,half);
+                    Move(Get(id),{half,y,inner-half,42});y+=56;
+                };
+                if(!countdownAppearance->singleColor)colorRow(CountdownText,T(L"字体颜色",L"Text color"));
+                colorRow(CountdownBackground,countdownAppearance->singleColor?T(L"颜色",L"Color"):T(L"背景颜色",L"Background color"));
+            }
+        }else{
+            const float colorLeft=existing?half+14:0;
+            if(existing){LabelAt(T(L"状态",L"Status"),y,0,half);statusFrame={0,y+24,half,42};
+                Move(Get(Pending),{4,y+28,(half-8)/2,34});Move(Get(Complete),{half/2,y+28,(half-8)/2,34});}
+            else {ShowWindow(Get(Pending),SW_HIDE);ShowWindow(Get(Complete),SW_HIDE);}
+            LabelAt(T(L"颜色标签",L"Colour"),y,colorLeft,half);y+=24;
+            for(int i=0;i<6;++i)Move(Get(ColorFirst+i),{colorLeft+i*36.f,y,36,42});y+=58;
+            LabelAt(T(L"排期",L"Schedule"),y);y+=24;
+            scheduleFrame={0,y,inner,42};Move(Get(AllDay),{4,y+4,(inner-8)/2,34});Move(Get(Timed),{inner/2,y+4,(inner-8)/2,34});y+=58;
+            LabelAt(T(L"日期",L"Date"),y,0,half);LabelAt(T(L"持续天数",L"Duration"),y,half+14,half);y+=24;
+            Move(Get(Date),{0,y,half,42});durationFrame={half+14,y,half,42};Move(Get(LessDays),{half+16,y+4,34,34});
+            Move(Get(Days),{half+54,y+8,std::max(30.f,half-116),26});Move(Get(MoreDays),{inner-36,y+4,34,34});y+=54;
+            float quickX=0;for(int i=0;i<4;++i){const float quickWidth=en?(i>1?100.f:68.f):(i>1?66.f:54.f);Move(Get(Today+i),{quickX,y,quickWidth,30});quickX+=quickWidth+8;}y+=42;
+            const bool timed=!draft["allDay"].get<bool>();
+            if(timed){LabelAt(T(L"开始",L"Starts"),y,0,half);LabelAt(T(L"结束",L"Ends"),y,half+14,half);y+=24;}
+            Move(Get(StartTime),{0,y,half,42},timed);Move(Get(EndTime),{half+14,y,half,42},timed);if(timed)y+=58;
+            hintFrame={0,y,inner,34};y+=50;
+            LabelAt(T(L"提醒",L"Reminder"),y,0,half);LabelAt(T(L"重复",L"Repeat"),y,half+14,half);y+=24;
+            Move(Get(Reminder),{0,y,half,42});Move(Get(Repeat),{half+14,y,half,42});y+=58;
+            moreLine=y;Move(Get(More),{-8,y+15,inner+16,36});y+=65;
+            if(more){LabelAt(T(L"子任务",L"Sub-steps"),y);y+=24;}
+            for(auto& step:steps){Move(step.check,{0,y,28,34},more);edit(GetDlgCtrlID(step.title),{36,y,inner-72,34},more);Move(step.remove,{inner-28,y,28,34},more);if(more)y+=42;}
+            edit(StepInput,{0,y,inner-76,42},more);Move(Get(AddStep),{inner-68,y,68,42},more);
+            if(more){y+=58;LabelAt(T(L"备注",L"Notes"),y);y+=24;}
+            edit(Notes,{0,y,inner,100},more);if(more)y+=116;
+        }
         contentHeight=y;scroll=std::clamp(scroll,0.f,std::max(0.f,contentHeight-viewportHeight));
         todo_ui::Move(form,{0,-scroll,inner,contentHeight},dpi);
         Move(Get(CloseButton),{width-52,22,28,28});
-        Move(Get(DeleteButton),{24,height-58,64,40},existing.has_value());
+        if(!countdown)Move(Get(DeleteButton),{24,height-58,64,40},existing.has_value());
         const float saveWidth=existing?118.f:144.f;
         Move(Get(CancelButton),{width-94-saveWidth,height-58,62,40});Move(Get(SaveButton),{width-24-saveWidth,height-58,saveWidth,40});
         InvalidateRect(window,nullptr,FALSE);InvalidateRect(form,nullptr,FALSE);UpdateSave();
@@ -270,13 +306,18 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         const float top=rect.top*96.f/dpi,bottom=rect.bottom*96.f/dpi;
         if(top<scroll)Scroll(top);else if(bottom>scroll+viewportHeight)Scroll(bottom-viewportHeight);
     }
-    void UpdateSave(){if(Get(SaveButton))EnableWindow(Get(SaveButton),!busy&&!todo::Trim(todo_ui::Utf8(todo_ui::Text(Get(Title)))).empty());}
+    void UpdateSave(){if(Get(SaveButton))EnableWindow(Get(SaveButton),!busy&&(countdown||!todo::Trim(todo_ui::Utf8(todo_ui::Text(Get(Title)))).empty()));}
     Json Fields() {
-        Json fields=draft;fields["title"]=todo_ui::Utf8(todo_ui::Text(Get(Title)));fields["notes"]=todo_ui::Utf8(todo_ui::Text(Get(Notes)));
-        int days=0;if(!todo_ui::Number(Get(Days),1,366,days))return {};
-        fields["days"]=days;SYSTEMTIME date{},start{},end{};
+        Json fields=draft;fields["title"]=todo_ui::Utf8(todo_ui::Text(Get(Title)));SYSTEMTIME date{},start{},end{};
         if(SendMessageW(Get(Date),DTM_GETSYSTEMTIME,0,reinterpret_cast<LPARAM>(&date))!=GDT_VALID)return {};
         fields["date"]=todo::SheetDate({date.wYear,date.wMonth,date.wDay});
+        if(countdown){
+            fields["reminder"]=countdownReminder?0:-1;
+            return fields;
+        }
+        fields["notes"]=todo_ui::Utf8(todo_ui::Text(Get(Notes)));
+        int days=0;if(!todo_ui::Number(Get(Days),1,366,days))return {};
+        fields["days"]=days;
         SendMessageW(Get(StartTime),DTM_GETSYSTEMTIME,0,reinterpret_cast<LPARAM>(&start));
         SendMessageW(Get(EndTime),DTM_GETSYSTEMTIME,0,reinterpret_cast<LPARAM>(&end));
         fields["time"]=Clock(start);fields["end"]=Clock(end);
@@ -319,11 +360,17 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
     }
     void Submit() {
         if(busy||!window)return;
-        if(!todo::Trim(todo_ui::Utf8(todo_ui::Text(Get(StepInput)))).empty())NewStep();
+        if(!countdown&&!todo::Trim(todo_ui::Utf8(todo_ui::Text(Get(StepInput)))).empty())NewStep();
         const auto fields=Fields();if(!fields.is_object())return Result("invalid-time");
         Json patch=Json::object();
         for(const auto* key:{"title","notes","color","frequency","subtasks"})
             if(!existing||fields[key]!=original[key])patch[key]=fields[key];
+        if(countdownAppearance&&originalAppearance&&
+            (countdownAppearance->textColor!=originalAppearance->textColor||
+             countdownAppearance->backgroundColor!=originalAppearance->backgroundColor||
+             countdownAppearance->textAlpha!=originalAppearance->textAlpha||
+             countdownAppearance->backgroundAlpha!=originalAppearance->backgroundAlpha||
+             countdownAppearance->countUp!=originalAppearance->countUp))patch["title"]=fields["title"];
         if((!existing||fields["reminder"]!=original["reminder"])&&fields["reminder"]!=-2)patch["reminder"]=fields["reminder"];
         bool moved=!existing;
         for(const auto* key:{"date","allDay","days"})moved=moved||fields[key]!=original[key];
@@ -354,14 +401,32 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         if(busy||closing)return;
         if(id==SaveButton)return Submit();if(id==DeleteButton)return Delete();
         if(id==CancelButton||id==CloseButton)return Close(true);
+        if(countdownAppearance&&(id==CountUp||id==CountDown)){countdownAppearance->countUp=id==CountUp;Layout();return;}
+        if(countdown&&id==Reminder){countdownReminder=!countdownReminder;if(form)InvalidateRect(form,nullptr,FALSE);return;}
+        if(countdownAppearance&&(id==CountdownText||id==CountdownBackground)){
+            picker.Close(false);
+            const bool textColor=id==CountdownText;
+            auto& rgb=textColor?countdownAppearance->textColor:countdownAppearance->backgroundColor;
+            auto& alpha=textColor?countdownAppearance->textAlpha:countdownAppearance->backgroundAlpha;
+            LumeWidgetColor color{static_cast<BYTE>(rgb>>16),static_cast<BYTE>(rgb>>8),static_cast<BYTE>(rgb),static_cast<BYTE>(alpha)};
+            const auto defaultColor=textColor?RGB(38,38,38):countdownAppearance->singleColor?RGB(130,100,165):RGB(33,131,192);
+            if(LumeWidgetColorPicker::Show(window,color,defaultColor)&&!closing&&window){
+                rgb=(color.red<<16)|(color.green<<8)|color.blue;alpha=color.alpha;
+                InvalidateRect(Get(id),nullptr,FALSE);
+            }
+            return;
+        }
         if(dates.count(id)||choices.count(id)){
-            if(picker.IsOpen()){picker.Close(false);return;}
+            const bool samePicker=picker.IsOpen()&&activePicker==id;
+            picker.Close(false);
+            if(samePicker)return;
+            activePicker=id;
             MONITORINFO monitor{sizeof(monitor)};if(!GetMonitorInfoW(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),&monitor))return;
-            const auto weak=weak_from_this();calendar::Preferences appearance;appearance.textColor.rgb=0xffffff;appearance.material=calendar::Material::FrostedGlass;
+            const auto weak=weak_from_this();calendar::Preferences appearance;appearance.textColor.rgb=0xffffff;appearance.material=calendar::Material::Solid;
             if(choices.count(id))picker.OpenChoice(instance,window,Get(id),monitor.rcWork,dpi,appearance,choices[id],selections[id],[weak,id](int choice){if(const auto self=weak.lock();self&&!self->closing){self->selections[id]=choice;self->SelectorText(id);}});
-            else{const auto value=dates[id];const auto now=time->ToLocal(Current());if(!now)return;
-                picker.OpenDate(instance,window,Get(id),monitor.rcWork,dpi,appearance,{{value.wYear,value.wMonth,value.wDay},value.wHour,value.wMinute},*now,
-                    [weak,id](todo::LocalDateTime selected){if(const auto self=weak.lock();self&&!self->closing){self->dates[id]=NativeDate(selected.date,selected.hour,selected.minute);self->SelectorText(id);return true;}return false;});}
+            else{const auto value=dates[id];const todo::LocalDateTime initial{{value.wYear,value.wMonth,value.wDay},value.wHour,value.wMinute};
+                picker.OpenDate(instance,window,Get(id),monitor.rcWork,dpi,appearance,initial,time->ToLocal(Current()).value_or(initial),
+                    [weak,id](todo::LocalDateTime selected){if(const auto self=weak.lock();self&&!self->closing){self->dates[id]=NativeDate(selected.date,selected.hour,selected.minute);self->SelectorText(id);InvalidateRect(self->form,nullptr,FALSE);return true;}return false;});}
             return;
         }
         if(id==Pending||id==Complete)draft["completed"]=id==Complete;
@@ -414,17 +479,43 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         const int id=static_cast<int>(item.CtlID);const float w=(item.rcItem.right-item.rcItem.left)*96.f/dpi,h=(item.rcItem.bottom-item.rcItem.top)*96.f/dpi;
         const auto dc=item.hDC;const bool disabled=(item.itemState&ODS_DISABLED)!=0,down=(item.itemState&ODS_SELECTED)!=0;
         const bool footer=id==SaveButton||id==CancelButton||id==DeleteButton;
-        const bool segment=id==AllDay||id==Timed||id==Pending||id==Complete||id==LessDays||id==MoreDays;
+        const bool segment=id==AllDay||id==Timed||id==Pending||id==Complete||id==LessDays||id==MoreDays||id==CountUp||id==CountDown;
         const auto brush=CreateSolidBrush(footer?kFooter:segment?kInput:kPaper);FillRect(dc,&item.rcItem,brush);DeleteObject(brush);
+        if(countdownAppearance&&(id==CountdownText||id==CountdownBackground)){
+            const bool textColor=id==CountdownText;
+            const auto rgb=textColor?countdownAppearance->textColor:countdownAppearance->backgroundColor;
+            const auto alpha=textColor?countdownAppearance->textAlpha:countdownAppearance->backgroundAlpha;
+            Round(dc,{0,0,w,h},dpi,12,down?RGB(45,45,51):kInput,kBorder);
+            const float scale=dpi/96.f;
+            Gdiplus::Graphics graphics(dc);graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::SolidBrush fill(Gdiplus::Color(static_cast<BYTE>(alpha),static_cast<BYTE>(rgb>>16),static_cast<BYTE>(rgb>>8),static_cast<BYTE>(rgb)));
+            graphics.FillEllipse(&fill,12*scale,(h-20)*.5f*scale,20*scale,20*scale);
+            Gdiplus::Pen outline(Gdiplus::Color(90,255,255,255),scale);
+            graphics.DrawEllipse(&outline,12*scale,(h-20)*.5f*scale,20*scale,20*scale);
+            wchar_t hex[16]{};swprintf_s(hex,L"#%06X",rgb);
+            Text(dc,hex,{42,0,w-66,h},dpi,13,kText);
+            Text(dc,L"›",{w-24,0,16,h},dpi,18,kDim,DT_CENTER);
+            return;
+        }
         if(id>=ColorFirst&&id<ColorFirst+6){
             const float s=dpi/96.f,x=(w-26)*.5f*s,y=(h-26)*.5f*s;Gdiplus::Graphics g(dc);g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-            const auto color=kColors[id-ColorFirst];if(color==CLR_INVALID){Gdiplus::HatchBrush hatch(Gdiplus::HatchStyleForwardDiagonal,Gdiplus::Color(255,67,67,71),Gdiplus::Color(255,28,28,32));g.FillEllipse(&hatch,x,y,26*s,26*s);}
+            const auto color=kColors[id-ColorFirst];
+            const bool selected=draft["color"]==kColorNames[static_cast<std::size_t>(id-ColorFirst)];
+            if(color==CLR_INVALID){Gdiplus::HatchBrush hatch(Gdiplus::HatchStyleForwardDiagonal,Gdiplus::Color(255,67,67,71),Gdiplus::Color(255,28,28,32));g.FillEllipse(&hatch,x,y,26*s,26*s);}
             else {Gdiplus::SolidBrush fill(Gdiplus::Color(255,GetRValue(color),GetGValue(color),GetBValue(color)));g.FillEllipse(&fill,x,y,26*s,26*s);}
             Gdiplus::Pen outline(Gdiplus::Color(46,255,255,255),1.5f*s);g.DrawEllipse(&outline,x,y,26*s,26*s);
-            if(draft["color"]==kColorNames[static_cast<std::size_t>(id-ColorFirst)]){Gdiplus::Pen ring(Gdiplus::Color(230,255,255,255),2*s);g.DrawEllipse(&ring,x-4*s,y-4*s,34*s,34*s);}return;
+            if(selected){Gdiplus::Pen ring(Gdiplus::Color(230,255,255,255),2*s);g.DrawEllipse(&ring,x-4*s,y-4*s,34*s,34*s);}return;
         }
         auto text=todo_ui::Text(item.hwndItem);COLORREF color=disabled?kFaint:kText;
         if(id==CloseButton){Icon(dc,id,{6,6,16,16},dpi,kDim);return;}
+        if(countdown&&id==Reminder){
+            Round(dc,{0,0,w,h},dpi,10,down?RGB(45,45,51):kInput,kBorder);
+            Text(dc,text,{14,0,w-70,h},dpi,13,color);
+            const float left=w-48,top=(h-20)/2;
+            Round(dc,{left,top,42,20},dpi,10,countdownReminder?kAccent:RGB(75,75,80));
+            Round(dc,{left+(countdownReminder?23:3),top+2,16,16},dpi,8,RGB(255,255,255));
+            return;
+        }
         if(id==SaveButton){
             Round(dc,{0,0,w,h},dpi,12,disabled?RGB(55,69,121):kAccent);
             Text(dc,text,{18,0,w-72,h},dpi,13,disabled?RGB(128,128,131):RGB(255,255,255));
@@ -432,9 +523,10 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
             Text(dc,L"Ctrl ↵",{w-61,(h-16)/2,45,16},dpi,10,disabled?RGB(126,133,162):RGB(232,237,255),DT_CENTER);return;
         }
         if(id==CancelButton||id==AddStep){Round(dc,{0,0,w,h},dpi,12,down?RGB(54,54,60):RGB(42,42,47));}
-        else if(id==Pending||id==Complete||id==AllDay||id==Timed){
+        else if(id==Pending||id==Complete||id==AllDay||id==Timed||id==CountUp||id==CountDown){
             const bool selected=(id==AllDay&&draft["allDay"].get<bool>())||(id==Timed&&!draft["allDay"].get<bool>())||
-                (id==Pending&&!draft["completed"].get<bool>())||(id==Complete&&draft["completed"].get<bool>());
+                (id==Pending&&!draft["completed"].get<bool>())||(id==Complete&&draft["completed"].get<bool>())||
+                (id==CountUp&&countdownAppearance&&countdownAppearance->countUp)||(id==CountDown&&countdownAppearance&&!countdownAppearance->countUp);
             if(selected)Round(dc,{0,0,w,h},dpi,9,id==Pending||id==Complete?RGB(58,58,66):kAccent);
             color=selected?RGB(255,255,255):kDim;
             if(id==AllDay||id==Timed){const float content=ui_font::IsChinese(text)?static_cast<float>(text.size())*13.f:static_cast<float>(text.size())*6.6f;
@@ -460,6 +552,7 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         if(target==form){
             for(const auto& label:labels)Text(dc,label.text,label.bounds,dpi,12,kDim,DT_LEFT,FW_SEMIBOLD);
             for(const auto& frame:frames)Round(dc,frame,dpi,12,kInput,kBorder);
+            if(countdown)return;
             Round(dc,scheduleFrame,dpi,13,kInput,kBorder);if(existing)Round(dc,statusFrame,dpi,13,kInput,kBorder);Round(dc,durationFrame,dpi,12,kInput,kBorder);
             Text(dc,T(L"天",L"days"),{durationFrame.Right()-65,durationFrame.y,27,durationFrame.height},dpi,12,kFaint,DT_CENTER);
             Round(dc,hintFrame,dpi,11,RGB(33,35,48));Icon(dc,Timed,{12,hintFrame.y+10,14,14},dpi,RGB(183,198,255));Text(dc,ScheduleHint(),{33,hintFrame.y,hintFrame.width-44,hintFrame.height},dpi,12,RGB(183,198,255));
@@ -469,10 +562,10 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         }
         else if(target==window){
             const auto foot=Pixels({0,height-73,width,73},dpi);const auto brush=CreateSolidBrush(kFooter);FillRect(dc,&foot,brush);DeleteObject(brush);
-            Text(dc,existing?T(L"编辑任务",L"Edit task"):T(L"添加任务",L"Add task"),{24,22,width-100,26},dpi,19,kText,DT_LEFT,FW_BOLD);
-            Text(dc,existing?T(L"保存后，日历、桌面清单和灵动岛会一起更新。",L"Changes appear in the calendar, desktop list and island together."):
+            Text(dc,countdown?T(L"倒数日",L"Countdown"):existing?T(L"编辑任务",L"Edit task"):T(L"添加任务",L"Add task"),{24,22,width-100,26},dpi,19,kText,DT_LEFT,FW_BOLD);
+            if(!countdown)Text(dc,existing?T(L"保存后，日历、桌面清单和灵动岛会一起更新。",L"Changes appear in the calendar, desktop list and island together."):
                 T(L"把想做的事，安排进每一天。",L"Give the things you want to do a place in your days."),{24,52,width-88,16},dpi,12,kDim);
-            Gdiplus::Graphics graphics(dc);Gdiplus::Pen pen(Gdiplus::Color(255,47,47,51),dpi/96.f);pen.SetDashStyle(Gdiplus::DashStyleDash);graphics.DrawLine(&pen,0.f,84*dpi/96.f,width*dpi/96.f,84*dpi/96.f);
+            Gdiplus::Graphics graphics(dc);Gdiplus::Pen pen(Gdiplus::Color(255,47,47,51),dpi/96.f);pen.SetDashStyle(Gdiplus::DashStyleDash);if(!countdown)graphics.DrawLine(&pen,0.f,84*dpi/96.f,width*dpi/96.f,84*dpi/96.f);
             pen.SetDashStyle(Gdiplus::DashStyleSolid);graphics.DrawLine(&pen,0.f,(height-73)*dpi/96.f,width*dpi/96.f,(height-73)*dpi/96.f);
             if(!feedback.empty())Text(dc,feedback,{24,height-101,width-48,20},dpi,11,RGB(255,137,137));
         }
@@ -481,7 +574,7 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         auto keep=shared_from_this();if(closing)return;closing=true;
         const auto old=window,oldOwner=owner,focus=returnFocus;const bool enable=ownerWasEnabled;auto notify=std::move(closed);picker.Close(false);
         window=nullptr;ownerWasEnabled=false;
-        if(old){KillTimer(old,kFloatTimer);SetWindowLongPtrW(old,GWLP_USERDATA,0);if(form)SetWindowLongPtrW(form,GWLP_USERDATA,0);if(viewport)SetWindowLongPtrW(viewport,GWLP_USERDATA,0);DestroyWindow(old);}
+        if(old){SetWindowLongPtrW(old,GWLP_USERDATA,0);if(form)SetWindowLongPtrW(form,GWLP_USERDATA,0);if(viewport)SetWindowLongPtrW(viewport,GWLP_USERDATA,0);DestroyWindow(old);}
         form=nullptr;viewport=nullptr;tabs.clear();steps.clear();surface.reset();save={};nowProvider={};
         if(titleFont){DeleteObject(titleFont);titleFont=nullptr;}
         if(enable&&IsWindow(oldOwner))EnableWindow(oldOwner,TRUE);
@@ -494,16 +587,6 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         const auto action=message.value("action",std::string{});
         if(action=="save")SaveCommands(message.value("commands",Json{}));else if(action=="delete")Delete();else if(action=="close")Close(true);
     }
-    static bool CoveredByLume(HWND hwnd) {
-        RECT mine{};GetWindowRect(hwnd,&mine);
-        for(HWND above=GetWindow(hwnd,GW_HWNDPREV);above;above=GetWindow(above,GW_HWNDPREV)){
-            DWORD pid=0;GetWindowThreadProcessId(above,&pid);const auto ownedBy=GetWindow(above,GW_OWNER);
-            if(pid!=GetCurrentProcessId()||!IsWindowVisible(above)||ownedBy==hwnd||IsChild(hwnd,ownedBy)||GetAncestor(above,GA_ROOTOWNER)==hwnd)continue;
-            RECT other{},overlap{};if(GetWindowRect(above,&other)&&IntersectRect(&overlap,&mine,&other))return true;
-        }return false;
-    }
-    static void Float(HWND hwnd,bool above){if(above)SetTimer(hwnd,kFloatTimer,250,nullptr);else KillTimer(hwnd,kFloatTimer);
-        SetWindowPos(hwnd,above?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);}
     static LRESULT CALLBACK Proc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
         auto* raw=reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
         if(message==WM_NCCREATE){raw=static_cast<Impl*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(raw));}
@@ -528,8 +611,6 @@ struct TodoSheetWindow::Impl : std::enable_shared_from_this<Impl> {
         case WM_MOUSEWHEEL:self->Scroll(self->scroll-GET_WHEEL_DELTA_WPARAM(wp)/120.f*48);return 0;
         case WM_LBUTTONDOWN:
             if(hwnd==self->window&&GET_Y_LPARAM(lp)<todo_ui::Px(88,self->dpi)){ReleaseCapture();return SendMessageW(hwnd,WM_NCLBUTTONDOWN,HTCAPTION,lp);}return 0;
-        case WM_ACTIVATEAPP:if(hwnd==self->window)Float(hwnd,wp!=FALSE);return 0;
-        case WM_TIMER:if(hwnd==self->window&&wp==kFloatTimer&&CoveredByLume(hwnd))SetWindowPos(hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);return 0;
         case WM_DPICHANGED:{
             self->dpi=HIWORD(wp);if(self->surface){auto old=self->surface->font;self->surface->dpi=self->dpi;
                 self->surface->font=CreateFontW(-todo_ui::Px(13,self->dpi),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,ui_font::Family(L"待办"));
@@ -550,22 +631,26 @@ TodoSheetWindow::TodoSheetWindow()=default;
 TodoSheetWindow::~TodoSheetWindow(){if(impl_)impl_->closed={};Close(false);}
 void TodoSheetWindow::SetEnglish(bool value){english=value;}
 bool TodoSheetWindow::Open(HINSTANCE instance,HWND owner,RECT host,unsigned dpi,const calendar::Preferences&,
-    const todo::ILocalTimePort& time,todo::Command seed,todo::Millis now,std::optional<todo::TaskView> existing,Save save,Closed closed,Now nowProvider) {
+    const todo::ILocalTimePort& time,todo::Command seed,todo::Millis now,std::optional<todo::TaskView> existing,Save save,Closed closed,Now nowProvider,Mode mode,
+    std::optional<CountdownAppearance> countdownAppearance) {
     if(IsOpen()){SetForegroundWindow(Handle());return true;}
     if(!IsWindow(owner)||!dpi||!save||host.right<=host.left||host.bottom<=host.top||
         (seed.type==todo::CommandType::Update&&!existing)||(seed.type==todo::CommandType::Add&&!seed.patch.schedule))return false;
-    auto state=std::make_shared<Impl>();state->instance=instance;state->owner=owner;state->returnFocus=GetFocus();
+    if(mode==Mode::Countdown&&!existing)return false;
+    auto state=std::make_shared<Impl>();state->countdown=mode==Mode::Countdown;state->instance=instance;state->owner=owner;state->returnFocus=GetFocus();
+    if(state->countdown){state->countdownAppearance=countdownAppearance.value_or(CountdownAppearance{});state->originalAppearance=state->countdownAppearance;}
     state->dpi=dpi;state->en=english.load();state->time=&time;state->seed=std::move(seed);state->existing=std::move(existing);state->openedAt=now;
     state->save=std::move(save);state->closed=std::move(closed);state->nowProvider=std::move(nowProvider);state->MakeDraft();
     WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=instance;wc.lpfnWndProc=Impl::Proc;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.lpszClassName=kClass;
     if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;wc.lpszClassName=kBodyClass;
     if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     MONITORINFO monitor{sizeof(monitor)};if(!GetMonitorInfoW(MonitorFromRect(&host,MONITOR_DEFAULTTOPRIMARY),&monitor))return false;
-    const auto area=monitor.rcWork;const int width=std::min(MulDiv(kWidth,static_cast<int>(dpi),96),static_cast<int>(area.right-area.left));
-    const int height=std::min(MulDiv(kHeight,static_cast<int>(dpi),96),static_cast<int>(area.bottom-area.top)-MulDiv(32,static_cast<int>(dpi),96));
+    const auto area=monitor.rcWork;const int width=std::min(MulDiv(state->countdown?380:kWidth,static_cast<int>(dpi),96),static_cast<int>(area.right-area.left));
+    const int countdownHeight=372+(state->countdownAppearance?(state->countdownAppearance->singleColor?56:112):0);
+    const int height=std::min(MulDiv(state->countdown?countdownHeight:kHeight,static_cast<int>(dpi),96),static_cast<int>(area.bottom-area.top)-MulDiv(32,static_cast<int>(dpi),96));
     const int left=std::clamp(static_cast<int>((host.left+host.right)/2)-width/2,static_cast<int>(area.left),static_cast<int>(area.right)-width);
     const int top=area.top+(area.bottom-area.top-height)/2;
-    auto caption=state->T(L"Lume 待办",L"Lume task");if(state->existing)caption+=L" · "+todo_ui::Wide(state->existing->title);
+    auto caption=state->countdown?state->T(L"倒数日",L"Countdown"):state->T(L"Lume 待办",L"Lume task");if(state->existing)caption+=L" · "+todo_ui::Wide(state->existing->title);
     state->window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_CONTROLPARENT,kClass,caption.c_str(),WS_POPUP|WS_CLIPCHILDREN,
         left,top,width,height,owner,nullptr,instance,state.get());if(!state->window)return false;impl_=state;
     window_layer::Register(state->window,window_layer::Kind::ExplicitTool,owner);
@@ -575,12 +660,15 @@ bool TodoSheetWindow::Open(HINSTANCE instance,HWND owner,RECT host,unsigned dpi,
     if(state->ownerWasEnabled)EnableWindow(owner,FALSE);
     const auto window=state->window;state->surface->AttachOpaque(window,24.f);state->surface->Show(state->Get(Title));
     if(state->closing||!IsWindow(window))return false;
-    SetForegroundWindow(window);SetFocus(state->Get(Title));Impl::Float(window,true);
+    SetForegroundWindow(window);SetFocus(state->Get(Title));
     return true;
 }
 void TodoSheetWindow::Close(bool restore){auto state=std::move(impl_);if(state)state->Close(restore);}
 HWND TodoSheetWindow::Handle()const noexcept{return impl_?impl_->window:nullptr;}
 bool TodoSheetWindow::IsOpen()const noexcept{return Handle()!=nullptr;}
+std::optional<TodoSheetWindow::CountdownAppearance> TodoSheetWindow::CountdownColors()const{
+    return impl_?impl_->countdownAppearance:std::nullopt;
+}
 bool TodoSheetWindow::Receive(std::string_view message){if(!IsOpen())return false;const auto state=impl_;state->Handle(std::string(message));return true;}
 bool TodoSheetWindow::Receive(HWND window,std::string_view message){
     wchar_t name[64]{};if(!IsWindow(window)||!GetClassNameW(window,name,64)||std::wstring_view(name)!=kClass)return false;

@@ -97,7 +97,8 @@ PopupDriver* activePopup=nullptr;
 UINT PopupCommand(const PopupDriver& popup) {
     if(popup.rootRow==0)return 15u+static_cast<UINT>(popup.childRow);
     if(popup.rootRow==1)return popup.scrollSizeToEnd?IDM_LUME_WIDGET_SIZE_FIRST+25:IDM_LUME_WIDGET_SIZE_FIRST+static_cast<UINT>(popup.childRow);
-    if(popup.rootRow==2)return popup.childRow==3?IDM_LUME_WIDGET_CENTER:IDM_LUME_WIDGET_POSITION;
+    if(popup.rootRow==2)return popup.childRow==3?IDM_LUME_WIDGET_CENTER:
+        popup.childRow==4?IDM_LUME_WIDGET_CENTER_HORIZONTAL:IDM_LUME_WIDGET_POSITION;
     if(popup.rootRow==4)return IDM_LUME_WIDGET_COLOR;
     if(popup.rootRow==5)return 11;
     if(popup.rootRow==6)return IDM_LUME_WIDGET_LOCK;
@@ -109,7 +110,7 @@ UINT RootIndex(const PopupDriver& popup) {
     switch(popup.rootRow){case 0:return 0;case 1:return 1;case 2:return 2;case 4:return 3;case 5:return 4;case 6:return 5;case 8:return 6;default:return 99;}
 }
 UINT ChildIndex(const PopupDriver& popup) {
-    if(popup.rootRow==2)return popup.childRow==3?2:static_cast<UINT>(popup.childRow);
+    if(popup.rootRow==2)return popup.childRow==3?2:popup.childRow==4?3:static_cast<UINT>(popup.childRow);
     return popup.scrollSizeToEnd?25:static_cast<UINT>(popup.childRow);
 }
 void CALLBACK DrivePopup(HWND,UINT,UINT_PTR timer,DWORD) {
@@ -327,6 +328,14 @@ void Run(bool resetOnly) {
         GetMonitorInfoW(MonitorFromWindow(Clock(),MONITOR_DEFAULTTONEAREST),&monitor);
         Check(std::abs((bounds.left+bounds.right)-(monitor.rcWork.left+monitor.rcWork.right))<=2&&
               std::abs((bounds.top+bounds.bottom)-(monitor.rcWork.top+monitor.rcWork.bottom))<=2,"center command centers visible native bounds");
+        position.accept=true;Menu(position);GetWindowRect(Clock(),&bounds);
+        const LONG topBeforeHorizontalCenter=bounds.top;
+        const int yBeforeHorizontalCenter=controller.Snapshot().Active().y;
+        Menu({2,4});GetWindowRect(Clock(),&bounds);
+        GetMonitorInfoW(MonitorFromWindow(Clock(),MONITOR_DEFAULTTONEAREST),&monitor);
+        Check(std::abs((bounds.left+bounds.right)-(monitor.rcWork.left+monitor.rcWork.right))<=2&&
+              bounds.top==topBeforeHorizontalCenter&&controller.Snapshot().Active().y==yBeforeHorizontalCenter,
+              "horizontal center preserves vertical position and centers visible native bounds");
         Menu({5});Check(openSettings==style+1,"open settings routed once without closing clock");
         Check(ui::ClockPageState(controller).find(L"\"running\":true")!=std::wstring::npos,"page snapshot reflects running native state");
         std::cout<<"PASS style "<<clock::StyleName(static_cast<clock::Style>(style))<<": menus, cancel/confirm, scale bounds, locks, drag lifecycle, center, settings route\n";

@@ -5,6 +5,7 @@
 #include "platform/windows/spectrum/spectrum_view.h"
 #include "platform/windows/widget_ui/native_widget_window.h"
 #include "platform/windows/widget_ui/LumeWidgetColorPicker.h"
+#include "platform/windows/widget_ui/LumeWidgetPositionEditor.h"
 #include "platform/windows/widget_ui/LumeWidgetMenu.h"
 #include "platform/windows/widget_ui/resource.h"
 #include <objidl.h>
@@ -47,7 +48,8 @@ struct SpectrumSession::Impl{
             if(Gdiplus::GdiplusStartup(&token,&input,nullptr)!=Gdiplus::Ok)return 0u;
             // The size submenu lists 50..300% in steps of ten.
             const int percent=(spectrum::ScalePercent(bounds)+5)/10*10;
-            const auto result=LumeWidgetMenu::ShowSpectrum(owner,point,static_cast<int>(prefs.style),percent,prefs.window.locked);
+            const auto result=LumeWidgetMenu::ShowSpectrum(owner,point,static_cast<int>(prefs.style),percent,prefs.window.locked,
+                                                           bounds.x,bounds.y);
             Gdiplus::GdiplusShutdown(token);return result;
         };
         ports.command=[this](UINT command,const widget::Preferences& bounds){MenuCommand(command,bounds);};
@@ -109,7 +111,7 @@ struct SpectrumSession::Impl{
             error=layer?L"layer":L"runtime";applying=false;return false;
         }
         if(next.window.enabled){
-            const auto bounds=widget::Clamped(window.Bounds(),WindowLimits);auto& w=next.window;
+            const auto bounds=widget::Clamped(window.PreferredBounds(),WindowLimits);auto& w=next.window;
             w.x=bounds.x;w.y=bounds.y;w.placed=bounds.placed;w.width=bounds.width;w.height=bounds.height;
         }
         if(!store.Save(path,next)){
@@ -181,6 +183,22 @@ struct SpectrumSession::Impl{
             // Keep a position the user just dragged to.
             next.window.x=bounds.x;next.window.y=bounds.y;next.window.placed=bounds.placed;
             next.window=spectrum::Scaled(next.window,50+static_cast<int>(command-IDM_LUME_WIDGET_SIZE_FIRST)*10);
+        }
+        else if(command==IDM_LUME_WIDGET_POSITION){
+            int x=bounds.x,y=bounds.y;
+            const auto owner=window.Handle();
+            if(!owner||!LumeWidgetPositionEditor::Show(owner,x,y)||stopped||!window.Handle())return;
+            next.window=bounds;next.window.x=x;next.window.y=y;next.window.placed=true;
+        }
+        else if(command==IDM_LUME_WIDGET_CENTER||command==IDM_LUME_WIDGET_CENTER_HORIZONTAL){
+            const auto owner=window.Handle();RECT current{};
+            if(!owner||!GetWindowRect(owner,&current))return;
+            MONITORINFO monitor{};monitor.cbSize=sizeof(monitor);
+            if(!GetMonitorInfoW(MonitorFromWindow(owner,MONITOR_DEFAULTTONEAREST),&monitor))return;
+            const LONG x=monitor.rcWork.left+(monitor.rcWork.right-monitor.rcWork.left-(current.right-current.left))/2;
+            const LONG y=command==IDM_LUME_WIDGET_CENTER?
+                monitor.rcWork.top+(monitor.rcWork.bottom-monitor.rcWork.top-(current.bottom-current.top))/2:current.top;
+            next.window=bounds;next.window.x=x;next.window.y=y;next.window.placed=true;
         }
         else return;
         const bool ok=Apply(next);if(notify)notify(State(),!ok);

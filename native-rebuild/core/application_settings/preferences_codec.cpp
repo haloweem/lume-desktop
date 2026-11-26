@@ -16,7 +16,8 @@ DecodedPreferences DecodePreferences(std::string_view bytes) noexcept {
         const bool hasScale = json.contains("interfaceScale");
         if ((json["version"] == 3 && (!hasScale || !hasDirectory)) ||
             (json["version"] != 3 && hasScale)) return {{}, "preferences-invalid"};
-        if (json.size() != 4u + (hasDirectory ? 1u : 0u) + (hasScale ? 1u : 0u) || !json.at("language").is_string() ||
+        const bool hasGames=json.contains("gamePrograms");
+        if (json.size() != 4u + (hasGames ? 1u : 0u) + (hasDirectory ? 1u : 0u) + (hasScale ? 1u : 0u) || !json.at("language").is_string() ||
             !json.at("balancedMode").is_boolean() || !json.at("autostart").is_boolean())
             return {{}, "preferences-invalid"};
         Preferences preferences{json["language"].get<std::string>(),
@@ -37,19 +38,32 @@ DecodedPreferences DecodePreferences(std::string_view bytes) noexcept {
                 return {{}, "preferences-invalid"};
             preferences.interfaceScale = percent.get<int>();
         }
+        if (hasGames) {
+            if (!hasScale || !json["gamePrograms"].is_array() || json["gamePrograms"].size()>16)
+                return {{}, "preferences-invalid"};
+            for (const auto& item : json["gamePrograms"]) {
+                if (!item.is_string()) return {{}, "preferences-invalid"};
+                const auto path=item.get<std::string>();
+                if (path.empty() || path.size()>2048 || path.find_first_of("\r\n")!=std::string::npos ||
+                    path.find('\0')!=std::string::npos) return {{}, "preferences-invalid"};
+                preferences.gamePrograms.push_back(path);
+            }
+        }
         return {preferences, {}};
     } catch (...) { return {{}, "preferences-invalid"}; }
 }
 std::string EncodePreferences(const Preferences& preferences) {
-    return nlohmann::json{{"version", 3}, {"language", preferences.language},
+    auto json=nlohmann::json{{"version", 3}, {"language", preferences.language},
         {"balancedMode", preferences.balancedMode}, {"autostart", preferences.autostart},
-        {"wallpaperDirectory", preferences.wallpaperDirectory}, {"interfaceScale", preferences.interfaceScale}}.dump();
+        {"wallpaperDirectory", preferences.wallpaperDirectory}, {"interfaceScale", preferences.interfaceScale}};
+    if (!preferences.gamePrograms.empty()) json["gamePrograms"]=preferences.gamePrograms;
+    return json.dump();
 }
 std::wstring SerializeSnapshot(const Snapshot& state) {
     const auto json = nlohmann::json{{"version", 1}, {"type", "app-settings-state"},
         {"revision", state.revision}, {"language", state.preferences.language},
         {"balancedMode", state.preferences.balancedMode}, {"autostart", state.preferences.autostart},
-        {"interfaceScale", state.preferences.interfaceScale},
+        {"interfaceScale", state.preferences.interfaceScale}, {"gamePrograms", state.preferences.gamePrograms},
         {"dataDirectory", state.dataDirectory}, {"wallpaperDirectory", state.wallpaperDirectory},
         {"busy", state.busy}, {"error", state.error}, {"update", {
             {"status", state.update.status}, {"version", state.update.version},

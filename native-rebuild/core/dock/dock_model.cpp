@@ -142,8 +142,24 @@ std::vector<std::string>::iterator FindPath(std::vector<std::string>& paths, std
 }  // namespace
 
 bool ValidPosition(int value) { return value >= MinPosition && value <= MaxPosition; }
+bool ValidPositionMode(int value) { return value >= PositionCenter && value <= PositionRight; }
+bool ValidPositionOffset(int value) { return value >= MinPositionOffset && value <= MaxPositionOffset; }
 bool ValidBottomOffset(int value) { return value >= MinBottomOffset && value <= MaxBottomOffset; }
 bool ValidIconSpacing(int value) { return value >= MinIconSpacing && value <= MaxIconSpacing; }
+bool ValidSummonShortcut(unsigned code) noexcept {
+    if (code == 0) return true;
+    if (code > 4095) return false;
+    const unsigned vk = code % 256, mods = code / 256;
+    const bool key = vk == 8 || vk == 9 || vk == 13 || vk == 19 || vk == 20 || vk == 32 ||
+        vk == 44 || vk == 45 || vk == 46 || vk == 144 || vk == 145 || (vk >= 33 && vk <= 40) ||
+        (vk >= 48 && vk <= 57) || (vk >= 65 && vk <= 90) || (vk >= 96 && vk <= 135) ||
+        (vk >= 186 && vk <= 192) || (vk >= 219 && vk <= 222) || vk == 226;
+    const bool control = (mods & 2) != 0, alt = (mods & 1) != 0, shift = (mods & 4) != 0, win = (mods & 8) != 0;
+    if (!key || vk == 123 || !(control || alt || win)) return false;
+    return !((vk == 9 && (mods & 9)) || (vk == 46 && (mods & 3) == 3) ||
+             (vk == 76 && win) || (vk == 27 && control && shift) ||
+             (vk == 115 && alt) || (win && (vk == 68 || vk == 69 || vk == 82)));
+}
 bool ValidLumePosition(int value, std::size_t pinnedCount) {
     return value >= 0 && static_cast<std::size_t>(value) <= std::min(pinnedCount, MaxPinned);
 }
@@ -152,10 +168,15 @@ bool Valid(const Preferences& value, const TextKey& pathKey) {
     if (value.dockCollections.size() > MaxCollections) return false;
     for (const auto& id : value.dockCollections)
         if (!FindCollection(value, id) || !dockIds.insert(id).second) return false;
-    return value.iconScale >= MinIconScale && value.iconScale <= MaxIconScale &&
+    return value.screen >= -1 && value.screen <= 64 && value.iconScale >= MinIconScale && value.iconScale <= MaxIconScale &&
+           value.reflectionRatio >= 0 && value.reflectionRatio <= 100 &&
+           value.reflectionTransparency >= 0 && value.reflectionTransparency <= 100 &&
+           value.animationDuration>=50 && value.animationDuration<=2000 &&
            value.launchpadScale>=MinLaunchpadScale&&value.launchpadScale<=MaxLaunchpadScale&&
            value.launchpadIconScale>=MinLaunchpadIconScale&&value.launchpadIconScale<=MaxLaunchpadIconScale&&
-           ValidPosition(value.position) && ValidBottomOffset(value.bottomOffset) && ValidIconSpacing(value.iconSpacing) &&
+           ValidSummonShortcut(value.summonShortcutCode)&&
+           ValidEdge(value.edge) && ValidPosition(value.position) && ValidPositionMode(value.positionMode) && ValidPositionOffset(value.positionOffset) &&
+           ValidBottomOffset(value.bottomOffset) && ValidIconSpacing(value.iconSpacing) &&
            ValidLumePosition(value.lumePosition, value.pinned.size()) &&
            ValidPaths(value.pinned, MaxPinned, pathKey) && ValidPaths(value.added, MaxAdded, pathKey) &&
            ValidPaths(value.removed, MaxOrder, pathKey) &&
@@ -169,11 +190,17 @@ bool Encode(const Preferences& value, std::string& output) {
             collections.push_back({{"id", collection.id}, {"title", collection.title}, {"paths", collection.paths}});
         auto text = Json{{"version", 1}, {"enabled", value.enabled}, {"frosted", value.frosted},
                          {"transparent", value.transparent}, {"reflection", value.reflection},
-                         {"systemTray", value.systemTray}, {"controlCenter", value.controlCenter}, {"showRunning", value.showRunning},
+                         {"reflectionRatio", value.reflectionRatio}, {"reflectionTransparency", value.reflectionTransparency},
+                         {"systemTray", value.systemTray}, {"controlCenter", value.controlCenter}, {"showRunning", value.showRunning}, {"runningPreview", value.runningPreview},
+                         {"animation",value.animation},{"animateRestore",value.animateRestore},{"animateLaunch",value.animateLaunch},
+                         {"animateClose",value.animateClose},{"animationDuration",value.animationDuration},
+                         {"screen", value.screen}, {"summonEnabled", value.summonEnabled}, {"summonShortcutCode", value.summonShortcutCode},
                          {"iconScale", value.iconScale},
                          {"launchpadScale",value.launchpadScale},{"launchpadIconScale",value.launchpadIconScale},
                          {"launchpadMaximized", value.launchpadMaximized}, {"removed", value.removed},
-                         {"position", value.position}, {"bottomOffset", value.bottomOffset}, {"iconSpacing", value.iconSpacing},
+                         {"position", value.position}, {"positionMode", value.positionMode}, {"positionOffset", value.positionOffset},
+                         {"edge", static_cast<int>(value.edge)}, {"showStartMenu", value.showStartMenu}, {"launchpadEnabled", value.launchpadEnabled},
+                         {"bottomOffset", value.bottomOffset}, {"iconSpacing", value.iconSpacing},
                          {"lumeVisible", value.lumeVisible}, {"lumePosition", value.lumePosition},
                          {"pinned", value.pinned}, {"added", value.added}, {"order", value.order},
                          {"collections", collections}, {"dockCollections", value.dockCollections}}.dump();
@@ -197,26 +224,68 @@ bool Decode(const std::string& input, Preferences& output, const TextKey& pathKe
         optional += json.contains("dockCollections") ? 1 : 0;
         optional += json.contains("removed") ? 1 : 0;
         optional += json.contains("launchpadMaximized") ? 1 : 0;
-        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning", "iconScale", "position", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
-                                "lumeVisible", "lumePosition"})
+        optional += json.contains("showStartMenu") ? 1 : 0;
+        optional += json.contains("animationDuration") ? 1 : 0;
+        optional += json.contains("edge") ? 1 : 0;
+        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning", "runningPreview", "animation", "animateRestore", "animateLaunch", "animateClose", "launchpadEnabled", "summonEnabled", "summonShortcutCode", "iconScale", "position", "positionMode", "positionOffset", "bottomOffset", "iconSpacing","launchpadScale","launchpadIconScale",
+                                "screen", "lumeVisible", "lumePosition", "reflectionRatio", "reflectionTransparency"})
             optional += json.contains(key) ? 1 : 0;
         if (json.size() != 5u + optional || !json.contains("version") || json.at("version") != 1 ||
             !json.at("enabled").is_boolean() || !json.at("frosted").is_boolean()) return false;
         Preferences value;
         value.enabled = json.at("enabled").get<bool>();
         value.frosted = json.at("frosted").get<bool>();
-        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning"})
+        for (const auto* key : {"transparent", "reflection", "systemTray", "controlCenter", "showRunning", "runningPreview", "animation", "animateRestore", "animateLaunch", "animateClose", "launchpadEnabled", "summonEnabled"})
             if (json.contains(key) && !json.at(key).is_boolean()) return false;
         if (json.contains("transparent")) value.transparent = json.at("transparent").get<bool>();
         if (json.contains("reflection")) value.reflection = json.at("reflection").get<bool>();
         if (json.contains("systemTray")) value.systemTray = json.at("systemTray").get<bool>();
         if (json.contains("controlCenter")) value.controlCenter = json.at("controlCenter").get<bool>();
+        if (json.contains("animation")) value.animation = json.at("animation").get<bool>();
+        if (json.contains("animateRestore")) value.animateRestore = json.at("animateRestore").get<bool>();
+        if (json.contains("animateLaunch")) value.animateLaunch = json.at("animateLaunch").get<bool>();
+        if (json.contains("animateClose")) value.animateClose = json.at("animateClose").get<bool>();
+        if (json.contains("animationDuration")) {
+            const auto& ms=json.at("animationDuration");
+            if (!ms.is_number_integer() || ms<50 || ms>2000) return false;
+            value.animationDuration=ms.get<int>();
+        }
+        if (json.contains("runningPreview")) value.runningPreview = json.at("runningPreview").get<bool>();
         if (json.contains("showRunning")) value.showRunning = json.at("showRunning").get<bool>();
+        if (json.contains("launchpadEnabled")) value.launchpadEnabled = json.at("launchpadEnabled").get<bool>();
+        if (json.contains("showStartMenu")) {
+            if (!json.at("showStartMenu").is_boolean()) return false;
+            value.showStartMenu = json.at("showStartMenu").get<bool>();
+        }
+        if (json.contains("edge")) {
+            if (!json.at("edge").is_number_integer() || json.at("edge") < 0 || json.at("edge") > 3) return false;
+            value.edge = static_cast<Edge>(json.at("edge").get<int>());
+        }
+        if (json.contains("screen")) {
+            const auto& screen = json.at("screen");
+            if (!screen.is_number_integer() || screen < -1 || screen > 64) return false;
+            value.screen = screen.get<int>();
+        }
+        if (json.contains("summonEnabled")) value.summonEnabled = json.at("summonEnabled").get<bool>();
+        if (json.contains("summonShortcutCode")) {
+            if (!json.at("summonShortcutCode").is_number_integer() || json.at("summonShortcutCode") < 0 ||
+                json.at("summonShortcutCode") > 4095) return false;
+            value.summonShortcutCode = json.at("summonShortcutCode").get<unsigned>();
+        }
+        for (const auto& field : {std::pair{"positionMode", &value.positionMode},
+                                  std::pair{"positionOffset", &value.positionOffset}}) {
+            if (!json.contains(field.first)) continue;
+            if (!json.at(field.first).is_number_integer()) return false;
+            if (json.at(field.first) < 0 || json.at(field.first) > 10000) return false;
+            *field.second = json.at(field.first).get<int>();
+        }
         if (json.contains("iconScale")) {
             if (!json.at("iconScale").is_number_integer()||json.at("iconScale")<50||json.at("iconScale")>140) return false;
             value.iconScale = std::min(120,json.at("iconScale").get<int>());
         }
         for (const auto& field : {std::pair{"position", &value.position},
+                                  std::pair{"reflectionRatio", &value.reflectionRatio},
+                                  std::pair{"reflectionTransparency", &value.reflectionTransparency},
                                   std::pair{"launchpadScale", &value.launchpadScale},
                                   std::pair{"launchpadIconScale", &value.launchpadIconScale},
                                   std::pair{"bottomOffset", &value.bottomOffset},
@@ -369,7 +438,7 @@ std::vector<Entry> PageItems(const std::vector<Entry>& items, int page) {
 
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            bool lumeVisible, int lumePosition, std::string_view lumePath, bool systemTray, bool showRunning) {
+                            bool lumeVisible, int lumePosition, std::string_view lumePath, bool systemTray, bool showRunning, bool runningPreview) {
     std::vector<Item> items{{Kind::Launchpad, {}, "\xe5\x90\xaf\xe5\x8a\xa8\xe5\x8f\xb0", false}};
     const auto lumeSlot = std::clamp(lumePosition, 0, static_cast<int>(pinned.size()));
     const auto addLume = [&] {
@@ -408,6 +477,7 @@ std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::v
             if (key.empty() || !shown.insert(key).second) continue;
             if (app.asWindows) continue;  // its window thumbnails stand for it
             extra.push_back({Kind::Running, app.executable, app.name.empty() ? EntryName(app.executable) : app.name, true});
+            if (runningPreview) extra.back().window = app.frontWindow;
         }
         if (!extra.empty()) {
             items.push_back({Kind::Separator, {}, {}, false});
@@ -444,7 +514,8 @@ void AppendWindows(std::vector<Item>& items, const std::vector<ProgramWindow>& w
 
 std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            std::string_view lumePath, bool managerOpen) {
+                            std::string_view lumePath, bool managerOpen,
+                            const std::map<std::string, std::vector<std::string>>& collectionTargets) {
     auto openApps = running;
     // Window enumeration excludes our own process so resident widgets never
     // become running apps. Add only the open manager, even if its pin is hidden.
@@ -453,7 +524,20 @@ std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::
             return pathKey(app.executable) == pathKey(lumePath);
         })) openApps.push_back({std::string(lumePath), "Lume"});
     auto items = DockItems(prefs.pinned, targets, openApps, pathKey, prefs.lumeVisible, prefs.lumePosition, lumePath,
-                           SystemTrayAvailable && prefs.controlCenter, prefs.showRunning);
+                           SystemTrayAvailable && prefs.controlCenter, prefs.showRunning, prefs.runningPreview);
+    if (prefs.animation) {
+        for (auto& item : items) {
+            if (item.kind != Kind::Pinned && item.kind != Kind::Running && item.kind != Kind::Lume) continue;
+            const auto key = pathKey(!item.runningProgram.empty() ? item.runningProgram :
+                                     !item.target.empty() ? item.target : item.path);
+            const auto found = std::find_if(openApps.begin(), openApps.end(),
+                [&](const auto& app) { return pathKey(app.executable) == key; });
+            if (found == openApps.end()) continue;
+            item.animationWindows = found->windows;
+            if (item.animationWindows.empty() && found->frontWindow)
+                item.animationWindows.push_back(found->frontWindow);
+        }
+    }
     std::vector<Item> groups;
     for (const auto& id : prefs.dockCollections) {
         const auto* collection = FindCollection(prefs, id);
@@ -462,9 +546,27 @@ std::vector<Item> DockItemsFor(const Preferences& prefs, const std::vector<std::
         const auto members = CollectionItems(*collection, pathKey);
         for (std::size_t i = 0; i < std::min<std::size_t>(4, members.size()); ++i)
             item.previewPaths.push_back(members[i].path);
+        const auto targetsForGroup = collectionTargets.find(id);
+        if (prefs.animation && targetsForGroup != collectionTargets.end()) {
+            item.collectionPrograms = targetsForGroup->second;
+            std::vector<std::string> keys;
+            for (const auto& program : item.collectionPrograms) keys.push_back(pathKey(program));
+            for (const auto& app : openApps) {
+                const auto program = pathKey(app.executable);
+                if (std::none_of(keys.begin(), keys.end(), [&](const auto& key) {
+                    return key == program || InstallSubfolder(key, program);
+                })) continue;
+                item.animationWindows.insert(item.animationWindows.end(), app.windows.begin(), app.windows.end());
+                if (app.windows.empty() && app.frontWindow) item.animationWindows.push_back(app.frontWindow);
+            }
+        }
         groups.push_back(std::move(item));
     }
-    items.insert(items.begin() + 1, groups.begin(), groups.end());
+    auto afterLaunchpad = prefs.launchpadEnabled ? items.begin() + 1 : items.erase(items.begin());
+    if (prefs.showStartMenu)
+        afterLaunchpad = items.insert(afterLaunchpad, {Kind::StartMenu, {}, "开始菜单"}) + 1;
+    items.insert(afterLaunchpad, groups.begin(), groups.end());
+    if (!items.empty() && items.front().kind == Kind::Separator) items.erase(items.begin());
     return items;
 }
 
@@ -727,11 +829,11 @@ Change MoveFromDockCollection(Preferences& value, std::string_view id, std::stri
     return Change::Changed;
 }
 bool Movable(const Item& item) {
-    return item.kind == Kind::Lume || item.kind == Kind::Pinned || item.kind == Kind::Running;
+    return item.kind == Kind::StartMenu || item.kind == Kind::Lume || item.kind == Kind::Pinned || item.kind == Kind::Running;
 }
-bool Removable(const Item& item) { return item.kind == Kind::Pinned || item.kind == Kind::Lume || item.kind == Kind::Running; }
+bool Removable(const Item& item) { return Movable(item); }
 std::string MotionKey(const Item& item) {
     return std::to_string(static_cast<int>(item.kind)) + "|" + item.path +
-           (item.window ? "#" + std::to_string(item.window) : std::string{});
+           (item.kind == Kind::Window && item.window ? "#" + std::to_string(item.window) : std::string{});
 }
 }  // namespace lume::dock

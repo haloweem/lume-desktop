@@ -36,7 +36,7 @@ foreach ($existing in @(Get-AppxPackage -Name $identityConfig.name | Where-Objec
     $existingExternalPath = Get-LumePackageExternalPath $existing.PackageFullName
     $action = Get-LumeIdentityRegistrationAction $existing $identityConfig $existingExternalPath $installRoot (-not $DevelopmentRegistration)
     if ($action -eq 'current' -and [string]$existing.Status -in @('Ok', '0')) {
-        Write-RegistrationLog 'Matching identity is already registered.'
+        Write-RegistrationLog ('Reused registered identity ' + $existing.Version + ' at ' + $installRoot + '; bundled version=' + $identityConfig.version)
         Write-Output 'The matching identity is already registered for this user and installation. Restart Lume to use it.'
         return
     }

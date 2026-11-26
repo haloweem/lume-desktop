@@ -164,7 +164,7 @@ struct WeatherSession::Impl {
             const bool layer=window.PlacementFailed();
             const bool rollback=Runtime(previous);error=layer?"layer":rollback?"runtime":"rollback";applying=false;return false;
         }
-        if(next.window.enabled)next.window=widget::Clamped(window.Bounds(),weather::WindowLimits);
+        if(next.window.enabled)next.window=widget::Clamped(window.PreferredBounds(),weather::WindowLimits);
         if(!store.Save(path,next)){
             const bool rollback=Runtime(previous);error=rollback?"save":"rollback";applying=false;return false;
         }
@@ -172,6 +172,12 @@ struct WeatherSession::Impl {
     }
     void Refresh(){
         if(stopped||applying||(!window.Handle()&&!sharedConsumer))return;
+        // The old city selector is no longer exposed. An explicit refresh is
+        // also the escape from a saved fixed city, without resetting appearance.
+        if(prefs.city!="auto"){
+            auto next=prefs;next.city="auto";
+            if(!Apply(std::move(next))){if(notify)notify(State(),true);return;}
+        }
         // Also permits recovery if backend construction failed asynchronously.
         if(!worker.Running()&&!worker.Start(runtimeCity))return;
         worker.Refresh();reading=worker.Latest();tooltip.Update(reading);window.Paint();

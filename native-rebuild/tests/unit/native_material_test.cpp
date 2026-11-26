@@ -56,6 +56,75 @@ void ExpectShellSafeSurface(HWND owner,unsigned bottomInset=0){
  Expect(bounds.right-bounds.left<=body.right-body.left+128&&bounds.bottom-bounds.top<=body.bottom-body.top+128,
         "native canvas bounds follow the lens instead of spanning the virtual desktop");
 }
+void ContinuousMoveScenario(HWND owner, LumeMaterialHandle handle, LumeMaterialInspectFn inspect, const char* material) {
+ const HWND surface=SurfaceFor(owner);
+ RECT original{}, initialCanvas{};
+ Expect(surface&&GetWindowRect(owner,&original)&&GetWindowRect(surface,&initialCanvas),
+        "read continuous move fixture geometry");
+ const int direction=initialCanvas.right-original.right >= original.left-initialCanvas.left ? 1 : -1;
+ LumeMaterialStatus status{};status.size=sizeof(status);
+ Expect(inspect(handle,&status)&&status.frameReady,"continuous move starts with visible glass");
+ const auto before=status.frames;
+ unsigned canvasMoves=0, handoffs=0, visibleMoves=0;
+ RECT previousCanvas=initialCanvas;
+ HWND previousSurface=surface;
+ const auto move=[&](int dx){
+   Expect(SetWindowPos(owner,nullptr,original.left+dx,original.top,0,0,
+          SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOSIZE)!=FALSE,"move native owner continuously");
+ };
+ const auto sample=[&]{
+   HWND currentSurface=SurfaceFor(owner);
+   RECT current{};
+   for(int retry=0;retry<3&&(!currentSurface||!IsWindowVisible(currentSurface));++retry)
+     currentSurface=SurfaceFor(owner);
+   Expect(currentSurface&&GetWindowRect(currentSurface,&current)&&IsWindowVisible(currentSurface),
+          "glass remains visible during movement");
+   if(currentSurface!=previousSurface)++handoffs;
+   if(!EqualRect(&previousCanvas,&current)){
+     ++canvasMoves;
+     if(currentSurface==previousSurface)++visibleMoves;
+   }
+   previousSurface=currentSurface;
+   previousCanvas=current;
+ };
+ for(int dx=2;dx<=32;dx+=2){move(direction*dx);Pump(12);sample();}
+ Pump(80);sample();
+ Expect(canvasMoves==0,"short drag keeps the same canvas bounds");
+ move(0);Pump(80);sample();
+ // This screen point is well inside the lens at both ends of the fast path.
+ // A displaced old frame or an empty handoff would expose the dark fixture.
+ const int probeX=original.left+((original.right-original.left)+192)/2;
+ const int probeY=(original.top+original.bottom)/2;
+ const HDC screen=GetDC(nullptr);
+ Expect(screen!=nullptr,"open screen DC for composed pixels");
+ const COLORREF background=GetPixel(screen,probeX,original.bottom+40);
+ const COLORREF covered=GetPixel(screen,probeX,probeY);
+ if(covered==background)std::cerr<<material<<" screen colors "<<covered<<'/'<<background<<'\n';
+ Expect(background!=CLR_INVALID&&covered!=CLR_INVALID&&covered!=background,
+        "screen probe distinguishes the glass from its dark backdrop");
+ unsigned samples=0, exposed=0;
+ const auto watch=[&]{
+   const auto until=GetTickCount64()+25;
+   do {
+     const COLORREF pixel=GetPixel(screen,probeX,probeY);
+     if(pixel!=CLR_INVALID){++samples;if(pixel==background)++exposed;}
+     Pump(1);
+   }while(GetTickCount64()<until);
+   sample();
+ };
+ for(int repetition=0;repetition<2;++repetition){
+   for(int dx=24;dx<=192;dx+=24){move(dx);watch();}
+   for(int dx=168;dx>=0;dx-=24){move(dx);watch();}
+ }
+ ReleaseDC(nullptr,screen);
+ Pump(150);sample();
+ Expect(inspect(handle,&status)&&status.frameReady&&!status.failed&&status.frames>before+1,
+        "glass presents fresh frames during a continuous move");
+ std::cout<<material<<" continuous move: "<<status.frames-before<<" frames, "<<canvasMoves
+          <<" canvas boundary crossings, "<<handoffs<<" handoffs, "<<exposed<<"/"<<samples<<" exposed screen samples\n";
+ Expect(samples>=32&&exposed==0,"glass continuously covers the common screen point during fast drag");
+ Expect(canvasMoves>=4&&visibleMoves==0,"fast drag crosses multiple boundaries without moving the visible canvas");
+}
 void ExplicitCanvasScenario(LumeMaterialAttachFn attach,LumeMaterialUpdateFn update,
                            LumeMaterialDetachFn detach,LumeMaterialInspectFn inspect,const std::vector<RECT>& screens){
  Expect(!screens.empty(),"explicit material has a display fixture");
@@ -195,12 +264,12 @@ int main(int argc,char**argv){
  const auto statistics=Resolve<LumeMaterialStatisticsFn>(module,"LumeMaterialStatistics");
  Expect(attach&&update&&detach&&inspect&&statistics,"all ABI symbols present");
  LumeMaterialParameters p{};p.size=sizeof(p);Expect(attach(&p)==0,"invalid HWND rejected");
- HWND background=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"Native material isolated verification",WS_POPUP|WS_VISIBLE|SS_CENTER,50,50,800,520,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+ HWND background=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"Native material isolated verification",WS_POPUP|WS_VISIBLE|SS_BLACKRECT,50,50,800,520,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
  HWND owner=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW,L"STATIC",L"",WS_POPUP,120,120,380,320,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
  HWND owner2=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW,L"STATIC",L"",WS_POPUP,510,130,320,320,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
  Expect(background&&owner&&owner2,"isolated test windows created");
  SetLayeredWindowAttributes(owner,0,1,LWA_ALPHA);SetLayeredWindowAttributes(owner2,0,1,LWA_ALPHA);ShowWindow(owner,SW_SHOWNOACTIVATE);
- p.owner=owner;p.opticalProfile=1;p.lightForeground=1;
+ p.owner=owner;p.opticalProfile=6;p.lightForeground=0;
  p.cornerRadius=std::numeric_limits<float>::quiet_NaN();Expect(attach(&p)==0,"invalid corner radius rejected");
  p.cornerRadius=8;
  p.panelCount=2;p.panels[0]={18,18,30,30,-1};p.panels[1]={58,18,100,60,8};
@@ -326,6 +395,8 @@ int main(int argc,char**argv){
    }
    Expect(!sb.failed&&sb.frameReady&&sb.frames>beforeReopen&&IsWindowVisible(SurfaceFor(owner2)),
           "closing and reopening presents a fresh visible material surface");
+ ContinuousMoveScenario(owner2,b,inspect,"Frosted");
+ ContinuousMoveScenario(owner,a,inspect,"Liquid");
  }
  // Exercise physical screen coordinates, including a negative-origin monitor
  // when available, without assuming where the primary display is arranged.

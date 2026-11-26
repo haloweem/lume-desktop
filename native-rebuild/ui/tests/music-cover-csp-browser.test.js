@@ -39,19 +39,20 @@ test('production CSP loads QQ and Kugou covers in desktop and mobile layouts',
   await mkdir(evidence,{recursive:true});
   browser=await chromium.launch({headless:true,channel:'msedge'});
   const origin=`http://127.0.0.1:${server.address().port}`;
-  const covers=['https://qpic.y.qq.com/music_cover/fixture.jpg','https://img.kgimg.com/stdmusic/fixture.jpg'];
+  const covers=['https://qpic.y.qq.com/music_cover/fixture.jpg','https://music-file.y.qq.com/playlist/fixture.jpg','https://img.kgimg.com/stdmusic/fixture.jpg'];
+  const avatars=['https://thirdqq.qlogo.cn/fixture.png','https://qpic.y.qq.com/qqmusic/avatar/fixture/140'];
   for(const width of [1440,390]) {
     const page=await browser.newPage({viewport:{width,height:900}});
     const errors=[],violations=[];
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('**/*',route=>{
-      if(covers.includes(route.request().url()))
+      if([...covers,...avatars].includes(route.request().url()))
         return route.fulfill({status:200,contentType:'image/png',body:image});
       if(route.request().url().startsWith(origin+'/'))return route.continue();
       return route.abort();
     });
     await page.goto(origin+'/fixture.html');
-    await page.evaluate(async covers=>{
+    await page.evaluate(async ({covers,avatars})=>{
       window.coverViolations=[];
       document.addEventListener('securitypolicyviolation',event=>coverViolations.push(event.blockedURI));
       const {musicPage,initialMusicState}=await import('/music.js');
@@ -59,12 +60,22 @@ test('production CSP loads QQ and Kugou covers in desktop and mobile layouts',
         signedIn:true,provider:'qq',tracks:[],playlists:[],
         recommendations:covers.map((artwork,index)=>({id:String(index),providerId:'qq',title:'Cover fixture '+index,artwork})),
       }});
-    },covers);
+      const {musicProviderImage}=await import('/music-provider-account.js');
+      for(const source of avatars) {
+        const image=document.createElement('img');
+        image.className='avatar-fixture';
+        image.src=musicProviderImage(source);
+        document.querySelector('main').append(image);
+      }
+    },{covers,avatars});
     const images=page.locator('.MusicRecommendationImage img');
-    assert.equal(await images.count(),2);
+    assert.equal(await images.count(),covers.length);
     await images.evaluateAll(nodes=>nodes.forEach(node=>{node.loading='eager';}));
     await images.evaluateAll(nodes=>Promise.all(nodes.map(node=>node.decode())));
     assert.ok((await images.evaluateAll(nodes=>nodes.map(node=>node.naturalWidth))).every(width=>width===32));
+    const avatarImages=page.locator('.avatar-fixture');
+    await avatarImages.evaluateAll(nodes=>Promise.all(nodes.map(node=>node.decode())));
+    assert.ok((await avatarImages.evaluateAll(nodes=>nodes.map(node=>node.naturalWidth))).every(width=>width===32));
     violations.push(...await page.evaluate(()=>coverViolations));
     assert.deepEqual(violations,[]);
     assert.deepEqual(errors,[]);

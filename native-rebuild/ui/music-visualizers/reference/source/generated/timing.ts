@@ -58,4 +58,5 @@ const buildTimedWords = (text: string, startTime: number, endTime: number): Word
 
     return words;
 };
+
 export {buildTimedWords};

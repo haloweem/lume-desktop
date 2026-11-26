@@ -3,7 +3,7 @@ import {syncSettingsControlBusy} from './settings-frame.js';
 
 // Preserve existing base-6 and Clock base-7 layouts. Five-widget layouts use
 // a compact permutation rank shared with core/dynamic_island/expanded_widgets.h.
-const clockLayoutOffset=1296,fiveLayoutOffset=3697,expandedLayoutMaximum=4416,maximumExpandedWidgets=5;
+const clockLayoutOffset=1296,fiveLayoutOffset=3697,countdownLayoutOffset=4417,countdownFiveOffset=8513,expandedLayoutMaximum=11032,maximumExpandedWidgets=5;
 export const expandedWidgets=[
   ['music','音乐','Music','♫','歌曲、封面与播放控制','Track, artwork and playback controls'],
   ['calendar-weather','日历','Calendar','▦','月历、农历节气与今日天气','Month calendar, holidays and today’s weather'],
@@ -11,11 +11,15 @@ export const expandedWidgets=[
   ['system','性能','Performance','▥','CPU、GPU、内存，以及笔记本电量','CPU, GPU and memory, with battery on laptops'],
   ['todos','待办事项','To-dos','✓','查看和完成今天的待办','View and complete today’s to-dos'],
   ['clock','时间','Clock','◷','当前日期、星期与24小时制时间','Current local date, weekday and 24-hour time'],
+  ['countdown','倒数日','Countdown','◷','距离目标日期还有多少天','Days remaining until a target date'],
 ];
 export function expandedWidgetIcon(id){
   const item=expandedWidgets[id];
-  const extension=item?.[0]==='focus'?'svg':'png';
-  return item?`<img class="island-expanded-icon" src="assets/icons/island-expanded/${item[0]}.${extension}" width="24" height="24" alt="" aria-hidden="true" draggable="false">`:'';
+  return item?islandCategoryIcon(item[0]):'';
+}
+export function islandCategoryIcon(name){
+  const extension=name==='focus'||name==='countdown'?'svg':'png';
+  return `<img class="island-expanded-icon" src="assets/icons/island-expanded/${name}.${extension}" width="24" height="24" alt="" aria-hidden="true" draggable="false">`;
 }
 export function expandedSelectionSummary(code){
   const ids=decodeExpandedLayout(code)??[0];
@@ -23,6 +27,17 @@ export function expandedSelectionSummary(code){
 }
 export function decodeExpandedLayout(code){
   if(!Number.isInteger(code)||code<0||code>expandedLayoutMaximum)return null;
+  if(code>=countdownFiveOffset){
+    let rank=code-countdownFiveOffset;const digits=Array(5),available=[0,1,2,3,4,5,6];
+    for(let index=4;index>=0;--index){const radix=7-index;digits[index]=rank%radix;rank=Math.floor(rank/radix);}
+    const ids=digits.map(digit=>available.splice(digit,1)[0]);return ids.includes(6)?ids:null;
+  }
+  if(code>=countdownLayoutOffset){
+    let value=code-countdownLayoutOffset;const ids=[];
+    while(value){const digit=value%8;value=Math.floor(value/8);
+      if(!digit||ids.includes(digit-1)||ids.length===4)return null;ids.unshift(digit-1);}
+    return ids.includes(6)?ids:null;
+  }
   if(code>=fiveLayoutOffset){
     let rank=code-fiveLayoutOffset;
     const digits=Array(5),available=[0,1,2,3,4,5];
@@ -43,12 +58,13 @@ export const validExpandedLayout=code=>decodeExpandedLayout(code)!==null;
 export function encodeExpandedLayout(ids){
   if(!Array.isArray(ids)||ids.length>maximumExpandedWidgets||new Set(ids).size!==ids.length||ids.some(id=>!Number.isInteger(id)||id<0||id>=expandedWidgets.length))return null;
   if(ids.length===maximumExpandedWidgets){
-    const available=[0,1,2,3,4,5];let rank=0;
-    ids.forEach((id,index)=>{const digit=available.indexOf(id);rank=rank*(6-index)+digit;available.splice(digit,1);});
-    return fiveLayoutOffset+rank;
+    const countdown=ids.includes(6),available=countdown?[0,1,2,3,4,5,6]:[0,1,2,3,4,5];let rank=0;
+    ids.forEach((id,index)=>{const digit=available.indexOf(id);rank=rank*((countdown?7:6)-index)+digit;available.splice(digit,1);});
+    return (countdown?countdownFiveOffset:fiveLayoutOffset)+rank;
   }
-  const clockLayout=ids.includes(5),base=clockLayout?7:6;
-  return clockLayoutOffset*Number(clockLayout)+ids.reduce((code,id)=>code*base+id+1,0);
+  const countdown=ids.includes(6),clockLayout=ids.includes(5),base=countdown?8:clockLayout?7:6;
+  const offset=countdown?countdownLayoutOffset:clockLayout?clockLayoutOffset:0;
+  return offset+ids.reduce((code,id)=>code*base+id+1,0);
 }
 const busy=state=>['loading','saving','unavailable'].includes(state.dynamicIslandStatus);
 const chipSelector='[data-island-expanded-chip]';
@@ -92,9 +108,6 @@ export function expandedWidgetPicker(state,available=expandedWidgets.map((_,id)=
   };
   return `<section class="island-expanded-picker" data-island-expanded-picker aria-label="${t('展开态组件','Expanded widgets')}">
     <div class="island-expanded-picker__widgets" data-expanded-widgets>${available.map(chip).join('')}</div>
-    <p class="island-expanded-picker__hint" data-expanded-empty ${ids.length?'hidden':''}>${t('点击右上角的小开关启用组件','Use the small switch at the top right to enable a widget.')}</p>
-    <p class="island-expanded-picker__hint" data-expanded-limit role="status" ${available.length>1?'':'hidden'}>${available.length>=maximumExpandedWidgets?t('最多同时启用 5 个组件，横向排列；按住已启用的胶囊拖动排序。','Enable up to 5 widgets in one row. Hold and drag an enabled capsule to reorder.'):
-      available.length>1?t('按住已启用的胶囊拖动排序，周围组件会自动让位。','Hold and drag an enabled capsule to reorder; nearby widgets make room.'):''}</p>
   </section>`;
 }
 export function syncExpandedWidgetPicker(root,state){
@@ -123,7 +136,6 @@ export function syncExpandedWidgetPicker(root,state){
     });
   }
   picker.querySelectorAll('button').forEach(button=>button.toggleAttribute('data-island-pending',disabled&&state.dynamicIslandStatus==='saving'));
-  picker.querySelector('[data-expanded-empty]').hidden=ids.length>0;
   if(focused?.isConnected&&document.activeElement!==focused&&!focused.disabled)focused.focus({preventScroll:true});
 }
 export function mountExpandedWidgetPicker(root,{getState,onChange}){

@@ -57,16 +57,19 @@ try {
 } finally { Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue }
 
 # Not part of the program: release upload (server, bucket, SSH key path).
-foreach ($excluded in @('native-rebuild\tools\release\publish-release.ps1')) {
+foreach ($excluded in @('native-rebuild\tools\release\publish-release.ps1',
+        'native-rebuild\tools\server-session-lifecycle')) {
     $path = Join-Path $destination $excluded
-    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 
 Copy-Item -LiteralPath (Join-Path $destination 'native-rebuild\ui\music-effects\reference\licenses\Folia-AGPL-3.0.txt') -Destination (Join-Path $destination 'LICENSE')
 foreach ($name in @('README.md', 'BUILDING.md', 'THIRD-PARTY.md')) {
     Copy-Item -LiteralPath (Join-Path $destination "native-rebuild\tools\open-source\$name") -Destination (Join-Path $destination $name)
 }
-@('build-artifacts/', 'native-rebuild/build/', 'native-rebuild/out/', 'native-rebuild/.vs/', '*.user', '*.suo') -join "`r`n" |
+@('build-artifacts/', 'native-rebuild/build/', 'native-rebuild/out/', 'native-rebuild/.vs/',
+  'native-rebuild/.cache/', 'native-rebuild/music-runtime/node_modules/', 'native-rebuild/music-runtime/dist/',
+  'native-rebuild/music-runtime/runtime/', 'LumeSetup-*.exe', '*.user', '*.suo', '*.log', '*.pfx', '*.p12', '.env', '.env.local') -join "`r`n" |
     Set-Content -LiteralPath (Join-Path $destination '.gitignore') -Encoding ascii
 
 $cmake = Get-Content -LiteralPath (Join-Path $destination 'native-rebuild\CMakeLists.txt') -Raw

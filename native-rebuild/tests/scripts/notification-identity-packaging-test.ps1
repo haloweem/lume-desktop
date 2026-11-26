@@ -51,6 +51,7 @@ namespace LumeNotificationIdentity {
     $global:FixturePackages = @(); $global:FixtureAdds = 0; $global:FixtureRemoves = 0; $global:FixtureSignature = 'Valid'
     $global:FixtureBusy = $false; $global:FixtureForced = 0; $global:FixtureResultStatus = 'Ok'
     function global:Get-AppxPackage { [CmdletBinding()] param([string]$Name) return @($global:FixturePackages | Where-Object Name -eq $Name) }
+    function global:Get-AppxPackageManifest { [CmdletBinding()] param([string]$Package) return ,$global:FixtureInstalledManifest }
     function global:Get-AuthenticodeSignature {
         [CmdletBinding()] param([string]$LiteralPath)
         return [pscustomobject]@{Status=$global:FixtureSignature;SignerCertificate=[pscustomobject]@{Subject=$global:FixtureConfig.publisher}}
@@ -93,7 +94,19 @@ namespace LumeNotificationIdentity {
         & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot | Out-Null
         Check ($global:FixtureAdds -eq 4) 'An older identity from this same publisher/install must upgrade.'
         $global:FixturePackages[0].Version='1.0.10.0'
-        Reject { & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot } 'Identity downgrade must be rejected.'
+        $global:FixtureInstalledManifest = New-FixtureManifest $global:FixtureConfig
+        $global:FixtureInstalledManifest.Package.Identity.Version = '1.0.10.0'
+        & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot | Out-Null
+        Check ($global:FixtureAdds -eq 4 -and $global:FixtureRemoves -eq 0) 'Rollback must reuse a healthy compatible newer identity in place.'
+        $global:FixturePackages[0].IsDevelopmentMode = $true
+        Reject { & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot } 'A newer development registration must not satisfy production.'
+        $global:FixturePackages[0].IsDevelopmentMode = $false
+        $global:FixturePackages[0].Status = 'Modified'
+        Reject { & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot } 'A damaged newer registration must not be reused or downgraded.'
+        $global:FixturePackages[0].Status = 'Ok'
+        $capability = $global:FixtureInstalledManifest.SelectSingleNode('//*[local-name()="Capability" and @Name="userNotificationListener"]')
+        [void]$capability.ParentNode.RemoveChild($capability)
+        Reject { & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot } 'A newer registration missing a required capability must not be reused.'
         $global:FixturePackages[0].Version='1.0.9.0';$global:FixtureSignature='HashMismatch'
         Reject { & $register -IdentityPackagePath $fixtureMsix -InstallDirectory $fixtureRoot } 'Even an existing matching identity must not bypass signed-input validation.'
         $global:FixtureSignature='Valid';$global:FixturePackages[0].PackageFullName='fixture:C:\OtherLume'
@@ -229,10 +242,14 @@ foreach ($name in @('StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.p
 Check ($packageSource -match 'Assert-LumeSignedIdentityPackage \$NotificationIdentityPackage \$compiledIdentityConfig') 'Packaging must validate signed material against the compiled identity.'
 Check ($packageSource -match 'notification-identity=\$notificationIdentityMode' -and $packageSource -match 'notification-identity-package-sha256=\$notificationIdentityPackageHash') 'Delivery evidence must identify signed registration versus metadata-only output and pin the signed input.'
 Check ($installer -match 'AfterInstall: PrepareInstalledLume' -and
-    $installer -match '(?s)procedure PrepareInstalledLume;\s*begin\s*VerifyAllInstalledUi;\s*RegisterSignedNotificationIdentity;') 'The final file hook must prepare identity before non-postinstall Run entries.'
+    $installer -match '(?s)procedure PrepareInstalledLume;\s*begin\s*InstallPreparedForLaunch := False;\s*VerifyAllInstalledUi;\s*RegisterSignedNotificationIdentity;\s*InstallPreparedForLaunch := True;') 'The launch gate must open only after integrity checks and the synchronous identity attempt.'
 Check ($installer -match '(?s)procedure RegisterSignedNotificationIdentity;.*?ExecAsOriginalUser.*?ewWaitUntilTerminated' -and
-    $installer -match 'Result := UiWasVerified and NotificationIdentityReady') 'Launch must require completed registration, not a default false failure flag.'
-Check ($installer -match 'Check: IsVerifiedLumeStart' -and $installer -match 'Result := IsLumeUpdate and IsVerifiedLumeStart') 'Normal and silent Shell starts must honor the registration failure gate.'
+    $installer -match 'Result := UiWasVerified and InstallPreparedForLaunch') 'Shell launch must wait for the identity attempt to finish.'
+Check ($installer -match 'Check: IsVerifiedLumeStart' -and $installer -match 'Result := IsLumeUpdate and IsVerifiedLumeStart') 'Normal and silent Shell starts must both honor the launch gate.'
+$registrationBody = [regex]::Match($installer, '(?s)procedure RegisterSignedNotificationIdentity;(.+?)procedure PrepareInstalledLume;').Groups[1].Value
+Check ($registrationBody -match '(?s)GetSHA256OfFile\(PackageFile\).*?RaiseException' -and
+    $registrationBody -match '(?s)ewWaitUntilTerminated, ResultCode\) then\s*begin\s*Log\([^;]+;\s*Exit;' -and
+    $registrationBody -match '(?s)if ResultCode <> 0 then\s*begin\s*Log\([^;]+;\s*Exit;') 'A damaged payload must stop setup, while host or registration errors must allow desktop fallback.'
 foreach ($file in @('Register-NotificationIdentity.ps1','Remove-NotificationIdentity.ps1','Identity-Common.ps1','Build-NotificationIdentityPackage.ps1')) {
     $source = Get-Content -LiteralPath (Join-Path $identityRoot $file) -Raw
     Check ($source -notmatch '(?i)Import-Certificate|Import-PfxCertificate|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|RequestAccessAsync|Get-AppxPackage[^\r\n]*-AllUsers') 'Deployment scripts must not add trust, change Developer Mode, request private access or affect all users.'

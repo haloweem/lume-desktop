@@ -37,6 +37,7 @@ public:
     int Run(HINSTANCE instance, CommandHandler handler, bool verification = false,
         const std::wstring& verificationReadyScript = {},unsigned verificationRasterDpi = 0);
     void RequestClose();
+    void SetGameCovered(bool covered);
     void Post(const std::wstring& message);
     void Present();
     HWND Handle() const;

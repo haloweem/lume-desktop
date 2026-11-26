@@ -1,0 +1,1 @@
+import{e as l}from"./chunk-2RCK3FTM.js";import{f as o,g as a}from"./chunk-E7KZXXVV.js";import{a as s}from"./chunk-FSMYLL7F.js";import{c}from"./chunk-7SZRL6FY.js";var y=c(s(),1);var m=i=>{let n=o(),t=a(),e=n?void 0:i?.scale,r=n?void 0:i?.antialias;return(0,y.useMemo)(()=>l(t,e&&r?{scale:e,antialias:r}:null),[t,e,r])};export{m as a};

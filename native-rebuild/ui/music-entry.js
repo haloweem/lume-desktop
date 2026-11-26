@@ -87,7 +87,10 @@ export function createMusicRuntime({
       : error==='conflict' ? translate?.('音乐背景已更改，请重试','Music background changed. Please try again.')
       : translate?.('音乐背景保存失败，已保留此前背景','Could not save music background. Previous background retained.')),
   });
-  musicProviderAccount.subscribe(value=>musicOnline.accounts(value));
+  musicProviderAccount.subscribe(value=>{
+    musicOnline.accounts(value);
+    musicOnline.select(value.selected);
+  });
 
   function musicLibraryView() {
     const local=musicLibrary.state;

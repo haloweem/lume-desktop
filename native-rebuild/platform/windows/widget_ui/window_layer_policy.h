@@ -63,6 +63,8 @@ inline void ApplyForegroundProtection(Context& result, bool shellForeground, QUE
     result.allDisplays = false;
     if (shellForeground) {
         result.fullscreen.clear();
+        result.foreignForeground = false;
+        result.foregroundBounds = {};
         return;
     }
     if (ExclusiveNotificationState(state)) {
@@ -108,9 +110,14 @@ inline Context Capture() {
     ApplyForegroundProtection(result, shellForeground, state);
     return result;
 }
+// Global budget for desktop surfaces, set on the watcher's UI thread.
+inline thread_local bool balancedIdle=false;
+inline thread_local std::function<bool(const Context&)> balancedPolicy;
+inline thread_local bool fullscreenProtection=true;
 inline bool Protected(const RECT& bounds, const Context& state, bool hideFullscreen = true) {
-    return state.allDisplays || ((hideFullscreen || state.exclusive) && std::any_of(state.fullscreen.begin(), state.fullscreen.end(),
-        [&](const RECT& display) { return Intersects(bounds, display); }));
+    return fullscreenProtection && (state.allDisplays || ((hideFullscreen || state.exclusive) &&
+        std::any_of(state.fullscreen.begin(), state.fullscreen.end(),
+            [&](const RECT& display) { return Intersects(bounds, display); })));
 }
 inline thread_local Context context;
 inline thread_local bool enabled = false, applying = false;
@@ -124,6 +131,7 @@ struct Entry {
     Kind kind; HWND owner; bool wanted; bool suppressed; bool pending = false;
     bool aboveApplications = false, hideFullscreen = true;
     bool contentOccluded = false;
+    bool fullscreenBypass = false;
 };
 inline thread_local std::unordered_map<HWND, Entry> windows;
 inline const Entry* IslandPolicy(const Entry& entry) {
@@ -175,12 +183,13 @@ inline bool DesktopFamily(HWND window) {
         role==static_cast<ULONG_PTR>(Kind::Island)+1;
 }
 inline bool Blocked(HWND window, const Entry& entry, const Context& state, const RECT* proposed = nullptr) {
-    if (!enabled || entry.kind == Kind::ExplicitTool) return false;
+    if (!enabled || entry.kind == Kind::ExplicitTool || entry.fullscreenBypass) return false;
     if (entry.owner && (!IsWindow(entry.owner) || Suppressed(entry.owner))) return true;
     if (entry.owner && entry.kind == Kind::Popup && !IsWindowVisible(entry.owner)) return true;
     RECT bounds{}; if(proposed)bounds=*proposed;else GetWindowRect(window, &bounds);
     if (IsRectEmpty(&bounds) && entry.owner) GetWindowRect(entry.owner, &bounds);
     const auto* island=IslandPolicy(entry);
+    if (balancedIdle && entry.kind!=Kind::Editor) return true;
     return Protected(bounds,state,island?island->hideFullscreen:true);
 }
 inline void HideCompanions(HWND owner) {
@@ -208,7 +217,7 @@ inline bool ContentOccluded(HWND window) {
     for(unsigned depth=0;entry->owner&&depth<8;++depth) {
         const auto owner=windows.find(entry->owner);if(owner==windows.end())return false;entry=&owner->second;
     }
-    if(!ResidentDesktop(*entry))return false;
+    if(!ResidentDesktop(*entry)||entry->fullscreenBypass)return false;
     RECT bounds{};
     return GetWindowRect(window, &bounds) && !IsRectEmpty(&bounds) && Covers(context.foregroundBounds, bounds);
 }
@@ -269,15 +278,28 @@ inline void Update(const Context& next) {
     for (const auto window : roots) Apply(window);
     for (const auto window : children) Apply(window);
 }
-inline void Refresh() { if (enabled) Update(ReadContext()); }
+inline void Refresh() {
+    if (!enabled) return;
+    auto next=ReadContext();
+    balancedIdle=fullscreenProtection && balancedPolicy && balancedPolicy(next);
+    Update(next);
+}
 inline void WantVisible(HWND window) {
     const auto i=windows.find(window);if(i==windows.end())return;
     i->second.wanted=true;
     if(enabled)context=ReadContext();
     Apply(window);
 }
-inline void Start() { enabled = true; Refresh(); }
-inline void Stop() { enabled = false; Update({}); observer = {}; desktopForeground = {}; }
+inline void Start(bool protectFullscreen = true) {
+    fullscreenProtection = protectFullscreen;
+    enabled = true;
+    Refresh();
+}
+inline void Stop() {
+    enabled = false;
+    fullscreenProtection = true;
+    balancedPolicy={}; balancedIdle=false; Update({}); observer = {}; desktopForeground = {};
+}
 inline LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
     if (message == RestackMessage()) RestoreDesktop(window);
     if(message==PolicyMessage()) {
@@ -320,13 +342,14 @@ inline LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM w, LPARAM l,
                 found->second.suppressed=false;
                 RemovePropW(window,lume::window_ids::LayerSuppressedProp);
             }
-            if (found->second.kind != Kind::ExplicitTool && !Overlay(found->second) && !(position->flags & SWP_NOZORDER) &&
+            if (found->second.kind != Kind::ExplicitTool && !found->second.fullscreenBypass &&
+                !Overlay(found->second) && !(position->flags & SWP_NOZORDER) &&
                 position->hwndInsertAfter == HWND_TOPMOST) {
                 const HWND ceiling = applicationCeiling ? applicationCeiling() : nullptr;
                 position->hwndInsertAfter = found->second.kind == Kind::Popup && ceiling ? ceiling : HWND_NOTOPMOST;
                 position->flags |= SWP_NOACTIVATE | SWP_NOOWNERZORDER;
             }
-            if(enabled && found->second.kind==Kind::Popup && !Overlay(found->second) && context.foreignForeground &&
+            if(enabled && found->second.kind==Kind::Popup && !found->second.fullscreenBypass && !Overlay(found->second) && context.foreignForeground &&
                ((position->flags&SWP_SHOWWINDOW)||!(position->flags&SWP_NOZORDER)) && applicationCeiling) {
                 if(const HWND ceiling=applicationCeiling()){
                     position->hwndInsertAfter=ceiling;position->flags&=~SWP_NOZORDER;
@@ -360,5 +383,22 @@ inline void ConfigureIsland(HWND window,bool aboveApplications,bool hideFullscre
     if(found==windows.end()||found->second.kind!=Kind::Island)return;
     found->second.aboveApplications=aboveApplications;found->second.hideFullscreen=hideFullscreen;
     if(enabled){context=ReadContext();Apply(window);}
+}
+inline bool SetFullscreenBypass(HWND window,bool bypass) {
+    const auto found=windows.find(window);
+    if(found==windows.end())return false;
+    if(found->second.kind==Kind::Popup) {
+        const auto owner=windows.find(found->second.owner);
+        if(bypass&&(owner==windows.end()||!owner->second.fullscreenBypass))return false;
+    } else if(found->second.kind!=Kind::Desktop)return false;
+    if(found->second.fullscreenBypass==bypass)return true;
+    found->second.fullscreenBypass=bypass;
+    if(enabled){context=ReadContext();Apply(window);}
+    if(bypass)EnumWindows([](HWND surface,LPARAM owner)->BOOL {
+        if(GetPropW(surface,lume::window_ids::GlassSurfaceOwnerProp)==reinterpret_cast<HWND>(owner))
+            PostMessageW(surface,lume::window_ids::GlassRestackMessage,0,0);
+        return TRUE;
+    },reinterpret_cast<LPARAM>(window));
+    return true;
 }
 } // namespace lume::platform::windows::window_layer

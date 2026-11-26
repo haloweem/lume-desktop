@@ -15,6 +15,9 @@ public:
     void Refresh();
     void Stop();
     bool Running()const;
+    bool CanRecycle(const std::vector<std::string>& paths) const;
+    // Returns only desktop entries removed by the shell, including partial completion.
+    std::vector<std::string> Recycle(HWND owner,const std::vector<std::string>& paths) const;
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
 };

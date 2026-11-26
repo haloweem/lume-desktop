@@ -8,7 +8,7 @@ bool operator==(const Preferences& a, const Preferences& b) noexcept {
     return a.enabled == b.enabled && a.durationMs == b.durationMs && a.restore == b.restore &&
         a.launch == b.launch && a.multiMonitor == b.multiMonitor &&
         a.unhideTaskbar == b.unhideTaskbar && a.unhideDurationMs == b.unhideDurationMs &&
-        a.engine == b.engine;
+        a.engine == b.engine && a.dockOnly == b.dockOnly && a.close == b.close;
 }
 bool Valid(const Preferences& p) noexcept {
     return p.durationMs >= 50 && p.durationMs <= 2000 && p.unhideDurationMs >= 0 &&

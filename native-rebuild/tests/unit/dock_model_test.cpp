@@ -17,6 +17,14 @@ std::string Lower(std::string_view text) {
 const TextKey key = [](std::string_view text) { return Lower(text); };
 }  // namespace
 int main() {
+    Check(Preferences{}.reflectionTransparency == 50, "Dock reflection defaults to half opacity");
+    Preferences defaultReflection, savedReflection;
+    Check(Decode(R"({"version":1,"enabled":false,"frosted":false,"pinned":[],"added":[]})",
+                 defaultReflection, key) && defaultReflection.reflectionTransparency == 50,
+          "missing reflection transparency uses the new default");
+    Check(Decode(R"({"version":1,"enabled":false,"frosted":false,"pinned":[],"added":[],"reflectionTransparency":18})",
+                 savedReflection, key) && savedReflection.reflectionTransparency == 18,
+          "explicitly saved reflection transparency remains unchanged");
     // Launchpad merge, de-duplication, ordering and "added" marking.
     const auto items = LaunchpadItems({"C:\\Users\\a\\Desktop\\Zed.lnk", "C:\\Users\\a\\Desktop\\notes.txt",
                                        "C:\\Users\\a\\Desktop\\Apps"},
@@ -165,6 +173,7 @@ int main() {
           "Lume can be hidden without removing pinned items");
     {
         Preferences manager;
+        manager.showStartMenu = false;
         manager.controlCenter = false;
         manager.lumeVisible = false;
         manager.pinned = pinned;
@@ -205,7 +214,7 @@ int main() {
         tray.controlCenter = false;
         Check(Encode(tray, encoded) && Decode(encoded, reopened, key) && !reopened.controlCenter,
               "control center visibility survives save and restart");
-        Check(DockItemsFor(reopened, {}, {}, key).size() == 2, "control center is absent when its preference is disabled");
+        Check(DockItemsFor(reopened, {}, {}, key).size() == 3, "control center is absent when its preference is disabled");
         Preferences old;
         Check(Decode(R"({"version":1,"enabled":true,"frosted":false,"pinned":[],"added":[],"systemTray":false})", old, key) && old.controlCenter &&
               DockItemsFor(old, {}, {}, key).back().kind == Kind::SystemTray,
@@ -219,6 +228,7 @@ int main() {
     }
     {
         Preferences visibility;
+        visibility.showStartMenu = false;
         Check(visibility.showRunning, "the separate running section is on by default");
         std::string encoded;
         Preferences reopened;
@@ -240,19 +250,25 @@ int main() {
     {
         Preferences visibility;
         visibility.controlCenter = false;
+        visibility.showStartMenu = false;
         visibility.pinned = {pinned[0], "C:\\Users\\a\\Desktop\\WeGame.lnk", pinned[1]};
         visibility.lumePosition = 1;
         const std::vector<std::string> resolved{targets[0], "C:\\Program Files (x86)\\WeGame\\wegame.exe", targets[1]};
         const std::string launcherUi = "C:\\Program Files (x86)\\WeGame\\x64\\wegameui.exe";
         const std::string executable = "C:\\Lume\\Lume.exe";
         const std::vector<RunningApp> active{{"c:\\program files\\chrome\\CHROME.EXE", "Chrome"},
-            {launcherUi, "WeGame UI"}, {"C:\\Apps\\editor.exe", "Editor"},
+            {launcherUi, "WeGame UI", false, 12}, {"C:\\Apps\\editor.exe", "Editor"},
             {"C:\\Apps\\editor.exe", "Editor duplicate"}, {targets[1], "Music", true}};
         const auto before = DockItemsFor(visibility, resolved, active, key, executable, true);
         Check(before.size() == 10 && before[5].kind == Kind::Separator &&
               before[6].name == "Chrome" && before[7].name == "WeGame UI" &&
               before[8].name == "Editor" && before[9].path == executable,
               "enabled running section preserves first-seen app order and the open manager");
+        visibility.runningPreview = true;
+        const auto previews = DockItemsFor(visibility, resolved, active, key, executable, true);
+        Check(previews.size() == before.size() && previews[7].window == 12 && !before[7].window &&
+              previews[3].running && !previews[3].window && MotionKey(previews[7]) == MotionKey(before[7]) &&
+              Movable(previews[7]), "preview style keeps pinned icons, app grouping and drag identity");
         const auto savedPins = visibility.pinned;
         visibility.showRunning = false;
         const auto hidden = DockItemsFor(visibility, resolved, active, key, executable, true);
@@ -351,18 +367,29 @@ int main() {
     appearance.lumePosition = 2;
     Check(Encode(appearance, text) && Decode(text, decoded, key) && !decoded.lumeVisible &&
           decoded.lumePosition == 2, "Lume visibility and position survive save/reopen");
-    Check(Decode("{\"version\":1,\"enabled\":true,\"frosted\":false,\"pinned\":[],\"added\":[]}", decoded, key) &&
-          decoded.position == 50 && decoded.bottomOffset == 0 && decoded.iconSpacing == 10,
+        Check(Decode("{\"version\":1,\"enabled\":true,\"frosted\":false,\"pinned\":[],\"added\":[]}", decoded, key) &&
+          decoded.position == 50 && decoded.positionMode == lume::dock::PositionCenter && decoded.positionOffset == 0 &&
+          decoded.bottomOffset == 0 && decoded.iconSpacing == 10,
           "older preferences preserve the original Dock layout");
-    for (const auto* invalid : {"\"position\":101", "\"position\":-1", "\"bottomOffset\":-20",
+    for (const auto* invalid : {"\"position\":101", "\"position\":-1", "\"positionMode\":3", "\"positionOffset\":51", "\"bottomOffset\":-20",
                                "\"bottomOffset\":180", "\"iconSpacing\":3", "\"iconSpacing\":25",
                                "\"iconSpacing\":\"10\"",
                                "\"lumePosition\":33", "\"lumeVisible\":\"false\""})
         Check(!Decode(std::string("{\"version\":1,\"enabled\":true,\"frosted\":false,\"pinned\":[],\"added\":[],") +
                       invalid + "}", decoded, key), "invalid layout preference is rejected");
     using lume::ui::PageCommand;
-    Check(lume::ui::ParsePageCommand(L"v1|dock|position|75") ==
+        appearance.positionMode = lume::dock::PositionRight;
+        appearance.positionOffset = 25;
+        Check(Encode(appearance, text) && Decode(text, decoded, key) &&
+              decoded.positionMode == lume::dock::PositionRight && decoded.positionOffset == 25,
+              "Dock position mode and offset survive save/reopen");
+        Check(lume::ui::ParsePageCommand(L"v1|dock|position|75") ==
               static_cast<PageCommand>(static_cast<int>(PageCommand::DockPositionFirst) + 75) &&
+          lume::ui::ParsePageCommand(L"v1|dock|positionMode|center") == PageCommand::DockPositionModeCenter &&
+          lume::ui::ParsePageCommand(L"v1|dock|positionMode|left") == PageCommand::DockPositionModeLeft &&
+          lume::ui::ParsePageCommand(L"v1|dock|positionMode|right") == PageCommand::DockPositionModeRight &&
+          lume::ui::ParsePageCommand(L"v1|dock|positionOffset|50") == PageCommand::DockPositionOffsetLast &&
+          lume::ui::ParsePageCommand(L"v1|dock|positionOffset|51") == PageCommand::Invalid &&
           lume::ui::ParsePageCommand(L"v1|dock|bottomOffset|160") ==
               static_cast<PageCommand>(static_cast<int>(PageCommand::DockBottomOffsetFirst) + 160) &&
           lume::ui::ParsePageCommand(L"v1|dock|iconSpacing|24") ==
@@ -390,16 +417,23 @@ int main() {
               PinCollection(grouped, "dock1", key) == Change::Changed && grouped.pinned == std::vector<std::string>{b},
               "pinning a launchpad collection moves its pinned members atomically");
         auto visible = DockItemsFor(grouped, grouped.pinned, {}, key);
-        Check(visible[0].kind == Kind::Launchpad && visible[1].kind == Kind::Collection &&
-              visible[1].path == CollectionKey("dock1") && visible[1].previewPaths == std::vector<std::string>{a},
-              "new collection follows launchpad and previews saved members");
+        Check(visible[0].kind == Kind::Launchpad && visible[1].kind == Kind::StartMenu && visible[2].kind == Kind::Collection &&
+              visible[2].path == CollectionKey("dock1") && visible[2].previewPaths == std::vector<std::string>{a},
+              "Start follows launchpad before the collection preview");
         Check(MoveToDockCollection(grouped, "dock1", {b}, key) == Change::Changed && grouped.pinned.empty() &&
               FindCollection(grouped, "dock1")->paths == std::vector<std::string>{a, b}, "Dock icon moves into collection");
+        grouped.animation = true;
+        const std::string launcher = R"(C:\Apps\Example\Launcher.exe)", uiProgram = R"(C:\Apps\Example\bin\UI.exe)";
+        const auto groupedApps = DockItemsFor(grouped, {}, {{uiProgram, "UI", false, 41, {41, 42}}}, key,
+                                              {}, false, {{"dock1", {launcher}}});
+        Check(groupedApps[2].collectionPrograms == std::vector<std::string>{launcher} &&
+              groupedApps[2].animationWindows == std::vector<std::uint64_t>{41,42},
+              "collection maps a resolved shortcut before launch and all its running UI windows");
         Check(MoveFromDockCollection(grouped, "dock1", a, 0, key) == Change::Changed &&
               grouped.pinned == std::vector<std::string>{a} && FindCollection(grouped, "dock1")->paths == std::vector<std::string>{b},
               "member moves back to Dock without losing its original path");
         Check(RenameCollection(grouped, "dock1", "Renamed") == Change::Changed &&
-              DockItemsFor(grouped, grouped.pinned, {}, key)[1].name == "Renamed", "Dock label follows shared collection title");
+              DockItemsFor(grouped, grouped.pinned, {}, key)[2].name == "Renamed", "Dock label follows shared collection title");
         std::string saved;
         Preferences reopened;
         Check(Encode(grouped, saved) && Decode(saved, reopened, key) && reopened.dockCollections == grouped.dockCollections &&
@@ -441,6 +475,23 @@ int main() {
         Item other = windowItem; other.window = 43;
         Check(MotionKey(pinnedItem) == "2|C:\\A.exe" && MotionKey(windowItem) == "6|C:\\A.exe#42" &&
               MotionKey(windowItem) != MotionKey(other), "motion keys");
+    }
+    {
+        Check(!Preferences{}.summonEnabled && Preferences{}.summonShortcutCode == 2093,
+              "Dock summon defaults off with Win+Insert selected");
+        Check(ValidSummonShortcut(0) && ValidSummonShortcut(2093) && ValidSummonShortcut(544) && ValidSummonShortcut(800),
+              "Win+Insert default and custom summon shortcuts are valid");
+        Check(!ValidSummonShortcut(371) && !ValidSummonShortcut(2130) && !ValidSummonShortcut(123),
+              "Alt+F4, Win+R and F12 are unavailable for Dock summon");
+        Preferences summon;
+        summon.summonEnabled = true;
+        summon.summonShortcutCode = 544;
+        std::string encoded;
+        Preferences reopened;
+        Check(Encode(summon, encoded) && Decode(encoded, reopened, key) && reopened.summonEnabled &&
+              reopened.summonShortcutCode == 544, "Dock summon setting and shortcut persist");
+        Check(!Decode(R"({"version":1,"enabled":false,"frosted":false,"pinned":[],"added":[],"summonShortcutCode":371})", reopened, key),
+              "reserved Dock summon shortcut is rejected from preferences");
     }
     if (failures) return 1;
     std::cout << "dock model passed\n";

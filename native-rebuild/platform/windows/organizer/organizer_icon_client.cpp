@@ -2,6 +2,7 @@
 #include "platform/windows/organizer/organizer_icons.h"
 #include "platform/windows/organizer/organizer_icon_protocol.h"
 #include "platform/windows/organizer/shell_open.h"
+#include "platform/windows/shell_location.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -175,7 +176,7 @@ struct OrganizerIconExtractor::Impl {
         return true;
     }
     std::shared_ptr<const WidgetBitmap> Read(const std::wstring& path,const std::atomic_bool& cancelled,unsigned pixelSize) {
-        if(cancelled||!LocalPath(path)){if(cancelled)Stop();return {};}
+        if(cancelled||(!LocalPath(path)&&!IsDockShellTarget(path))){if(cancelled)Stop();return {};}
         if(!pixelSize||pixelSize>organizer_icon_ipc::MaxSide)return {};
         if(!Start())return {};
         message->result=organizer_icon_ipc::Result::Pending;

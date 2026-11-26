@@ -1,6 +1,6 @@
 {
     "name": "motion-dom",
-    "version": "12.42.2",
+    "version": "13.4.2",
     "author": "Matt Perry",
     "license": "MIT",
     "repository": "https://github.com/motiondivision/motion",
@@ -17,7 +17,7 @@
         }
     },
     "dependencies": {
-        "motion-utils": "^12.39.0"
+        "motion-utils": "^13.3.0"
     },
     "scripts": {
         "clean": "rm -rf types dist lib",
@@ -33,8 +33,8 @@
         },
         {
             "path": "./dist/size-rollup-motion-value.js",
-            "maxSize": "1.8 kB"
+            "maxSize": "1.9 kB"
         }
     ],
-    "gitHead": "40e8756c63b258c9dd07de9501cb788410eefb02"
+    "gitHead": "50f9558f31e09bdd31908f7d78f16f016e4bb734"
 }

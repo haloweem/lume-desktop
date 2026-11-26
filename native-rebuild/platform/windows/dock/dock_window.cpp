@@ -11,6 +11,7 @@
 #include "platform/windows/widget_ui/desktop_level.h"
 #include "core/window/screen_fit.h"
 #include "platform/windows/dock/dock_slots.h"
+#include "platform/windows/dock/dock_animation_targets.h"
 #include "platform/windows/dock/dock_sources.h"
 #include <dwmapi.h>
 #include <shellscalingapi.h>
@@ -28,6 +29,7 @@ constexpr const wchar_t* IconClass = lume::window_ids::DockIconsClass;
 constexpr const wchar_t* BarClass = lume::window_ids::DockBarClass;
 constexpr wchar_t GhostClass[] = L"LumeNativeDockDragIcon", PreviewClass[] = L"LumeNativeDockPreview";
 constexpr UINT_PTR PreviewTimer = 0x7c3;
+constexpr UINT PreviewHoverDelayMs = 500;
 constexpr UINT_PTR PreviewLeaveTimer = 0x7c4;
 constexpr UINT FrameMessage = WM_APP + 0x7c1;
 constexpr UINT PaintMessage = WM_APP + 0x7c3;
@@ -55,6 +57,15 @@ void LaunchpadGlyph(WidgetCanvas& canvas, WidgetRect r) {
         for (int column = 0; column < 3; ++column)
             canvas.Rounded({r.x + gap + column * (cell + gap), r.y + gap + row * (cell + gap), cell, cell},
                            cell * .3f, 0xffffff, .92f);
+}
+void StartGlyph(WidgetCanvas& canvas, WidgetRect r) {
+    const float tile = r.width * .374f, gap = r.width * .035f;
+    const float inset = (r.width - 2 * tile - gap) / 2;
+    constexpr std::uint32_t blues[2][2]{{0x32b9f4, 0x169de8}, {0x168ee0, 0x0878d5}};
+    for (int row = 0; row < 2; ++row)
+        for (int column = 0; column < 2; ++column)
+            canvas.Rounded({r.x + inset + column * (tile + gap), r.y + inset + row * (tile + gap), tile, tile},
+                           0, blues[row][column]);
 }
 // Control center, drawn like the launchpad glyph: two white sliders whose
 // knobs sit at opposite ends, on the Dock itself without a tile.
@@ -127,10 +138,55 @@ struct DockWindow::Impl {
     std::unique_ptr<WidgetCanvas> previewCanvas;
     WidgetBitmap previewBitmap;
     LayeredSurface previewSurface;
+    POINT previewOrigin{};
+    double previewSlideStart = 0;
     // Published positions for the minimize animation (dock_slots.h).
     HANDLE slotsMapping = nullptr;
     dock_slots::Table* slots = nullptr;
+    dock_animation::Publisher animationTargets;
+    std::vector<std::vector<ULONGLONG>> collectionProgramKeys;
+    RECT AnimationRect(std::size_t index) {
+        const auto window = items[index].window;
+        const auto thumb = thumbnails.find(window);
+        return ScreenRect(window ? WindowBox(index, thumb == thumbnails.end() ? SIZE{1,1} : thumb->second.source)
+                                 : IconRect(index));
+    }
+    void PublishAnimationTargets() {
+        if (!look.animation) { animationTargets.Reset(); return; }
+        dock_animation::Targets table{};
+        table.bar = HandleToLong(bar);
+        table.icons = HandleToLong(icons);
+        table.edge = static_cast<LONG>(look.edge);
+        if (visible && !desktopLayer.Covered() && layoutX.size() == items.size()) {
+            auto add = [&](LONG kind, ULONGLONG key, RECT r, LONG area = 0) {
+                if (key && table.count < dock_animation::Capacity)
+                    table.slots[table.count++] = {kind, area, key, r.left, r.top, r.right, r.bottom};
+            };
+            // Keep visible running icons first even if a very large collection fills the table.
+            for (auto kind : {dock::Kind::Running, dock::Kind::Window, dock::Kind::Pinned, dock::Kind::Lume, dock::Kind::Collection}) {
+                for (std::size_t i = 0; i < items.size(); ++i) {
+                    const auto& item = items[i];
+                    if (item.kind != kind) continue;
+                    const RECT r = AnimationRect(i);
+                    const LONG area = kind == dock::Kind::Running || kind == dock::Kind::Window ? dock_animation::RunningArea : 0;
+                    if (kind == dock::Kind::Collection) {
+                        for (const auto hwnd : item.animationWindows) add(dock_animation::CollectionWindow, hwnd, r);
+                        for (const auto key : collectionProgramKeys[i]) add(dock_animation::CollectionProgram, key, r);
+                        continue;
+                    }
+                    for (const auto window : item.animationWindows) add(dock_slots::WindowSlot, window, r, area);
+                    if (item.window && item.animationWindows.empty()) add(dock_slots::WindowSlot, item.window, r, area);
+                    const auto& path = !item.runningProgram.empty() ? item.runningProgram :
+                                       !item.target.empty() ? item.target : item.path;
+                    add(dock_slots::ProgramSlot, dock_slots::ProgramKey(OrganizerWide(path)), r, area);
+                }
+            }
+        }
+        animationTargets.Publish(MonitorFromWindow(bar, MONITOR_DEFAULTTONEAREST), table);
+    }
     void PublishSlots() {
+        PublishAnimationTargets();
+        if (!ports.publishSlots) return;
         if (!slots) {
             slotsMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(dock_slots::Table),
                                               ports.slotsName.empty() ? dock_slots::MappingName : ports.slotsName.c_str());
@@ -138,11 +194,6 @@ struct DockWindow::Impl {
             slots = static_cast<dock_slots::Table*>(MapViewOfFile(slotsMapping, FILE_MAP_WRITE, 0, 0, sizeof(dock_slots::Table)));
             if (!slots) { CloseHandle(slotsMapping); slotsMapping = nullptr; return; }
         }
-        const auto screen = [&](WidgetRect r) {
-            return RECT{overlayOrigin.x + static_cast<LONG>(std::lround(Px(r.x))), overlayOrigin.y + static_cast<LONG>(std::lround(Px(r.y))),
-                        overlayOrigin.x + static_cast<LONG>(std::lround(Px(r.x + r.width))),
-                        overlayOrigin.y + static_cast<LONG>(std::lround(Px(r.y + r.height)))};
-        };
         InterlockedIncrement(&slots->sequence);
         LONG count = 0;
         const bool shown = visible && !desktopLayer.Covered() && layoutX.size() == items.size();
@@ -152,12 +203,12 @@ struct DockWindow::Impl {
             RECT r{};
             if (item.kind == dock::Kind::Window && item.window) {
                 const auto found = thumbnails.find(item.window);
-                r = screen(WindowBox(i, found == thumbnails.end() ? SIZE{1, 1} : found->second.source));
+                r = ScreenRect(WindowBox(i, found == thumbnails.end() ? SIZE{1, 1} : found->second.source));
                 slot.kind = dock_slots::WindowSlot;
                 slot.key = item.window;
             } else if (item.kind == dock::Kind::Pinned || item.kind == dock::Kind::Running) {
                 const float size = IconSize * motion[Key(item)].scale.value, bottom = Headroom + BarHeight - IconBottom;
-                r = screen({barLeft + Visual(i), bottom - size, size, size});
+                r = ScreenRect(Physical({barLeft + Visual(i), bottom - size, size, size}));
                 slot.kind = dock_slots::ProgramSlot;
                 slot.key = dock_slots::ProgramKey(OrganizerWide(item.target.empty() ? item.path : item.target));
             } else continue;
@@ -186,6 +237,7 @@ struct DockWindow::Impl {
     std::vector<dock_slots::Slot> lastWindowSlots;
     std::vector<std::pair<dock_slots::Slot, ULONGLONG>> recentWindows;
     void ReleaseSlots() {
+        animationTargets.Reset();
         if (slots) { InterlockedIncrement(&slots->sequence); slots->count = 0; InterlockedIncrement(&slots->sequence); UnmapViewOfFile(slots); }
         slots = nullptr;
         if (slotsMapping) CloseHandle(slotsMapping);
@@ -208,7 +260,7 @@ struct DockWindow::Impl {
     std::unique_ptr<WidgetCanvas> ghostCanvas;
     WidgetBitmap ghostBitmap;
     LayeredSurface ghostSurface;
-    bool removing = false;
+    bool removing = false, pinningRunning = false;
     // Live DWM thumbnails of minimized windows, drawn on the bar window so the
     // icon layer above can put each program's badge over them.
     struct Thumbnail { HTHUMBNAIL handle = nullptr; SIZE source{}; RECT shown{}; bool visible = false; };
@@ -233,6 +285,28 @@ struct DockWindow::Impl {
     Impl(HINSTANCE i, DockWindowPorts p) : instance(i), ports(std::move(p)) {}
     ~Impl() { Stop(); }
     float Px(float dip) const { return dip * static_cast<float>(dpi) / 96; }
+    static constexpr float BaseDepth = Headroom + BarHeight + BottomMargin;
+    static constexpr float SurfaceDepth = BaseDepth + IconSize * MaxScale;
+    bool Vertical() const { return dock::Vertical(look.edge); }
+    float AlongOrigin() const { return static_cast<float>(Vertical() ? overlayOrigin.y : overlayOrigin.x) * 96 / dpi; }
+    WidgetRect Physical(WidgetRect slot) const {
+        switch (look.edge) {
+        case dock::Edge::Top: return {slot.x, SurfaceDepth - slot.y - slot.height, slot.width, slot.height};
+        case dock::Edge::Left: return {SurfaceDepth - slot.y - slot.height, slot.x, slot.height, slot.width};
+        case dock::Edge::Right: return {slot.y, slot.x, slot.height, slot.width};
+        default: return slot;
+        }
+    }
+    RECT ScreenRect(WidgetRect physical) const {
+        return {overlayOrigin.x + std::lround(Px(physical.x)), overlayOrigin.y + std::lround(Px(physical.y)),
+                overlayOrigin.x + std::lround(Px(physical.x + physical.width)),
+                overlayOrigin.y + std::lround(Px(physical.y + physical.height))};
+    }
+    WidgetRect IconRect(std::size_t index) {
+        const auto& frame = motion[Key(items[index])];
+        const float size = IconSize * frame.scale.value;
+        return Physical({barLeft + Visual(index), Headroom + BarHeight - IconBottom - size - frame.lift.value, size, size});
+    }
     bool Register(const wchar_t* name) {
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
@@ -265,7 +339,7 @@ struct DockWindow::Impl {
     // to the input snapshot; visual reordering never rewrites that snapshot.
     std::vector<std::size_t> Primary(std::size_t skip = None) const {
         std::vector<std::size_t> result;
-        const bool movingRunning = dragged != None && dragged < items.size() && items[dragged].kind == dock::Kind::Running;
+        const bool movingRunning = !pinningRunning && dragged != None && dragged < items.size() && items[dragged].kind == dock::Kind::Running;
         for (const auto i : order) {
             if (i == skip) continue;
             if (movingRunning ? items[i].kind == dock::Kind::Running :
@@ -290,8 +364,15 @@ struct DockWindow::Impl {
     }
     std::vector<std::size_t> DisplayOrder() const {
         auto result = RestOrder();
-        if (dragged == None) return result;
+        if (dragged == None || items[dragged].kind == dock::Kind::StartMenu) return result;
         auto primary = Primary(dragged);
+        if (pinningRunning) {
+            result.erase(std::find(result.begin(), result.end(), dragged));
+            const auto before = dropSlot < primary.size() ? std::find(result.begin(), result.end(), primary[dropSlot]) :
+                std::find_if(result.begin(), result.end(), [&](auto index) { return items[index].kind == dock::Kind::Separator; });
+            result.insert(before, dragged);
+            return result;
+        }
         primary.insert(primary.begin() + static_cast<std::ptrdiff_t>(std::min(dropSlot, primary.size())), dragged);
         const bool running = items[dragged].kind == dock::Kind::Running;
         std::size_t n = 0;
@@ -332,7 +413,15 @@ struct DockWindow::Impl {
         barWidth = std::max(Padding * 2, x - Spacing() + Padding);
         Anchor();
     }
-    float Centered() const { return (overlayWidth - barWidth) / 2; }
+    float Centered() const { return std::max(0.f, (overlayWidth - barWidth) / 2); }
+    float RestAnchor() const {
+        const float edge = std::max(0.f, overlayWidth - barWidth);
+        const float center = edge / 2;
+        const float progress = std::clamp(look.positionOffset, 0, 50) / 50.f;
+        if (look.positionMode == dock::PositionLeft) return center * progress;
+        if (look.positionMode == dock::PositionRight) return edge - center * progress;
+        return center;
+    }
     // The rest-layout position (bar-relative) shown at animated position q.
     float RestOf(float q) const {
         float restX = Padding;
@@ -366,10 +455,12 @@ struct DockWindow::Impl {
                 motion[Key(items[i])].offset.value = before[i] - (barLeft + layoutX[i]);
     }
     bool Position() {
-        const auto monitor = MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        const auto monitor = look.monitor ? MonitorFromRect(&look.monitor->bounds, MONITOR_DEFAULTTONEAREST) :
+            MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO info{};
         info.cbSize = sizeof(info);
         if (!GetMonitorInfoW(monitor, &info)) return false;
+        if (look.monitor) { info.rcMonitor = look.monitor->bounds; info.rcWork = look.monitor->work; }
         UINT dpiX = 96, dpiY = 96;
         monitorDpi = SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX ? dpiX : 96;
         // The icon size zooms the whole Dock: every DIP below becomes larger.
@@ -380,23 +471,35 @@ struct DockWindow::Impl {
         dpi = std::max(48u, static_cast<unsigned>(std::lround(monitorDpi * look.iconScale / 100.0 * fit)));
         // With many icons, shrink the whole Dock until it fits the work area.
         const float needed = RestWidth() + IconSize + Spacing();
-        const int available = info.rcWork.right - info.rcWork.left;
+        const int available = Vertical() ? info.rcWork.bottom - info.rcWork.top : info.rcWork.right - info.rcWork.left;
         if (needed * static_cast<float>(dpi) / 96 > static_cast<float>(available))
-            dpi = std::max(48u, static_cast<unsigned>(std::floor(static_cast<float>(available) * 96 / needed)));
-        const float workWidth = static_cast<float>(info.rcWork.right - info.rcWork.left) * 96 / dpi;
+            dpi = std::max(1u, static_cast<unsigned>(std::floor(static_cast<float>(available) * 96 / needed)));
+        const float workWidth = static_cast<float>(available) * 96 / dpi;
         overlayWidth = std::min(RestWidth() + ExtraWidth + IconSize + Spacing(), workWidth);
         const int width = static_cast<int>(std::lround(Px(overlayWidth)));
-        const int height = static_cast<int>(std::lround(Px(Headroom + BarHeight + BottomMargin)));
-        const int workPixels = info.rcWork.right - info.rcWork.left;
-        const int centred = info.rcWork.left + (workPixels - width) / 2;
-        const int bottomOffset = MulDiv(look.bottomOffset, static_cast<int>(monitorDpi), 96);
-        // Always centred: the horizontal position setting was removed (old values are ignored).
-        overlayOrigin = {centred,
-                         std::max(info.rcWork.top, info.rcWork.bottom - height - bottomOffset)};
+        const int height = static_cast<int>(std::lround(Px(BaseDepth)));
+        const int flippedDepth = static_cast<int>(std::lround(Px(SurfaceDepth - BaseDepth)));
+        const int horizontalSpace = std::max(0, available - width);
+        const int towardCenter = MulDiv(horizontalSpace, std::clamp(look.positionOffset, 0, 50), 100);
+        const int along = (Vertical() ? info.rcWork.top : info.rcWork.left) +
+            (look.positionMode == dock::PositionLeft ? towardCenter :
+             look.positionMode == dock::PositionRight ? horizontalSpace - towardCenter : horizontalSpace / 2);
+        const LONG offset = MulDiv(look.bottomOffset, static_cast<int>(monitorDpi), 96);
+        switch (look.edge) {
+        case dock::Edge::Top:
+            overlayOrigin = {along, std::min(info.rcWork.top + offset, std::max(info.rcWork.top, info.rcWork.bottom - height)) - flippedDepth};
+            break;
+        case dock::Edge::Left:
+            overlayOrigin = {std::min(info.rcWork.left + offset, std::max(info.rcWork.left, info.rcWork.right - height)) - flippedDepth, along};
+            break;
+        case dock::Edge::Right: overlayOrigin = {std::max(info.rcWork.left, info.rcWork.right - height - offset), along}; break;
+        default: overlayOrigin = {along, std::max(info.rcWork.top, info.rcWork.bottom - height - offset)}; break;
+        }
         // The bar's content is constant (a near-transparent fill under the glass):
         // render it once at the widest size and show a slice of it each frame.
-        if (!barCanvas->Begin(overlayWidth, BarHeight, dpi)) return false;
-        barCanvas->Rounded({0, 0, overlayWidth, BarHeight}, 0, 0xffffff, 1.f / 255);
+        const auto shape = Physical({0, Headroom, overlayWidth, BarHeight});
+        if (!barCanvas->Begin(shape.width, shape.height, dpi)) return false;
+        barCanvas->Rounded({0, 0, shape.width, shape.height}, 0, 0xffffff, 1.f / 255);
         return barCanvas->Finish(barBitmap) && barSurface.Upload(barBitmap);
     }
     void RestackVisible() {
@@ -423,20 +526,32 @@ struct DockWindow::Impl {
         BOOL animate = TRUE;
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0);
         reducedMotion = !animate;
+        const bool horizontalPositionChanged = !(look.monitor == nextLook.monitor) || look.edge != nextLook.edge || look.positionMode != nextLook.positionMode ||
+                                              look.positionOffset != nextLook.positionOffset;
         // Keep where every surviving icon is on screen, then adopt the new items.
         std::map<std::string, float> screen;
-        const float oldOrigin = static_cast<float>(overlayOrigin.x) * 96 / dpi;
-        if (layoutX.size() == items.size())
+        const float oldOrigin = AlongOrigin();
+        if (!horizontalPositionChanged && layoutX.size() == items.size())
             for (std::size_t i = 0; i < items.size(); ++i) screen[Key(items[i])] = barLeft + oldOrigin + Visual(i);
         const float oldLeft = barLeft + oldOrigin;
         items = std::move(next);
+        collectionProgramKeys.assign(items.size(), {});
+        for (std::size_t i = 0; i < items.size(); ++i)
+            for (const auto& program : items[i].collectionPrograms)
+                collectionProgramKeys[i].push_back(dock_slots::ProgramKey(OrganizerWide(program)));
         PruneSnapshots();
         runningOrder.erase(std::remove_if(runningOrder.begin(), runningOrder.end(), [&](const auto& key) {
             return std::none_of(items.begin(), items.end(), [&](const auto& item) { return Key(item) == key; });
         }), runningOrder.end());
+        if (look.reflectionRatio != nextLook.reflectionRatio || look.edge != nextLook.edge) mirrors.clear();
         look = nextLook;
+        if (!dock::ValidEdge(look.edge)) look.edge = dock::Edge::Bottom;
+        look.reflectionRatio = std::clamp(look.reflectionRatio, 0, 100);
+        look.reflectionTransparency = std::clamp(look.reflectionTransparency, 0, 100);
         look.iconScale = std::clamp(look.iconScale, 50, 200);
         if (!dock::ValidPosition(look.position)) look.position = dock::DefaultPosition;
+        if (!dock::ValidPositionMode(look.positionMode)) look.positionMode = dock::PositionCenter;
+        if (!dock::ValidPositionOffset(look.positionOffset)) look.positionOffset = dock::DefaultPositionOffset;
         if (!dock::ValidBottomOffset(look.bottomOffset)) look.bottomOffset = dock::DefaultBottomOffset;
         if (!dock::ValidIconSpacing(look.iconSpacing)) look.iconSpacing = dock::DefaultIconSpacing;
         frosted = look.frosted;
@@ -461,11 +576,11 @@ struct DockWindow::Impl {
             visible = false;
             return false;
         }
-        const float newOrigin = static_cast<float>(overlayOrigin.x) * 96 / dpi;
-        anchor = {visible ? oldLeft - newOrigin : 0.f, 0};
+        const float newOrigin = AlongOrigin();
+        anchor = {visible && !horizontalPositionChanged ? oldLeft - newOrigin : RestAnchor(), 0};
         order = RestOrder();
         Layout();
-        if (!visible) { anchor = {Centered(), 0}; barLeft = Centered(); }
+        if (!visible || horizontalPositionChanged) { anchor = {RestAnchor(), 0}; barLeft = RestAnchor(); }
         for (std::size_t i = 0; i < items.size(); ++i) {
             const auto found = screen.find(Key(items[i]));
             if (found != screen.end()) motion[Key(items[i])].offset.value = found->second - (barLeft + newOrigin + layoutX[i]);
@@ -509,7 +624,7 @@ struct DockWindow::Impl {
         }
         moving |= gap.Step(gapSlot == None ? 0.f : 1.f, dt, SlideOmega, SlideZeta, .002f, reducedMotion);
         Layout();
-        moving |= anchor.Step(Centered(), dt, SlideOmega, SlideZeta, .05f, reducedMotion);
+        moving |= anchor.Step(RestAnchor(), dt, SlideOmega, SlideZeta, .05f, reducedMotion);
         Anchor();
         return moving;
     }
@@ -519,11 +634,18 @@ struct DockWindow::Impl {
             for (auto it = mirrors.begin(); it != mirrors.end();)
                 it = it->second.first.expired() ? mirrors.erase(it) : std::next(it);
         }
-        const float height = Headroom + BarHeight + BottomMargin;
-        if (!iconCanvas->Begin(overlayWidth, height, dpi)) { visible = false; return false; }
+        if (!iconCanvas->Begin(Vertical() ? SurfaceDepth : overlayWidth, Vertical() ? overlayWidth : SurfaceDepth, dpi)) {
+            visible = false; return false;
+        }
         // A near-transparent body over the bar keeps it hit-testable; the
         // headroom stays fully transparent and passes clicks through.
-        iconCanvas->Rounded({barLeft, Headroom, barWidth, BarHeight}, CornerRadius, 0xffffff, 1.f / 255);
+        const auto body = Physical({barLeft, Headroom, barWidth, BarHeight});
+        iconCanvas->Rounded(body, CornerRadius, 0xffffff, 1.f / 255);
+        const auto barRect = ScreenRect(body);
+        const POINT barOrigin{barRect.left, barRect.top};
+        const SIZE barSize{std::lround(Px(body.width)), std::lround(Px(body.height))};
+        if (!barSurface.Compose(bar, barOrigin, barSize)) { visible = false; return false; }
+        UpdateThumbnails(barOrigin);
         std::size_t labelled = None;
         for (const auto i : order) {
             if (i == dragged) continue;
@@ -536,11 +658,6 @@ struct DockWindow::Impl {
             visible = false;
             return false;
         }
-        const POINT barOrigin{overlayOrigin.x + static_cast<LONG>(std::lround(Px(barLeft))),
-                              overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom)))};
-        const SIZE barSize{static_cast<LONG>(std::lround(Px(barWidth))), static_cast<LONG>(std::lround(Px(BarHeight)))};
-        if (!barSurface.Compose(bar, barOrigin, barSize)) { visible = false; return false; }
-        UpdateThumbnails(barOrigin);
         PublishSlots();
         if (look.transparent || desktopLayer.Covered()) return true;  // "无": no glass under the icons
         LumeMaterialParameters p;
@@ -548,10 +665,9 @@ struct DockWindow::Impl {
         p.size = sizeof(p);
         p.owner = bar;
         p.frosted = frosted;
-        // Frosted keeps the Dock frost (profile 3). Liquid uses the widgets'
-        // profile 1: the soft-edge rim lens is about as tall as the 100 DIP
-        // bar, so profile 3 smeared the whole Dock instead of edging it.
-        p.opticalProfile = frosted ? 3 : 1;
+        // Profile 3 selects Dock optics in the liquid shader and the cool tint
+        // in the frosted shader.
+        p.opticalProfile = 3;
         p.lightForeground = 1;
         // The material measures in the monitor's DIPs, not the zoomed ones.
         p.cornerRadius = CornerRadius * look.iconScale / 100.f;
@@ -564,7 +680,7 @@ struct DockWindow::Impl {
             p.contactX = lastMaterial.contactX;
             p.contactY = lastMaterial.contactY;
         } else {
-            MaterialContact(bar, barWidth, BarHeight, dpi, p.contactX, p.contactY);
+            MaterialContact(bar, body.width, body.height, dpi, p.contactX, p.contactY);
         }
         SubmitMaterial(material, p, lastMaterial);
         return true;
@@ -576,29 +692,32 @@ struct DockWindow::Impl {
         if (item.kind == dock::Kind::Separator) {
             const float x = barLeft + Visual(i);
             // Nearly the height of the glass, as on macOS.
-            iconCanvas->Line(x + .5f, Headroom + 12, x + .5f, Headroom + BarHeight - 12, 0xffffff, .7f, 2);
+            const auto rule = Physical({x + .5f, Headroom + 12, 0.f, BarHeight - 24});
+            iconCanvas->Line(rule.x, rule.y, rule.x + rule.width, rule.y + rule.height, 0xffffff, .7f, 2);
             return;
         }
         const float size = IconSize * m.scale.value;
         float left = barLeft + Visual(i);
         if (i == dragged) left = dragX - grabOffset * m.scale.value;
-        const WidgetRect r{left, bottom - size - m.lift.value, size, size};
-        if (item.kind == dock::Kind::Window) {
-            // The window itself is a DWM thumbnail on the bar below; music
-            // shows its cover here instead. The program's badge goes on top.
-            const auto cover = ports.cover ? ports.cover(item) : nullptr;
+        const WidgetRect r = Physical({left, bottom - size - m.lift.value, size, size});
+        if (item.window) {
+            const auto cover = item.kind == dock::Kind::Window && ports.cover ? ports.cover(item) : nullptr;
             const auto found = thumbnails.find(item.window);
-            const auto snapshot = cover ? nullptr : Snapshot(item.window, item.path);
+            const auto snapshot = cover ? nullptr : BarSnapshot(item);
             const auto box = WindowBox(i, snapshot ? SIZE{static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)}
                                                    : cover || found == thumbnails.end() ? SIZE{1, 1} : found->second.source);
             if (cover) iconCanvas->ImageBitmap(cover, box);
             else if (snapshot) iconCanvas->ImageBitmap(snapshot, box);
-            const float badge = size * BadgeSize;
-            if (const auto icon = Icon(item))
-                iconCanvas->ImageBitmap(icon, {box.x + box.width - badge * .78f, bottom - badge * .86f, badge, badge});
-            return;
+            if (cover || snapshot || (found != thumbnails.end() && found->second.visible)) {
+                const float badge = size * BadgeSize;
+                if (const auto icon = Icon(item))
+                    iconCanvas->ImageBitmap(icon, {box.x + box.width - badge * .78f, box.y + box.height - badge * .86f, badge, badge});
+                return;
+            }
+            // Fall back to the app icon if DWM cannot supply a thumbnail.
         }
         if (item.kind == dock::Kind::Launchpad) LaunchpadGlyph(*iconCanvas, r);
+        else if (item.kind == dock::Kind::StartMenu) StartGlyph(*iconCanvas, r);
         else if (item.kind == dock::Kind::SystemTray) ControlCenterGlyph(*iconCanvas, r);
         else if (item.kind == dock::Kind::Collection) {
             const bool target = i == collectTarget || i == discardTarget || item.path == dropCollection;
@@ -615,21 +734,17 @@ struct DockWindow::Impl {
         else if (const auto bitmap = Icon(item)) {
             iconCanvas->ImageBitmap(bitmap, r);
             // The reflection stays on the row while the icon lifts or is dragged.
-            if (look.reflection && i != dragged) {
-                const float floor = Headroom + BarHeight + BottomMargin;
-                if (iconCanvas->PushClip({left - size, bottom, size * 3, floor - bottom})) {
-                    // Keep the fade inside the available strip even while the
-                    // icon magnifies; the reflection must never end at a hard clip.
-                    const float reflectionTop=bottom+1;
-                    const float mirrorHeight=std::min(size,2*(floor-reflectionTop));
-                    iconCanvas->ImageBitmap(Mirror(bitmap), {left,reflectionTop,size,mirrorHeight});
-                    iconCanvas->PopClip();
-                }
+            if (look.reflection && i != dragged && look.reflectionRatio > 0 && look.reflectionTransparency < 100) {
+                const float reflectionTop = bottom + 1;
+                const float mirrorHeight = size * look.reflectionRatio / 100.f;
+                if (mirrorHeight > 0)
+                    iconCanvas->ImageBitmap(Mirror(bitmap), Physical({left, reflectionTop, size, size}),
+                                            (100 - look.reflectionTransparency) / 100.f);
             }
         }
         else iconCanvas->Rounded(r, size * .22f, 0xffffff, .14f);
         if (item.running && i != dragged)
-            iconCanvas->Rounded({left + size / 2 - 2, bottom + 6, 4, 4}, 2, 0xffffff, .85f);
+            iconCanvas->Rounded(Physical({left + size / 2 - 2, bottom + 6, 4, 4}), 2, 0xffffff, .85f);
     }
     std::shared_ptr<const WidgetBitmap> Icon(const dock::Item& item) {
         return ports.icon ? ports.icon(item) : nullptr;
@@ -638,7 +753,8 @@ struct DockWindow::Impl {
     // Moving through the gap into the gallery gets a grace period.
     void SyncPreview() {
         const bool valid = hover < items.size() && dragged == None &&
-            (items[hover].kind == dock::Kind::Window || items[hover].kind == dock::Kind::Running);
+            (items[hover].kind == dock::Kind::Window || items[hover].kind == dock::Kind::Running ||
+             ((items[hover].kind == dock::Kind::Pinned || items[hover].kind == dock::Kind::Lume) && items[hover].running));
         if (valid && (hover == previewIndex || hover == pendingPreview)) {
             KillTimer(icons, PreviewLeaveTimer);
             previewLeaving = false;
@@ -654,7 +770,7 @@ struct DockWindow::Impl {
         HidePreview();
         if (!valid || !icons) return;
         pendingPreview = hover;
-        SetTimer(icons, PreviewTimer, 280, nullptr);
+        SetTimer(icons, PreviewTimer, PreviewHoverDelayMs, nullptr);
     }
     bool previewLeaving = false;
     void ReleasePreviewCards() {
@@ -668,6 +784,7 @@ struct DockWindow::Impl {
             KillTimer(icons, PreviewLeaveTimer);
         }
         pendingPreview = previewIndex = None;
+        previewSlideStart = 0;
         previewPressed = 0;
         previewLeaving = false;
         ReleasePreviewCards();
@@ -679,11 +796,9 @@ struct DockWindow::Impl {
             if (PtInRect(&card.rect, point)) return card.window.handle;
         return 0;
     }
-    bool PointerInPreview() const {
-        if (!preview || !IsWindowVisible(preview)) return false;
-        RECT bounds{}; POINT point{};
-        GetWindowRect(preview, &bounds); GetCursorPos(&point);
-        return PtInRect(&bounds, point) != FALSE;
+    bool ContainsPreviewPoint(POINT screen) const {
+        RECT bounds{};
+        return preview && IsWindowVisible(preview) && GetWindowRect(preview, &bounds) && PtInRect(&bounds, screen);
     }
     void ShowPreview(std::size_t index) {
         if (index >= items.size() || layoutX.size() != items.size()) return;
@@ -709,9 +824,9 @@ struct DockWindow::Impl {
         }
         previewIndex = index;
         previewPage = 0;
-        PaintPreview();
+        PaintPreview(true);
     }
-    void PaintPreview() {
+    void PaintPreview(bool opening = false) {
         if (previewIndex >= items.size() || previewWindows.empty()) { HidePreview(); return; }
         ReleasePreviewCards();
         MONITORINFO info{sizeof(info)};
@@ -742,8 +857,6 @@ struct DockWindow::Impl {
             return RECT{static_cast<LONG>(std::lround(r.x * unit)), static_cast<LONG>(std::lround(r.y * unit)),
                 static_cast<LONG>(std::lround((r.x + r.width) * unit)), static_cast<LONG>(std::lround((r.y + r.height) * unit))};
         };
-        struct Destination { HTHUMBNAIL handle; RECT rect; };
-        std::vector<Destination> destinations;
         for (std::size_t n = 0; n < count; ++n) {
             const auto& window = previewWindows[begin + n];
             const WidgetRect card{margin + static_cast<float>(n % columns) * (cardWidth + cardGap),
@@ -764,7 +877,6 @@ struct DockWindow::Impl {
                 previewCanvas->Rounded(image, 0, 0xffffff, 1.f / 255);
                 entry.rect = pixels(image);
                 if (snapshot) previewCanvas->ImageBitmap(snapshot, image);
-                else destinations.push_back({entry.thumbnail, pixels(image)});
             } else {
                 previewCanvas->Rounded(image, 0, 0xffffff, 1.f / 255);
                 if (const auto icon = Icon(items[previewIndex]))
@@ -777,21 +889,58 @@ struct DockWindow::Impl {
         }
         if (!previewCanvas->Finish(previewBitmap)) { HidePreview(); return; }
         const float size = IconSize * motion[Key(items[previewIndex])].scale.value;
-        const LONG centre = overlayOrigin.x + static_cast<LONG>(std::lround(Px(barLeft + Visual(previewIndex) + size / 2)));
         const LONG w = static_cast<LONG>(previewBitmap.width), h = static_cast<LONG>(previewBitmap.height);
-        // Above the magnified icon, so moving up does not pass through another icon.
-        const LONG iconTop = overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom + BarHeight - IconBottom - size)));
-        const POINT origin{
-            std::clamp(centre - w / 2, info.rcWork.left + 8, std::max(info.rcWork.left + 8, info.rcWork.right - w - 8)),
-            std::max(info.rcWork.top + 8, std::min(iconTop, overlayOrigin.y + static_cast<LONG>(std::lround(Px(Headroom)))) - h - 8)};
-        if (!previewSurface.Present(preview, previewBitmap, &origin)) { HidePreview(); return; }
-        for (const auto& destination : destinations) {
-            DWM_THUMBNAIL_PROPERTIES p{};
-            p.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
-            p.rcDestination = destination.rect; p.fVisible = TRUE; p.opacity = 255; p.fSourceClientAreaOnly = FALSE;
-            DwmUpdateThumbnailProperties(destination.handle, &p);
+        const auto anchorRect = ScreenRect(Physical({barLeft + Visual(previewIndex), std::min(Headroom, Headroom + BarHeight - IconBottom - size),
+                                                      size, std::max(BarHeight, size)}));
+        LONG left = (anchorRect.left + anchorRect.right - w) / 2;
+        LONG top = (anchorRect.top + anchorRect.bottom - h) / 2;
+        switch (look.edge) {
+        case dock::Edge::Top: top = anchorRect.bottom + 8; break;
+        case dock::Edge::Left: left = anchorRect.right + 8; break;
+        case dock::Edge::Right: left = anchorRect.left - w - 8; break;
+        default: top = anchorRect.top - h - 8; break;
         }
-        ShowWindow(preview, SW_SHOWNOACTIVATE);
+        previewOrigin = {
+            std::clamp(left, info.rcWork.left + 8, std::max(info.rcWork.left + 8, info.rcWork.right - w - 8)),
+            std::clamp(top, info.rcWork.top + 8, std::max(info.rcWork.top + 8, info.rcWork.bottom - h - 8))};
+        if (!previewSurface.Upload(previewBitmap)) { HidePreview(); return; }
+        if (opening) {
+            window_layer::SetFullscreenBypass(preview, desktopLayer.Summoned());
+            if (!reducedMotion) previewSlideStart = AnimationSeconds();
+        }
+        PresentPreviewFrame();
+        if (previewIndex == None) return;
+        if (opening) {
+            const bool summoned = desktopLayer.Summoned();
+            SetWindowPos(preview, summoned ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        }
+        if (previewSlideStart) Animate();
+    }
+    void PresentPreviewFrame() {
+        const double progress = previewSlideStart ? std::clamp((AnimationSeconds() - previewSlideStart) / .22, 0., 1.) : 1.;
+        const double remaining = (1. - progress) * (1. - progress) * (1. - progress);
+        const LONG offset = std::lround(36. * monitorDpi / 96. * remaining);
+        const BYTE opacity = static_cast<BYTE>(std::lround(255. * (1. - remaining)));
+        POINT position = previewOrigin;
+        switch (look.edge) {
+        case dock::Edge::Top: position.y -= offset; break;
+        case dock::Edge::Left: position.x -= offset; break;
+        case dock::Edge::Right: position.x += offset; break;
+        default: position.y += offset; break;
+        }
+        const SIZE size{static_cast<LONG>(previewBitmap.width), static_cast<LONG>(previewBitmap.height)};
+        if (!previewSurface.Compose(preview, position, size, {}, opacity)) { HidePreview(); return; }
+        for (const auto& card : previewCards) {
+            if (!card.thumbnail) continue;
+            DWM_THUMBNAIL_PROPERTIES properties{};
+            properties.dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY;
+            properties.rcDestination = card.rect;
+            properties.fVisible = TRUE;
+            properties.opacity = opacity;
+            DwmUpdateThumbnailProperties(card.thumbnail, &properties);
+        }
+        if (progress >= 1.) previewSlideStart = 0;
     }
     // Where a minimized window is drawn (icon-layer DIPs): its shape fitted
     // into the icon's square, standing on the icon baseline.
@@ -801,14 +950,19 @@ struct DockWindow::Impl {
         const float aspect = source.cx > 0 && source.cy > 0 ? static_cast<float>(source.cx) / source.cy : 1.f;
         float width = size, height = size / aspect;
         if (height > size * ThumbnailHeight) { height = size * ThumbnailHeight; width = height * aspect; }
-        return {left + (size - width) / 2, bottom - height, width, height};
+        if (Vertical()) return Physical({left + (size - height) / 2, bottom - width, height, width});
+        return Physical({left + (size - width) / 2, bottom - height, width, height});
+    }
+    std::shared_ptr<const WidgetBitmap> BarSnapshot(const dock::Item& item) {
+        if (item.kind == dock::Kind::Running && !IsIconic(reinterpret_cast<HWND>(item.window))) return nullptr;
+        return Snapshot(item.window, item.path);
     }
     void UpdateThumbnails(POINT barOrigin) {
         std::map<std::uint64_t, bool> live;
         const bool show = !desktopLayer.Covered();
         for (const auto i : order) {
             const auto& item = items[i];
-            if (item.kind != dock::Kind::Window || !item.window) continue;
+            if (!item.window || i == dragged) continue;
             const auto source = reinterpret_cast<HWND>(item.window);
             if (!IsWindow(source)) continue;
             live[item.window] = true;
@@ -817,9 +971,9 @@ struct DockWindow::Impl {
                 if (FAILED(DwmRegisterThumbnail(bar, source, &t.handle))) { t.handle = nullptr; continue; }
                 DwmQueryThumbnailSourceSize(t.handle, &t.source);
             }
-            const bool cover = ports.cover && ports.cover(item);
+            const bool cover = item.kind == dock::Kind::Window && ports.cover && ports.cover(item);
             // A snapshot from just before minimizing replaces DWM's image (grey for some apps).
-            const auto snapshot = Snapshot(item.window, item.path);
+            const auto snapshot = BarSnapshot(item);
             const auto box = WindowBox(i, snapshot ? SIZE{static_cast<LONG>(snapshot->width), static_cast<LONG>(snapshot->height)} : t.source);
             const LONG dx = overlayOrigin.x - barOrigin.x, dy = overlayOrigin.y - barOrigin.y;
             const RECT shown{static_cast<LONG>(std::lround(Px(box.x))) + dx, static_cast<LONG>(std::lround(Px(box.y))) + dy,
@@ -941,32 +1095,39 @@ struct DockWindow::Impl {
             ghostCanvas->Text(label, pill, 12, 0xffffff, .95f, false, WidgetTextAlign::Center);
         }
         if (!ghostCanvas->Finish(ghostBitmap)) return;
-        const float left = dragX - grabOffset * DragScale - (width - size) / 2;
-        const float top = dragY - grabOffsetY * DragScale - (labelHeight + labelGap);
+        const auto slot = Physical({dragX - grabOffset * DragScale, dragY - grabOffsetY * DragScale, size, size});
+        const float left = slot.x - (width - size) / 2;
+        const float top = slot.y - (labelHeight + labelGap);
         const POINT origin{overlayOrigin.x + static_cast<LONG>(std::lround(Px(left))),
                            overlayOrigin.y + static_cast<LONG>(std::lround(Px(top)))};
         if (ghostSurface.Present(ghost, ghostBitmap, &origin) && !IsWindowVisible(ghost))
             ShowWindow(ghost, SW_SHOWNOACTIVATE);
     }
     void HideGhost() { if (ghost) ShowWindow(ghost, SW_HIDE); }
-    // The icon flipped upside down, fading out over its upper half, as on a
-    // glossy shelf. Built once per icon bitmap.
+    // The mirrored portion is cached for the current ratio.
     std::shared_ptr<const WidgetBitmap> Mirror(const std::shared_ptr<const WidgetBitmap>& source) {
         const auto found = mirrors.find(source.get());
         if (found != mirrors.end()) return found->second.second;
-        auto result=std::make_shared<const WidgetBitmap>(MakeDockReflection(*source));
+        auto result=std::make_shared<const WidgetBitmap>(MakeDockReflection(*source, look.reflectionRatio, look.edge));
         mirrors[source.get()] = {source, result};
         return result;
     }
     void DrawLabel(std::size_t i) {
         const auto& m = motion[Key(items[i])];
         const float size = IconSize * m.scale.value;
-        const float center = barLeft + Visual(i) + size / 2;
-        const float top = Headroom + BarHeight - IconBottom - size;
-        const auto text = FitText(*iconCanvas, OrganizerWide(items[i].name), 220, 12);
+        const auto icon = IconRect(i);
+        const float textSpace = Vertical() ? (look.edge == dock::Edge::Left ? SurfaceDepth - icon.x - size : icon.x) - 28 : 220;
+        const auto text = FitText(*iconCanvas, OrganizerWide(items[i].name), std::max(24.f, textSpace), 12);
         const float width = iconCanvas->MeasureText(text, 12) + 20, height = 24;
-        const float x = std::clamp(center - width / 2, 0.f, std::max(0.f, overlayWidth - width));
-        const float y = std::max(0.f, top - height - 8);
+        float x = icon.x + (size - width) / 2, y = icon.y + (size - height) / 2;
+        switch (look.edge) {
+        case dock::Edge::Top: y = icon.y + size + 8; break;
+        case dock::Edge::Left: x = icon.x + size + 8; break;
+        case dock::Edge::Right: x = icon.x - width - 8; break;
+        default: y = icon.y - height - 8; break;
+        }
+        x = std::clamp(x, 0.f, std::max(0.f, (Vertical() ? SurfaceDepth : overlayWidth) - width));
+        y = std::clamp(y, 0.f, std::max(0.f, (Vertical() ? overlayWidth : SurfaceDepth) - height));
         iconCanvas->Rounded({x, y, width, height}, 8, 0x1c1c1e, .72f);
         iconCanvas->Text(text, {x, y, width, height}, 12, 0xffffff, .95f, false, WidgetTextAlign::Center);
     }
@@ -984,7 +1145,8 @@ struct DockWindow::Impl {
         return None;
     }
     float Dip(LPARAM l, bool vertical) const {
-        return static_cast<float>(vertical ? GET_Y_LPARAM(l) : GET_X_LPARAM(l)) * 96 / dpi;
+        const auto value = static_cast<float>((vertical != Vertical()) ? GET_Y_LPARAM(l) : GET_X_LPARAM(l)) * 96 / dpi;
+        return vertical && (look.edge == dock::Edge::Top || look.edge == dock::Edge::Left) ? SurfaceDepth - value : value;
     }
     void Pointer(float x, float y) {
         hovering = dragged != None || (y >= Headroom && y <= Headroom + BarHeight && x >= barLeft && x <= barLeft + barWidth) ||
@@ -1044,10 +1206,12 @@ struct DockWindow::Impl {
     }
     void BeginDrag() {
         dragged = pressed;
+        pinningRunning = false;
         const float scale = motion[Key(items[dragged])].scale.value;
-        grabOffset = std::clamp(dragX - (barLeft + Visual(dragged)), 0.f, IconSize * scale) / scale;
+        const auto start = MAKELPARAM(pressPoint.x, pressPoint.y);
+        grabOffset = std::clamp(Dip(start, false) - (barLeft + Visual(dragged)), 0.f, IconSize * scale) / scale;
         const float top = Headroom + BarHeight - IconBottom - IconSize * scale - motion[Key(items[dragged])].lift.value;
-        grabOffsetY = std::clamp(dragY - top, 0.f, IconSize * scale) / scale;
+        grabOffsetY = std::clamp(Dip(start, true) - top, 0.f, IconSize * scale) / scale;
         removing = false;
         dropSlot = TargetAt(DraggedCentre(), dragged);
         Reorder(DisplayOrder());
@@ -1074,10 +1238,18 @@ struct DockWindow::Impl {
         if (collectTarget != None) { discardTarget = None; Animate(); return; }
         // Pinned icons and Lume can be dropped on the Recycle Bin to leave the Dock.
         discardTarget = hit != None && hit != dragged && AcceptsDrop(hit) &&
-            (items[dragged].kind == dock::Kind::Pinned || items[dragged].kind == dock::Kind::Lume) ? hit : None;
+            (items[dragged].kind == dock::Kind::Pinned || items[dragged].kind == dock::Kind::Lume ||
+             items[dragged].kind == dock::Kind::StartMenu) ? hit : None;
         if (discardTarget != None) { Animate(); return; }
+        if (items[dragged].kind == dock::Kind::StartMenu) { Animate(); return; }
+        const bool wasPinning = pinningRunning;
+        if (items[dragged].kind == dock::Kind::Running) {
+            const auto divider = std::find_if(items.begin(), items.end(), [](const auto& item) { return item.kind == dock::Kind::Separator; });
+            const float restLeft = barLeft + (barWidth - RestWidth()) / 2;
+            pinningRunning = divider != items.end() && x < restLeft + Slot(items, static_cast<std::size_t>(divider - items.begin()), Spacing()).x;
+        }
         const auto target = TargetAt(DraggedCentre(), dragged);
-        if (target != dropSlot) {
+        if (wasPinning != pinningRunning || target != dropSlot) {
             dropSlot = target;
             Reorder(DisplayOrder());
         }
@@ -1104,7 +1276,7 @@ struct DockWindow::Impl {
                 if (item.kind == dock::Kind::Lume) return item.orderIndex;
             return None;
         }();
-        const bool changed = items[from].kind == dock::Kind::Running ? false : items[from].kind == dock::Kind::Lume
+        const bool changed = items[from].kind == dock::Kind::Running ? pinningRunning : items[from].kind == dock::Kind::Lume
                                  ? target.lumePosition != originalLume
                                  : items[from].kind == dock::Kind::Pinned
                                        ? target.pinnedSlot != originalPinned || target.lumePosition != originalLume
@@ -1116,14 +1288,15 @@ struct DockWindow::Impl {
         const float restTop = Headroom + BarHeight - IconBottom - IconSize * m.scale.value;
         m.lift.value = std::clamp(restTop - (dragY - grabOffsetY * DragScale), -60.f, 600.f);
         if (removed) m.scale.value = 0;
-        if (commit && !discard && items[from].kind == dock::Kind::Running) {
+        if (commit && !discard && !pinningRunning && items[from].kind == dock::Kind::Running) {
             runningOrder.clear();
             for (const auto index : committedOrder)
                 if (index < items.size() && items[index].kind == dock::Kind::Running)
                     runningOrder.push_back(Key(items[index]));
         }
         dragged = None;
-        Reorder(commit && !discard && group.empty() ? committedOrder : RestOrder());
+        Reorder(commit && !discard && !pinningRunning && group.empty() ? committedOrder : RestOrder());
+        pinningRunning = false;
         Animate();
         if (commit && discard && ports.discard) {
             if (hasPending) Show(std::move(pending), pendingLook);
@@ -1135,7 +1308,7 @@ struct DockWindow::Impl {
         }
         else if (commit && changed && ports.place)
             ports.place(from, target.pinnedSlot, target.lumePosition);
-        else if (hasPending) Show(std::move(pending), pendingLook);
+        if (hasPending) Show(std::move(pending), pendingLook);
     }
     void DragOver(const OrganizerDropFeedback& feedback) {
         if (!visible) return;
@@ -1145,8 +1318,9 @@ struct DockWindow::Impl {
             Animate();
             return;
         }
-        const float x = static_cast<float>(feedback.point.x) * 96 / dpi;
-        const auto hit = HitAt(x, static_cast<float>(feedback.point.y) * 96 / dpi);
+        const auto point = MAKELPARAM(feedback.point.x, feedback.point.y);
+        const float x = Dip(point, false);
+        const auto hit = HitAt(x, Dip(point, true));
         dropCollection = hit != None && (items[hit].kind == dock::Kind::Collection || AcceptsDrop(hit)) ? items[hit].path : std::string{};
         if (!dropCollection.empty()) { gapSlot = None; hover = None; Animate(); return; }
         const auto slot = SlotAt(x, None);
@@ -1171,7 +1345,8 @@ struct DockWindow::Impl {
         return index < items.size() && items[index].kind == dock::Kind::Pinned && ports.acceptsDrop && ports.acceptsDrop(items[index]);
     }
     bool DropPaths(const std::vector<std::string>& paths, POINT point) {
-        const auto hit = HitAt(static_cast<float>(point.x) * 96 / dpi, static_cast<float>(point.y) * 96 / dpi);
+        const auto position = MAKELPARAM(point.x, point.y);
+        const auto hit = HitAt(Dip(position, false), Dip(position, true));
         if (hit != None && AcceptsDrop(hit)) {
             const auto target = items[hit];  // The port may refresh items.
             dropCollection.clear(); gapSlot = None; gap = {0, 0}; Animate();
@@ -1179,7 +1354,7 @@ struct DockWindow::Impl {
         }
         const auto group = hit != None && items[hit].kind == dock::Kind::Collection ? items[hit].path : std::string{};
         dropCollection.clear();
-        const auto slot = SlotAt(static_cast<float>(point.x) * 96 / dpi, None);
+        const auto slot = SlotAt(Dip(position, false), None);
         gapSlot = None;
         // The new icons take the open gap's place, so it closes at once.
         gap = {0, 0};
@@ -1291,7 +1466,8 @@ struct DockWindow::Impl {
             if (w == PreviewLeaveTimer) {
                 KillTimer(hwnd, PreviewLeaveTimer);
                 self->previewLeaving = false;
-                if (!self->PointerInPreview()) self->HidePreview();
+                POINT cursor{};
+                if (!GetCursorPos(&cursor) || !self->ContainsPreviewPoint(cursor)) self->HidePreview();
                 return 0;
             }
             break;
@@ -1313,7 +1489,8 @@ struct DockWindow::Impl {
             // launchpad item hovered, on the thread that also moves that item.
             // Pointer messages restart the clock when a dragged icon moves.
             // Holding it still needs no software bitmap or vblank polling.
-            if (!moving) self->clock.Pause();
+            if (self->previewSlideStart) self->PresentPreviewFrame();
+            if (!moving && !self->previewSlideStart) self->clock.Pause();
             return 0;
         }
         case PaintMessage:self->paintPending=false;if(self->visible)self->Paint();return 0;
@@ -1353,7 +1530,13 @@ struct DockWindow::Impl {
             const auto pressed = self->pressed;
             self->pressed = None;
             // End the drag before releasing capture, whose notification cancels drags.
-            if (wasDragging) { self->EndDrag(true); if (GetCapture() == hwnd) ReleaseCapture(); return 0; }
+            if (wasDragging) {
+                const float x = self->Dip(l, false), y = self->Dip(l, true);
+                if (x != self->dragX || y != self->dragY) self->Drag(x, y);
+                self->EndDrag(true);
+                if (GetCapture() == hwnd) ReleaseCapture();
+                return 0;
+            }
             if (GetCapture() == hwnd) ReleaseCapture();
             const auto hit = self->HitAt(self->Dip(l, false), self->Dip(l, true));
             if (hit != None && hit == pressed && self->ports.activate) self->ports.activate(hit);
@@ -1406,12 +1589,27 @@ bool DockWindow::Show(std::vector<dock::Item> items, bool frosted) {
 bool DockWindow::Show(std::vector<dock::Item> items, const DockAppearance& look) { return impl_->Show(std::move(items), look); }
 void DockWindow::Stop() { impl_->Stop(); }
 bool DockWindow::Paint() { return impl_->Paint(); }
+bool DockWindow::SummonTemporarily() {
+    if (!impl_->visible || !impl_->icons || !impl_->bar || !impl_->desktopLayer.Summon()) return false;
+    if (impl_->Paint()) return true;
+    impl_->desktopLayer.Restore();
+    return false;
+}
+bool DockWindow::ContainsPreviewPoint(POINT screen) const { return impl_->ContainsPreviewPoint(screen); }
+void DockWindow::RestoreDesktopLayer() {
+    if (impl_->desktopLayer.Summoned() && impl_->preview) {
+        impl_->HidePreview();
+        window_layer::SetFullscreenBypass(impl_->preview, false);
+    }
+    impl_->desktopLayer.Restore();
+}
 void DockWindow::RequestPaint() {
     if(impl_->icons&&!impl_->paintPending)impl_->paintPending=PostMessageW(impl_->icons,PaintMessage,0,0)!=FALSE;
 }
 HWND DockWindow::Handle() const { return impl_->icons; }
 HWND DockWindow::BarHandle() const { return impl_->bar; }
 bool DockWindow::Visible() const { return impl_->visible; }
+void DockWindow::RefreshDesktopLayer() { impl_->RestackVisible(); }
 bool DockWindow::LayersVisible() const {
     // Hidden under a maximized window still counts: it returns by itself.
     return impl_->visible && impl_->icons && impl_->bar &&
@@ -1449,17 +1647,35 @@ bool DockWindow::HasCachedSnapshot(std::uint64_t window) const {
 RECT DockWindow::IconBounds(std::size_t index) const {
     auto& s = *impl_;
     if (index >= s.items.size() || s.layoutX.size() != s.items.size()) return {};
-    const float size = IconSize * s.motion[Key(s.items[index])].scale.value;
-    const float left = s.barLeft + s.Visual(index), bottom = Headroom + BarHeight - IconBottom;
-    return {s.overlayOrigin.x + static_cast<LONG>(s.Px(left)), s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom - size)),
-            s.overlayOrigin.x + static_cast<LONG>(s.Px(left + size)), s.overlayOrigin.y + static_cast<LONG>(s.Px(bottom))};
+    return s.ScreenRect(s.IconRect(index));
+}
+void DockWindow::RecordAppClick(std::size_t index, const std::string& program) {
+    auto& s = *impl_;
+    if (!s.look.animation || !s.visible || index >= s.items.size()) return;
+    const auto key = dock_slots::ProgramKey(OrganizerWide(program));
+    const auto& item = s.items[index];
+    const auto window = item.kind == dock::Kind::Collection ? 0 :
+        item.window ? item.window : item.animationWindows.empty() ? 0 : item.animationWindows.front();
+    if (item.kind != dock::Kind::Running && item.kind != dock::Kind::Window) {
+        for (std::size_t i = 0; i < s.items.size(); ++i) {
+            const auto& candidate = s.items[i];
+            if (candidate.kind != dock::Kind::Running && candidate.kind != dock::Kind::Window) continue;
+            const auto& path = candidate.runningProgram.empty() ? candidate.path : candidate.runningProgram;
+            const bool sameWindow = window && (candidate.window == window ||
+                std::find(candidate.animationWindows.begin(), candidate.animationWindows.end(), window) != candidate.animationWindows.end());
+            if ((sameWindow || (key && key == dock_slots::ProgramKey(OrganizerWide(path)))) &&
+                s.animationTargets.RecordClick(key, window, s.AnimationRect(i))) return;
+        }
+    }
+    s.animationTargets.RecordClick(key, window, s.AnimationRect(index));
 }
 bool DockWindow::DragHover(POINT screen) {
     auto& s = *impl_;
     if (!s.icons || !s.visible) return false;
     RECT bar{};
     GetWindowRect(s.bar, &bar);
-    InflateRect(&bar, 0, static_cast<int>(s.Px(24)));
+    const int margin = static_cast<int>(s.Px(24));
+    InflateRect(&bar, s.Vertical() ? margin : 0, s.Vertical() ? 0 : margin);
     if (!PtInRect(&bar, screen)) { DragLeave(); return false; }
     POINT client = screen;
     ScreenToClient(s.icons, &client);

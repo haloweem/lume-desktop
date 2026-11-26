@@ -1,0 +1,1 @@
+export const VOCAL_FPS=50,getVocalEnvelope=()=>null;

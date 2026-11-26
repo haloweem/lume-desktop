@@ -49,6 +49,12 @@ struct WidgetWindowPorts {
     // UI-thread notification; also sent after the first successful Start.
     // Independent of data updates so a suspended sampler can resume itself.
     std::function<void(bool)> contentVisibilityChanged={};
+    // Optional monitor source for isolated display-mode regression scenarios.
+    // Production reads GetMonitorInfoW; no global display settings are changed.
+    std::function<bool(HMONITOR,MONITORINFO&)> monitorInfo={};
+    // Optional visible body inside a fixed-size client during a reveal. Draw
+    // uses the final layout size, translated and clipped to this body.
+    std::function<std::optional<WidgetRect>(float,float)> revealBounds={};
 };
 // UI-thread owner; no data sampling, persistence, business models or timers.
 class NativeWidgetWindow final {
@@ -65,6 +71,11 @@ public:
     bool PlacementFailed()const;
     HWND Handle()const;
     widget::Preferences Bounds()const;
+    // Screen rectangle Place would use, including monitor fitting, without moving the HWND.
+    std::optional<RECT> PlacementFor(const widget::Preferences&)const;
+    // User placement, before temporary display/work-area constraints. Use this
+    // when persisting settings; Bounds() remains the actual layout/hit bounds.
+    widget::Preferences PreferredBounds()const;
     WidgetMaterialState MaterialState()const;
     static constexpr UINT UpdateMessage=WM_APP+0x620;
 private:

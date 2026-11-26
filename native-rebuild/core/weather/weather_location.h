@@ -3,7 +3,15 @@
 #include <vector>
 namespace lume::weather {
 using PlaceNormalizer = std::function<std::string(std::string_view)>;
-using DeviceLocation = std::function<std::optional<Location>(Millis,const Cancellation&)>;
+enum class DeviceLocationSource { Unknown, Satellite, Wifi, Cellular, Ip, Default };
+struct DeviceFix {
+    Location location;
+    DeviceLocationSource source = DeviceLocationSource::Unknown;
+    double accuracyMeters = 0;
+    Millis sampledAt = 0;
+};
+bool ReliableDeviceFix(const DeviceFix&, Millis now);
+using DeviceLocation = std::function<std::optional<DeviceFix>(Millis,const Cancellation&)>;
 struct LocationResult {
     std::optional<Location> location;
     ProviderError error = ProviderError::Unavailable;
@@ -14,6 +22,7 @@ struct LocationResult {
 struct LocationEnvironment {
     std::vector<std::string> countries;
     std::function<std::optional<std::string>(Millis)> localTime;  // YYYY-MM-DDTHH:mm
+    std::function<std::string()> timezone;  // Current Windows IANA zone, for device fixes without a zone.
 };
 // Persists the last trusted automatic location across restarts.
 struct LocationStore {
@@ -21,9 +30,9 @@ struct LocationStore {
     std::function<bool(std::string_view)> save;
 };
 // Worker-owned. Named cities need no network. Automatic location prefers the
-// system (Wi-Fi) fix, which a VPN cannot move; IP geolocation goes direct,
-// drops results whose country or UTC offset disagree with the computer, and
-// only moves a trusted location after two consecutive far results.
+// fresh, sufficiently accurate Wi-Fi/GPS/cellular fixes. IP lookups bypass the
+// system proxy and compare providers; a far move needs independent agreement
+// or a second recent observation. Saved fallback locations expire after a day.
 class WeatherLocation final {
 public:
     WeatherLocation(HttpTransport, Clock, LocalTime, PlaceNormalizer, DeviceLocation = {},
@@ -40,6 +49,7 @@ private:
     };
     void Restore();
     void Accept(Location, Origin, Millis now);
+    void Persist();
     HttpTransport transport_;
     Clock clock_;
     LocalTime local_;
@@ -49,6 +59,7 @@ private:
     LocationStore store_;
     std::optional<Trusted> trusted_;
     std::optional<Location> pending_;
+    Millis pendingAt_ = 0;
     Millis checkedAt_ = 0, validUntil_ = 0;
     bool restored_ = false;
 };

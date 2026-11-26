@@ -90,6 +90,18 @@ void WriteShortcut(const std::filesystem::path& path,const std::wstring& target,
         SUCCEEDED(shortcut->QueryInterface(IID_PPV_ARGS(file.Put())))&&
         SUCCEEDED(file->Save(path.c_str(),TRUE)),"save shortcut with custom icon");
 }
+void WriteFolderShortcut(const std::filesystem::path& path,const std::wstring& target) {
+    Check(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"initialize COM for folder shortcut");
+    bool saved=false;
+    {
+        Com<IShellLinkW> shortcut;Com<IPersistFile> file;
+        saved=SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(shortcut.Put())))&&SUCCEEDED(shortcut->SetPath(target.c_str()))&&
+            SUCCEEDED(shortcut->QueryInterface(IID_PPV_ARGS(file.Put())))&&SUCCEEDED(file->Save(path.c_str(),TRUE));
+    }
+    CoUninitialize();
+    Check(saved,"create real shortcut targeting a folder");
+}
 void VerifyShortcutPixels(const std::wstring& target,const std::wstring& fixture,const std::atomic_bool& cancelled) {
     IconFiles files(std::filesystem::temp_directory_path()/
         (L"lume-organizer-icons-"+std::to_wstring(GetCurrentProcessId())));
@@ -102,6 +114,9 @@ void VerifyShortcutPixels(const std::wstring& target,const std::wstring& fixture
     Check(shortcut&&shortcut->width==source->width&&shortcut->height==source->height,
         "shortcut keeps the custom high-resolution icon");
     Check(shortcut->pixels==source->pixels,"shortcut icon has no shell shortcut-arrow overlay");
+    const auto* middle=shortcut->pixels.data()+(shortcut->height/2)*shortcut->width;
+    const auto artworkPixels=std::count_if(middle,middle+shortcut->width,[](auto pixel){return (pixel>>24)>=48;});
+    Check(artworkPixels*100>=shortcut->width*90,"transparent padding no longer makes the artwork undersized");
     unsigned green=0,red=0;
     for(const auto color:shortcut->pixels) {
         if(((color>>8)&255)>((color>>16)&255)*2)++green;
@@ -183,7 +198,13 @@ int ProbeIcons(const std::filesystem::path& output) {
 int main(int argc,char**) {
     // A fresh helper starts without COM. Verify initialization before handing
     // a folder/shortcut to the Shell, and balanced cleanup on both outcomes.
-    std::thread openThread([]{
+    IconFiles folderFixture(std::filesystem::temp_directory_path()/
+        (L"lume-folder-open-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())));
+    const auto folderTarget=(folderFixture.directory/L"target folder").wstring();
+    const auto folderShortcut=folderFixture.directory/L"folder shortcut.lnk";
+    std::filesystem::create_directories(folderTarget);
+    WriteFolderShortcut(folderShortcut,folderTarget);
+    std::thread openThread([&]{
         for(const auto* path:{L"C:\\",L"D:\\Folder with spaces\\",L"C:\\资料\\目录",L"C:\\Folder shortcut.lnk"}){
             expectedOpenPath=path;shellOpenSucceeds=true;
             Check(OpenShellTarget(path,VerifyShellOpen),"folder and shortcut opens execute inside an STA with the exact path");
@@ -193,6 +214,14 @@ int main(int argc,char**) {
             Check(!OpenShellTarget(path,VerifyShellOpen),"Shell open failures are not reported successful");
             Check(CoGetApartmentType(&type,&qualifier)==CO_E_NOTINITIALIZED,"helper releases apartment after failed open");
         }
+        expectedOpenPath=folderTarget;shellOpenSucceeds=true;
+        Check(OpenShellTarget(folderShortcut.c_str(),VerifyShellOpen),
+            "folder shortcut is resolved to its directory before Shell execution");
+        APTTYPE type{};APTTYPEQUALIFIER qualifier{};
+        Check(CoGetApartmentType(&type,&qualifier)==CO_E_NOTINITIALIZED,"folder shortcut releases apartment after open");
+        shellOpenSucceeds=false;
+        Check(!OpenShellTarget(folderShortcut.c_str(),VerifyShellOpen),"folder shortcut reports a Shell open failure");
+        Check(CoGetApartmentType(&type,&qualifier)==CO_E_NOTINITIALIZED,"folder shortcut releases apartment after failure");
         Check(!OpenShellTarget(L"",VerifyShellOpen),"empty Shell target rejected");
     });
     openThread.join();

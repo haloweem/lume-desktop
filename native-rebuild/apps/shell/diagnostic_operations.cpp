@@ -18,7 +18,9 @@ std::optional<std::string> DiagnosticModule(ui::PageCommand command) {
     if(value>=static_cast<int>(ui::PageCommand::MinimizeEnable)&&value<=static_cast<int>(ui::PageCommand::MinimizeUnhideDurationLast))return "minimize";
     if(value>=static_cast<int>(ui::PageCommand::RadialEnable)&&value<=static_cast<int>(ui::PageCommand::RadialShortcutLast))return "radial";
     if((value>=static_cast<int>(ui::PageCommand::DockEnable)&&value<=static_cast<int>(ui::PageCommand::DockLaunchpadIconScaleLast))||
-       command==ui::PageCommand::DockShowRunningOn||command==ui::PageCommand::DockShowRunningOff)return "dock";
+       command==ui::PageCommand::DockShowRunningOn||command==ui::PageCommand::DockShowRunningOff||
+       command==ui::PageCommand::DockRunningIcons||command==ui::PageCommand::DockRunningPreviews||
+       (command>=ui::PageCommand::DockAnimationOn&&command<=ui::PageCommand::DockAnimationDurationLast))return "dock";
     return {};
 }
 std::string DiagnosticModuleForMessage(const nlohmann::json& message) {

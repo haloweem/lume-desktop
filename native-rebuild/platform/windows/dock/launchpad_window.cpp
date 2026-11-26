@@ -1,4 +1,5 @@
 #include "platform/windows/dock/launchpad_window.h"
+#include "platform/windows/dock/dock_popup_bounds.h"
 #include "platform/windows/widget_ui/window_layer_policy.h"
 #include "platform/windows/lume_window_ids.h"
 #include "platform/windows/dock/dock_sources.h"
@@ -1036,6 +1037,7 @@ struct LaunchpadWindow::Impl {
         if (!id.empty() && ports.dropIntoCollection) return ports.dropIntoCollection(paths, id);
         return ports.dropPaths ? ports.dropPaths(paths) : false;
     }
+    dock::Edge dockEdge = dock::Edge::Bottom;
     bool Geometry(RECT dockBounds){
         MONITORINFO info{};
         info.cbSize = sizeof(info);
@@ -1046,6 +1048,19 @@ struct LaunchpadWindow::Impl {
         const auto px = [&](float dip) { return static_cast<int>(std::lround(dip * static_cast<float>(dpi) / 96)); };
         const int workWidth = info.rcWork.right - info.rcWork.left;
         const int gap = px(16);
+        if (dockEdge != dock::Edge::Bottom) {
+            const auto inside = SpaceInsideDock(info.rcWork, dockBounds, dockEdge, Full() ? gap / 2 : gap);
+            const LONG maxWidth = inside.right - inside.left, maxHeight = inside.bottom - inside.top;
+            const LONG w = Full() ? maxWidth : std::min<LONG>(maxWidth - px(16), px(compact ? 390.f : PreferredWidth * panelScale / 100.f));
+            const LONG h = Full() ? maxHeight : std::min<LONG>(maxHeight - px(16), px(compact ? 400.f : PreferredHeight * panelScale / 100.f));
+            if (w < px(compact ? 280.f : 480.f) || h < px(compact ? 280.f : 320.f)) return false;
+            const POINT origin = DockPopupOrigin(inside, dockBounds, dockEdge, w, h);
+            final = {origin.x, origin.y, origin.x + w, origin.y + h};
+            width = static_cast<float>(w) * 96 / dpi;
+            height = static_cast<float>(h) * 96 / dpi;
+            dockAnchor = dockBounds;
+            return true;
+        }
         const int below = dockBounds.bottom > dockBounds.top ? dockBounds.top - gap : info.rcWork.bottom - gap;
         if (Full()) {
             // The whole work area above the Dock, so dragging an item down to
@@ -1095,12 +1110,13 @@ struct LaunchpadWindow::Impl {
         if(!visible)return true;
         PositionSearch();return Paint();
     }
-    bool Show(RECT dockBounds, bool nextFrosted, bool prepareOnly = false) {
+    bool Show(RECT dockBounds, bool nextFrosted, bool prepareOnly, dock::Edge edge) {
         if (!Create()) return false;
         if (prepareOnly && (visible || closing)) return true;
         FinishDragDiagnostics("reopened");
         FlushDragDiagnostics();
         frosted = nextFrosted;
+        dockEdge = edge;
         BOOL animate = TRUE;
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0);
         reducedMotion = !animate;
@@ -2232,7 +2248,7 @@ struct LaunchpadWindow::Impl {
             if (!self->visible && !self->closing && self->window) {
                 self->material.Detach();
                 self->lastMaterial = {};
-                self->Show(self->lastDock, self->frosted, true);
+                self->Show(self->lastDock, self->frosted, true, self->dockEdge);
             }
             return 0;
         case FrameMessage: {
@@ -2515,8 +2531,8 @@ struct LaunchpadWindow::Impl {
 LaunchpadWindow::LaunchpadWindow(HINSTANCE instance, LaunchpadPorts ports, Presentation presentation)
     : impl_(std::make_unique<Impl>(instance, std::move(ports), presentation)) {}
 LaunchpadWindow::~LaunchpadWindow() = default;
-bool LaunchpadWindow::Show(RECT dock, bool frosted) { return impl_->Show(dock, frosted); }
-bool LaunchpadWindow::Prepare(RECT dock, bool frosted) { return impl_->Show(dock, frosted, true); }
+bool LaunchpadWindow::Show(RECT bounds, bool frosted, dock::Edge edge) { return impl_->Show(bounds, frosted, false, edge); }
+bool LaunchpadWindow::Prepare(RECT bounds, bool frosted, dock::Edge edge) { return impl_->Show(bounds, frosted, true, edge); }
 void LaunchpadWindow::Hide() { impl_->Hide(); }
 bool LaunchpadWindow::Visible() const { return impl_->visible; }
 void LaunchpadWindow::Refresh() {

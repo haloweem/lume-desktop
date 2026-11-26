@@ -32,7 +32,9 @@ enum class MenuKind
 	Position,
 	Material,
 	CalendarTheme,
-	OrganizerColor,
+	OrganizerDisplay,
+	OrganizerDeletion,
+	DockSystemIcons,
 	TimeStyle,
 	SpectrumStyle
 };
@@ -63,6 +65,13 @@ struct MenuItem
 	bool separator = false;
 	bool checked = false;
 	bool enabled = true;
+	std::vector<MenuItem> children{};
+};
+
+struct OrganizerMenuOptions {
+	bool collapsed = false;
+	bool list = false;
+	bool canDelete = false;
 };
 
 struct MenuState
@@ -91,7 +100,7 @@ struct MenuState
 	bool frosted = false;
 	int calendarTheme = 0;
 	int timeStyle = 0;
-	int accent = 0;
+	OrganizerMenuOptions organizer;
 	bool childOpen = false;
 	bool parentHoverArmed = false;
 };
@@ -151,6 +160,8 @@ void AddPositionItems(MenuState* state)
 		{ yLabel, IDM_LUME_WIDGET_POSITION, MenuKind::Position },
 		{ L"", 0, MenuKind::Position, MenuIcon::None, true },
 		{ L"\u5c45\u4e2d", IDM_LUME_WIDGET_CENTER,
+			MenuKind::Position, MenuIcon::Center },
+		{ L"\u6c34\u5e73\u5c45\u4e2d", IDM_LUME_WIDGET_CENTER_HORIZONTAL,
 			MenuKind::Position, MenuIcon::Center }
 	};
 }
@@ -208,7 +219,8 @@ void AddSpectrumStyleItems(MenuState* state)
 
 bool IsActionSubmenu(MenuKind kind)
 {
-	return kind == MenuKind::SpectrumStyle || kind == MenuKind::Material || kind == MenuKind::CalendarTheme || kind == MenuKind::OrganizerColor || kind == MenuKind::TimeStyle;
+	return kind == MenuKind::DockSystemIcons || kind == MenuKind::SpectrumStyle || kind == MenuKind::Material || kind == MenuKind::CalendarTheme ||
+		kind == MenuKind::OrganizerDisplay || kind == MenuKind::OrganizerDeletion || kind == MenuKind::TimeStyle;
 }
 
 int ItemHeight(const MenuState* state, const MenuItem& item)
@@ -414,7 +426,7 @@ UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	int x, int y, int scalePercent, bool locked,
 	const std::vector<MenuItem>* rootItems = nullptr, bool frosted = false,
 	int calendarTheme = 0, int timeStyle = 0, bool compact = false,
-	LumeWidgetMenu::Scope scope = LumeWidgetMenu::Scope::Desktop, int accent = 0);
+	LumeWidgetMenu::Scope scope = LumeWidgetMenu::Scope::Desktop, OrganizerMenuOptions organizer = {});
 
 void OpenSubmenu(MenuState* state, int index)
 {
@@ -426,8 +438,8 @@ void OpenSubmenu(MenuState* state, int index)
 	POINT child = { state->width - Scale(state, kSubmenuOverlap), row.top };
 	ClientToScreen(state->window, &child);
 	const UINT command = ShowPopup(state->window, child, item.submenu,
-		state->x, state->y, state->scalePercent, state->locked, nullptr,
-		state->frosted, state->calendarTheme, state->timeStyle, false, state->scope, state->accent);
+		state->x, state->y, state->scalePercent, state->locked, item.children.empty() ? nullptr : &item.children,
+		state->frosted, state->calendarTheme, state->timeStyle, false, state->scope, state->organizer);
 	state->childOpen = false;
 	if (command)
 	{
@@ -680,7 +692,7 @@ bool RegisterWindowClass()
 UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	int x, int y, int scalePercent, bool locked,
 	const std::vector<MenuItem>* rootItems, bool frosted, int calendarTheme, int timeStyle, bool compact,
-	LumeWidgetMenu::Scope scope, int accent)
+	LumeWidgetMenu::Scope scope, OrganizerMenuOptions organizer)
 {
 	if (!RegisterWindowClass()) return 0;
 	// Own the graphics lifetime as well as the modal window. Some callers
@@ -708,23 +720,34 @@ UINT ShowPopup(HWND owner, POINT position, MenuKind kind,
 	state.frosted = frosted;
 	state.calendarTheme = calendarTheme;
 	state.timeStyle = timeStyle;
-	state.accent = accent >= 0 && accent <= 5 ? accent : 0;
+	state.organizer = organizer;
 	state.compact = compact && kind == MenuKind::Root;
 	state.rowHeight = state.compact ? 30 : kind == MenuKind::Root ? kRootRowHeight : kSubmenuRowHeight;
 	state.width = state.compact ? 176 : kind == MenuKind::Root ? kRootWidth :
 		IsActionSubmenu(kind) ? 190 : kSubmenuWidth;
-	if (kind == MenuKind::Root && rootItems) state.items = *rootItems;
+	if (rootItems) state.items = *rootItems;
 	else if (kind == MenuKind::Root) AddRootItems(&state);
 	else if (kind == MenuKind::Size) AddSizeItems(&state);
 	else if (kind == MenuKind::Position) AddPositionItems(&state);
 	else if (kind == MenuKind::CalendarTheme) AddCalendarThemeItems(&state);
 	else if (kind == MenuKind::TimeStyle) AddTimeStyleItems(&state);
 	else if (kind == MenuKind::SpectrumStyle) AddSpectrumStyleItems(&state);
-	else if (kind == MenuKind::OrganizerColor)
+	else if (kind == MenuKind::OrganizerDisplay)
 	{
-		const wchar_t* labels[]{L"默认",L"蓝",L"绿",L"琥珀",L"粉",L"紫"};
-		for(int index=0;index<6;++index)
-			state.items.push_back({labels[index],static_cast<UINT>(230+index),MenuKind::OrganizerColor,MenuIcon::None,false,state.accent==index});
+		state.items = {
+			{L"折叠",4,MenuKind::Root,MenuIcon::None,false,organizer.collapsed},
+			{L"展开",5,MenuKind::Root,MenuIcon::None,false,!organizer.collapsed},
+			{L"",0,MenuKind::Root,MenuIcon::None,true},
+			{L"列表",6,MenuKind::Root,MenuIcon::None,false,organizer.list},
+			{L"图标",7,MenuKind::Root,MenuIcon::None,false,!organizer.list}
+		};
+	}
+	else if (kind == MenuKind::OrganizerDeletion)
+	{
+		state.items = {
+			{L"移除图标", LumeWidgetMenu::OrganizerRemoveIcon},
+			{L"删除图标", LumeWidgetMenu::OrganizerDeleteIcon, MenuKind::Root, MenuIcon::None, false, false, organizer.canDelete}
+		};
 	}
 	else AddMaterialItems(&state);
 
@@ -857,11 +880,12 @@ UINT LumeWidgetMenu::ShowActions(HWND owner, POINT position, bool canRefresh,
 		&items, frosted, calendarTheme,
 		canCalendarTheme ? (solid ? kCalendarMaterialSolid : kCalendarMaterialGlass) : 0);
 }
-UINT LumeWidgetMenu::ShowSpectrum(HWND owner, POINT position, int style, int scalePercent, bool locked)
+UINT LumeWidgetMenu::ShowSpectrum(HWND owner, POINT position, int style, int scalePercent, bool locked, int x, int y)
 {
 	std::vector<MenuItem> items{
 		{ L"音频样式", 0, MenuKind::SpectrumStyle, MenuIcon::Color },
 		{ L"组件大小", 0, MenuKind::Size, MenuIcon::Size },
+		{ L"位置", 0, MenuKind::Position, MenuIcon::Position },
 		{ L"", 0, MenuKind::Root, MenuIcon::None, true },
 		{ L"打开设置", 11, MenuKind::Root, MenuIcon::Settings },
 		{ L"锁定位置", 12, MenuKind::Root, MenuIcon::Lock, false, locked },
@@ -871,7 +895,7 @@ UINT LumeWidgetMenu::ShowSpectrum(HWND owner, POINT position, int style, int sca
 	// 样式二 is drawn in one colour, chosen as the clock's 组件颜色 is.
 	if (style == 1)
 		items.insert(items.begin() + 3, { L"组件颜色", IDM_LUME_WIDGET_COLOR, MenuKind::Root, MenuIcon::Color });
-	return ShowPopup(owner, position, MenuKind::Root, 0, 0, scalePercent, locked, &items, false, 0, style);
+	return ShowPopup(owner, position, MenuKind::Root, x, y, scalePercent, locked, &items, false, 0, style);
 }
 UINT LumeWidgetMenu::ShowRadial(HWND owner, POINT position, bool frosted)
 {
@@ -885,23 +909,21 @@ UINT LumeWidgetMenu::ShowRadial(HWND owner, POINT position, bool frosted)
     };
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false);
 }
-UINT LumeWidgetMenu::ShowOrganizer(HWND owner,POINT position,bool collapsed,bool list,bool frosted,bool locked,bool item,int accent)
+UINT LumeWidgetMenu::ShowOrganizer(HWND owner,POINT position,bool collapsed,bool list,bool frosted,bool locked,bool item,bool canDelete)
 {
     std::vector<MenuItem> items{
-        {L"折叠模式",collapsed?5u:4u,MenuKind::Root,MenuIcon::Size,false,collapsed},
-        {list?L"图标模式":L"列表模式",list?7u:6u,MenuKind::Root,MenuIcon::Size},
+        {L"显示方式",0,MenuKind::OrganizerDisplay,MenuIcon::Size},
         {L"新建收纳",3,MenuKind::Root,MenuIcon::Create},
-        {L"材质设置",0,MenuKind::Material,MenuIcon::Material},
-        {L"标记颜色",0,MenuKind::OrganizerColor,MenuIcon::Color},
+        {L"材质设置",0,MenuKind::Material,MenuIcon::Material}
+    };
+    if(item)items.push_back({L"删除设置",0,MenuKind::OrganizerDeletion,MenuIcon::Close});
+    items.insert(items.end(),{
         {L"",0,MenuKind::Root,MenuIcon::None,true},
         {L"打开设置",11,MenuKind::Root,MenuIcon::Settings},
         {L"锁定位置",12,MenuKind::Root,MenuIcon::Lock,false,locked},
-        {L"恢复默认",10,MenuKind::Root,MenuIcon::Reset},
         {L"关闭组件",1,MenuKind::Root,MenuIcon::Close}
-    };
-    // Removes the reference only; the file itself stays where it is.
-    if(item)items.insert(items.begin(),{{L"删除图标",13,MenuKind::Root,MenuIcon::Close},{L"",0,MenuKind::Root,MenuIcon::None,true}});
-    return ShowPopup(owner,position,MenuKind::Root,0,0,100,false,&items,frosted,0,0,false,Scope::Desktop,accent);
+    });
+    return ShowPopup(owner,position,MenuKind::Root,0,0,100,false,&items,frosted,0,0,false,Scope::Desktop,{collapsed,list,canDelete});
 }
 
 UINT LumeWidgetMenu::ShowItems(HWND owner, POINT position, const std::vector<Action>& actions, bool compact, Scope scope)
@@ -928,47 +950,60 @@ UINT LumeWidgetMenu::ShowNotes(HWND owner, POINT position, bool frosted, bool lo
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false);
 }
 
-UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool none, bool systemTray)
+namespace {
+UINT DockPopup(HWND owner, POINT position, bool frosted, bool none, bool startPinned,
+               bool canPin, bool canRemove, bool canCloseWindow)
 {
+    using M = LumeWidgetMenu;
     std::vector<MenuItem> items {
         { L"新建收纳", 40, MenuKind::Root, MenuIcon::Create },
-        { L"添加系统图标", 46, MenuKind::Root, MenuIcon::Create },
         { L"材质设置", 0, MenuKind::Material, MenuIcon::Material },
-        { L"", 0, MenuKind::Root, MenuIcon::None, true },
-        { L"打开设置", 11, MenuKind::Root, MenuIcon::Settings },
-        { L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset },
-        { L"关闭 Dock", 1, MenuKind::Root, MenuIcon::Close }
     };
-    if constexpr (lume::dock::SystemTrayAvailable)
-        items.insert(items.begin() + 2, { systemTray ? L"隐藏控制中心" : L"显示控制中心", 47, MenuKind::Root, MenuIcon::Center });
+    if (canPin) items.push_back({L"固定到 Dock", 20, MenuKind::Root, MenuIcon::Pin});
+    items.push_back({L"添加系统图标", 0, MenuKind::DockSystemIcons, MenuIcon::Create, false, false, true, {
+        {L"开始菜单", M::AddStartMenu, MenuKind::Root, MenuIcon::None, false, startPinned, !startPinned},
+        {L"此电脑", M::AddThisPC}, {L"回收站", M::AddRecycleBin}, {L"控制面板", M::AddControlPanel},
+        {L"网络", M::AddNetwork}, {L"用户文件夹", M::AddUserFolder}
+    }});
+    items.push_back({L"", 0, MenuKind::Root, MenuIcon::None, true});
+    items.push_back({L"打开设置", 11, MenuKind::Root, MenuIcon::Settings});
+    if (canCloseWindow) items.push_back({L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close});
+    if (canRemove) items.push_back({L"移除图标", 21, MenuKind::Root, MenuIcon::Close});
+    items.push_back({L"关闭 Dock", 1, MenuKind::Root, MenuIcon::Close});
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
-        none ? kDockMaterialNone : kDockMaterialGlass);
+                     none ? kDockMaterialNone : kDockMaterialGlass);
+}
 }
 
-UINT LumeWidgetMenu::ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded, bool canExpand)
+UINT LumeWidgetMenu::ShowDock(HWND owner, POINT position, bool frosted, bool none, bool startPinned)
+{
+    return DockPopup(owner, position, frosted, none, startPinned, false, false, false);
+}
+
+UINT LumeWidgetMenu::ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool editCountdown)
 {
     std::vector<MenuItem> items {
         { L"材质设置", 0, MenuKind::Material, MenuIcon::Material },
         { L"", 0, MenuKind::Root, MenuIcon::None, true },
         { L"打开设置", 11, MenuKind::Root, MenuIcon::Settings },
-        { L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset },
-        { L"关闭灵动岛", 1, MenuKind::Root, MenuIcon::Close }
+        { L"关闭组件", 1, MenuKind::Root, MenuIcon::Close }
     };
-    if (expanded || canExpand) items.insert(items.begin(), { expanded ? L"收起" : L"展开", 2, MenuKind::Root, MenuIcon::Center });
+    if (editCountdown) items.insert(items.begin(), { L"编辑倒数日", 12, MenuKind::Root, MenuIcon::Settings });
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
         none ? kDockMaterialNone : kDockMaterialGlass);
 }
 
-UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal,
-                                  bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem, bool systemTray)
+UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool removable,
+                                  bool inCollection, bool dockActions, bool frosted, bool none, bool runningItem, bool startPinned)
 {
+    if (dockActions)
+        return DockPopup(owner, position, frosted, none, startPinned, !pinned, pinned, runningItem);
     std::vector<MenuItem> items;
     if (!pinned)
         items.push_back({ L"固定到 Dock", 20, MenuKind::Root, MenuIcon::Pin });
-    else if (!dockActions)
+    else
         items.push_back({ L"移除图标", 21, MenuKind::Root, MenuIcon::Close });
-    if (canReveal)
-        items.push_back({ L"打开所在位置", 22, MenuKind::Root, MenuIcon::Position });
+    items.push_back({ L"打开所在位置", 22, MenuKind::Root, MenuIcon::Position });
     if (inCollection)
     {
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
@@ -979,29 +1014,9 @@ UINT LumeWidgetMenu::ShowDockItem(HWND owner, POINT position, bool pinned, bool 
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"从启动台移除", 23, MenuKind::Root, MenuIcon::Close });
     }
-    if (runningItem && !dockActions) {
+    if (runningItem) {
         items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
         items.push_back({ L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close });
-    }
-    if (dockActions)
-    {
-        // The Dock's own actions follow, so the small bar need not be hit exactly.
-        items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
-        items.push_back({ L"新建收纳", 40, MenuKind::Root, MenuIcon::Create });
-        items.push_back({ L"添加系统图标", 46, MenuKind::Root, MenuIcon::Create });
-        if constexpr (lume::dock::SystemTrayAvailable)
-            items.push_back({ systemTray ? L"隐藏控制中心" : L"显示控制中心", 47, MenuKind::Root, MenuIcon::Center });
-        items.push_back({ L"材质设置", 0, MenuKind::Material, MenuIcon::Material });
-        items.push_back({ L"", 0, MenuKind::Root, MenuIcon::None, true });
-        items.push_back({ L"打开设置", 11, MenuKind::Root, MenuIcon::Settings });
-        items.push_back({ L"恢复默认", 10, MenuKind::Root, MenuIcon::Reset });
-        if (runningItem)
-            items.push_back({ L"关闭窗口", 24, MenuKind::Root, MenuIcon::Close });
-        else if (pinned)
-            items.push_back({ L"移除图标", 21, MenuKind::Root, MenuIcon::Close });
-        items.push_back({ L"关闭 Dock", 1, MenuKind::Root, MenuIcon::Close });
-        return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, frosted, false,
-            none ? kDockMaterialNone : kDockMaterialGlass);
     }
     return ShowPopup(owner, position, MenuKind::Root, 0, 0, 100, false, &items, false, false);
 }

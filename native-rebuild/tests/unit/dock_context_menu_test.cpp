@@ -2,6 +2,7 @@
 // that is never switched to. Preferences stay in memory; no app is launched.
 #include "apps/shell/dock_session.h"
 #include "platform/windows/dock/dock_window.h"
+#include "platform/windows/lume_window_ids.h"
 #include "platform/windows/dock/launchpad_window.h"
 #include "platform/windows/dock/dock_sources.h"
 #include "platform/windows/organizer/organizer_text.h"
@@ -58,21 +59,19 @@ HWND Find(const wchar_t* name, HWND owner = nullptr) {
     }, reinterpret_cast<LPARAM>(&search));
     return search.result;
 }
-enum class Action { Cancel, Settings, UnpinAfterRefresh, DisableWhileOpen, NewCollection, Rename, Delete, PinLume, MaterialLiquid };
+enum class Action { Cancel, Settings, UnpinAfterRefresh, DisableWhileOpen, NewCollection, Rename, Delete, PinLume, AddStart, MaterialLiquid };
 struct Drive { DockSession* session; Action action; unsigned opened = 0; HWND rootMenu = nullptr; };
 Drive* drive = nullptr;
 void CALLBACK MenuTimer(HWND, UINT, UINT_PTR timer, DWORD) {
-    if (drive->action == Action::MaterialLiquid) {
+    if (drive->action == Action::MaterialLiquid || drive->action == Action::AddStart) {
         if (!drive->rootMenu) {
             const HWND root = Find(L"LumeWidgetMenuWindow");
             if (!root) return;
             drive->rootMenu = root;
             ++drive->opened;
             PostMessageW(root, WM_KEYDOWN, VK_HOME, 0);
-            // New collection, system icon and the optional control-center item
-            // precede Material. Its submenu has its own modal message loop.
-            const int beforeMaterial = lume::dock::SystemTrayAvailable ? 3 : 2;
-            for (int i = 0; i < beforeMaterial; ++i) PostMessageW(root, WM_KEYDOWN, VK_DOWN, 0);
+            PostMessageW(root, WM_KEYDOWN, VK_DOWN, 0); // Material
+            if (drive->action == Action::AddStart) PostMessageW(root, WM_KEYDOWN, VK_DOWN, 0); // System icons
             PostMessageW(root, WM_KEYDOWN, VK_RIGHT, 0);
             return;
         }
@@ -93,6 +92,10 @@ void CALLBACK MenuTimer(HWND, UINT, UINT_PTR timer, DWORD) {
     case Action::Rename:
     case Action::Delete:
         PostMessageW(menu, WM_KEYDOWN, VK_HOME, 0);
+        if (drive->action == Action::PinLume) {
+            PostMessageW(menu, WM_KEYDOWN, VK_DOWN, 0);
+            PostMessageW(menu, WM_KEYDOWN, VK_DOWN, 0);
+        }
         if (drive->action == Action::Delete) PostMessageW(menu, WM_KEYDOWN, VK_DOWN, 0);
         PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
         break;
@@ -105,10 +108,7 @@ void CALLBACK MenuTimer(HWND, UINT, UINT_PTR timer, DWORD) {
         PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
         break;
     case Action::Settings:
-        // The leading actions include an optional control-center entry. The
-        // final three actions are always Settings, Reset and Close Dock.
         PostMessageW(menu, WM_KEYDOWN, VK_END, 0);
-        PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);
         PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);
         PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
         break;
@@ -174,6 +174,11 @@ void RunningAreaScenario() {
     Check(dock::Encode(prefs, files.values["running-area.json"]), "encode running-area fixture");
     auto legacy = nlohmann::json::parse(files.values["running-area.json"]);
     legacy.erase("showRunning");
+    legacy.erase("runningPreview");
+    legacy.erase("animationDuration");
+    legacy.erase("edge");
+    legacy.erase("showStartMenu");
+    legacy.erase("launchpadEnabled");
     files.values["running-area.json"] = legacy.dump();
     unsigned managerActivations = 0;
     DockSession session(GetModuleHandleW(nullptr), {"running-area.json", true}, {},
@@ -181,7 +186,43 @@ void RunningAreaScenario() {
     Check(session.Snapshot().showRunning, "old configuration without showRunning defaults to enabled");
     Check(session.Restore() && session.Running(), "restore running-area session");
     const auto initial = nlohmann::json::parse(session.State());
+    Check(initial.value("animationDuration", 0) == 400, "missing Dock animation duration defaults to 400 ms");
     Check(initial.value("showRunning", false), "native snapshot publishes the default running-area state");
+    Check(initial.value("edge", "") == "bottom" && initial.value("showStartMenu", false),
+          "legacy preferences keep the bottom edge and show Start");
+    for (const auto* edge : {L"top", L"left", L"right", L"bottom"}) {
+        const auto command = ui::ParsePageCommand(std::wstring(L"v1|dock|edge|") + edge);
+        const auto response = session.HandlePage(command);
+        Check(response && nlohmann::json::parse(*response).value("saved", false) &&
+              nlohmann::json::parse(*response).value("edge", "") == platform::windows::OrganizerUtf8(edge) &&
+              session.Running(), "edge changes are applied and saved by the native session");
+    }
+    Check(initial.value("launchpadEnabled", false), "older files enable the launchpad by default");
+    session.HandlePage(ui::ParsePageCommand(L"v1|dock|launchpadScale|83"));
+    session.HandlePage(ui::ParsePageCommand(L"v1|dock|launchpadIconScale|77"));
+    const auto padOff = session.HandlePage(ui::ParsePageCommand(L"v1|dock|launchpadEnabled|false"));
+    Check(padOff && nlohmann::json::parse(*padOff).value("saved", false) && !session.ToggleLaunchpad(),
+          "disabled launchpad cannot open");
+    dock::Preferences restored;
+    Check(dock::Decode(files.values["running-area.json"], restored, platform::windows::dock_sources::PathKey) && !restored.launchpadEnabled &&
+          restored.launchpadScale == 83 && restored.launchpadIconScale == 77, "disabling preserves both sizes on disk");
+    const auto withoutPad = dock::DockItemsFor(restored, {}, {}, platform::windows::dock_sources::PathKey);
+    Check(!withoutPad.empty() && withoutPad.front().kind == dock::Kind::StartMenu &&
+          std::none_of(withoutPad.begin(), withoutPad.end(), [](const auto& item){return item.kind == dock::Kind::Launchpad;}),
+          "Start stays first when the launchpad is hidden");
+    session.HandlePage(ui::ParsePageCommand(L"v1|dock|launchpadEnabled|true"));
+    Check(session.Snapshot().launchpadEnabled && session.Snapshot().launchpadScale == 83 &&
+          session.Snapshot().launchpadIconScale == 77, "re-enabling restores the saved sizes");
+    const auto startOff = session.HandlePage(ui::ParsePageCommand(L"v1|dock|showStartMenu|false"));
+    Check(startOff && nlohmann::json::parse(*startOff).value("saved", false) && !session.Snapshot().showStartMenu,
+          "Start visibility can be saved independently");
+    Check(!nlohmann::json::parse(files.values["running-area.json"]).value("showStartMenu", true),
+          "Start visibility persists");
+    session.HandlePage(ui::ParsePageCommand(L"v1|dock|showStartMenu|true"));
+    Check(!initial.value("runningPreview", true), "existing configurations keep app icons");
+    const auto preview = session.HandlePage(ui::ParsePageCommand(L"v1|dock|runningPreview|true"));
+    Check(preview && nlohmann::json::parse(*preview).value("runningPreview", false) &&
+          session.Snapshot().runningPreview, "preview mode is applied by the native session");
     const auto reply = session.HandlePage(off);
     Check(reply.has_value(), "running-area switch is accepted by the real session");
     const auto disabled = nlohmann::json::parse(*reply);
@@ -221,16 +262,55 @@ void RunningAreaScenario() {
           "background refresh preserves the disabled section and pinned order");
     session.Shutdown();
     DockSession reopened(GetModuleHandleW(nullptr), {"running-area.json", true}, {}, {}, {}, [] { return true; }, &files);
-    Check(!reopened.Snapshot().showRunning && reopened.Restore() && reopened.Running(),
+    Check(reopened.Snapshot().runningPreview && !reopened.Snapshot().showRunning && reopened.Restore() && reopened.Running(),
           "disabled running area survives session destruction and reopening");
     const auto reset = reopened.HandlePage(PageCommand::DockReset);
     Check(reset.has_value() && nlohmann::json::parse(*reset).value("saved", false) &&
-          reopened.Snapshot().showRunning && reopened.Snapshot().pinned == prefs.pinned && reopened.Snapshot().controlCenter,
+          reopened.Snapshot().animationDuration == 400 && !reopened.Snapshot().runningPreview && reopened.Snapshot().showRunning && reopened.Snapshot().pinned == prefs.pinned && reopened.Snapshot().controlCenter,
           "restore defaults enables the running area and preserves fixed apps and control center");
     Check(nlohmann::json::parse(files.values["running-area.json"]).value("showRunning", false),
           "restore defaults persists the enabled running area");
     Check(managerActivations == 0, "configuration changes never launch or activate an application");
     reopened.Shutdown();
+}
+void DisplayScenario() {
+    using namespace lume::platform::windows;
+    const DisplayMonitor primary{L"DISPLAY1", {0,0,1440,900}, {0,0,1440,860}, true};
+    const DisplayMonitor secondary{L"DISPLAY2", {-1440,0,0,900}, {-1440,0,0,860}, false};
+    std::vector<DisplayMonitor> monitors{primary,secondary};
+    Files files;
+    lume::dock::Preferences prefs;
+    prefs.enabled = prefs.transparent = true;
+    Check(lume::dock::Encode(prefs, files.values["screens"]), "encode screen fixture");
+    DockSession session(GetModuleHandleW(nullptr), {"screens",true,{},[&]{return monitors;}}, {}, {}, {}, {}, &files);
+    auto choose = [&](int screen) {
+        const auto result = session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|screen|" + std::to_wstring(screen)));
+        return result && nlohmann::json::parse(*result).value("saved",false);
+    };
+    auto bars = [] {
+        std::vector<bool> onPrimary;
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM data) -> BOOL {
+            wchar_t name[128]{}; GetClassNameW(window,name,128);
+            RECT rect{};
+            if (std::wstring(name) == lume::window_ids::DockIconsClass && IsWindowVisible(window) && GetWindowRect(window,&rect))
+                reinterpret_cast<std::vector<bool>*>(data)->push_back((rect.left+rect.right)/2 >= 0);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&onPrimary));
+        std::sort(onPrimary.begin(),onPrimary.end());
+        return onPrimary;
+    };
+    Check(session.Restore() && bars()==std::vector<bool>{true}, "default Dock stays on primary");
+    Check(choose(0) && bars()==std::vector<bool>{false,true}, "all displays have separate Dock windows");
+    Check(choose(2) && bars()==std::vector<bool>{false}, "single secondary Dock at negative coordinates");
+    files.failWrites=true;
+    Check(!choose(0) && bars()==std::vector<bool>{false}, "failed save restores single-screen projection");
+    files.failWrites=false;
+    monitors={primary};
+    Check(session.Restore() && bars()==std::vector<bool>{true} && session.Snapshot().screen==2, "disconnected screen falls back without overwriting preference");
+    Check(!choose(2), "stale screen choice is rejected");
+    monitors.push_back(secondary);
+    Check(session.Restore() && bars()==std::vector<bool>{false}, "reconnected screen restored");
+    session.Shutdown();
 }
 void Scenario() {
     Check(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "initialize COM");
@@ -238,6 +318,7 @@ void Scenario() {
         Files files;
         lume::dock::Preferences prefs;
         prefs.enabled = prefs.transparent = true;
+        prefs.showStartMenu = false;
         prefs.pinned = {"C:\\LumeContextFixture\\first-application.exe", "C:\\LumeContextFixture\\second-application.exe",
                         "C:\\LumeContextFixture\\third-application.exe"};
         Check(lume::dock::Encode(prefs, files.values["dock.json"]), "encode in-memory preferences");
@@ -292,6 +373,19 @@ void Scenario() {
         RightClick(session, pinned.x + pinned.width / 2, 50, Action::UnpinAfterRefresh);
         Check(session.Snapshot().pinned == std::vector<std::string>{prefs.pinned[1], prefs.pinned[2]},
               "menu command keeps the original item after list replacement");
+        RightClick(session, 2, 50, Action::AddStart); Pump(600);
+        Check(session.Snapshot().showStartMenu, "system icons submenu pins the Start menu");
+        const auto startSlot = DockWindow::Slot({{lume::dock::Kind::Launchpad}, {lume::dock::Kind::StartMenu}}, 1);
+        RightClick(session, startSlot.x + startSlot.width / 2, 50, Action::UnpinAfterRefresh);
+        lume::dock::Preferences savedStart;
+        Check(!session.Snapshot().showStartMenu, "Start item menu removes its clicked tile");
+        Check(lume::dock::Decode(files.values["dock.json"], savedStart, lume::platform::windows::dock_sources::PathKey) &&
+              !savedStart.showStartMenu, "Start removal survives decoding settings");
+        RightClick(session, 2, 50, Action::AddStart); Pump(600);
+        const auto startPoint = At(session, startSlot.x + startSlot.width / 2, 42);
+        Drag(session.Handle(), startPoint,
+             MAKELPARAM(GET_X_LPARAM(startPoint), GET_Y_LPARAM(startPoint) - 155));
+        Check(!session.Snapshot().showStartMenu, "dragging Start out of Dock unpins it");
         RightClick(session, 2, 50, Action::NewCollection); Pump(600);
         Check(session.Snapshot().dockCollections.size() == 1, "background right click creates Dock collection");
         const auto id = session.Snapshot().dockCollections[0];
@@ -339,12 +433,15 @@ void Scenario() {
         session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|launchpadScale|83"));
         session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|launchpadIconScale|57"));
         session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|iconScale|73"));
+        session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|reflectionRatio|80"));
+        session.HandlePage(lume::ui::ParsePageCommand(L"v1|dock|reflectionTransparency|50"));
         session.HandlePage(PageCommand::DockReflectionOff);
         session.Shutdown();
         DockSession restarted(GetModuleHandleW(nullptr), {"dock.json", true}, {}, {}, {}, [] { return false; }, &files);
         Check(restarted.Snapshot().launchpadScale == 83 && restarted.Snapshot().launchpadIconScale == 57 &&
-              restarted.Snapshot().iconScale == 73 && !restarted.Snapshot().reflection,
-              "nondefault Dock and launchpad scales and unchecked reflection survive restart");
+              restarted.Snapshot().iconScale == 73 && !restarted.Snapshot().reflection &&
+              restarted.Snapshot().reflectionRatio == 80 && restarted.Snapshot().reflectionTransparency == 50,
+              "nondefault Dock scales, disabled reflection and its percentages survive restart");
         Check(restarted.Restore() && restarted.Snapshot().dockCollections == std::vector<std::string>{id} &&
               lume::dock::FindCollection(restarted.Snapshot(), id)->title == "我的 Dock 收纳" && restarted.Snapshot().pinned.size() == 1,
               "collection binding title members and Dock items persist after restart");
@@ -406,6 +503,21 @@ void Scenario() {
         Check(session.Snapshot().lumeVisible && session.Snapshot().lumePosition == 1 &&
               session.Snapshot().pinned == prefs.pinned, "pinning running Lume restores its saved slot without a duplicate executable");
         checkWidth();
+        const auto withPin = currentItems();
+        const auto pinnedLume = std::find_if(withPin.begin(), withPin.end(), [](const auto& item) { return item.kind == lume::dock::Kind::Lume; });
+        const auto pinnedSlot = DockWindow::Slot(withPin, static_cast<std::size_t>(pinnedLume - withPin.begin()));
+        RightClick(session, pinnedSlot.x + pinnedSlot.width / 2, 50, Action::UnpinAfterRefresh);
+        checkWidth();
+        const auto start = At(session, slot.x + slot.width / 2, 50);
+        const auto front = At(session, DockWindow::Padding + DockWindow::IconSize / 2, 50);
+        SendMessageW(session.Handle(), WM_LBUTTONDOWN, MK_LBUTTON, start);
+        SendMessageW(session.Handle(), WM_MOUSEMOVE, MK_LBUTTON, front);
+        SendMessageW(session.Handle(), WM_LBUTTONUP, 0, front);
+        SendMessageW(session.Handle(), WM_MOUSELEAVE, 0, 0);
+        const auto stored = nlohmann::json::parse(files.values.at("self.json"));
+        Check(stored.at("lumeVisible") == true && stored.at("lumePosition") == 0 && stored.at("pinned") == prefs.pinned,
+              "dropping running Lume in the app section persists the chosen slot without pinning its exe twice");
+        checkWidth();
         managerOpen = false;
         session.Refresh();
         checkWidth();
@@ -413,6 +525,7 @@ void Scenario() {
         session.Shutdown();
     }
     RunningAreaScenario();
+    DisplayScenario();
     CoUninitialize();
 }
 LRESULT CALLBACK PreviewBackground(HWND window, UINT message, WPARAM w, LPARAM l) {

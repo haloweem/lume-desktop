@@ -241,6 +241,10 @@
 .application-settings__diagnostics-events { margin: 12px 0 0; color: rgba(255, 255, 255, .48); font-size: 13px; }
 .application-settings__diagnostics-evidence { width: min(100%, 720px); display: grid; gap: 6px; margin-top: 8px; }
 .application-settings__diagnostics-evidence-item { margin: 0; color: rgba(255, 255, 255, .74); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.application-settings__support-help { margin: 24px 0 0; color: #f4f6fa; font-size: 18px; font-weight: 700; line-height: 1.6; }
+.application-settings__support-help a { color: #65a8ff; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
+.application-settings__support-help a:hover { color: #9bc8ff; }
+.application-settings__support-help a:focus-visible { outline: 2px solid #65a8ff; outline-offset: 4px; border-radius: 2px; }
 .application-account { width: min(100%, 720px); display: grid; gap: 22px; letter-spacing: 0; }
 .application-account [data-account-profile] { display: grid; gap: 22px; }
 /* 给外扩 5px 的 VIP 圆框留出空间，避免被设置面板的滚动边界裁切。 */

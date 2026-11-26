@@ -1,5 +1,5 @@
 import {toggle} from './dom.js';
-import {settingsFrame,settingsSelect,syncSettingsSelect,syncSettingsControlBusy} from './settings-frame.js';
+import {settingsFrame,settingsGroup,settingsSelect,syncSettingsSelect,syncSettingsControlBusy} from './settings-frame.js';
 import {taskbarDisplayedPreferences} from './state.js';
 import {t} from './localization.js';
 
@@ -23,7 +23,8 @@ const errors=()=>({
   'core-exited':t('任务栏透明服务意外退出，效果尚未恢复','The taskbar transparency service exited unexpectedly. Appearance has not been restored.'),
   'core-access-denied':t('任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试，请导出问题反馈报告','The taskbar transparency service was denied access to the Windows taskbar (0x80070005). Automatic retries have stopped. Export a diagnostic report.'),
   'core-restart-required':t('任务栏接入模块需要重新加载，已停止自动重试。请保存工作后重启 Windows，再启动当前版本的 Lume','The taskbar integration module must be reloaded. Automatic retries have stopped. Save your work and restart Windows, then start the current Lume version.'),
-  'core-attach-timeout':t('任务栏接入系统 XAML 超时（0x80070102），尚未确认透明效果，请导出问题反馈报告','Connecting to the Windows taskbar XAML timed out (0x80070102). Transparency is not confirmed. Export a diagnostic report.'),
+  'core-attach-timeout':t('任务栏接入系统 XAML 超时（0x80070102），已停止自动重试，请导出问题反馈报告','Connecting to the Windows taskbar XAML timed out (0x80070102). Automatic retries have stopped. Export a diagnostic report.'),
+  'core-failure':t('任务栏透明服务运行失败，已停止自动重试；请重新启用功能后再试','The taskbar transparency service failed. Automatic retries have stopped; enable the feature again to retry.'),
   'core-effect-unconfirmed':t('任务栏服务正在运行，但尚未确认背景透明效果，请导出问题反馈报告','The taskbar service is running, but background transparency is not confirmed. Export a diagnostic report.'),
   'core-stop':t('任务栏透明服务尚未停止，请再次关闭功能重试','The taskbar transparency service has not stopped. Try disabling it again.'),
   cancelled:t('任务栏操作已取消，尚未确认应用结果','Taskbar operation cancelled. Application is not confirmed.'),
@@ -71,20 +72,17 @@ export function taskbarNotice(state,{previousStatus,hasInlineStatus=false}={}) {
 }
 export function taskbarPage(state,tab='settings') {
   const p=taskbarDisplayedPreferences(state),busy=['saving','loading'].includes(state.taskbarStatus);
-  const row=(label,help,action,value)=>`<div class="setting-row"><div><label>${label}</label><p class="setting-help">${help}</p></div>${toggle(value,label,`taskbar-${action}`,busy)}</div>`;
+  const row=(label,action,value)=>`<div class="setting-row"><label>${label}</label>${toggle(value,label,`taskbar-${action}`,busy)}</div>`;
   const body=tab==='settings'?
-    row(t('任务栏透明化','Taskbar transparency'),t('控制 Windows 任务栏背景是否透明','Make the Windows taskbar background transparent'),'transparent',p.transparentTaskbar)+
-    row(t('自动隐藏任务栏','Automatically hide taskbar'),t('控制 Lume 启用期间 Windows 任务栏是否自动隐藏','Automatically hide the Windows taskbar while Lume controls it'),'autoHide',p.autoHideTaskbar)+
-    `<div class="setting-row" data-taskbar-hide-behavior ${p.autoHideTaskbar?'':'hidden'}><div><label>${t('隐藏行为','Hiding behavior')}</label><p class="setting-help">${hideBehaviorHelp(p.hideBehavior)}</p></div>${settingsSelect('taskbar-hide-behavior',t('隐藏行为','Hiding behavior'),p.hideBehavior,hideBehaviorOptions(),busy || !p.autoHideTaskbar)}</div>`+
+    settingsGroup(row(t('任务栏透明化','Taskbar transparency'),'transparent',p.transparentTaskbar))+
+    settingsGroup(row(t('自动隐藏任务栏','Automatically hide taskbar'),'autoHide',p.autoHideTaskbar)+
+      `<div class="setting-row" data-taskbar-hide-behavior ${p.autoHideTaskbar?'':'hidden'}><label>${t('隐藏行为','Hiding behavior')}</label>${settingsSelect('taskbar-hide-behavior',t('隐藏行为','Hiding behavior'),p.hideBehavior,hideBehaviorOptions(),busy || !p.autoHideTaskbar)}</div>`)+
     `<div class="reset-row"><button class="reset" data-action="taskbar-reset" ${busy?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<p>${t('自动隐藏：鼠标移到任务栏所在的屏幕边缘时显示。完全隐藏：鼠标移到边缘也不显示任务栏。','Auto-hide reveals the taskbar when the pointer reaches its screen edge. Completely hidden keeps it hidden at the edge as well.')}</p><p>${t('关闭此功能或退出 Lume 时，会恢复此功能修改前的任务栏设置；若恢复未完成，页面会显示实际错误。','Disabling the feature or exiting Lume restores the previous taskbar settings. Incomplete recovery is reported on this page.')}</p><p>${t('恢复默认会开启任务栏透明化、关闭自动隐藏，隐藏行为恢复为自动隐藏，并保留当前功能启用状态。','Restoring defaults turns transparency on and auto-hide off, resets hiding behavior to auto-hide, and keeps the current feature enable state.')}</p>`;
   return settingsFrame({title:t('任务栏美化','Taskbar appearance'),description:t('让 Windows 10 和 Windows 11 的任务栏保持透明。','Keep the Windows 10 and Windows 11 taskbar transparent.'),
     tab,body,scope:'taskbar',status:taskbarStatus(state),error:state.taskbarStatus==='error',backLabel:t('返回桌面美化','Back to desktop styles')});
 }
 const hideBehaviorOptions=()=>[['fully-hidden',t('完全隐藏','Completely hidden')],['auto-hide',t('自动隐藏','Auto-hide')]];
-const hideBehaviorHelp=behavior=>behavior==='fully-hidden'
-  ?t('隐藏后，鼠标移到屏幕边缘也不显示任务栏','Keep the taskbar hidden even when the pointer reaches the screen edge')
-  :t('隐藏后，鼠标移到任务栏所在的屏幕边缘时显示','Show the taskbar when the pointer reaches its screen edge');
 export function syncTaskbarControls(root,state) {
   const busy=['saving','loading'].includes(state.taskbarStatus),p=taskbarDisplayedPreferences(state);
   for(const [action,value] of [['toggle',p.enabled],['transparent',p.transparentTaskbar],['autoHide',p.autoHideTaskbar]]) {
@@ -97,7 +95,6 @@ export function syncTaskbarControls(root,state) {
   const behaviorRow=root.querySelector('[data-taskbar-hide-behavior]');
   if(behaviorRow) {
     behaviorRow.hidden=!p.autoHideTaskbar;
-    behaviorRow.querySelector('.setting-help').textContent=hideBehaviorHelp(p.hideBehavior);
     syncSettingsSelect(root,'taskbar-hide-behavior',p.hideBehavior,hideBehaviorOptions(),busy || !p.autoHideTaskbar,true);
   }
   const reset=root.querySelector('[data-action="taskbar-reset"]');if(reset)syncSettingsControlBusy(reset,busy);

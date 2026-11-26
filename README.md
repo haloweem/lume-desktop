@@ -1,8 +1,28 @@
-# Lume 桌面客户端源码
+# Lume Desktop
 
 这是 Lume Windows 桌面客户端（壁纸、桌面组件、任务栏、Dock、灵动岛、音乐等）的源码。
 本次导出的版本和源码提交写在 [`SOURCE-REVISION.txt`](SOURCE-REVISION.txt)。
 源码同步与官网安装包发布分别进行；同版本号也可能包含后续修复，请用源码提交号区分快照。
+
+**当前公开版本：1.1.4** · [下载 Windows x64 安装包](https://github.com/haloweem/lume-desktop/releases/download/v1.1.4/LumeSetup-1.1.4.exe) · [版本说明](https://github.com/haloweem/lume-desktop/releases/tag/v1.1.4) · [构建说明](BUILDING.md)
+
+## 功能
+
+- 静态与动态壁纸、桌面组件和个性化材质。
+- Dock、启动台和 Windows 任务栏美化。
+- 灵动岛、日历、待办、倒数日与桌面时钟。
+- 音乐播放、歌词可视化及在线音乐平台适配。
+
+## 目录
+
+| 入口 | 内容 |
+|---|---|
+| [`native-rebuild/`](native-rebuild/) | 客户端源码、资源、测试与构建脚本 |
+| [`BUILDING.md`](BUILDING.md) | 编译、测试和安装包生成方法 |
+| [`THIRD-PARTY.md`](THIRD-PARTY.md) | 第三方组件与许可 |
+| [`SOURCE-REVISION.txt`](SOURCE-REVISION.txt) | 本次源码快照版本与来源 |
+
+1.1.4 包含音乐运行库和歌单读取修复、倒数日编辑及 Dock 窗口还原改进。本仓库尚未包含 1.1.5 的剪贴板历史与文件暂存功能。
 
 ## 许可
 

@@ -179,6 +179,7 @@
 .MusicStage { position: absolute; inset: 0; z-index: 1; overflow: hidden; }
 .MusicEffects { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
 .MusicEffects canvas { display: block; width: 100%; height: 100%; }
+.MusicEffects[data-effect-layer="foreground"] { z-index: 2; }
 .MusicPlayback > .MusicPlayerBar { z-index: 4; }
 .MusicQualityDismiss {position:absolute;inset:0;z-index:3;background:transparent}
 .MusicImmersiveHoverZone {position:absolute;bottom:0;left:0;right:0;height:160px;z-index:2;pointer-events:none}

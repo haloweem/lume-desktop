@@ -156,6 +156,11 @@ void TestParserExpansionAndProtocolBudgets() {
         json["trackId"] == "local-test" && json["lines"][0]["startTime"] == 1.25 &&
         json["lines"][0]["words"].empty() && json["lines"][0]["translation"] == "",
         "native encoder emits the exact bridge contract");
+    const auto bilingual = lume::ui::EncodeMusicLyrics({7, "local-test",
+        {{1, 2, "你好", {}, "Hello", "nǐ hǎo"}}});
+    const auto bilingualJson = nlohmann::json::parse(bilingual);
+    Check(bilingualJson["lines"][0]["translation"] == "Hello" &&
+        bilingualJson["lines"][0]["romanization"] == "nǐ hǎo", "native encoder preserves both subtitle tracks");
     const auto invalid = lume::ui::EncodeMusicLyrics({7, "local-test", {{2, 1, "bad", {}, {}}}});
     Check(invalid.find(L"\"lines\":[]") != std::wstring::npos, "encoder fails closed for an invalid timeline");
     Check(!lume::ui::ParseMusicPageJson(L"{\"version\":1,\"scope\":\"music\",\"action\":\"loadLyrics\",\"id\":\"local-test\",\"path\":\"C:/secret.lrc\"}"),

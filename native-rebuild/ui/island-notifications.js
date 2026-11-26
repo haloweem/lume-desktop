@@ -53,7 +53,7 @@ function inactiveKey(key,p){
 function row({id,key,label,hint,p,disabled,editor=''}){
   const inactive=disabled;
   const value=editor?'<button type="button" class="in-value" data-island-notification-editor="'+id+'" aria-label="'+h(t('设置','Configure')+' '+label)+'" aria-expanded="false" aria-controls="island-notification-editor-'+id+'"'+disabledAttr(inactive||!p[key])+'><span data-island-notification-summary="'+id+'">'+h(summary(p,id))+'</span>'+chevron+'</button>':'';
-  return '<div class="in-row-shell" data-island-notification-row="'+key+'"><div class="in-row">'+icon(id)+'<div class="in-row__text"><span class="in-row__label">'+label+'</span><small>'+hint+'</small></div><div class="in-row__controls">'+value+switchControl(key,label,p,inactive,true)+'</div></div>'+editor+'</div>';
+  return '<div class="in-row-shell" data-island-notification-row="'+key+'"><div class="in-row">'+icon(id)+'<div class="in-row__text"><span class="in-row__label">'+label+'</span></div><div class="in-row__controls">'+value+switchControl(key,label,p,inactive,true)+'</div></div>'+editor+'</div>';
 }
 function noticeStatus(state){
   const status=state.islandNotificationsStatus;
@@ -101,10 +101,10 @@ export function islandNotificationsPage(state){
   const status=noticeStatus(state);
   return [
     '<div class="island-notifications" data-island-notifications>',
-    '<header class="in-page-head"><div><h1 class="settings-component-title">'+t('实时通知','Notifications')+'</h1><p>'+t('把关心的提醒留在岛上，由你决定何时开启。','Keep the reminders you care about on the island. You choose when to turn them on.')+'</p></div></header>',
+    '<header class="in-page-head"><div><h1 class="settings-component-title">'+t('实时通知','Notifications')+'</h1></div></header>',
     '<div class="in-layout"><div class="in-column">',
     '<section class="in-module" data-island-notification-group="care" aria-label="'+t('日常关怀','Daily care')+'">',
-    moduleHead(t('日常关怀','Daily care'),t('让专注的日常，也有适时的休息','Small pauses for a more comfortable day')),
+    moduleHead(t('日常关怀','Daily care'),''),
     '<div class="in-card">',
     row({id:'water',key:'waterEnabled',label:t('喝水','Drink water'),hint:t('忙碌时，也记得补充水分','Make time to stay hydrated'),group:'care',p,disabled,editor:waterEditor}),
     row({id:'stand',key:'standEnabled',label:t('久坐','Take a break'),hint:t('起身走走，舒展一下','Stand up and stretch for a moment'),group:'care',p,disabled,editor:standEditor}),
@@ -112,14 +112,14 @@ export function islandNotificationsPage(state){
     row({id:'off-work',key:'offWorkEnabled',label:t('下班','End of work'),hint:t('到点收尾，安心下班','Wrap up and enjoy your evening'),group:'care',p,disabled,editor:offWorkEditor}),
     '</div></section>',
     '<section class="in-module" data-island-notification-group="weather" aria-label="'+t('天气','Weather')+'">',
-    moduleHead(t('天气','Weather'),t('天气有变化，出门更从容','Stay a step ahead of changing weather')),
+    moduleHead(t('天气','Weather'),''),
     '<div class="in-card">',
     row({id:'severe',key:'weatherSevere',label:t('恶劣天气','Severe weather'),hint:t('留意较强降水、降雪和雷雨','Watch for heavy rain, snow and thunderstorms'),group:'weather',p,disabled}),
     row({id:'rain',key:'weatherRain',label:t('降雨','Rain'),hint:t('下雨前，提醒带伞','Remember an umbrella before it rains'),group:'weather',p,disabled}),
     row({id:'temperature',key:'weatherTemperatureDrop',label:t('降温','Temperature drop'),hint:t('气温下降，记得添衣','A little notice when the weather cools'),group:'weather',p,disabled,editor:temperatureEditor}),
     '</div></section></div>',
     '<section class="in-module in-module--messages" data-island-notification-group="messages" aria-label="'+t('消息通知','Messages')+'">',
-    moduleHead(t('消息通知','Messages'),t('只接收你主动选择的应用','Only from the apps you choose')),
+    moduleHead(t('消息通知','Messages'),''),
     '<div class="in-card">',
     row({id:'qq',key:'messagesQQ',label:t('QQ 通知','QQ notifications'),hint:t('接收 QQ 的系统通知或注意提示','QQ system notifications or attention alerts'),group:'messages',p,disabled}),
     row({id:'wechat',key:'messagesWeChat',label:t('微信提醒','WeChat alerts'),hint:t('仅提示应用有新提醒，不读取聊天正文','App attention alerts without reading chat content'),group:'messages',p,disabled}),

@@ -102,7 +102,8 @@ export function mountSettingsChoice(root) {
     refresh();if(unavailable(entry.source)||!visible(entry.source))return;
     close();
     const {source,trigger,time}=entry,popup=doc.createElement('div'),labels=words(source);
-    popup.className='settings-choice-popup'+(time?' settings-choice-popup--time':'');
+    popup.className='settings-choice-popup'+(time?' settings-choice-popup--time':'')+
+      (trigger.closest('.settings--sidebar, .DesktopBeautyLayout')?' settings-choice-popup--desktop-beauty':'');
     popup.id=trigger.getAttribute('aria-controls');popup.dataset.settingsChoicePopup=time?'time':'select';
     popup.setAttribute('role',time?'dialog':'listbox');popup.setAttribute('aria-label',labelOf(source)||labels.time);
     active={entry,popup,value:source.value,draft:/^\d{2}:\d{2}$/.test(source.value)?source.value:'00:00'};

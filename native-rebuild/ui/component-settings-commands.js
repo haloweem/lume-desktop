@@ -13,6 +13,7 @@ const selects={
 };
 const dockRanges={
   'dock-icon-scale':'iconScale','dock-position':'position',
+  'dock-position-offset':'positionOffset',
   'dock-bottom-offset':'bottomOffset','dock-icon-spacing':'iconSpacing',
 };
 const toggles={
@@ -20,7 +21,11 @@ const toggles={
   ...Object.fromEntries(['calendar','performance','spectrum','todayTodo','almanac','weather',
     'organizer','icons','taskbar','minimize','radial','dock'].map(scope=>[`${scope}-toggle`,[scope,'enabled','enabled']])),
   'dock-reflection':['dock','reflection','reflection'],'dock-show-running':['dock','showRunning','showRunning'],
+  ...Object.fromEntries(['animation','animateRestore','animateLaunch','animateClose'].map(key=>['dock-'+key,['dock',key,key]])),
+  'dock-launchpad-enabled':['dock','launchpadEnabled','launchpadEnabled'],
+  'dock-show-start-menu':['dock','showStartMenu','showStartMenu'],
   'dock-system-tray':['dock','systemTray','systemTray'],
+  'dock-summon-enabled':['dock','summonEnabled','summonEnabled'],
   'icons-autoHide':['icons','autoHide','enableAutoHide'],'icons-restoreOnInput':['icons','restoreOnInput','showIconsOnAnyInput'],
   'taskbar-transparent':['taskbar','transparent','transparentTaskbar'],'taskbar-autoHide':['taskbar','autoHide','autoHideTaskbar'],
   ...Object.fromEntries(['restore','launch','multiMonitor','unhideTaskbar'].map(key=>[`minimize-${key}`,['minimize',key,key]])),
@@ -52,6 +57,7 @@ export function createComponentSettingsCommands({getState,request,send,showNotic
         request('calendar',action.slice('calendar-'.length));return true;
       }
       if(action==='weather-location-settings'){send('weather','location-settings');return true;}
+      if(action==='dock-summon-clear'){request('dock','summonShortcut',0);return true;}
       if(typeof action==='string'&&action.startsWith('dynamicIsland-')) {
         const key=action.slice('dynamicIsland-'.length);
         if(key==='toggle')request('dynamicIsland','enabled',!state.dynamicIsland.enabled);

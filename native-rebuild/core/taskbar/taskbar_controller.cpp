@@ -11,10 +11,11 @@ Controller::Controller(RecordStore& store, std::string path, ITaskbarPort& port)
 }
 Preferences Controller::Effective() const {
     auto value = record_.preferences;
-    if (!autoHideDemand_) return value;
-    // Hiding only: a disabled taskbar module must not start transparency.
-    if (!value.enabled) { value.enabled = true; value.transparentTaskbar = false; }
-    value.autoHideTaskbar = true;
+    if (autoHideDemand_ || trayReveal_) {
+        // Temporary visibility never changes preferences or starts transparency.
+        if (!value.enabled) { value.enabled = true; value.transparentTaskbar = false; }
+        value.autoHideTaskbar = !trayReveal_;
+    }
     return value;
 }
 bool Controller::Fail(Error error) {
@@ -51,6 +52,8 @@ bool Controller::Save(Record next) {
 bool Controller::Apply(Preferences preferences) {
     if (loaded_ == LoadState::Failed) return Fail(Error::Load);
     const auto previous = record_.preferences;
+    if (preferences.enabled != previous.enabled || preferences.autoHideTaskbar != previous.autoHideTaskbar ||
+        preferences.hideBehavior != previous.hideBehavior) observingAutoHide_ = yieldedAutoHide_ = false;
     if (preferences.enabled && preferences.transparentTaskbar &&
         (!previous.enabled || !previous.transparentTaskbar || preferences == previous))
         port_.ResetCoreFailure();
@@ -103,6 +106,7 @@ bool Controller::RestoreOwned() {
 }
 bool Controller::RestoreHiding() {
     hideApplied_ = false;
+    observingAutoHide_ = yieldedAutoHide_ = false;
     Error failure = Error::None;
     // Keep these recoveries independent: a missing secondary screen or a
     // failed visibility restore must not leave global auto-hide enabled.
@@ -122,15 +126,33 @@ bool Controller::RestoreHiding() {
 }
 bool Controller::ApplyHiding(const Preferences& preferences) {
     hideApplied_ = false;
+    // With no hide request Windows is the owner, including when only transparency is enabled.
+    if (!preferences.autoHideTaskbar) {
+        if (!RestoreHiding()) return false;
+        hideApplied_ = true;
+        return true;
+    }
+    if (yieldedAutoHide_) return true;
     bool current = false;
     auto error = port_.ReadAutoHide(current);
     if (error != Error::None) return Fail(error);
-    if (!record_.ownsAutoHide) {
+    if (!current && observingAutoHide_) {
+        // The OS/user changed a previously confirmed state. Do not fight it on every tick.
+        if (record_.ownsAutoHide) {
+            auto next = record_; next.ownsAutoHide = false;
+            if (!Save(std::move(next))) return false;
+        }
+        if (!RestoreHiding()) return false;
+        yieldedAutoHide_ = true;
+        return true;
+    }
+    if (!current && !record_.ownsAutoHide) {
         auto next = record_; next.ownsAutoHide = true; next.originalAutoHide = current;
         if (!Save(std::move(next))) return false;
     }
     if (current != preferences.autoHideTaskbar &&
         (error = port_.SetAutoHide(preferences.autoHideTaskbar)) != Error::None) return Fail(error);
+    observingAutoHide_ = true;
     if (!ApplyVisibility(preferences.autoHideTaskbar && preferences.hideBehavior == HideBehavior::FullyHidden))
         return false;
     hideApplied_ = true;
@@ -309,7 +331,7 @@ Status Controller::Snapshot() const {
                   Effective().enabled};
     const auto effective = Effective();
     status.hideApplied = hideApplied_;
-    status.effectiveAutoHide = effective.enabled && effective.autoHideTaskbar;
+    status.effectiveAutoHide = effective.enabled && effective.autoHideTaskbar && !yieldedAutoHide_;
     status.fullyHidden = status.effectiveAutoHide && effective.hideBehavior == HideBehavior::FullyHidden;
     status.autoHideDemand = autoHideDemand_;
     return status;

@@ -94,7 +94,7 @@ void Pump(DWORD milliseconds = 0) {
         if (milliseconds) Sleep(5);
     } while (GetTickCount64() < end);
 }
-UpdateNotice Notice(std::wstring version = L"1.1.3") {
+UpdateNotice Notice(std::wstring version = L"1.1.4") {
     return {std::move(version), L"\u65b0\u7248\u672c\u5df2\u53ef\u7528\u3002\u6539\u5584\u7a33\u5b9a\u6027\u4e0e\u663e\u793a\u6548\u679c\u3002", true};
 }
 void Click(UpdatePresenter& presenter, unsigned action) {
@@ -152,9 +152,9 @@ void Lifecycle(HINSTANCE instance) {
     Check(GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &info), "query fixture monitor");
     Check(rect.right <= info.rcWork.right && rect.bottom <= info.rcWork.bottom &&
           rect.left >= info.rcWork.left && rect.top >= info.rcWork.top, "notice stays inside work area");
-    Check(presenter.Show(Notice(L"1.1.3")) && presenter.Handle() == window, "repeated show updates the same HWND");
+    Check(presenter.Show(Notice(L"1.1.4")) && presenter.Handle() == window, "repeated show updates the same HWND");
     wchar_t title[256]{}; GetWindowTextW(window, title, 256);
-    Check(std::wstring(title).find(L"1.1.3") != std::wstring::npos, "updated version reaches native window text");
+    Check(std::wstring(title).find(L"1.1.4") != std::wstring::npos, "updated version reaches native window text");
     Click(presenter, 2);
     Check(!presenter.HasVisible() && !IsWindow(window), "later dismisses without shutdown");
     Check(presenter.Show(Notice()), "can show after later");
@@ -258,7 +258,7 @@ void LayoutAndTimeout(HINSTANCE instance) {
     Check(timed.Show(Notice()), "timed notification shows");
     Pump(60);
     const auto oldTimer = UpdatePresenterTestAccess::DismissTimer(timed);
-    Check(timed.Show(Notice(L"1.1.3")), "repeat refreshes lifetime");
+    Check(timed.Show(Notice(L"1.1.4")), "repeat refreshes lifetime");
     SendMessageW(timed.Handle(), WM_TIMER, oldTimer, 0);
     Check(timed.HasVisible(), "stale timeout cannot dismiss a refreshed notice");
     Pump(50); Check(timed.HasVisible(), "new notice gets a full lifetime");

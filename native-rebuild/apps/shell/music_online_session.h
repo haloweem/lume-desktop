@@ -24,6 +24,7 @@ struct MusicOnlineOptions {
     std::function<void(std::vector<music::Track>, std::string, std::string)> play;
     std::function<void()> wake;
     bool verification = false;
+    std::shared_ptr<platform::windows::FoliaMusicRuntime> runtime;
 };
 
 class MusicOnlineSession final {

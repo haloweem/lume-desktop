@@ -20,7 +20,7 @@ const state = overrides => ({lines,current:{id:'one'},currentTime:1,duration:30,
 
 test('available lyric styles are registered separately from backgrounds', async () => {
   const {MUSIC_VISUALIZERS,resolveMusicVisualizer,activeLyricIndex}=await import(moduleUrl);
-  assert.deepEqual(MUSIC_VISUALIZERS.map(item=>item.id),['partita','fume','sonnet','gallery','3d','lumiere','cadenza','tilt','cappella','diorama','pendolo','classic','tempera']);
+  assert.deepEqual(MUSIC_VISUALIZERS.map(item=>item.id),['partita','fume','sonnet','gallery','3d','lumiere','cadenza','tilt','cappella','diorama','pendolo','classic','tempera','nebbia','hanabi','machi']);
   assert.equal(resolveMusicVisualizer('partita'),'partita');
   assert.equal(resolveMusicVisualizer('classic'),'classic');
   assert.equal(resolveMusicVisualizer('motif'),'partita');

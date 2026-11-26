@@ -22,11 +22,11 @@ test('island appears immediately after Dock in the styles catalog and search',()
 test('island bridge rejects malformed commands and snapshots',()=>{
   const sent=[];const bridge=createBridge({postMessage:m=>sent.push(m)});
   assert.ok(validIslandState(snapshot()));assert.ok(validHostMessage(snapshot()));
-  for(const fields of [{enabled:'true'},{remaining:1501},{remaining:NaN},{running:true},{extra:true},
+  for(const fields of [{enabled:'true'},{remaining:1501},{remaining:NaN},{running:true},{countdownDate:2932897},{countdownStyle:'other'},{extra:true},
     {saved:true,result:'snapshot'},{loadStatus:'bad'},{error:'unknown'},{size:'huge'},{hover:1},{material:'glass'},{hideIdle:false},{shape:'circle'},{shape:1}])assert.equal(validHostMessage(snapshot(fields)),false);
   for(const command of [['enabled',true],['locked',false],['expand'],['collapse'],['focus'],['stopFocus'],['reset'],
     ['hideFullscreen',true],['topmost',false],['hover',true],['size','large'],['material','liquid-glass'],['autoHide',true],['shape','standard'],['shape','capsule'],['resetAppearance'],
-    ['leftWidget',20],['rightWidget',14]])
+    ['leftWidget',20],['rightWidget',14],['countdownStyle','violet']])
     assert.ok(bridge.send('dynamicIsland',...command));
   for(const command of [['enabled','true'],['focus',true],['locked',1],['material','glass'],['path','C:/anything'],['size','huge'],['hover','yes'],['hideIdle',false]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
@@ -34,7 +34,7 @@ test('island bridge rejects malformed commands and snapshots',()=>{
     ['leftStyle','circle'],['rightStyle','capsule'],['card',0],['cardMove',0]])
     assert.equal(bridge.send('dynamicIsland',...command),false);
   assert.equal(bridge.send('dynamicIsland','shape','circle'),false);
-  assert.equal(sent.length,18);
+  assert.equal(sent.length,19);
   assert.ok(validHostMessage({version:1,type:'navigate',page:'dynamicIsland'}));
 });
 test('native acknowledgement settles requests while preserving confirmed preferences on failure',()=>{
@@ -78,10 +78,10 @@ test('island shows expanded widgets and style choices without a live or compact 
   assert.doesNotMatch(islandPage(active),/dynamicIsland-(?:toggle|hover|expand|collapse)|island-preview/);
   assert.doesNotMatch(islandPage(active),/dynamicIsland-hideIdle/);
   assert.match(islandPage(active),/data-action="dynamicIsland-autoHide"/);
-  assert.match(islandPage(active),/data-action="dynamicIsland-hideFullscreen"/);
+  assert.doesNotMatch(islandPage(active),/data-action="dynamicIsland-hideFullscreen"/);
   assert.match(islandPage(active),/id="dynamicIsland-layer"/);
   assert.match(islandPage(active),/data-select-value="above"/);
-  assert.match(islandPage(active),/全屏时隐藏/);
+  assert.doesNotMatch(islandPage(active),/全屏时隐藏/);
   assert.match(islandPage(active),/空闲时隐藏/);
   assert.doesNotMatch(islandPage(active),/无活动时自动隐藏/);
   assert.doesNotMatch(islandPage(active),/id="dynamicIsland-(?:size|material)"|data-island-preference/);
@@ -103,13 +103,14 @@ test('island shows expanded widgets and style choices without a live or compact 
   assert.match(home,/data-island-expanded-panel>/);
   assert.match(home,/data-island-expanded-picker/);
   // The five released widgets share the picker; focus remains hidden.
-  assert.equal((home.match(/data-island-expanded-toggle="\d+"/g)||[]).length,5);
+  assert.match(home,/data-island-expanded-toggle="6"/);
+  assert.equal((home.match(/data-island-expanded-toggle="\d+"/g)||[]).length,6);
   assert.match(home,/data-island-expanded-toggle="0"/);
   assert.match(home,/data-island-expanded-toggle="1"/);
   assert.match(home,/data-island-expanded-toggle="4"/);
   assert.match(home,/data-island-expanded-toggle="5"/);
   assert.match(home,/data-island-expanded-toggle="3"/);
-  assert.match(home,/最多同时启用 5 个组件，横向排列/);
+  assert.doesNotMatch(home,/最多同时启用 5 个组件|Use the switches to enable/);
   assert.doesNotMatch(home,/最多同时启用 4 个组件|data-island-expanded-toggle="2"/);
   assert.doesNotMatch(home,/data-island-layout|data-island-membership|data-island-components-title/);
   for(const [key,values] of [['material',['none','liquid-glass','frosted-glass']],['size',['small','standard','large']]])
@@ -123,7 +124,29 @@ test('island shows expanded widgets and style choices without a live or compact 
   assert.match(home,/data-island-clock-style="flip"/);
   assert.match(home,/data-island-clock-style="pixel"/);
   assert.equal((home.match(/data-island-clock-style=/g)||[]).length,6);
-  assert.equal((home.match(/data-island-style-widget=/g)||[]).length,5);
+  assert.equal((home.match(/data-island-style-widget=/g)||[]).length,6);
+  assert.match(home,/data-island-style-widget="countdown"/);
+  assert.match(home,/assets\/icons\/island-expanded\/countdown\.svg/);
+  assert.doesNotMatch(home,/data-island-style-widget="other"|暂无样式|VIP专享/);
+  const countdown=islandPage({...state,islandStyleWidget:'countdown'},'home');
+  assert.match(countdown,/data-island-style-title[^>]*>倒数日</);
+  assert.doesNotMatch(countdown,/data-island-countdown-date/);
+  assert.match(countdown,/island-countdown-preview__number/);
+  assert.match(countdown,/data-island-countdown-style="standard"/);
+  assert.match(countdown,/data-island-countdown-style="violet"/);
+  assert.equal((countdown.match(/data-island-countdown-style=/g)||[]).length,2);
+  assert.match(countdown,/默认样式/);
+  assert.doesNotMatch(countdown,/标准样式/);
+  assert.doesNotMatch(countdown,/纪念日|Anniversary|anniversary/);
+  assert.match(countdown,/纯色样式/);
+  assert.doesNotMatch(countdown,/紫色样式/);
+  const unavailableStyles=islandPage({...state,dynamicIslandStatus:'unavailable',islandStyleWidget:'clock'},'home');
+  assert.doesNotMatch(unavailableStyles,/data-island-clock-style="progress"[^>]*disabled/);
+  const customized=islandPage({...state,dynamicIsland:{...state.dynamicIsland,countdownTitle:'用户自定义标题',countdownDate:21916},islandStyleWidget:'countdown'},'home');
+  assert.match(customized,/新年/);
+  assert.doesNotMatch(customized,/用户自定义标题/);
+  assert.match(customized,/100/);
+  assert.doesNotMatch(customized,/下个周年|♥|island-countdown-preview__anniversary-footer/);
   const updated=reduce(state,{type:'host',message:snapshot({hover:true,size:'small',topmost:false})});
   assert.equal(updated.dynamicIsland.size,'small');assert.equal(updated.dynamicIsland.material,'none');assert.equal(updated.dynamicIsland.hover,true);assert.equal(updated.dynamicIsland.topmost,false);
 });
@@ -136,6 +159,20 @@ test('shape waits for native confirmation, survives rollback and accepts older s
   state=reduce(state,{type:'host',message:snapshot({shape:'standard',error:'save',result:'applied'})});
   assert.equal(state.dynamicIsland.shape,'standard');assert.equal(state.dynamicIslandStatus,'error');
   assert.equal(reduce(state,{type:'host',message:snapshot()}).dynamicIsland.shape,'capsule');
+});
+test('countdown style selection supports standard and solid color styles',()=>{
+  let state=reduce(initialState(),{type:'host',message:snapshot()});
+  assert.equal(state.dynamicIsland.countdownStyle,'standard');
+  state=reduce(state,{type:'request',scope:'dynamicIsland',key:'countdownStyle',value:'violet'});
+  assert.equal(state.dynamicIsland.countdownStyle,'standard');
+  state=reduce(state,{type:'host',message:snapshot({countdownStyle:'violet',saved:true,result:'applied',loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.countdownStyle,'violet');
+  assert.equal(validHostMessage(snapshot({countdownStyle:'anniversary'})),false,'removed style is rejected by the renderer');
+  state=reduce(state,{type:'request',scope:'dynamicIsland',key:'countdownStyle',value:'standard'});
+  state=reduce(state,{type:'host',message:snapshot({countdownStyle:'violet',error:'save',result:'applied',loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.countdownStyle,'violet');
+  state=reduce(state,{type:'host',message:snapshot({countdownStyle:'standard',saved:true,result:'applied',loadStatus:'loaded'})});
+  assert.equal(state.dynamicIsland.countdownStyle,'standard');
 });
 
 test('clock styles validate, wait for native acknowledgement and preserve confirmed style on failure',()=>{

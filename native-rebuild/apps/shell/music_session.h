@@ -66,6 +66,7 @@ struct MusicSessionOptions {
         const std::function<bool()>&)> analyzeScore;
     std::function<music::ResolvedAudioSource(const music::Track&, std::string_view quality,
         const std::function<bool()>&)> resolveAudioSource;
+    std::function<bool(std::string_view)> issuedSource;
 };
 
 class MusicSession final {

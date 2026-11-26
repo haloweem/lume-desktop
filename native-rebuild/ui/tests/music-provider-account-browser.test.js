@@ -23,6 +23,19 @@ async function withBrowser(run) {
   const {chromium}=require(process.env.LUME_PLAYWRIGHT_DIR||path.join(runtime,'playwright'));
   const {PNG}=require(path.join(runtime,'pngjs'));
   const server=createServer(async(req,res)=>{
+    if(new URL(req.url,'http://localhost').pathname==='/provider-fixture.html') {
+      res.setHeader('Content-Type','text/html; charset=utf-8');
+      return res.end(`<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/music.css"><link rel="stylesheet" href="/music-provider-account.css"><main></main><script type="module">
+        import {MUSIC_PROVIDERS,createMusicProviderAccount,mountMusicProviderAccountView,musicProviderAccountPanel} from '/music-provider-account.js';
+        const root=document.querySelector('main');root.innerHTML=musicProviderAccountPanel();
+        window.sent=[];window.selected=[];
+        window.controller=createMusicProviderAccount({send:(action,fields)=>{sent.push({action,...fields});return true;}});
+        window.view=mountMusicProviderAccountView(root,controller,{onSelect:provider=>selected.push(provider)});
+        let revision=0;
+        window.reply=patch=>controller.receive({version:1,type:'music-provider-account-state',revision:++revision,accounts:MUSIC_PROVIDERS.map(provider=>({provider,request:0,status:'signed-out',phase:'',userId:'',displayName:'',qrImage:'',qrText:'',error:'',...patch[provider]}))});
+        window.ready=true;
+      </script>`);
+    }
     const file=path.resolve(ui,'.'+new URL(req.url,'http://localhost').pathname);
     if(!file.startsWith(ui+path.sep))return res.writeHead(403).end();
     try {
@@ -38,6 +51,54 @@ async function withBrowser(run) {
     browser=await chromium.launch({headless:true,channel:'msedge'});
     await run({browser,PNG,evidence,url:`http://127.0.0.1:${server.address().port}/index.html`});
   } finally {await browser?.close();await new Promise(resolve=>server.close(resolve));}
+}
+
+for(const [width,height] of [[1440,900],[390,844]]) {
+test(`four-platform account window ${width}x${height}: retained sessions, QR and direct switching`,
+  browserOptions,()=>withBrowser(async({browser,PNG,evidence,url})=>{
+    const page=await browser.newPage({viewport:{width,height}}),errors=[];
+    const avatar=new PNG({width:128,height:128});
+    for(let y=0;y<128;y++)for(let x=0;x<128;x++) {
+      const at=(y*128+x)*4;avatar.data[at]=70+x;avatar.data[at+1]=70+y;avatar.data[at+2]=210;avatar.data[at+3]=255;
+    }
+    await page.route(avatarUrl,route=>route.fulfill({contentType:'image/png',body:PNG.sync.write(avatar)}));
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(url.replace('/index.html','/provider-fixture.html'));
+    await page.waitForFunction(()=>window.ready);
+    await page.evaluate(avatarUrl=>reply({qq:{status:'signed-in',userId:'2503676207',displayName:'biu ~',avatarUrl},
+      netease:{status:'signed-in',userId:'net-user',displayName:'test2575'}}),avatarUrl);
+    await page.locator('[data-music-provider-open]').click();
+    await page.evaluate(()=>selected.length=0);
+    const dialog=page.locator('.MusicProviderDialog');
+    assert.equal(await dialog.locator('[data-provider-select]').count(),4);
+    assert.equal(await dialog.locator('[data-provider-select="spotify"], [data-provider-select="ytm"], [data-provider-select="bodian"], [data-provider-select="appleMusic"]').count(),0);
+    await page.locator('[data-provider-select="qq"]').click();
+    assert.equal(await page.locator('[data-provider-name]').innerText(),'biu ~');
+    assert.equal(await page.evaluate(()=>sent.some(item=>item.action==='begin')),false);
+    assert.deepEqual(await page.evaluate(()=>selected),['qq']);
+    assert.equal(await page.locator('[data-provider-identity-platform]').innerText(),'QQ 音乐 · ID: 2503676207');
+    assert.equal(await page.locator('[data-provider-switch]').count(),0);
+    await page.waitForFunction(()=>document.querySelector('[data-provider-avatar]')?.naturalWidth>0);
+    await page.screenshot({path:path.join(evidence,`four-platform-account-${width}.png`)});
+    await page.locator('[data-provider-select="qishui"]').click();
+    await page.evaluate(()=>reply({qishui:{request:sent.at(-1).request,status:'authorizing',phase:'waiting',qrText:'LUME-TEST-QISHUI'}}));
+    await page.locator('.MusicProviderQr img').waitFor({state:'visible'});
+    assert.match(await page.locator('[data-provider-note]').innerText(),/抖音/);
+    await page.locator('[data-provider-select="kugou"]').click();
+    assert.deepEqual(await page.evaluate(()=>sent.slice(-2).map(({action,provider})=>[action,provider])),[['cancel','qishui'],['begin','kugou']]);
+    await page.evaluate(()=>reply({kugou:{request:sent.at(-1).request,status:'authorizing',phase:'waiting',qrText:'LUME-TEST-KUGOU'}}));
+    assert.equal(await page.locator('.MusicProviderQr').isVisible(),true);
+    assert.equal(await page.locator('[data-provider-browser], [data-provider-reopen]').count(),0);
+    const rect=await dialog.evaluate(node=>node.getBoundingClientRect().toJSON());
+    assert.ok(rect.left>=0&&rect.right<=width&&rect.top>=0&&rect.bottom<=height,JSON.stringify(rect));
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:path.join(evidence,`four-platform-login-${width}.png`)});
+    await page.keyboard.press('Escape');
+    assert.equal(await dialog.count(),0);
+    assert.equal(await page.evaluate(()=>sent.at(-1).action),'cancel');
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }));
 }
 
 for(const [width,height] of [[1440,900],[390,844]]) {
@@ -65,7 +126,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
           harness.receive({version:1,type:'music-online-state',request,provider,action,status:'ready',error:'',
             data:{tracks:[],playlists:[],recommendations:[],more:false,likedIds:[]}});
         };
-        window.providerState={revision:0,accounts:['netease','qq','kugou'].map(provider=>({
+        window.providerState={revision:0,accounts:['qq','netease','kugou','qishui'].map(provider=>({
           provider,request:0,status:'signed-out',phase:'',userId:'',displayName:'',qrImage:'',qrText:'',error:''}))};
         window.reply=(provider,patch)=>{
           providerState.accounts=providerState.accounts.map(account=>account.provider===provider?{...account,...patch}:account);
@@ -110,8 +171,8 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
           await image.waitFor({state:'visible'});
           assert.equal(await image.evaluate(node=>node.naturalWidth),320,'native PNG path renders without a remote request');
         }
-        assert.equal(await page.locator('dialog a, dialog iframe').count(),0);
-        assert.equal((await page.locator('dialog').innerText()).includes('LUME-TEST-ONLY'),false);
+        assert.equal(await page.locator('.MusicProviderDialog a, .MusicProviderDialog iframe').count(),0);
+        assert.equal((await page.locator('.MusicProviderDialog').innerText()).includes('LUME-TEST-ONLY'),false);
         await page.evaluate(provider=>reply(provider,{phase:'scanned'}),provider);
         assert.match(await page.locator('[data-provider-message]').innerText(),/已扫码/);
         const revision=await page.evaluate(()=>providerState.revision);
@@ -123,18 +184,18 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
         assert.match(await page.locator('[data-provider-message]').innerText(),/已扫码/);
         if(provider==='qq') {
           await page.screenshot({path:path.join(evidence,`qr-fixture-${width}.png`)});
-          const rect=await page.locator('dialog').evaluate(node=>node.getBoundingClientRect().toJSON());
+          const rect=await page.locator('.MusicProviderDialog').evaluate(node=>node.getBoundingClientRect().toJSON());
           assert.ok(rect.x>=0 && rect.right<=width && rect.y>=0 && rect.bottom<=height);
         }
-        await page.locator('[data-provider-select="kugou"]').focus();
+        await page.locator('[data-provider-select="qishui"]').focus();
         await page.keyboard.press('Tab');
         assert.equal(await page.locator('[data-provider-close]').evaluate(node=>node===document.activeElement),true);
         await page.keyboard.press('Escape');
-        assert.equal(await page.locator('dialog').count(),0);
+        assert.equal(await page.locator('.MusicProviderDialog').count(),0);
         assert.equal(await opener.evaluate(node=>node===document.activeElement),true);
         assert.equal(await page.evaluate(()=>providerCommands().at(-1).action),'cancel');
         await page.evaluate(provider=>reply(provider,{status:'signed-in',userId:'late-fixture',displayName:'Stale'}),provider);
-        assert.equal(await page.locator('dialog').count(),0,'late success cannot reopen a closed modal');
+        assert.equal(await page.locator('.MusicProviderDialog').count(),0,'late success cannot reopen a closed modal');
       }
       assert.equal(requests.slice(networkStart).some(value=>!value.startsWith(new URL(url).origin+'/')),false);
       assert.equal(page.url(),url);assert.equal(popups.length,0);
@@ -144,20 +205,20 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       assert.deepEqual(await page.evaluate(()=>providerCommands().slice(-2).map(value=>[value.action,value.provider])),
         [['cancel','netease'],['begin','qq']]);
       await page.evaluate(()=>harness.receive({version:1,type:'visibility',visible:false}));
-      assert.equal(await page.locator('dialog').count(),0);
+      assert.equal(await page.locator('.MusicProviderDialog').count(),0);
       await page.evaluate(()=>harness.receive({version:1,type:'visibility',visible:true}));
       await page.locator('.MusicProviderButtons [data-music-provider-open="kugou"]').click();
       await page.evaluate(()=>{
         Object.defineProperty(document,'hidden',{configurable:true,value:true});
         document.dispatchEvent(new Event('visibilitychange'));
       });
-      assert.equal(await page.locator('dialog').count(),0);
+      assert.equal(await page.locator('.MusicProviderDialog').count(),0);
       await page.evaluate(()=>{
         delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));
       });
       await page.locator('.MusicProviderButtons [data-music-provider-open="netease"]').click();
       await page.evaluate(()=>document.querySelector('[data-titlebar-music]').click());
-      assert.equal(await page.locator('dialog').count(),0);
+      assert.equal(await page.locator('.MusicProviderDialog').count(),0);
       assert.equal(await page.locator('[data-music-root]').count(),0);
       assert.equal(await page.evaluate(()=>providerCommands().at(-1).action),'cancel');
       await page.locator('[data-titlebar-music]').click();
@@ -179,7 +240,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
         const request=providerCommands().at(-1).request;
         reply('qq',{request,status:'signed-in',error:'',phase:'',userId:'10001',displayName:'Synthetic account'});
       });
-      assert.equal(await page.locator('dialog').count(),0,'successful login dismisses its QR dialog');
+      assert.equal(await page.locator('.MusicProviderDialog').count(),0,'successful login dismisses its QR dialog');
       assert.equal(await page.evaluate(()=>providerCommands().at(-1).action),'begin',
         'successful login does not send cancel');
       assert.deepEqual(await page.evaluate(()=>{const {provider,action}=onlineCommands().at(-1);return [provider,action];}),
@@ -212,7 +273,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       const accountPanel=page.locator('.MusicProviderAccounts');
       assert.equal(await page.locator('[data-music-provider-active]').count(),1);
       assert.equal(await accountPanel.locator('.MusicProviderSwitchers, .MusicProviderSwitcher, .MusicProviderAccountConnect').count(),0);
-      assert.equal(await accountPanel.locator('[data-music-provider-select], [data-music-provider-open]').count(),0);
+      assert.equal(await accountPanel.locator('[data-music-provider-open]').count(),1,'one shared account manager remains available');
       const profileAccepted=await page.evaluate(async profile=>{
         const {validMusicProviderAccountMessage}=await import('./music-provider-account.js');
         reply('qq',profile);
@@ -224,16 +285,16 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       assert.equal(await accountRow.getAttribute('data-provider'),'qq');
       assert.equal(await accountRow.locator('[data-music-provider-active-name]').innerText(),'Synthetic account');
       assert.deepEqual(await accountRow.locator('img[src]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('src')).sort()),
-        [avatarUrl,vipIconUrl,svipIconUrl].sort(),'avatar and both active/inactive memberships use real image elements');
+        [avatarUrl,vipIconUrl].sort(),'avatar and the highest active membership use real image elements');
       await page.waitForFunction(()=>[...document.querySelectorAll('[data-music-provider-active] img[src]')]
         .every(node=>node.complete&&node.naturalWidth>0));
       const avatar=accountRow.locator('[data-music-provider-avatar]');
       assert.deepEqual(await avatar.evaluate(node=>{
         const rect=node.getBoundingClientRect();return {width:rect.width,height:rect.height};
       }),{width:40,height:40});
-      const logout=accountRow.locator('[data-music-provider-logout]');
-      assert.equal(await logout.isVisible(),true);
-      assert.ok(await logout.locator('svg').count()>0,'logout stays an icon button');
+      const manage=accountRow.locator('[data-music-provider-manage]');
+      assert.equal(await manage.isVisible(),true);
+      assert.ok(await manage.locator('svg').count()>0,'account management stays an icon button');
       const sync=accountPanel.locator('[data-music-provider-refresh]');
       assert.equal(await sync.isVisible(),true);
       assert.match(await sync.innerText(),/同步数据/);
@@ -254,7 +315,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
             harness.receive({version:1,type:'music-provider-account-state',revision:++providerState.revision,accounts});
           },{field,source});
           assert.deepEqual(await accountRow.locator('img[src]').evaluateAll(nodes=>nodes.map(node=>node.getAttribute('src')).sort()),
-            [avatarUrl,vipIconUrl,svipIconUrl].sort(),`rejected ${field} never replaces safe images`);
+            [avatarUrl,vipIconUrl].sort(),`rejected ${field} never replaces safe images`);
         }
       }
       await page.locator('.MusicPlayerPanel').screenshot({path:path.join(evidence,`account-panel-${width}.png`)});
@@ -289,7 +350,7 @@ test(`historical active-account UI ${width}x${height}: public profile images, gu
       await page.screenshot({path:path.join(evidence,`guest-home-${width}.png`)});
       assert.equal(await page.locator('.MusicProviderButtons').isVisible(),true,
         'returning home after logout keeps the login entry even with a local playback queue');
-      assert.equal(await page.locator('dialog').count(),0,'guest entry navigates home instead of opening account-page QR login');
+      assert.equal(await page.locator('.MusicProviderDialog').count(),0,'guest entry navigates home instead of opening account-page QR login');
       assert.equal(await page.evaluate(()=>providerCommands().length),commandCount);
       assert.deepEqual(errors,[]);
       await page.close();
@@ -319,7 +380,7 @@ test(`QQ audio quality ${width}x${height}: four official VIP options, session co
     await page.locator('[data-titlebar-music]').click();
     await page.locator('[data-music-root]').waitFor();
     await page.evaluate(async profile=>{
-      const accounts=['netease','qq','kugou'].map(provider=>({provider,request:0,
+      const accounts=['qq','netease','kugou','qishui'].map(provider=>({provider,request:0,
         status:provider==='qq'?'signed-in':'signed-out',phase:'',userId:provider==='qq'?'10001':'',
         displayName:provider==='qq'?'QQ fixture':'',qrImage:'',qrText:'',error:'',
         ...(provider==='qq'?profile:{})}));

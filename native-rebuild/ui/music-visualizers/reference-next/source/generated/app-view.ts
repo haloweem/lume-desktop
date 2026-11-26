@@ -1,0 +1,1 @@
+export const useAppViewStore = selector => selector({view:'player'});

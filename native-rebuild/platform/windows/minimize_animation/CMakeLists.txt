@@ -23,10 +23,10 @@ add_library(LumeMinimizeHook SHARED minimize_animation_hook.cpp minimize_animati
 set_target_properties(LumeMinimizeHook PROPERTIES PREFIX "" OUTPUT_NAME "LumeMinimizeHook${LUME_MINIMIZE_BITS}"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_link_libraries(LumeMinimizeHook PRIVATE lume-minimize-animation-core user32 gdi32 dwmapi d2d1 shell32 advapi32 ole32 oleaut32 uuid)
-add_executable(LumeMinimizeHost WIN32 minimize_animation_host.cpp)
+add_executable(LumeMinimizeHost WIN32 minimize_animation_host.cpp dock_genie_renderer.cpp)
 set_target_properties(LumeMinimizeHost PROPERTIES OUTPUT_NAME "LumeMinimizeHost${LUME_MINIMIZE_BITS}"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-target_link_libraries(LumeMinimizeHost PRIVATE lume-minimize-animation-core user32)
+target_link_libraries(LumeMinimizeHost PRIVATE lume-minimize-animation-core user32 d3d11 dxgi dcomp d3dcompiler dwmapi)
 add_dependencies(LumeMinimizeHost LumeMinimizeHook)
 add_library(lume-minimize-animation-runtime STATIC minimize_animation_runtime.cpp)
 target_link_libraries(lume-minimize-animation-runtime PUBLIC lume-minimize-animation-core PRIVATE user32)
@@ -78,7 +78,10 @@ if(NOT LUME_MINIMIZE_STANDALONE)
       -OutputDirectory "${CMAKE_BINARY_DIR}" -Architecture "${LUME_MINIMIZE_COMPANION}"
     DEPENDS build-minimize-hosts.ps1 CMakeLists.txt
       minimize_animation_hook.cpp minimize_animation_hook.def minimize_animation_host.cpp
-      minimize_animation_ipc.h NOTICE.md SOURCES.md
+      minimize_animation_ipc.h dock_genie_renderer.cpp dock_genie_renderer.h dock_genie_packet.h
+      "${LUME_MINIMIZE_ROOT}/platform/windows/lume_window_ids.h"
+      "${LUME_MINIMIZE_ROOT}/platform/windows/dock/dock_animation_targets.h"
+      "${LUME_MINIMIZE_ROOT}/platform/windows/dock/dock_slots.h" NOTICE.md SOURCES.md
       "${LUME_MINIMIZE_ROOT}/core/minimize_animation/minimize_animation.h"
       "${LUME_MINIMIZE_ROOT}/core/minimize_animation/minimize_animation.cpp"
       "${LUME_MINIMIZE_ROOT}/core/minimize_animation/minimize_animation_store.h"
@@ -119,6 +122,8 @@ if(LUME_MINIMIZE_STANDALONE AND BUILD_TESTING)
   add_test(NAME lume-minimize-animation-test COMMAND lume-minimize-animation-test)
   add_test(NAME lume-minimize-animation-runtime-test COMMAND lume-minimize-animation-runtime-test)
   add_test(NAME lume-minimize-animation-session-test COMMAND lume-minimize-animation-session-test)
+add_test(NAME lume-dock-genie-test COMMAND lume-minimize-animation-runtime-test --dock)
+set_tests_properties(lume-dock-genie-test PROPERTIES RUN_SERIAL TRUE TIMEOUT 40)
   set_tests_properties(lume-minimize-animation-runtime-test PROPERTIES TIMEOUT 70 RUN_SERIAL TRUE)
   set_tests_properties(lume-minimize-animation-session-test PROPERTIES TIMEOUT 40 RUN_SERIAL TRUE)
 endif()

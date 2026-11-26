@@ -65,6 +65,10 @@ int DayOfYear(Date date) noexcept {
     return IsValidDate(date) ? Ordinal(date) - DaysBeforeYear(date.year) + 1 : 0;
 }
 
+int DaysSinceUnixEpoch(Date date) noexcept {
+    return IsValidDate(date) ? Ordinal(date) - DaysBeforeYear(1970) : 0;
+}
+
 std::optional<Date> AddDays(Date date, int offset) noexcept {
     if (!IsValidDate(date)) return std::nullopt;
     const auto ordinal = static_cast<std::int64_t>(Ordinal(date)) + offset;

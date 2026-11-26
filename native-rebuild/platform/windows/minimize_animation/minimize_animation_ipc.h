@@ -49,6 +49,8 @@ struct SharedControl {
     volatile LONG unhideTaskbar;
     volatile LONG unhideDurationMs;
     volatile LONG classic;
+    volatile LONG dockOnly, close, rendererWindow;
+    volatile LONG dockFrames, dockCompleted, dockClosed, dockZoomed;
     volatile LONG hostPid;
     volatile LONG startupError;
     volatile LONG installedHooks;
@@ -109,6 +111,8 @@ inline void WriteSettings(SharedControl& s, const minimize_animation::Preference
     InterlockedExchange(&s.multiMonitor,p.multiMonitor);
     InterlockedExchange(&s.unhideTaskbar,p.unhideTaskbar);
     InterlockedExchange(&s.unhideDurationMs,p.unhideDurationMs);
+    InterlockedExchange(&s.dockOnly,p.dockOnly);
+    InterlockedExchange(&s.close,p.close);
     InterlockedExchange(&s.classic,p.engine == minimize_animation::Engine::Classic);
     InterlockedExchange(&s.enabled,p.enabled);
     InterlockedIncrement(&s.sequence);
@@ -120,6 +124,7 @@ inline bool ReadSettings(SharedControl& s, minimize_animation::Preferences& p) n
         p.restore=Read(s.restore)!=0; p.launch=Read(s.launch)!=0;
         p.multiMonitor=Read(s.multiMonitor)!=0; p.unhideTaskbar=Read(s.unhideTaskbar)!=0;
         p.unhideDurationMs=Read(s.unhideDurationMs);
+        p.dockOnly=Read(s.dockOnly)!=0; p.close=Read(s.close)!=0;
         p.engine=Read(s.classic) ? minimize_animation::Engine::Classic : minimize_animation::Engine::Modern;
         if (before == Read(s.sequence)) return minimize_animation::Valid(p);
     }

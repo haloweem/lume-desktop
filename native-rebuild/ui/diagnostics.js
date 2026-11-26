@@ -460,7 +460,7 @@ export function createDiagnosticsRecorder({
 }
 
 export function buildDiagnosticReport({
-  version = "1.1.3",
+  version = "1.1.4",
   language = "zh-CN",
   view = "",
   events = [],

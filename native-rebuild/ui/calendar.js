@@ -6,7 +6,7 @@ const themes=()=>[['spacious',t('经典','Classic')],['split',t('舒展','Spacio
 const materials=()=>[['solid',t('普通','Standard')],['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')]];
 const stageNote=state=>t('日程仅保存在本机。Lume 运行时会按设置弹出提醒，关闭日历仍可提醒；从托盘退出 Lume 后不再提醒。日程编辑表单和提醒窗当前使用纯色显示。','Events are stored only on this device. Reminders work while Lume is running, even with the calendar closed. Exiting Lume from the tray stops reminders. Event forms and reminder windows currently use solid colors. ')+({
   'native-ready':t('日历原生玻璃材质已启用。','Native calendar glass is enabled.'),'native-starting':t('正在准备日历材质。','Preparing the calendar material.'),
-  'transparent-fallback':t('日历材质暂不可用，当前为透明降级显示。','Calendar material is unavailable. Using a transparent fallback.'),inactive:t('启用日历后加载材质。','The material loads when the calendar is enabled.'),
+  'transparent-fallback':t('日历当前使用兼容材质。','Calendar is using a compatible material.'),inactive:t('启用日历后加载材质。','The material loads when the calendar is enabled.'),
 }[state.calendar?.material==='solid'?'':state.calendarMaterialStatus]||'');
 export function calendarStatus(state) {
   if(state.calendarStatus === 'error') return {
@@ -38,7 +38,7 @@ export function calendarPage(state,tab='settings') {
     `<div class="setting-row"><label for="calendar-theme">${t('日历主题','Calendar theme')}</label>${settingsSelect('calendar-theme',t('日历主题','Calendar theme'),p.theme,themes(),disabled)}</div>`+
     `<div class="setting-row"><label for="calendar-material">${t('材质设置','Material')}</label>${settingsSelect('calendar-material',t('材质设置','Material'),p.material,materials(),disabled)}</div>`+
     colorControl('textColor',t('字体颜色','Text color'),p.textColor,disabled)+colorControl('highlightColor',t('高亮颜色','Highlight color'),p.highlightColor,disabled)+
-    `<div class="reset-row"><button class="reset" data-action="calendar-reset" ${disabled?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>${note}` :
+    `<div class="reset-row"><button class="reset" data-action="calendar-reset" ${disabled?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>` :
     `<div class="settings-details"><h3>${t('功能说明','About this widget')}</h3><p>${description}</p><p>${t('组件可独立启用，桌面位置随拖拽保存。退出 Lume 时，组件会一同关闭。','Enable the widget independently. Its position is saved when dragged. The widget closes when you exit Lume.')}</p>${note}</div>`;
   return settingsFrame({title:t('日历','Calendar'),description,tab,body,status:calendarStatus(state),error:state.calendarStatus==='error',scope:'calendar'});
 }

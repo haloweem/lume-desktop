@@ -8,6 +8,7 @@
   --choice-accent: #b8bec8;
   --choice-text: #f1f1f1;
 }
+.settings-choice-popup--desktop-beauty { --choice-selected: #5b7bea; --choice-selected-purple: #5b7bea; --choice-accent: #5b7bea; }
 .settings-choice { position: relative; display: inline-flex; width: 100%; min-width: 0; vertical-align: middle; }
 .settings-choice-source {
   display: none !important;
@@ -63,6 +64,7 @@
 /* The existing settings-frame control keeps its command and keyboard contract. */
 .settings--sidebar .settings-body .setting-select-trigger,
 .settings--sidebar .settings-body .setting-select-options { background: var(--choice-surface); border-color: var(--choice-line); color: var(--choice-text); }
+.settings--sidebar .settings-body .setting-select-options { background: var(--choice-menu); }
 .setting-select-options { border: 1px solid var(--choice-line); border-radius: 8px; padding: 4px; }
 .setting-select-options button { border-radius: 5px; }
 .setting-select-options button:hover,.setting-select-options button:focus { background: var(--choice-hover); }

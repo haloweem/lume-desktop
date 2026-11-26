@@ -30,12 +30,12 @@ struct Probe {
     unsigned previews=0;
     unsigned allScreenChecks=0,singleScreenChecks=0;
     unsigned expansionRound=0;
-    unsigned fullscreenRound=0;
     bool clickModeConfirmed=false;
-    bool fullscreenOffConfirmed=false;
     bool animationConfirmed=false;
     bool layoutConfirmed=false,legacyLayoutObserved=false,clockSaveConfirmed=false,performanceSaveConfirmed=false;
     bool clockStyleConfirmed=false,progressStyleSaved=false,digitalStyleSaved=false,dateStyleSaved=false,flipStyleSaved=false,pixelStyleSaved=false,clockStyleReopened=false;
+    bool countdownStyleConfirmed=false,violetStyleSaved=false,countdownStyleReopened=false;
+    bool almanacStyleSaved=false;
     ULONGLONG deadline=0,closed=0;
     void Message(const std::wstring& text){
         if(text.find(L"\"type\":\"dynamicIsland-preview\"")!=std::wstring::npos){
@@ -60,12 +60,17 @@ struct Probe {
             if(clockStyle=="pixel")pixelStyleSaved=true;
         }
         if(ready==1&&clockStyleConfirmed)clockStyleReopened=true;
+        const auto countdownStyle=state.value("countdownStyle",std::string{});
+        countdownStyleConfirmed=countdownStyle=="violet";
+        if(state.value("saved",false)){
+            if(countdownStyle=="violet")violetStyleSaved=true;
+        }
+        if(ready==1&&countdownStyleConfirmed)countdownStyleReopened=true;
+        if(state.value("saved",false)&&state.value("calendarStyle",std::string{})=="chinese-almanac")almanacStyleSaved=true;
         animationConfirmed=state.value("hoverDelayMs",0)==1000&&state.value("animationSpeed",std::string{})=="fast"&&state.value("bounce",std::string{})=="bouncy";
-        visibilityConfirmed=state.value("hover",false)&&state.value("topmost",false)&&state.value("hideFullscreen",false);
+        visibilityConfirmed=state.value("hover",false)&&state.value("topmost",false);
         ++snapshots;
         if(state.value("saved",false)&&state.contains("screens")){
-            if(!state.value("hideFullscreen",false))fullscreenOffConfirmed=true;
-            else if(fullscreenOffConfirmed){fullscreenRound=ready+1;fullscreenOffConfirmed=false;}
             const int selected=state.value("screen",1);
             Check(IslandCount()==(selected==0?state["screens"].size():1),"real display policy applies the requested native window count");
             if(selected==0)++allScreenChecks;
@@ -90,10 +95,10 @@ struct Probe {
                 " fiveLayout="<<layoutConfirmed<<" clockStyle="<<clockStyleConfirmed<<" progressSaved="<<progressStyleSaved<<
                 " digitalSaved="<<digitalStyleSaved<<" dateSaved="<<dateStyleSaved<<" previews="<<previews<<
                 " ready="<<ready<<" stage="<<stage<<" allScreens="<<allScreenChecks<<" singleScreen="<<singleScreenChecks<<
-                " expansionRound="<<expansionRound<<" fullscreenRound="<<fullscreenRound<<'\n';
+                " expansionRound="<<expansionRound<<'\n';
             Check(false,"real manager lifecycle deadline");app->Exit();return;
         }
-        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&visibilityConfirmed&&animationConfirmed&&layoutConfirmed&&clockStyleConfirmed&&progressStyleSaved&&digitalStyleSaved&&dateStyleSaved&&flipStyleSaved&&pixelStyleSaved&&legacyLayoutObserved&&clockSaveConfirmed&&performanceSaveConfirmed&&expansionRound>ready&&fullscreenRound>ready){
+        if(stage==0&&app->ManagerReady()&&enabled&&locked&&material=="frosted-glass"&&shape=="standard"&&snapshots>snapshotAtOpen&&visibilityConfirmed&&animationConfirmed&&layoutConfirmed&&clockStyleConfirmed&&progressStyleSaved&&digitalStyleSaved&&dateStyleSaved&&flipStyleSaved&&pixelStyleSaved&&legacyLayoutObserved&&clockSaveConfirmed&&performanceSaveConfirmed&&expansionRound>ready&&countdownStyleConfirmed&&violetStyleSaved&&almanacStyleSaved){
             ++ready;
             Check(Island()!=nullptr,"real settings page creates island window");
             Check((GetWindowLongPtrW(Island(),GWL_EXSTYLE)&WS_EX_TOPMOST)!=0,"real display-layer dropdown applies native overlay state");
@@ -128,8 +133,8 @@ int main(){
     }
     Probe probe;options.onMessage=[&](const auto& text){probe.Message(text);};
     options.readyScript=LR"JS((()=>{
-      let material=false,shape=false,layer=false,hideOff=false,hideOn=false,allScreens=false,singleScreen=false,clickMode=false,hoverMode=false;
-      let clockStyleStage=-1,clockStylesDone=false;
+      let material=false,shape=false,layer=false,allScreens=false,singleScreen=false,clickMode=false,hoverMode=false;
+      let clockStyleStage=-1,clockStylesDone=false,countdownStyleStage=-1,calendarStyleStage=0;
       const act=()=>{
         const section=document.querySelector('[data-settings-scope="dynamicIsland"]');
         if(!section)return;
@@ -190,7 +195,7 @@ int main(){
         const picker=section.querySelector('[data-island-expanded-picker]');
         if(picker){
           if(!section.querySelector('[data-tab="music"],[data-tab="todo"],[data-tab="quick-launch"],[data-tab="clock"],[data-tab="notifications"]')||
-             picker.querySelectorAll('[data-island-expanded-chip]').length!==5)return;
+             picker.querySelectorAll('[data-island-expanded-chip]').length!==6)return;
           for(const id of [0,1,4,5,3]){
             const choice=picker.querySelector(`[data-island-expanded-toggle="${id}"]`);
             if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
@@ -216,6 +221,35 @@ int main(){
           if(finalStyle.getAttribute('aria-pressed')!=='true')return;
           clockStylesDone=true;
           }
+    )JS";
+    options.readyScript+=LR"JS(
+          if(countdownStyleStage<2){
+          const countdownCategory=section.querySelector('[data-island-style-widget="countdown"]');
+          if(!countdownCategory)return;
+          if(countdownCategory.getAttribute('aria-pressed')!=='true'){countdownCategory.click();return;}
+          const countdownStyles=['standard','violet'];
+          const violet=section.querySelector('[data-island-countdown-style="violet"]');
+          if(!violet||violet.disabled||violet.getAttribute('aria-disabled')==='true')return;
+          if(countdownStyleStage<0)countdownStyleStage=violet.getAttribute('aria-pressed')==='true'?2:0;
+          while(countdownStyleStage<countdownStyles.length){
+            const choice=section.querySelector(`[data-island-countdown-style="${countdownStyles[countdownStyleStage]}"]`);
+            if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
+            if(choice.getAttribute('aria-pressed')!=='true'){choice.click();return;}
+            ++countdownStyleStage;
+          }
+          }
+          if(calendarStyleStage<2){
+            const calendarCategory=section.querySelector('[data-island-style-widget="calendar-weather"]');
+            if(!calendarCategory)return;
+            if(calendarCategory.getAttribute('aria-pressed')!=='true'){calendarCategory.click();return;}
+            const styles=['chinese-almanac','default'];
+            while(calendarStyleStage<styles.length){
+              const choice=section.querySelector(`[data-island-calendar-style="${styles[calendarStyleStage]}"]`);
+              if(!choice||choice.disabled||choice.getAttribute('aria-disabled')==='true')return;
+              if(choice.getAttribute('aria-pressed')!=='true'){choice.click();return;}
+              ++calendarStyleStage;
+            }
+          }
         }
         if(material&&shape&&picker&&!layer){
           section.querySelector('[data-tab="settings"]').click();return;
@@ -228,13 +262,7 @@ int main(){
           }
           layer=true;
         }
-        const fullscreen=section.querySelector('[data-action="dynamicIsland-hideFullscreen"]');
-        if(layer&&fullscreen){
-          if(fullscreen.disabled||fullscreen.getAttribute('aria-disabled')==='true')return;
-          if(!hideOff){hideOff=true;fullscreen.click();return;}
-          if(fullscreen.getAttribute('aria-checked')==='false'&&!hideOn){hideOn=true;fullscreen.click();return;}
-          if(hideOn&&fullscreen.getAttribute('aria-checked')==='true'){section.querySelector('[data-tab="home"]').click();return;}
-        }
+        if(layer&&displayLayer)section.querySelector('[data-tab="home"]').click();
       };
       const observer=new MutationObserver(act);observer.observe(document.querySelector('#content'),{subtree:true,attributes:true,childList:true});act();
       window.addEventListener('beforeunload',()=>observer.disconnect(),{once:true});
@@ -247,18 +275,20 @@ int main(){
     Check(result==0&&probe.ready==2&&probe.stage==2,"complete real manager reopen and native close");
     Check(probe.allScreenChecks>=2&&probe.singleScreenChecks>=2,"real display policy buttons work before and after reopening the manager");
     Check(probe.expansionRound==2,"real click and hover mode buttons finish before each manager close");
-    Check(probe.fullscreenRound==2,"both manager visits finish style-card confirmation before the settings fullscreen toggle round-trip");
     Check(probe.animationConfirmed,"real animation controls persist through the manager close and reopen");
     Check(probe.layoutConfirmed,"real widget selection reaches the native session through WebView");
     Check(probe.progressStyleSaved&&probe.digitalStyleSaved&&probe.dateStyleSaved&&probe.flipStyleSaved&&probe.pixelStyleSaved&&probe.clockStyleReopened,
           "all five alternate clock styles save through WebView and the final pixel style is restored when the manager reopens");
+    Check(probe.violetStyleSaved&&probe.countdownStyleReopened,
+          "both countdown styles save through the real WebView and violet survives reopening");
+    Check(probe.almanacStyleSaved,"the longest calendar-style command saves through the real WebView");
     Check(probe.previews==0,"the settings page no longer requests whole-island native previews");
     Check(probe.legacyLayoutObserved&&probe.clockSaveConfirmed,"real WebView restores the legacy layout, saves clock as a fourth widget and retains it after reopening");
     Check(probe.performanceSaveConfirmed,"real WebView adds performance after clock and retains all five widgets after reopening");
     {
         std::ifstream persisted(root/L"island-display.json",std::ios::binary);
         const auto display=nlohmann::json::parse(persisted,nullptr,false);
-        Check(display.is_object()&&display.value("expandedLayout",0u)==PerformanceLayout&&display.value("clockStyle",std::string{})=="pixel"&&
+        Check(display.is_object()&&display.value("expandedLayout",0u)==PerformanceLayout&&display.value("clockStyle",std::string{})=="pixel"&&display.value("countdownStyle",std::string{})=="violet"&&
               display.value("leftWidget",std::string{})=="temperatureRange"&&display.value("rightWidget",std::string{})=="lunar",
               "real manager five-widget selection and clock style persist without changing compact widget selections");
     }

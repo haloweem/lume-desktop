@@ -1,5 +1,6 @@
 #include "apps/shell/music_online_session.h"
 #include "platform/windows/music_online_provider.h"
+#include "platform/windows/folia_music_runtime.h"
 #include "core/music/music_online_lyrics.h"
 #include "core/music/music_model.h"
 #include <windows.h>
@@ -39,7 +40,7 @@ std::wstring Wide(const std::string& value) {
     return result;
 }
 std::optional<Provider> ParseProvider(std::string_view name) {
-    for (const auto provider : {Provider::Netease, Provider::QQ, Provider::Kugou})
+    for (const auto provider : Providers)
         if (Name(provider) == name) return provider;
     return {};
 }
@@ -51,7 +52,8 @@ std::string Error(std::string_view value) {
 }
 bool MembershipBadge(std::string_view value) {
     return value.empty() || value == "qq-green-vip" || value == "qq-super-vip" ||
-        value == "netease-vip" || value == "netease-svip" || value == "kugou-vip";
+        value == "netease-vip" || value == "netease-svip" || value == "kugou-vip" ||
+        value == "qishui-vip";
 }
 bool PageId(std::string_view id) {
     return !id.empty() && id.size() <= 128 &&
@@ -170,7 +172,13 @@ std::optional<MusicOnlineCommand> ParseMusicOnlineCommand(std::wstring_view inpu
                     (std::string_view(key) == "limit" && (!number || number > 100))) return {};
                 command.arguments[key] = number;
             }
-            if (command.action == "playlist") allowed.insert("id");
+            if (command.action == "playlist") {
+                allowed.insert("id"); allowed.insert("collectionType");
+                if (json.contains("collectionType")) {
+                    if (json["collectionType"] != "playlist" && json["collectionType"] != "album") return {};
+                    command.arguments["collectionType"] = json["collectionType"];
+                }
+            }
             if (command.action == "search") {
                 allowed.insert("query");
                 if (!Text(json.value("query", Json{}), 512)) return {};
@@ -215,11 +223,14 @@ struct MusicOnlineSession::Impl {
         CheckCancelled(cancelled);
         args["_userId"] = lease.userId;
         if (options.execute) return options.execute(lease.provider, action, args, lease.credentials, cancelled);
+        if (options.runtime) return options.runtime->Request("online", lease.provider, {{"action", action}, {"args", args}}, cancelled);
         if (options.verification) throw std::runtime_error("service");
         return music::online::Execute(lease.provider, action, args, lease.credentials, cancelled);
     }
     Json PlaybackRead(const MusicProviderCredentialLease& lease, std::string_view action,
                       const Json& args, const Cancelled& cancelled) {
+        // The imported provider owns its retries and shares the native cancellation lease.
+        if (options.runtime && !options.execute) return Execute(lease, action, args, cancelled);
         // Folia retries reachability failures only. Keep one total budget and
         // cancellation through both the request and backoff, including lyrics.
         using namespace std::chrono;
@@ -447,7 +458,7 @@ struct MusicOnlineSession::Impl {
         auto lease = options.acquire ? options.acquire(*provider) : std::nullopt;
         if (!lease || lease->provider != identity.provider || lease->generation != identity.generation ||
             lease->userId != identity.userId || !Current(*lease)) throw std::runtime_error("signed-out");
-        return {std::move(*lease), track.id.substr(colon + 1)};
+        return {std::move(*lease), options.runtime && !options.execute ? track.id : track.id.substr(colon + 1)};
     }
     void AccountsChanged() {
         std::lock_guard lock(mutex);
@@ -525,7 +536,8 @@ music::ResolvedAudioSource MusicOnlineSession::ResolveAudioSource(const music::T
     auto result = impl_->PlaybackRead(lease, "resolve", {{"id", id}, {"quality", quality}}, cancelled);
     CheckCancelled(cancelled);
     const auto url = result.at("url").get<std::string>();
-    if (url.size() > 8192 || (url.compare(0, 8, "https://") != 0 &&
+    const bool issued = impl_->options.runtime && impl_->options.runtime->SourceAllowed(url);
+    if (url.size() > 8192 || (!issued && url.compare(0, 8, "https://") != 0 &&
         !(lease.provider == Provider::Kugou && music::IsKugouHttpAudioUrl(url))) ||
         url.find_first_of("\r\n\t\\ @#") != url.npos ||
         std::any_of(url.begin(), url.end(), [](unsigned char c) { return c < 33 || c >= 127; }))

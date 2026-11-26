@@ -19,9 +19,9 @@ Json State(MusicProviderAccountSession& session) {
     auto state = Json::parse(text.begin(), text.end());
     Require(state.is_object() && state.size() == 4 && state.at("version") == 1 &&
         state.at("type") == "music-provider-account-state" && state.at("revision").is_number_unsigned() &&
-        state.at("accounts").is_array() && state.at("accounts").size() == 3, "exact account state envelope");
+        state.at("accounts").is_array() && state.at("accounts").size() == 4, "exact account state envelope");
     for (const auto& account : state.at("accounts")) {
-        Require(account.is_object() && account.size() == 11 && account.at("request").is_number_unsigned() &&
+        Require(account.is_object() && account.size() == 12 && account.at("request").is_number_unsigned() &&
             account.at("memberships").is_array(), "exact account schema");
         for (const auto* key : {"provider", "status", "phase", "userId", "displayName",
                                "qrImage", "qrText", "error", "avatarUrl"})
@@ -105,6 +105,60 @@ void CredentialErrorContract() {
         Require(publicError == (allowed ? error : "invalid-response"), "QQ diagnostic public boundary");
         session.Shutdown();
     }
+}
+void RuntimePreparationIsLazyAndRetryable() {
+    std::atomic<int> prepares{0}, reads{0};
+    auto options = Fixtures();
+    options.prepareRuntime = [&](const Cancelled& cancelled, const std::function<void(std::string_view)>& phase) {
+        CheckCancelled(cancelled); phase("downloading");
+        if (++prepares == 1) throw std::runtime_error("runtime-download");
+        phase("extracting");
+    };
+    options.load = [](Provider) { return Json{{"saved", "fixture"}}; };
+    options.execute = [&](Provider, Operation operation, Json&, const Cancelled&) {
+        Require(operation == Operation::Refresh, "saved accounts restore after runtime preparation");
+        ++reads; return SignedIn();
+    };
+    MusicProviderAccountSession session(options);
+    State(session); session.DrainNotification();
+    Require(prepares == 0 && reads == 0, "passive state delivery must not download music components");
+    session.HandlePage({"snapshot"});
+    Require(Await([&] { return State(session)["accounts"][3]["error"] == "runtime-download"; }), "download failure reaches all queued restores");
+    session.HandlePage({"snapshot"});
+    Require(prepares == 1 && reads == 0, "remaining providers and repeated snapshots never loop downloads");
+    session.HandlePage({"refresh", Provider::QQ, 1});
+    Require(Await([&] {
+        const auto rows = State(session)["accounts"];
+        return std::all_of(rows.begin(), rows.end(), [](const Json& row) { return row["status"] == "signed-in"; });
+    }), "explicit retry prepares runtime and restores every saved account");
+    Require(prepares == 2 && reads == 4, "one explicit retry performs one download and four restores");
+    session.Shutdown();
+}
+void PreparationDoesNotConsumeQrLifetime() {
+    std::atomic<bool> entered{false}, release{false};
+    std::atomic<int> calls{0};
+    auto options = Fixtures();
+    options.qrLifetime = 80ms; options.pollInterval = 1s;
+    options.prepareRuntime = [&](const Cancelled& cancelled, const std::function<void(std::string_view)>& phase) {
+        phase("downloading"); entered = true;
+        while (!release) { CheckCancelled(cancelled); std::this_thread::sleep_for(1ms); }
+        phase("extracting");
+    };
+    options.execute = [&](Provider, Operation operation, Json&, const Cancelled& cancelled) {
+        CheckCancelled(cancelled); ++calls;
+        Require(operation == Operation::Begin, "QR starts only after preparation"); return Authorizing();
+    };
+    MusicProviderAccountSession session(options);
+    session.HandlePage({"begin", Provider::QQ, 1});
+    Require(Await([&] { return entered.load(); }), "download phase started");
+    std::this_thread::sleep_for(120ms);
+    Require(State(session)["accounts"][1]["phase"] == "downloading" && calls == 0,
+        "component download can outlast the QR lifetime without starting a QR");
+    release = true;
+    Require(Await([&] { return State(session)["accounts"][1]["status"] == "authorizing"; }),
+        "QR receives its full lifetime after component preparation");
+    session.CancelActive(); session.Shutdown();
+    Require(calls == 1, "cancel stops further QR work");
 }
 void ShutdownLogout() {
     std::atomic<bool> entered{false}, cancelled{false};
@@ -365,7 +419,7 @@ void InvalidPublicProfile() {
 }
 void PublicImageOrigins() {
     Require(PublicImageUrl(""), "empty optional image accepted");
-    for (const auto* host : {"y.qq.com", "y.gtimg.cn", "q1.qlogo.cn", "q2.qlogo.cn", "thirdqq.qlogo.cn",
+    for (const auto* host : {"y.qq.com", "y.gtimg.cn", "qpic.y.qq.com", "q1.qlogo.cn", "q2.qlogo.cn", "thirdqq.qlogo.cn",
                             "p1.music.126.net", "p2.music.126.net", "p3.music.126.net", "p4.music.126.net",
                             "imge.kugou.com", "imgessl.kugou.com"}) {
         Require(PublicImageUrl(std::string("https://") + host + "/fixture.png"), "official HTTPS image accepted");
@@ -706,6 +760,8 @@ int main() {
         PublicProfileLimits();
         InvalidPublicProfile();
         CredentialErrorContract();
+        RuntimePreparationIsLazyAndRetryable();
+        PreparationDoesNotConsumeQrLifetime();
         RefreshProfile();
         PollRetriesTransientFailures();
         PollFailureCapStillEndsTheAttempt();

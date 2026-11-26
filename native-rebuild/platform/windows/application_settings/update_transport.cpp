@@ -102,7 +102,7 @@ public:
         if (verification_) return {{}, "update-verification"};
         try {
             const auto deadline = Clock::now() + std::chrono::seconds(15);
-            InternetHandle session(WinHttpOpen(L"LumeNative/1.1.3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            InternetHandle session(WinHttpOpen(L"LumeNative/1.1.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
             if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 5000, 5000))
                 return {{}, "update-network"};
@@ -253,7 +253,7 @@ public:
             const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
             std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
             if (parts.dwExtraInfoLength) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-            InternetHandle session(WinHttpOpen(L"LumeNativeUpdate/1.1.3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            InternetHandle session(WinHttpOpen(L"LumeNativeUpdate/1.1.4", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
             if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 10000, 15000, 15000)) return {{}, "update-network"};
             InternetHandle connection(WinHttpConnect(session.value, host.c_str(), parts.nPort, 0));

@@ -11,6 +11,13 @@
 namespace lume::platform::windows {
 namespace {
 constexpr ULONGLONG ClassicMaintainMs = 100;
+bool TrayInteractionActive() {
+    const auto foreground = GetForegroundWindow();
+    wchar_t name[96]{};
+    if (!foreground || !GetClassNameW(foreground, name, 96)) return false;
+    return wcscmp(name,L"Shell_TrayWnd")==0 || wcscmp(name,L"NotifyIconOverflowWindow")==0 ||
+        wcscmp(name,L"TopLevelWindowForOverflowXamlIsland")==0;
+}
 bool Equal(const taskbar::Status& a, const taskbar::Status& b) {
     return a.preferences == b.preferences && a.mode == b.mode && a.error == b.error &&
         a.running == b.running && a.pendingRecovery == b.pendingRecovery && a.taskbars == b.taskbars &&
@@ -73,12 +80,13 @@ struct TaskbarRuntime::Impl {
         }
         if (callback) callback();
     }
-    bool Start(std::optional<taskbar::Preferences> next, std::optional<bool> demand = {}) {
+    bool Start(std::optional<taskbar::Preferences> next, std::optional<bool> demand = {}, unsigned revealMs = 0) {
         std::lock_guard<std::mutex> operation(operationMutex);
         std::thread finished;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (stopped || !controller || status.loaded == taskbar::LoadState::Failed) return false;
+            if (revealMs) revealUntil = GetTickCount64() + std::min(revealMs, 30000u);
             if (status.worker) {
                 if (next) { pending = *next; accepted = *next; }
                 if (demand) pendingDemand = *demand;
@@ -92,7 +100,7 @@ struct TaskbarRuntime::Impl {
             std::lock_guard<std::mutex> lock(mutex);
             if (next) pending = *next;
             if (demand) demandValue = *demand; // No worker runs, so the mutex owns it.
-            if (!next && !demandValue && !status.state.preferences.enabled && !status.state.pendingRecovery) return true;
+            if (!next && !demandValue && !revealUntil && !status.state.preferences.enabled && !status.state.pendingRecovery) return true;
             requestEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             if (!requestEvent) { status.state.error = taskbar::Error::Watch; return false; }
             cancel = false; status.worker = true; status.applying = true;
@@ -118,12 +126,16 @@ struct TaskbarRuntime::Impl {
         bool settle = false;
         for (;;) {
             std::optional<taskbar::Preferences> request;
-            bool stop = false, demand = false;
+            bool stop = false, demand = false, reveal = false;
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 stop = stopped; request = pending; pending.reset();
                 if (pendingDemand) { demandValue = *pendingDemand; pendingDemand.reset(); }
                 demand = demandValue;
+                if (revealUntil && GetTickCount64() >= revealUntil) {
+                    revealUntil = TrayInteractionActive() ? GetTickCount64() + 1000 : 0;
+                }
+                reveal = revealUntil != 0;
                 ResetEvent(requestEvent);
                 if (!stop) cancel = false;
             }
@@ -139,6 +151,7 @@ struct TaskbarRuntime::Impl {
                 controller->SetAutoHideDemand(demand);
                 failures = 0; settle = false;
             }
+            controller->SetTrayReveal(reveal);
             const auto before = controller->Snapshot();
             const bool reloaded = before.error == taskbar::Error::CoreRestartRequired && port->CoreReloadResolved();
             if (reloaded) port->ResetCoreFailure();
@@ -207,6 +220,10 @@ struct TaskbarRuntime::Impl {
                 }
             }
             bool repeat = false;
+            if (reveal) {
+                const auto checkAt = GetTickCount64() + 100;
+                if (!due || due > checkAt) due = checkAt;
+            }
             while (!repeat) {
                 HANDLE handles[2]{requestEvent, nullptr}; DWORD count = 1;
                 const auto signal = port->ExitSignal();
@@ -269,6 +286,7 @@ struct TaskbarRuntime::Impl {
     std::optional<taskbar::Preferences> accepted;
     std::optional<bool> pendingDemand;
     bool demandValue = false;
+    ULONGLONG revealUntil = 0;
     std::thread worker;
     HANDLE requestEvent = nullptr;
     TaskbarRuntimeStatus status;
@@ -287,6 +305,7 @@ bool TaskbarRuntime::Restore() {
     return impl_->Start({});
 }
 bool TaskbarRuntime::RequireAutoHide(bool value) { return impl_->Start({}, value); }
+bool TaskbarRuntime::RevealForTray(unsigned milliseconds) { return milliseconds && impl_->Start({}, {}, milliseconds); }
 bool TaskbarRuntime::Shutdown() { return impl_->Shutdown(); }
 TaskbarRuntimeStatus TaskbarRuntime::Snapshot() const { return impl_->Snapshot(); }
 }  // namespace lume::platform::windows

@@ -31,9 +31,9 @@ DiagnosticReportResult WriteDiagnosticReport(const DiagnosticReportInput& input)
 // version, Windows, GPU driver, self-check, failing components, recent
 // crashes and where the logs are. No files are written.
 std::string DiagnosticText(const DiagnosticReportInput& input);
-// Page command {"version":1,"scope":"diagnostic-report","action":"create"|"open-logs","note":"..."}.
+// Page command {"version":1,"scope":"diagnostic-report","action":"...","note":"..."}.
 struct DiagnosticReportCommand {
-    std::string action;  // create | open-logs | copy | self-check
+    std::string action;  // create | open-logs | copy | self-check | open-help
     std::string note;
 };
 std::optional<DiagnosticReportCommand> ParseDiagnosticReportCommand(std::wstring_view message);

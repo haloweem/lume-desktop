@@ -6,8 +6,8 @@ const text=(value,max=1024)=>typeof value==='string' && value.length<=max && !/[
 const id=value=>text(value,128) && /^[a-zA-Z0-9_.:-]+$/.test(value);
 const reads=['home','explore','playlist','search','favorites','recent'];
 const writes=['like','createPlaylist','addToPlaylist'];
-const errors=['','network','service','expired','unsupported','unavailable','invalid-response','storage','signed-out','busy','not-found'];
-const membershipBadges=['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip'];
+const errors=['','network','timeout','rate-limited','service','expired','unsupported','unavailable','invalid-response','storage','signed-out','busy','not-found'];
+const membershipBadges=['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip','qishui-vip'];
 const unsafeTrackIds=new Set(['__proto__','constructor','prototype']);
 const connected=account=>account?.status==='signed-in'||!!account?.userId&&['loading','error'].includes(account.status);
 const trackProvider=id=>typeof id==='string'?id.split(':')[0]:'';
@@ -58,9 +58,10 @@ export function validMusicOnlineCommand(action,fields) {
   if(action==='likes')return exact(fields,base);
   if(reads.includes(action)) {
     const required=action==='playlist'?['id']:action==='search'?['query']:[];
-    return exact(fields,[...base,...required],['offset','limit']) &&
+    return exact(fields,[...base,...required],['offset','limit',...(action==='playlist'?['collectionType']:[])]) &&
       (!required.includes('id')||id(fields.id)) &&
       (!required.includes('query')||text(fields.query,512)&&fields.query.trim().length>0) &&
+      (fields.collectionType===undefined||['playlist','album'].includes(fields.collectionType)) &&
       (fields.offset===undefined||Number.isSafeInteger(fields.offset)&&fields.offset>=0&&fields.offset<=100000) &&
       (fields.limit===undefined||Number.isSafeInteger(fields.limit)&&fields.limit>0&&fields.limit<=100);
   }
@@ -89,10 +90,11 @@ export function validMusicOnlineMessage(message) {
 }
 
 export const musicOnlineError=error=>({
-  network:'网络连接失败，请重试',service:'音乐平台服务暂不可用，请重试',expired:'登录已过期，请重新扫码',
-  unsupported:'该平台暂不支持此操作',unavailable:'该歌曲暂不可播放，请检查账号权限',
+  network:'网络连接失败，请重试',service:'音乐平台服务暂不可用，请重试',expired:'登录已过期，请重新登录',
+  timeout:'音乐平台响应超时，请重试','rate-limited':'操作过于频繁，请稍后重试',
+  unsupported:'该平台暂不支持此操作',unavailable:'该内容暂不可用，请重试',
   'invalid-response':'音乐平台返回的数据无法读取',storage:'音乐数据保存失败',
-  'signed-out':'请先扫码登录音乐平台',busy:'上一项操作尚未完成','not-found':'歌曲列表已更新，请重新打开列表',
+  'signed-out':'请先登录音乐平台',busy:'上一项操作尚未完成','not-found':'当前列表中找不到这首歌曲，请刷新后重试',
 })[error]||'';
 
 // Only public list state is retained. The native owner authorizes IDs and resolves media.
@@ -104,7 +106,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
   let likedAttempts=new Set();
   let provider='netease',library=empty();
   const readCache=new Map();
-  let cacheOwner='',lastSentRead='',deferredPlay=null;
+  let cacheOwner='',registeredRead='',deferredPlay=null;
   function empty(){return {signedIn:false,providerId:provider,tracks:[],playlists:[],recommendations:[],
     favorites:[],recent:[],searchTracks:[],more:false,loading:false,appending:false,busy:false,error:'',offset:0,
     liked:{},likedReady:{}};}
@@ -112,7 +114,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
   const snapshot=()=>({...library,accounts:accounts.map(value=>({...value}))});
   let api=null;
   const accountFor=(targetProvider=provider)=>accounts.find(value=>value.provider===targetProvider&&connected(value));
-  const cacheKey=(action,fields,targetProvider)=>`${targetProvider}|${action}|${fields.id||''}|${fields.query||''}`;
+  const cacheKey=(action,fields,targetProvider)=>`${targetProvider}|${action}|${fields.collectionType||'playlist'}|${fields.id||''}|${fields.query||''}`;
   const storageKey=(targetProvider,userId)=>`${cacheStoragePrefix}${targetProvider}.${userId}`;
   function loadReadCache(targetProvider=provider){
     if(!cache)return;
@@ -159,7 +161,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
     sequence=request;
     last={action,fields:{...entry.fields,offset:0,limit:entry.fields.limit||50},resume:null,append:false};
     pending={request,action,fields:last.fields,resume:null,append:false,background:false,silent:false,
-      provider:targetProvider,userId:accountFor(targetProvider)?.userId};
+      provider:targetProvider,userId:accountFor(targetProvider)?.userId,cached:true};
     const data={...entry.data};
     if(library.likedReady[targetProvider])delete data.likedIds;
     const message={version:1,type:'music-online-state',request,provider:targetProvider,action,
@@ -177,9 +179,8 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
   }
   function post(action,fields={},resume=null,append=false,targetProvider=provider,background=false,silent=false) {
     const cancellingRead=action==='cancel'&&!!pending&&reads.includes(pending.action);
-    if(pending&&reads.includes(pending.action)&&!reads.includes(action)&&action!=='cancel')lastSentRead='';
-    if(action==='cancel'){deferredPlay=null;if(cancellingRead)lastSentRead='';}
-    else if(deferredPlay&&!['play','enqueue','insertNext'].includes(action))deferredPlay=null;
+    if(reads.includes(action))registeredRead='';
+    if(action==='cancel'){deferredPlay=null;if(cancellingRead)registeredRead='';}
     const request=Math.max(sequence,now())+1;
     if(!validMusicOnlineCommand(action,{...fields,provider:targetProvider,request}))return false;
     sequence=request;
@@ -195,7 +196,11 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
     if(operation&&pending===operation) {
       pending=null;
       if(background){likedAttempts.add(targetProvider);warmLikes();}
-      else if(silent){library={...library,loading:false,busy:false};}
+      else if(silent){
+        const playback=!!deferredPlay;deferredPlay=null;
+        library={...library,loading:false,busy:false,...(playback?{error:'service'}:{})};
+        emit();if(playback)onError?.('service');
+      }
       else {library={...library,loading:false,busy:false,error:'service'};emit();onError?.('service');}
     }
     return false;
@@ -206,14 +211,23 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
     if(action==='like'?!canLikeMusicTrack(snapshot(),fields.id):!library.signedIn)return false;
     if(pending&&writes.includes(pending.action))return false;
     if(action==='cancel'||!validMusicOnlineCommand(action,{...fields,provider:targetProvider,request:1}))return false;
-    if(['play','enqueue','insertNext'].includes(action)&&pending?.silent) {
-      // A cached page is visible while its silent refresh re-registers tracks.
-      // Hold playback until that refresh lands so the native registry can
-      // resolve the clicked track instead of answering not-found.
-      deferredPlay={action,fields};
-      return true;
+    if(['play','enqueue','insertNext'].includes(action)) {
+      if(pending&&reads.includes(pending.action)) {
+        deferredPlay={action,fields};return true;
+      }
+      if(cache&&last&&registeredRead!==cacheKey(last.action,last.fields,targetProvider)) {
+        deferredPlay={action,fields};
+        return post(last.action,last.fields,null,false,targetProvider,false,true);
+      }
+    } else {
+      deferredPlay=null;
     }
     if(reads.includes(action)) {
+      if(action==='playlist'&&!fields.collectionType) {
+        const collection=[...library.playlists,...library.recommendations].find(item=>
+          item.providerId===targetProvider&&item.id===fields.id);
+        if(collection)fields={...fields,collectionType:collection.type};
+      }
       const pageFields={...fields,offset:fields.offset||0,limit:50};
       if(cache&&!force&&!append&&pageFields.offset===0&&!resume) {
         const key=cacheKey(action,pageFields,targetProvider);
@@ -222,8 +236,8 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
           // A disk-restored, stale, or different-view page still refreshes
           // silently. This re-registers tracks and makes the native displayed
           // queue match the page without blanking it.
-          if(entry.persisted||now()-entry.at>=cacheTtl||lastSentRead!==key) {
-            if(post(action,entry.fields,null,false,targetProvider,false,true))lastSentRead=key;
+          if(entry.persisted||now()-entry.at>=cacheTtl||registeredRead!==key) {
+            post(action,entry.fields,null,false,targetProvider,false,true);
           }
           return true;
         }
@@ -231,15 +245,16 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
       last={action,fields:pageFields,resume,append};
       library={...library,appending:append,...(append?{}:{more:false,offset:last.fields.offset,
         ...(action==='search'?{searchTracks:[]}:{tracks:[]})})};
-      const sent=post(action,last.fields,resume,append);
-      if(sent)lastSentRead=cacheKey(action,pageFields,targetProvider);
-      return sent;
+      return post(action,last.fields,resume,append);
     }
     return post(action,fields,null,false,targetProvider);
   }
   function flushDeferredPlay(){
     if(!deferredPlay)return;
     const play=deferredPlay;deferredPlay=null;
+    if(!library.tracks.some(track=>track.id===play.fields.id)) {
+      library={...library,error:'not-found'};onError?.('not-found');return;
+    }
     request(play.action,play.fields);
   }
   function sync(nextProvider=provider) {
@@ -250,7 +265,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
     post('cancel');
     provider=nextProvider;
     library={...empty(),signedIn:!!account,liked:library.liked,likedReady:library.likedReady};
-    lastSentRead='';
+    registeredRead='';
     if(cache)loadReadCache(nextProvider);
     emit();
     if(active&&account)request('home');
@@ -282,7 +297,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
       // playlist keeps its query and result context across account snapshots.
       const previous=previousAccounts.find(account=>account.provider===provider);
       const current=accounts.find(account=>account.provider===provider);
-      if(current?.status==='signed-in')lastSentRead='';
+      if(current?.status==='signed-in')registeredRead='';
       const recovered=!!previous&&!!current&&previous.status!=='signed-in'&&current.status==='signed-in';
       if(recovered&&library.error&&!library.loading&&!library.appending&&
         (!last||last.action==='home'))request('home',{},null,false,true);
@@ -328,7 +343,7 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
       if(operation.background)likedAttempts.add(message.provider);
       if(message.status==='error'){
         if(operation.background){warmLikes();return true;}
-        lastSentRead='';
+        registeredRead='';
         if(operation.silent){
           library={...library,loading:false,busy:false};
           if(deferredPlay){const error=message.error;deferredPlay=null;library={...library,error};emit();onError?.(error);return true;}
@@ -368,7 +383,8 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
         if(message.action==='home')library={...library,playlists:merge(library.playlists,data.playlists),
           recommendations:merge(library.recommendations,data.recommendations)};
         if(message.action==='explore')library={...library,recommendations:merge(library.recommendations,data.recommendations)};
-        if(cache&&!operation.append&&(operation.fields.offset||0)===0&&
+        if(!operation.cached)registeredRead=cacheKey(message.action,operation.fields,message.provider);
+        if(cache&&!operation.cached&&!operation.append&&(operation.fields.offset||0)===0&&
           ['home','explore','playlist','favorites','recent','search'].includes(message.action)) {
           const key=cacheKey(message.action,operation.fields,message.provider);
           readCache.delete(key);
@@ -395,10 +411,10 @@ export function createMusicOnline({send,onChange,onError,now=Date.now,cache=fals
           request(last.action,last.fields,last.resume,last.append,true);return true;
         }
       }
-      if(operation.silent)flushDeferredPlay();
-      emit();warmLikes();return true;
+      if(!operation.cached)flushDeferredPlay();
+      emit();if(!operation.cached)warmLikes();return true;
     },
-    dispose(){if(disposed)return;if(active||pending)post('cancel');disposed=true;active=false;pending=null;accounts=[];library=empty();readCache.clear();cacheOwner='';lastSentRead='';deferredPlay=null;},
+    dispose(){if(disposed)return;if(active||pending)post('cancel');disposed=true;active=false;pending=null;accounts=[];library=empty();readCache.clear();cacheOwner='';registeredRead='';deferredPlay=null;},
   };
   return api;
 }

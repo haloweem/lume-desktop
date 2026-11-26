@@ -1,6 +1,6 @@
 const text = value => typeof value === 'string' ? value : '';
 const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-const membershipBadges = new Set(['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip']);
+const membershipBadges = new Set(['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip','qishui-vip']);
 const audioQualities = new Set(['jyeffect','sky','jymaster','hires','lossless','high','standard']);
 
 function safeImage(value) {
@@ -11,7 +11,7 @@ function safeImage(value) {
     const url = new URL(value);
     if(/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/[a-f0-9]{64}\/media\.png$/.test(value)&&Number(url.port)<=65535)return url.href;
     if (!['https:','http:'].includes(url.protocol) || url.username || url.password || url.port) return '';
-    const providerHost = ['music.126.net','qq.com','gtimg.cn','kugou.com','kgimg.com']
+    const providerHost = ['music.126.net','qq.com','gtimg.cn','kugou.com','kgimg.com','douyinpic.com','byteimg.com']
       .some(domain=>url.hostname===domain||url.hostname.endsWith(`.${domain}`));
     if (!['static.lumedesktop.com', 'lume-wallpaper.local', 'lume-12345-1444884137.cos.ap-nanjing.myqcloud.com']
       .includes(url.hostname) && !providerHost) return '';

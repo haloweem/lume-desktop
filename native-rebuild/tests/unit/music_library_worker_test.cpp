@@ -277,6 +277,33 @@ int main() {
         Check(Json::parse(Read(storage / "queue.json")).at("position") == snapshot.position &&
             Json::parse(Read(storage / "queue.json")).at("volume") == 0.5, "latest queue fields coalesced");
         auto invalid = snapshot;
+        {
+            auto online = snapshot;
+            online.queue.clear();
+            for (const auto* provider : {"qq", "netease", "kugou", "qishui"}) {
+                auto song = *track;
+                song.id = std::string(provider) + ":123";
+                song.source = "online:" + song.id;
+                online.queue.push_back(std::move(song));
+            }
+            online.current = online.queue[0];
+            online.volume = 0.27;
+            online.repeat = lume::music::RepeatMode::All;
+            const auto onlineRoot = storage / "online-preferences";
+            {
+                MusicLibraryWorker writer({onlineRoot, {}});
+                Check(writer.SaveQueue(online), "online playback preferences accepted");
+                writer.Shutdown();
+            }
+            MusicLibraryWorker reader({onlineRoot, {}});
+            Check(reader.Restore(), "online playback preferences reload scheduled");
+            const auto loaded = Idle(reader);
+            Check(loaded.size() == 1 && loaded[0].restoredQueue &&
+                loaded[0].restoredQueue->queue.empty() && loaded[0].restoredQueue->volume == 0.27 &&
+                loaded[0].restoredQueue->muted && loaded[0].restoredQueue->shuffle &&
+                loaded[0].restoredQueue->repeat == lume::music::RepeatMode::All,
+                "online volume mute shuffle repeat survive process restart without persisting provider tracks");
+        }
         invalid.queue[0].id = "online:forbidden";
         Check(!worker.SaveQueue(invalid), "nonlocal queue rejected");
         invalid = snapshot;

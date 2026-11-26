@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace lume::application_settings {
-inline constexpr char CurrentVersion[] = "1.1.3";
+inline constexpr char CurrentVersion[] = "1.1.4";
 inline constexpr char NativeRuntime[] = "native-win32";
 inline constexpr char NativeChannel[] = "native-verification";
 inline constexpr char ManifestUrl[] = "https://lumedesktop.com/updates.json";
@@ -23,6 +23,7 @@ struct Preferences {
     std::string wallpaperDirectory;
     // 75 preserves the current manager layout; smaller values scale it as a whole.
     int interfaceScale = 75;
+    std::vector<std::string> gamePrograms;
 };
 enum class ReadStatus { Missing, Loaded, Failed };
 struct FileRead {
@@ -115,6 +116,7 @@ public:
     bool Restore();
     bool SetLanguage(const std::string& language);
     bool SetInterfaceScale(int percent);
+    bool SetGamePrograms(std::vector<std::string> programs);
     bool SetBalancedMode(bool enabled);
     bool SetAutostart(bool enabled);
     bool SetWallpaperDirectory(const std::string& directory);

@@ -29,6 +29,7 @@ import {
 } from "./pages.js";
 import {updateClockPreview} from './clock.js';
 import {mountRadialShortcut} from './radial.js';
+import {mountDockSummonShortcut,syncDockControls} from './dock.js';
 import {islandStatus,syncIslandControls,validIslandHoverDelay,previewIslandHoverDelay} from './dynamic-island.js';
 import {createComponentSettingsController} from './component-settings.js';
 import {createComponentSettingsCommands} from './component-settings-commands.js';
@@ -78,7 +79,7 @@ const diagnostics = {
   },
   buildReport: options => buildDiagnosticReport({
     ...options,
-    version: "1.1.3",
+    version: "1.1.4",
     events: diagnosticsRecorder.list(),
     health: diagnosticsRecorder.health(),
     native: diagnosticsRecorder.native(),
@@ -157,10 +158,15 @@ const radialShortcut=mountRadialShortcut(content,{
   getState:()=>state,onShortcut:code=>request('radial','shortcut',code),
   onCaptureChange:active=>bridge.send('radial','capture',active),
 });
+const dockSummonShortcut=mountDockSummonShortcut(content,{
+  getState:()=>state,onShortcut:code=>request('dock','summonShortcut',code),
+  onCaptureChange:active=>bridge.send('dock','summonCapture',active),
+});
 const componentSettings=createComponentSettingsController({
   root:content,showNotice,
   afterSync:(scope,nextState)=>{
     if(scope==='radial'||scope==='all')radialShortcut.sync();
+    if(scope==='dock'||scope==='all')dockSummonShortcut.sync();
     if(scope==='all')syncWallpaperControls(content,nextState,wallpaperPreview.playing);
     unmountChoice.refresh();
   },
@@ -446,6 +452,7 @@ function receiveNotes(message) {
 function render() {
   interactionMotion.capture();
   radialShortcut.cancel();
+  dockSummonShortcut.cancel();
   syncWallpaperStats();
   wallpaperScroll.capture(content);
   if (state.view !== "music") closeMusicPage();
@@ -835,6 +842,9 @@ content.addEventListener("click", (event) => {
   } else if(button.dataset.islandCalendarStyle){
     const style=button.dataset.islandCalendarStyle;
     if(['default','chinese-almanac'].includes(style)&&style!==(state.dynamicIsland.calendarStyle??'default'))request('dynamicIsland','calendarStyle',style);
+  } else if(button.dataset.islandCountdownStyle){
+    const style=button.dataset.islandCountdownStyle;
+    if(['standard','violet'].includes(style)&&style!==(state.dynamicIsland.countdownStyle??'standard'))request('dynamicIsland','countdownStyle',style);
   } else if (button.dataset.islandPreference) {
     const key=button.dataset.islandPreference;
     if(['material','size','animationSpeed','bounce'].includes(key)&&state.dynamicIsland[key]!==button.dataset.value)request('dynamicIsland',key,button.dataset.value);
@@ -846,6 +856,16 @@ content.addEventListener("click", (event) => {
     if(['click','hover'].includes(mode)&&state.dynamicIsland.hover!==(mode==='hover'))request('dynamicIsland','hover',mode==='hover');
   } else if (button.matches('button[data-island-shape]')) {
     if(button.dataset.islandShape!==state.dynamicIsland.shape)request('dynamicIsland','shape',button.dataset.islandShape);
+  } else if (button.dataset.dockScreen!==undefined) {
+    const screen=Number(button.dataset.dockScreen);
+    if(Number.isInteger(screen)&&screen>=0&&screen<=state.dock.screenCount&&screen!==state.dock.screen)request('dock','screen',screen);
+  } else if (button.dataset.dockRunningPreview!==undefined) {
+    const preview=button.dataset.dockRunningPreview==='true';
+    if(state.dock.showRunning&&preview!==state.dock.runningPreview)request('dock','runningPreview',preview);
+  } else if (button.dataset.dockMaterial) {
+    if(button.dataset.dockMaterial!==state.dock.material)request('dock','material',button.dataset.dockMaterial);
+  } else if (button.dataset.dockPosition) {
+    if(button.dataset.dockPosition!==state.dock.positionMode)request('dock','positionMode',button.dataset.dockPosition);
   } else if (componentCommands.action(button.dataset.action)) return;
   else if (button.dataset.action === "music-toggle")
     ensureMusicDesktopController().then(controller=>{
@@ -918,6 +938,12 @@ content.addEventListener("submit", (event) => {
   else if (query) dispatch({ type: "navigate", view: "search", query });
 });
 content.addEventListener("change", (event) => {
+  if(event.target.id==='dock-edge'){
+    const edge=event.target.value;
+    if(event.target.disabled||!['top','bottom','left','right'].includes(edge)){syncDockControls(content,state);return;}
+    if(edge!==(state.dock.edge??'bottom'))request('dock','edge',edge);
+    return;
+  }
   if(event.target.matches('[data-island-hover-delay]')){
     const slider=event.target,value=slider.valueAsNumber;
     if(slider.disabled||slider.getAttribute('aria-disabled')==='true'||!validIslandHoverDelay(value)){syncIslandControls(content,state);return;}
@@ -1056,11 +1082,13 @@ const unsubscribe = bridge.subscribe((message) => {
       return;
     }
     tab = message.page==="dynamicIsland" ? "home" : message.page==="todayTodo" ? "todo" : message.page==="dock" ? "dock" : "settings";
+    if(message.page==='dynamicIsland'&&message.section)state={...state,islandStyleWidget:message.section};
     if (state.view !== message.page) {
       state = {...state, view:message.page, history:["icons","taskbar","minimize","radial","dock","dynamicIsland"].includes(message.page)?["home","desktopBeauty"]:["home","desktopBeauty","widgets"]};
       state.musicReturn=null;
     }
     render();
+    if(message.page==='dynamicIsland'&&message.section)content.querySelector('[data-island-styles]')?.scrollIntoView({block:'nearest'});
     if(message.page==='radial'&&message.section==='shortcut')radialShortcut.start({waitForState:true});
   } else if (message.type === "visibility") {
     state = reduce(state, { type: "host", message });

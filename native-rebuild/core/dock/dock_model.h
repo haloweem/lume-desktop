@@ -2,6 +2,7 @@
 #include "core/organizer/organizer_model.h"
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,14 +19,33 @@ inline constexpr int Columns = 7, Rows = 3, PageSize = Columns * Rows;
 // Appearance values are integer DIPs/percentages so the settings page can
 // adjust them one unit at a time.
 inline constexpr int MinIconScale = 50, MaxIconScale = 120, DefaultIconScale = 100;
+inline constexpr int DefaultAnimationDurationMs = 400;
+inline constexpr int DefaultReflectionRatio = 50, DefaultReflectionTransparency = 50;
 inline constexpr int MinPosition = 0, MaxPosition = 100, DefaultPosition = 50;
 inline constexpr int MinBottomOffset = 0, MaxBottomOffset = 160, DefaultBottomOffset = 0;
 inline constexpr int MinIconSpacing = 4, MaxIconSpacing = 24, DefaultIconSpacing = 10;
 inline constexpr int MinLaunchpadScale=60,MaxLaunchpadScale=140,DefaultLaunchpadScale=100;
 inline constexpr int MinLaunchpadIconScale=50,MaxLaunchpadIconScale=120,DefaultLaunchpadIconScale=100;
+inline constexpr unsigned DefaultSummonShortcutCode=2093; // Win+Insert
+inline constexpr int PositionCenter=0,PositionLeft=1,PositionRight=2;
+enum class Edge { Bottom, Top, Left, Right };
+constexpr bool Vertical(Edge edge) { return edge == Edge::Left || edge == Edge::Right; }
+constexpr bool ValidEdge(Edge edge) { return edge >= Edge::Bottom && edge <= Edge::Right; }
+inline constexpr const char* EdgeName(Edge edge) {
+    switch (edge) {
+    case Edge::Top: return "top";
+    case Edge::Left: return "left";
+    case Edge::Right: return "right";
+    default: return "bottom";
+    }
+}
+inline constexpr int MinPositionOffset=0,MaxPositionOffset=50,DefaultPositionOffset=0;
 bool ValidPosition(int);
+bool ValidPositionMode(int);
+bool ValidPositionOffset(int);
 bool ValidBottomOffset(int);
 bool ValidIconSpacing(int);
+bool ValidSummonShortcut(unsigned) noexcept;
 bool ValidLumePosition(int, std::size_t pinnedCount);
 struct Collection {
     std::string id, title;
@@ -36,11 +56,24 @@ struct Preferences {
     bool frosted = false;
     bool transparent = false;  // no material: a fully transparent bar ("无")
     bool reflection = false;   // mirrored icons below the row
+    int reflectionRatio = DefaultReflectionRatio;
+    int reflectionTransparency = DefaultReflectionTransparency;
     bool systemTray = false;   // retired status strip; kept only so old files round-trip
     bool controlCenter = true; // Lume control center at the right edge
     bool showRunning = true;   // separate running-app section; pinned running state is retained
+    bool runningPreview = false;
+    bool animation = false, animateRestore = true, animateLaunch = true, animateClose = true;
+    int animationDuration = DefaultAnimationDurationMs;
+    bool showStartMenu = true;
+    bool launchpadEnabled = true;
+    Edge edge = Edge::Bottom;
+    int screen = -1;
+    bool summonEnabled = false;
+    unsigned summonShortcutCode = DefaultSummonShortcutCode;
     int iconScale = DefaultIconScale;
     int position = DefaultPosition;  // horizontal percentage of available desktop space
+    int positionMode = PositionCenter; // center, left or right
+    int positionOffset = DefaultPositionOffset; // percentage of the half-width toward center
     int bottomOffset = DefaultBottomOffset;  // extra distance above the default bottom margin, in DIPs
     int iconSpacing = DefaultIconSpacing;  // DIPs before iconScale is applied
     int launchpadScale=DefaultLaunchpadScale;
@@ -87,10 +120,12 @@ std::vector<Entry> Filter(const std::vector<Entry>&, std::string_view query, con
 int PageCount(std::size_t items);
 std::vector<Entry> PageItems(const std::vector<Entry>&, int page);
 
-enum class Kind { Launchpad, Lume, Pinned, Running, Separator, Collection, Window, SystemTray };
+enum class Kind { Launchpad, Lume, Pinned, Running, Separator, Collection, Window, SystemTray, StartMenu };
 struct RunningApp {
     std::string executable, name;
     bool asWindows = false;  // shown as its window thumbnails instead of a running icon
+    std::uint64_t frontWindow = 0;
+    std::vector<std::uint64_t> windows;
 };
 // A program window shown at the end of the Dock as a live thumbnail: every
 // window of a program that is not pinned, and minimized windows of pinned ones.
@@ -108,11 +143,13 @@ struct Item {
     // activation and drag commits independent of the visible item index.
     std::size_t orderIndex = static_cast<std::size_t>(-1);
     std::vector<std::string> previewPaths;
-    std::uint64_t window = 0;  // Kind::Window: the window; path is its program.
+    std::uint64_t window = 0;  // Window item or representative window in running-app preview mode.
     std::string target;        // the program a pinned shortcut starts; empty when path is the program
     // Pinned: a running program from the pinned program's install folder that
     // stands for it (a launcher whose UI runs as another executable).
     std::string runningProgram;
+    std::vector<std::uint64_t> animationWindows;
+    std::vector<std::string> collectionPrograms;  // resolved targets, including apps that have not started yet
 };
 // Items the user can drag to a new place, and drag off the Dock to remove.
 bool Movable(const Item&);
@@ -130,10 +167,12 @@ void AppendWindows(std::vector<Item>&, const std::vector<ProgramWindow>&);
 std::vector<Item> DockItems(const std::vector<std::string>& pinned, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
                             bool lumeVisible = true, int lumePosition = 0,
-                            std::string_view lumePath = {}, bool systemTray = false, bool showRunning = true);
+                            std::string_view lumePath = {}, bool systemTray = false, bool showRunning = true,
+                            bool runningPreview = false);
 std::vector<Item> DockItemsFor(const Preferences&, const std::vector<std::string>& targets,
                             const std::vector<RunningApp>& running, const TextKey& pathKey,
-                            std::string_view lumePath = {}, bool managerOpen = false);
+                            std::string_view lumePath = {}, bool managerOpen = false,
+                            const std::map<std::string, std::vector<std::string>>& collectionTargets = {});
 
 enum class Change { Invalid, Unchanged, Changed, Limit };
 Change Pin(Preferences&, std::string_view path, const TextKey& pathKey);

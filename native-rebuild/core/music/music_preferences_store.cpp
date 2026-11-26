@@ -21,7 +21,7 @@ bool UnsupportedEnvelopeVersion(const Json& value) {
 bool UnsupportedPreferenceVersion(const Json& value) {
     return value.is_object() && value.contains("version") &&
         (!value.at("version").is_number_integer() ||
-            (value.at("version") != 1 && value.at("version") != 2 && value.at("version") != 3));
+            value.at("version") < 1 || value.at("version") > MusicPreferences{}.version);
 }
 
 Record Read(settings::IFileStore& files, const std::string& path) {

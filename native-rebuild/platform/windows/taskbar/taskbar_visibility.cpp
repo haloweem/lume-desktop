@@ -2,6 +2,7 @@
 
 namespace lume::platform::windows::taskbar_visibility {
 namespace {
+constexpr wchar_t OwnerMark[] = L"Lume.Taskbar.FullyHidden.v1";
 bool SetStyle(HWND window, LONG_PTR style) {
     SetLastError(ERROR_SUCCESS);
     return SetWindowLongPtrW(window, GWL_EXSTYLE, style) != 0 || GetLastError() == ERROR_SUCCESS;
@@ -18,7 +19,7 @@ bool Capture(HWND window, taskbar::Visibility& out) {
     if (!IsWindow(window)) return false;
     out.extendedStyle = static_cast<std::uint32_t>(GetWindowLongPtrW(window, GWL_EXSTYLE));
     out.visible = IsWindowVisible(window) != FALSE;
-    if (LooksHidden(window)) {
+    if (GetPropW(window, OwnerMark) && LooksHidden(window)) {
         // Already hidden (a record was lost): never journal that as the
         // original, or restoring would leave the taskbar invisible.
         out.extendedStyle &= ~static_cast<std::uint32_t>(WS_EX_LAYERED | WS_EX_TRANSPARENT);
@@ -36,6 +37,8 @@ bool Hide(HWND window) {
     if (!IsWindow(window)) return false;
     const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
     const auto hiddenStyle = style | WS_EX_LAYERED | WS_EX_TRANSPARENT;
+    if (!GetPropW(window, OwnerMark) && !LooksHidden(window) &&
+        !SetPropW(window, OwnerMark, reinterpret_cast<HANDLE>(1))) return false;
     if (style != hiddenStyle && !SetStyle(window, hiddenStyle)) return false;
     COLORREF key = 0; BYTE alpha = 255; DWORD flags = 0;
     if ((!GetLayeredWindowAttributes(window, &key, &alpha, &flags) || alpha != 0 || flags != LWA_ALPHA) &&
@@ -60,6 +63,7 @@ bool Restore(HWND window, const taskbar::Visibility& original) {
             ((flags & LWA_ALPHA) && alpha != original.alpha)) return false;
     }
     if (!ShowWindowAsync(window, original.visible ? SW_SHOWNA : SW_HIDE)) return false;
+    RemovePropW(window, OwnerMark);
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
     return true;
 }
@@ -68,7 +72,8 @@ int RepairOrphans() {
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
         wchar_t name[64]{};
         if (!GetClassNameW(window, name, 64) ||
-            (wcscmp(name, L"Shell_TrayWnd") && wcscmp(name, L"Shell_SecondaryTrayWnd")) || !LooksHidden(window)) return TRUE;
+            (wcscmp(name, L"Shell_TrayWnd") && wcscmp(name, L"Shell_SecondaryTrayWnd")) ||
+            !GetPropW(window, OwnerMark) || !LooksHidden(window)) return TRUE;
         taskbar::Visibility normal;
         normal.extendedStyle = static_cast<std::uint32_t>(GetWindowLongPtrW(window, GWL_EXSTYLE)) &
             ~static_cast<std::uint32_t>(WS_EX_LAYERED | WS_EX_TRANSPARENT);

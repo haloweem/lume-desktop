@@ -19,6 +19,15 @@ HWND Field(HWND window,int id){struct Find{int id;HWND result=nullptr;}find{id};
     auto& state=*reinterpret_cast<Find*>(value);if(GetDlgCtrlID(child)==state.id){state.result=child;return FALSE;}return TRUE;
 },reinterpret_cast<LPARAM>(&find));return find.result;}
 void Click(HWND window,int id){const auto field=Field(window,id);Expect(field!=nullptr,"native control exists");SendMessageW(field,BM_CLICK,0,0);Pump();}
+void MouseClick(HWND control){
+    Expect(control&&IsWindow(control),"mouse target exists");
+    RECT bounds{};Expect(GetWindowRect(control,&bounds)!=FALSE,"mouse target has screen bounds");
+    POINT point{(bounds.left+bounds.right)/2,(bounds.top+bounds.bottom)/2};
+    ScreenToClient(control,&point);const LPARAM position=MAKELPARAM(point.x,point.y);
+    SendMessageW(control,WM_MOUSEMOVE,0,position);
+    SendMessageW(control,WM_LBUTTONDOWN,MK_LBUTTON,position);
+    SendMessageW(control,WM_LBUTTONUP,0,position);Pump();
+}
 void Text(HWND window,int id,const wchar_t* value){const auto field=Field(window,id);Expect(field!=nullptr,"native text field exists");SetWindowTextW(field,value);Pump();}
 void Selection(HWND window,int id,int index){Expect(Field(window,id)!=nullptr,"native choice exists");SendMessageW(Field(window,id),CB_SETCURSEL,index,0);}
 HWND Picker(HWND owner){HWND result=nullptr;struct Search{HWND owner;HWND* result;}search{owner,&result};EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL{auto& value=*reinterpret_cast<Search*>(data);wchar_t name[64]{};GetClassNameW(window,name,64);if(GetWindow(window,GW_OWNER)==value.owner&&std::wstring(name)==L"LumeCalendarTodoPicker"){*value.result=window;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&search));return result;}
@@ -36,6 +45,28 @@ void ComposedShot(HWND window,const std::filesystem::path& path){
     void* pixels=nullptr;const auto bitmap=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&pixels,nullptr,0);const auto old=SelectObject(dc,bitmap);BitBlt(dc,0,0,width,height,screen,rect.left,rect.top,SRCCOPY|CAPTUREBLT);GdiFlush();
     BITMAPFILEHEADER header{};header.bfType=0x4d42;header.bfOffBits=sizeof(header)+sizeof(BITMAPINFOHEADER);header.bfSize=header.bfOffBits+static_cast<DWORD>(width*height*4);
     std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<char*>(&header),sizeof(header));file.write(reinterpret_cast<char*>(&info.bmiHeader),sizeof(BITMAPINFOHEADER));file.write(static_cast<char*>(pixels),width*height*4);file.close();SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(nullptr,screen);
+}
+HWND colorOwner=nullptr;
+std::function<void(HWND)> colorAction;
+ULONGLONG colorDeadline=0;
+void CALLBACK ColorTimer(HWND,UINT,UINT_PTR id,DWORD){
+    HWND picker=nullptr;
+    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL{
+        wchar_t name[80]{};GetClassNameW(window,name,80);
+        if(GetWindow(window,GW_OWNER)==colorOwner&&std::wstring(name)==L"LumeWidgetColorPickerWindow"){
+            *reinterpret_cast<HWND*>(data)=window;return FALSE;
+        }
+        return TRUE;
+    },reinterpret_cast<LPARAM>(&picker));
+    if(!picker&&GetTickCount64()<colorDeadline)return;
+    KillTimer(nullptr,id);Expect(picker!=nullptr,"countdown opens the clock's shared color picker");
+    colorAction(picker);
+}
+void EditColor(HWND editor,int id,std::function<void(HWND)> action){
+    colorOwner=editor;colorAction=std::move(action);colorDeadline=GetTickCount64()+5000;
+    Expect(SetTimer(nullptr,0,20,ColorTimer)!=0,"drive the shared color picker on the isolated desktop");
+    Click(editor,id);colorAction={};
+    Expect(IsWindowEnabled(editor),"closing the color picker re-enables its editor");
 }
 void Backdrop(HWND window,COLORREF color){const auto old=reinterpret_cast<HBRUSH>(SetClassLongPtrW(window,GCLP_HBRBACKGROUND,reinterpret_cast<LONG_PTR>(CreateSolidBrush(color))));if(old)DeleteObject(old);RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);DwmFlush();Sleep(60);DwmFlush();Pump();}
 void CheckComposited(HWND window,const std::filesystem::path& diagnostics){
@@ -74,7 +105,9 @@ int main(int argc,char** argv){
     const auto open=[&](std::optional<todo::TaskView> existing=std::nullopt){todo::Command seed;seed.scope=repository.Read().scope;seed.patch.schedule=todo::DefaultSchedule({2026,11,14},now,time);
         if(existing){seed.type=todo::CommandType::Update;seed.id=existing->id;seed.patch.schedule.reset();}
         const auto started=GetTickCount64();Expect(sheet.Open(GetModuleHandleW(nullptr),owner,host,editorDpi,{},time,seed,now,existing,[&](const todo::Command& command){++saved;return repository.Dispatch(command,now);}),"native sheet opens");elapsed.push_back(GetTickCount64()-started);
-        Expect(sheet.IsOpen()&&IsWindowVisible(sheet.Handle()),"form is complete and visible before Open returns");Expect(!IsWindowEnabled(owner),"modal owner disabled");Expect(GetModuleHandleW(L"WebView2Loader.dll")==nullptr,"native form does not load a browser loader");};
+        Expect(sheet.IsOpen()&&IsWindowVisible(sheet.Handle()),"form is complete and visible before Open returns");Expect(!IsWindowEnabled(owner),"modal owner disabled");
+        if(!composited)Expect(!(GetWindowLongPtrW(sheet.Handle(),GWL_EXSTYLE)&WS_EX_TOPMOST),"native editor stays in the normal window layer");
+        Expect(GetModuleHandleW(L"WebView2Loader.dll")==nullptr,"native form does not load a browser loader");};
     open();const auto first=sheet.Handle();Expect(Field(first,101)&&Field(first,114),"native edit and date controls created");
     if(composited){
         const auto diagnostics=argc>2?std::filesystem::path(argv[2]):std::filesystem::path{};
@@ -85,7 +118,14 @@ int main(int argc,char** argv){
         std::cout<<"NATIVE_TODO_COMPOSITED_PASS backgrounds=2 opaqueRgb=1c1c20 firstMs="<<elapsed.front()<<" dpi="<<editorDpi<<'\n';return 0;
     }
     Text(first,101,L"原生待办 · 保留全部功能");Click(first,120);Text(first,121,L"输入法、子任务与备注");Click(first,122);Text(first,105,L"本机保存");
-    Selection(first,118,4);Selection(first,119,2);Click(first,142);Date(first,114,2026,11,16);Text(first,115,L"2");
+    Selection(first,118,4);Selection(first,119,2);Click(first,142);
+    Click(first,114);const auto datePicker=Picker(first);
+    Expect(datePicker&&IsWindowVisible(datePicker),"date click shows picker without waiting for a glass frame");
+    const auto grid=calendar::MonthGrid(2026,11,{2026,11,14},0);
+    const auto day=std::find_if(grid.begin(),grid.end(),[](const auto& cell){return cell.date==calendar::Date{2026,11,16};});
+    Expect(day!=grid.end(),"test date exists in month grid");
+    Click(datePicker,300+static_cast<int>(day-grid.begin()));Click(datePicker,208);
+    Expect(!Picker(first),"confirming a date closes the picker");Text(first,115,L"2");
     Click(first,119);const auto choice=Picker(first);Expect(choice!=nullptr,"repeat selector opens the existing native picker");
     Click(choice,502);Expect(!Picker(first)&&SendMessageW(Field(first,119),CB_GETCURSEL,0,0)==2,"native picker callback keeps weekday selection");
     if(argc>1){std::filesystem::create_directories(argv[1]);Shot(first,std::filesystem::path(argv[1])/"native-todo.bmp");}
@@ -99,11 +139,106 @@ int main(int argc,char** argv){
     Expect(tasks[0].subtasks.size()==1&&tasks[0].recurrence->frequency==todo::Frequency::Weekdays&&tasks[0].schedule->endAt==At(2026,11,18),"editing only a title retains sub-steps, recurrence and schedule");
     open(tasks[0]);edit=sheet.Handle();Click(edit,113);Date(edit,114,2026,11,20);Date(edit,124,2026,11,20,23,30);Date(edit,125,2026,11,20,0,30);Text(edit,115,L"1");Click(edit,111);Click(edit,106);tasks=repository.Read().tasks;
     Expect(tasks[0].completed&&tasks[0].schedule->endAt==At(2026,11,21,0,30),"timed overnight edit and completion share the same command validation");
+    tasks[0].schedule=todo::Schedule{At(2026,11,14),At(2026,11,15)};
+    tasks[0].completed=true;tasks[0].subtasks.push_back({"screen-click","子任务",false});
+    auto patch=todo::TaskPatch{};patch.schedule=tasks[0].schedule;patch.subtasks=tasks[0].subtasks;
+    auto command=todo::Command{};command.type=todo::CommandType::Update;command.scope=repository.Read().scope;command.id=tasks[0].id;command.patch=patch;
+    Expect(repository.Dispatch(command,now).ok,"seed completed all-day task with subtask");tasks=repository.Read().tasks;
+    open(tasks[0]);edit=sheet.Handle();
+    const auto dateControl=Field(edit,114);MouseClick(dateControl);const auto mousePicker=Picker(edit);
+    Expect(mousePicker&&IsWindowVisible(mousePicker),"real date control mouse coordinates open picker for completed task edit");
+    Expect(GetWindow(mousePicker,GW_OWNER)==edit,"date picker is owned by and layered over the todo sheet");
+    const auto screenGrid=calendar::MonthGrid(2026,11,{2026,11,14},0);
+    const auto changed=std::find_if(screenGrid.begin(),screenGrid.end(),[](const auto& cell){return cell.date==calendar::Date{2026,11,19};});
+    Expect(changed!=screenGrid.end(),"screen-click test date exists");
+    Click(mousePicker,300+static_cast<int>(changed-screenGrid.begin()));Click(mousePicker,208);
+    Expect(!Picker(edit),"mouse-opened picker closes after selecting and confirming a day");
+    Click(edit,106);tasks=repository.Read().tasks;
+    Expect(tasks[0].completed&&tasks[0].subtasks.size()==2&&tasks[0].schedule->startAt==At(2026,11,19),"date mouse selection persists on completed all-day item and keeps subtasks");
     const auto writes=saved;
     for(int i=0;i<8;++i){TodoSheetWindow::SetEnglish(i%2!=0);open();Text(sheet.Handle(),101,L"cancelled draft");
         if(i<3){RECT rect{};GetWindowRect(sheet.Handle(),&rect);const unsigned dpi=i==0?96:i==1?144:192;SendMessageW(sheet.Handle(),WM_DPICHANGED,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&rect));Expect(IsWindow(Field(sheet.Handle(),101)),"DPI change retains native input controls");}
         Click(sheet.Handle(),107);Expect(!sheet.IsOpen()&&IsWindowEnabled(owner),"repeated close releases every native form");}
     Expect(saved==writes&&Children()==children,"cancelled drafts do not save or start child processes");
+    todo::TaskView countdown;countdown.id="lume-countdown";countdown.title=u8"纪念日";
+    countdown.schedule=todo::DefaultSchedule({2026,11,14},now,time);
+    todo::Command countdownSeed;countdownSeed.type=todo::CommandType::Update;countdownSeed.id=countdown.id;
+    unsigned countdownSaves=0;
+    const auto openCountdown=[&]{
+        Expect(sheet.Open(GetModuleHandleW(nullptr),owner,host,editorDpi,{},time,countdownSeed,now,countdown,
+            [&](const todo::Command& command){
+                ++countdownSaves;
+                Expect(command.patch.title==u8"旅行"&&command.patch.schedule&&
+                    time.ToLocal(command.patch.schedule->startAt)->date==calendar::Date{2026,11,16}&&
+                    command.patch.reminder&&command.patch.reminder->kind==todo::ReminderKind::Relative,
+                    "countdown submits name, picked date and reminder through the shared sheet");
+                todo::CommandResult result;result.ok=true;return result;
+            },{},{},TodoSheetWindow::Mode::Countdown),"native countdown form opens");
+    };
+    TodoSheetWindow::SetEnglish(false);
+    {
+        auto unnamed=countdown;unnamed.title.clear();TodoSheetWindow::CountdownAppearance appearance;bool modeSaved=false;
+        Expect(sheet.Open(GetModuleHandleW(nullptr),owner,host,editorDpi,{},time,countdownSeed,now,unnamed,
+            [&](const todo::Command& command){
+                const auto current=sheet.CountdownColors();
+                modeSaved=command.patch.title&&command.patch.title->empty()&&current&&current->countUp;
+                todo::CommandResult result;result.ok=true;return result;
+            },{},{},TodoSheetWindow::Mode::Countdown,appearance),"unnamed countdown opens with the shared editor");
+        const auto editor=sheet.Handle();Click(editor,182);Click(editor,106);
+        Expect(modeSaved&&!sheet.IsOpen(),"a direction-only change can save when the event title is empty");
+    }
+    openCountdown();auto countdownWindow=sheet.Handle();
+    Expect(!Field(countdownWindow,105)&&!Field(countdownWindow,119)&&!Field(countdownWindow,123),
+           "countdown exposes only relevant fields");
+    Expect(Field(countdownWindow,182)&&Field(countdownWindow,183)&&sheet.CountdownColors()&&!sheet.CountdownColors()->countUp,
+           "countdown editor defaults to countdown and offers both directions");
+    Click(countdownWindow,182);
+    Expect(sheet.CountdownColors()&&sheet.CountdownColors()->countUp,"count-up selection updates the native editor state");
+    Text(countdownWindow,101,L"旅行");Click(countdownWindow,118);Click(countdownWindow,114);
+    const HWND countdownPicker=Picker(countdownWindow);Expect(countdownPicker!=nullptr,"countdown uses the native task date picker");
+    Click(countdownPicker,300+static_cast<int>(day-grid.begin()));Click(countdownPicker,208);
+    if(argc>1)Shot(countdownWindow,std::filesystem::path(argv[1])/"native-countdown.bmp");
+    Click(countdownWindow,106);Expect(!sheet.IsOpen()&&countdownSaves==1,"countdown saves once");
+    openCountdown();Text(sheet.Handle(),101,L"取消修改");Click(sheet.Handle(),107);
+    Expect(!sheet.IsOpen()&&countdownSaves==1&&Children()==children,"countdown cancel leaves saved data alone and starts no browser");
+    for(const bool solid:{false,true}){
+        TodoSheetWindow::CountdownAppearance appearance{solid,0x262626,solid?0x8264a5u:0x2183c0u};
+        unsigned colorSaves=0;
+        const auto openColors=[&]{
+            Expect(sheet.Open(GetModuleHandleW(nullptr),owner,host,editorDpi,{},time,countdownSeed,now,countdown,
+                [&](const todo::Command& command){
+                    ++colorSaves;const auto colors=sheet.CountdownColors();
+                    Expect(command.type==todo::CommandType::Update&&colors&&colors->backgroundColor==0x13a7c9&&colors->backgroundAlpha==128&&
+                        (solid||(colors->textColor==0x123456&&colors->textAlpha==190)),"custom RGB and alpha submit through the existing save callback");
+                    todo::CommandResult result;result.ok=true;return result;
+                },{},{},TodoSheetWindow::Mode::Countdown,appearance),"countdown color controls open in the shared native editor");
+        };
+        openColors();
+        Expect(Field(sheet.Handle(),180)&&static_cast<bool>(Field(sheet.Handle(),160))==!solid,"solid style has one color row and standard has two");
+        const auto pickBackground=[&](HWND picker){
+            Expect(!IsWindowEnabled(sheet.Handle()),"shared picker is modal to the countdown editor");
+            SetWindowTextW(GetDlgItem(picker,5101),L"#13A7C9");SetWindowTextW(GetDlgItem(picker,5105),L"128");
+            if(argc>1)Shot(picker,std::filesystem::path(argv[1])/"native-countdown-color-picker.bmp");
+            SendMessageW(picker,WM_KEYDOWN,VK_RETURN,0);
+        };
+        EditColor(sheet.Handle(),180,pickBackground);
+        EditColor(sheet.Handle(),180,[&](HWND picker){
+            wchar_t value[20]{};GetWindowTextW(GetDlgItem(picker,5101),value,20);
+            Expect(std::wstring(value)==L"#13A7C9","reopened picker displays the selected custom color");
+            GetWindowTextW(GetDlgItem(picker,5105),value,20);Expect(std::wstring(value)==L"128","reopened picker preserves alpha");
+            SetWindowTextW(GetDlgItem(picker,5101),L"#FF0000");SendMessageW(picker,WM_KEYDOWN,VK_ESCAPE,0);
+        });
+        Expect(sheet.CountdownColors()->backgroundColor==0x13a7c9,"picker cancellation keeps the editor draft");
+        if(!solid)EditColor(sheet.Handle(),160,[](HWND picker){
+            SetWindowTextW(GetDlgItem(picker,5102),L"18");SetWindowTextW(GetDlgItem(picker,5103),L"52");
+            SetWindowTextW(GetDlgItem(picker,5104),L"86");SetWindowTextW(GetDlgItem(picker,5105),L"190");
+            SendMessageW(picker,WM_KEYDOWN,VK_RETURN,0);
+        });
+        if(argc>1)Shot(sheet.Handle(),std::filesystem::path(argv[1])/(solid?"native-countdown-solid-colors.bmp":"native-countdown-standard-colors.bmp"));
+        Click(sheet.Handle(),106);Expect(!sheet.IsOpen()&&colorSaves==1,"color-only edits save even when the title and date are unchanged");
+        openColors();EditColor(sheet.Handle(),180,pickBackground);Click(sheet.Handle(),107);
+        Expect(!sheet.IsOpen()&&colorSaves==1,"cancelling a color edit does not save");
+    }
     open();const auto dying=sheet.Handle();DestroyWindow(owner);Pump();Expect(!sheet.IsOpen()&&!IsWindow(dying),"owner destruction releases native controls");
     std::cout<<"NATIVE_TODO_PASS opens="<<elapsed.size()<<" firstMs="<<elapsed.front()<<" repeatMinMs="<<*std::min_element(elapsed.begin()+1,elapsed.end())<<" maxMs="<<*std::max_element(elapsed.begin(),elapsed.end())<<" browserChildren=0\n";
     apartment.Close();SetThreadDesktop(previousDesktop);CloseDesktop(desktop);return 0;

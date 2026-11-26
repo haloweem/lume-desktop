@@ -516,7 +516,7 @@ var createRainWindowEffect = function(canvas, resources, settings) {
           preserveDrawingBuffer: true
         });
         if (!gl) throw new Error("Rain Window WebGL2 unavailable");
-        var prog = createProgram(gl, VERT_SRC, FRAG_SRC);
+        var prog = createProgram(gl, VERT_SRC, resources2.foreground ? FRAG_SRC.replace("fragColor = blend(bg, fg);", "fragColor = fg;") : FRAG_SRC);
         if (!prog) throw new Error("Rain Window shader program failed");
         gl.useProgram(prog);
         var uLoc = {

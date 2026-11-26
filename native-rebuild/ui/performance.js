@@ -14,7 +14,7 @@ export function performanceStatus(state) {
     rollback:t('性能组件恢复失败，请重新启用组件','Could not restore the performance widget. Enable it again.'),
   }[state.performanceError] || t('性能配置读取失败，当前使用默认设置；尚未保存','Could not load performance settings. Using defaults; not yet saved.');
   if(state.performanceLoadStatus==='recovered')return t('已从备份恢复性能配置，尚未保存到主配置','Performance settings restored from backup; not yet saved to the main configuration.');
-  if(state.performanceMaterialStatus==='transparent-fallback')return t('材质暂不可用，当前为透明显示','Material unavailable. Using a transparent fallback.');
+  if(state.performanceMaterialStatus==='transparent-fallback')return t('当前使用兼容材质','Using a compatible material.');
   return '';
 }
 export function performanceNotice(state,{previousStatus,hasInlineStatus=false}={}) {

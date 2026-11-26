@@ -12,6 +12,7 @@ struct Choice { std::wstring id, name; };
 struct Radio { bool available = false, on = false; };
 struct State {
     Radio wifi, bluetooth;
+    std::optional<bool> wifiAdapter; // unknown when adapter enumeration failed
     std::wstring ssid;            // connected Wi-Fi network, empty when none
     int signal = 0;               // 0-100
     bool ethernet = false;        // a wired connection is up

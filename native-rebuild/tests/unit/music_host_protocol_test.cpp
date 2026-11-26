@@ -105,10 +105,11 @@ int main() {
     Expect(projection.find(L"secret") == std::wstring::npos && projection.find(L"source") == std::wstring::npos,
         "page projection never contains playback sources");
     const auto lyrics = lume::ui::EncodeMusicLyrics({1, "netease:123",
-        {{1, 3, "ab", {{1, 1.5, "a"}, {1.5, 2.5, "b"}}, "translation"}}});
+        {{1, 3, "ab", {{1, 1.5, "a"}, {1.5, 2.5, "b"}}, "translation", "romanization"}}});
     const auto lyricsJson = nlohmann::json::parse(lyrics);
     Expect(lyricsJson["lines"][0]["words"][1]["endTime"] == 2.5 &&
-        lyricsJson["lines"][0]["translation"] == "translation", "provider timing and translation are preserved");
+        lyricsJson["lines"][0]["translation"] == "translation" &&
+        lyricsJson["lines"][0]["romanization"] == "romanization", "provider timing and both subtitle tracks are preserved");
     const auto badLyrics = lume::ui::EncodeMusicLyrics({1, "netease:123",
         {{1, 3, "ab", {{1, 5, "ab"}}, "translation"}}});
     Expect(nlohmann::json::parse(badLyrics)["lines"].empty(), "shared lyric validation rejects out-of-line words");

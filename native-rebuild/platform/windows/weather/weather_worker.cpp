@@ -76,6 +76,9 @@ struct WeatherWorker::State {
                         latest.error = ProviderError::None;
                     } else {
                         latest.error = result.error == ProviderError::None ? ProviderError::Unavailable : result.error;
+                        // A display cache is not evidence that its old automatic
+                        // coordinates are still valid after the location expires.
+                        if (latest.error == ProviderError::InvalidLocation) latest.snapshot.reset();
                         if (latest.snapshot && !Usable(*latest.snapshot, requested)) latest.snapshot.reset();
                     }
                     latest.loading = false;

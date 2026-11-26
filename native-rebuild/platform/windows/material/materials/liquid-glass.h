@@ -258,7 +258,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
   float thicknessProfile = saturate(optical.z);
   // Profile 3 (Dock, launchpad): a soft edge whose refraction, colour and
   // shading fade continuously into the clear body instead of a distinct rim.
-  float softEdge = step(2.5, optical.y);
+  bool widgetTransmission = optical.y >= 5.5;
+  float softEdge = widgetTransmission ? 0.0 : step(2.5, optical.y);
   float inside = max(-distance, 0.0);
   float bevelRadius = max((optical.x > 0.0 ? 18.0 * scale : radius * (18.0 / 22.0)), 0.001);
   float edge = 1.0 - smoothstep(0.0, bevelRadius, inside);
@@ -309,11 +310,17 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     refractPx += widgetInteriorOffset(center, scale, thicknessProfile, pressure)
         * 0.35 * smoothstep(0.0, radius, inside);
   } else if (dynamicProfile > 0.5) {
-    // Rectangular widgets refract wallpaper and icons exactly as in 1.0.2.1.
-    refractPx = widgetRectLensOffset(widgetLensNormal(lensPoint - halfSize, halfSize, radius), inside,
+    float2 rectNormal = widgetLensNormal(lensPoint - halfSize, halfSize, radius);
+    refractPx = widgetRectLensOffset(rectNormal, inside,
         min(radius * 0.90, min(halfSize.x, halfSize.y) * 0.75) * (1.0 + 0.6 * softEdge),
         thicknessProfile * (1.0 + pressure * 0.06));
     refractPx += widgetInteriorOffset(center, scale, thicknessProfile, pressure);
+    if (widgetTransmission) {
+      // Blend sample positions so a glyph stays a single image through the bevel.
+      float bevel = max(min(lensSize.x, lensSize.y) * (29.0 / 595.0), 0.001);
+      float bend = 3.52 * bevel * exp(-pow(inside / bevel, 1.5));
+      refractPx = lerp(refractPx, -rectNormal * bend, 0.25);
+    }
   }
   float flowRadius = saturate(length(center));
   float2 flowCurl = float2(

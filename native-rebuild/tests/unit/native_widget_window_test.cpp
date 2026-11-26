@@ -728,6 +728,40 @@ int main(int argc,char** argv){
     if(std::getenv("LUME_WIDGET_DRAG_TRACE"))
         std::cout<<"widget DPI awareness before="<<initialAwareness
             <<" after="<<GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext())<<'\n';
+    if(argc==2&&std::string(argv[1])=="--compatible-fallback"){
+        Expect(!GetModuleHandleW(L"LumeGlass.dll"),"fallback probe starts without material DLL");
+        const auto previous=GetThreadDesktop(GetCurrentThreadId());
+        const auto name=L"LumeFallbackTest-"+std::to_wstring(GetCurrentProcessId());
+        const auto desktop=CreateDesktopW(name.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);
+        Expect(desktop&&SetThreadDesktop(desktop),"bind fallback probe to isolated desktop");
+        Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"fallback COM");
+        window_layer::contextReader=[] { return window_layer::Context{}; };
+        {
+            lume::widget::Limits limits{220,160,220,160,220,160};
+            WidgetWindowPorts ports;ports.materialBottomInset=[](float,float){return 20u;};ports.showCloseButton=false;
+            NativeWidgetWindow window(GetModuleHandleW(nullptr),L"Transparent fallback test",limits,ports);
+            auto prefs=lume::widget::Defaults(limits);prefs.enabled=true;
+            Expect(window.Configure(prefs)&&window.Start(),"real widget starts when capture backend is unavailable");
+            for(int i=0;i<30;++i){MSG m{};while(PeekMessageW(&m,nullptr,0,0,PM_REMOVE)){TranslateMessage(&m);DispatchMessageW(&m);}Sleep(5);}
+            Expect(window.MaterialState()==WidgetMaterialState::TransparentFallback&&!GetModuleHandleW(L"LumeGlass.dll"),"missing backend reports transparent fallback");
+            RECT size{};GetClientRect(window.Handle(),&size);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+            info.bmiHeader.biWidth=size.right;info.bmiHeader.biHeight=-size.bottom;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
+            void* bits=nullptr;const auto dc=CreateCompatibleDC(nullptr);const auto dib=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);const auto old=SelectObject(dc,dib);
+            for(bool frosted:{false,true}){
+                prefs.frosted=frosted;Expect(window.Configure(prefs)&&window.Paint(),"widget renders after changing glass type");
+                SendMessageW(window.Handle(),WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);GdiFlush();
+                const auto* pixels=static_cast<const unsigned*>(bits);
+                Expect((pixels[(size.bottom/2)*size.right+size.right/2]>>24)==1,"blank widget body keeps only the hit-test alpha after failed capture");
+                POINT center{size.right/2,size.bottom/2};
+                ClientToScreen(window.Handle(),&center);
+                Expect(SendMessageW(window.Handle(),WM_NCHITTEST,0,MAKELPARAM(center.x,center.y))==HTCLIENT,"blank widget body accepts mouse input");
+                Expect((pixels[0]>>24)==0&&(pixels[(size.bottom-1)*size.right+size.right/2]>>24)==0,"fallback preserves rounded corners and the reserved bottom strip");
+            }
+            SelectObject(dc,old);DeleteObject(dib);DeleteDC(dc);window.Stop();
+        }
+        CoUninitialize();SetThreadDesktop(previous);CloseDesktop(desktop);
+        std::cout<<"COMPATIBLE_WIDGET_PASS missingCapture=verified bodyAlpha=1 hitTest=client cornersAndBottom=transparent\n";return 0;
+    }
     Expect(SUCCEEDED(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED)),"COM");
     if(argc==2&&std::string(argv[1])=="--desktop-level"){
         const auto name=L"LumeWidgetLayerTest-"+std::to_wstring(GetCurrentProcessId());

@@ -269,8 +269,10 @@ std::wstring EncodeMusicLyrics(const MusicLyricsMessage& lyrics) {
         Json words = Json::array();
         for (const auto& word : line.words)
             words.push_back({{"startTime", word.startTime}, {"endTime", word.endTime}, {"text", word.text}});
-        lines.push_back({{"startTime", line.startTime}, {"endTime", line.endTime},
-            {"fullText", line.fullText}, {"words", std::move(words)}, {"translation", line.translation}});
+        Json value{{"startTime", line.startTime}, {"endTime", line.endTime},
+            {"fullText", line.fullText}, {"words", std::move(words)}, {"translation", line.translation}};
+        if (!line.romanization.empty()) value["romanization"] = line.romanization;
+        lines.push_back(std::move(value));
     }
     return Wide(Json{{"version", 1}, {"type", "music-lyrics"}, {"session", lyrics.session},
         {"trackId", lyrics.trackId}, {"lines", std::move(lines)}}.dump(-1, ' ', false, Json::error_handler_t::replace));

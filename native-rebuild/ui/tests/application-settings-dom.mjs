@@ -7,7 +7,8 @@ const dom=new JSDOM('<header></header><main></main>',{url:'https://lume.local/',
 const {document,Event}=dom.window,host=document.querySelector('main'),commands=[],languages=[];
 let sent=true,backs=0;
 const bridge={applicationSettings:(action,fields={})=>{commands.push([action,fields]);return sent;},
-  account:(action,fields={})=>{commands.push(['account',action,fields]);return sent;},send:()=>true};
+  account:(action,fields={})=>{commands.push(['account',action,fields]);return sent;},
+  diagnosticReport:(action,note='')=>{commands.push(['diagnostic-report',action,note]);return sent;},send:()=>true};
 const titlebar=mountTitlebar(document.querySelector('header'),bridge,()=>{});
 const controller=mountApplicationSettings(host,{bridge,onBack:()=>backs++,onLanguage:language=>{
   languages.push(language);titlebar.setLanguage(language);
@@ -113,6 +114,12 @@ try {
   controller.show('support');
   assert.equal(find('[data-settings-heading]').textContent,'问题反馈');
   assert.equal(find('[data-settings-panel="support"]').hidden,false,'正式反馈页面允许通过导航打开');
+  assert.equal(find('[data-settings-text="supportHelp"]').textContent,'解决方式请查看');
+  const supportDocument=find('a[data-support-action="open-help"]');
+  assert.equal(supportDocument.textContent,'官方bug解决文档');
+  assert.equal(supportDocument.href,'https://www.lumedesktop.com/bugs.html');
+  supportDocument.click();
+  assert.deepEqual(commands.at(-1),['diagnostic-report','open-help','']);
   controller.show('general');
   sent=false;
   change('[data-setting="balancedMode"]',false);

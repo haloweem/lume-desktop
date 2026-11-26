@@ -3,6 +3,10 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <psapi.h>
+#include "platform/windows/dock/dock_animation_targets.h"
+#include "platform/windows/minimize_animation/dock_genie_packet.h"
+#include <chrono>
+#include <vector>
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -15,6 +19,8 @@ using namespace lume::platform::windows;
 using namespace lume::platform::windows::minimize_detail;
 namespace {
 constexpr UINT Action=WM_APP+180;
+constexpr UINT_PTR FirstPaintTimer=1;
+constexpr wchar_t FirstShowCloaked[]=L"Lume.Fixture.FirstShowCloaked";
 struct AtomicCreationState {volatile LONG pid=0;DWORD low=0,high=0;BOOL member=FALSE;};
 HANDLE observedJob=nullptr,observedProcess=nullptr;
 bool memberAtCreation=false,failExitWait=false;
@@ -356,14 +362,77 @@ void MeasureEngine(MinimizeAnimationRuntime& runtime,lume::minimize_animation::P
           after.frames>before.frames && after.failed==before.failed,
           "resource sample contains eight completed captured cross-process animations");
 }
+// Read the composited outline in one blit so the shoulder and neck come
+// from the same frame. Only the fixture's solid client color contributes.
+struct Outline {
+    POINT interior{};
+    double neckRatio=1, curvature=0;
+    bool visible=false;
+};
+Outline FixtureOutline(RECT bounds) {
+    const int w=bounds.right-bounds.left,h=bounds.bottom-bounds.top;
+    if (w<1 || h<1 || !lume::minimize_animation::SnapshotBytes(w,h)) return {};
+    BITMAPINFO info{};
+    info.bmiHeader={sizeof(BITMAPINFOHEADER),w,-h,1,32,BI_RGB};
+    HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
+    void* pixels=nullptr;
+    HBITMAP frame=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    auto old=frame && dc ? SelectObject(dc,frame) : nullptr;
+    const bool copied=old && BitBlt(dc,0,0,w,h,screen,bounds.left,bounds.top,SRCCOPY|CAPTUREBLT);
+    GdiFlush();
+    struct Span {int left=0,width=0;};
+    std::vector<Span> rows(h);
+    int begin=0,end=0,run=0;
+    if (copied) for (int y=0;y<h;++y) {
+        const auto* row=static_cast<const DWORD*>(pixels)+static_cast<std::size_t>(y)*w;
+        int left=w,right=-1,count=0;
+        for (int x=0;x<w;++x) {
+            if ((row[x]&0xffffff)!=0x264974) continue;
+            left=std::min(left,x);right=x;++count;
+        }
+        if (count>=8 && count>(right-left)/2) {
+            rows[y]={left,right-left+1};
+            if (++run>end-begin) {end=y+1;begin=end-run;}
+        } else run=0;
+    }
+    if (old) SelectObject(dc,old);
+    if (frame) DeleteObject(frame);
+    if (dc) DeleteDC(dc);
+    ReleaseDC(nullptr,screen);
+    if (end-begin<32) return {};
+    const auto at=[&](double depth){return rows[begin+int((end-begin-1)*depth)];};
+    const double shoulder=at(.10).width,neck=at(.90).width;
+    double deviation=0;
+    for (const double fraction : {.25,.5,.75}) {
+        const double straight=shoulder+(neck-shoulder)*fraction;
+        deviation=std::max(deviation,std::abs(at(.10+.80*fraction).width-straight));
+    }
+    const auto solid=at(.28);
+    return {{bounds.left+solid.left+solid.width/4,bounds.top+begin+LONG((end-begin-1)*.28)},
+            neck/shoulder,deviation/shoulder,true};
+}
 LRESULT CALLBACK Fixture(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
+    if (msg==WM_WINDOWPOSCHANGED && (reinterpret_cast<WINDOWPOS*>(l)->flags&SWP_SHOWWINDOW) &&
+        !GetPropW(hwnd,FirstShowCloaked)) {
+        DWORD cloak=0;
+        DwmGetWindowAttribute(hwnd,DWMWA_CLOAKED,&cloak,sizeof(cloak));
+        SetPropW(hwnd,FirstShowCloaked,LongToHandle(cloak ? 1 : 2));
+    }
+    if (msg==WM_TIMER && w==FirstPaintTimer) {
+        KillTimer(hwnd,FirstPaintTimer);
+        SetWindowLongPtrW(hwnd,GWLP_USERDATA,0);
+        InvalidateRect(hwnd,nullptr,FALSE);
+        UpdateWindow(hwnd);
+        return 0;
+    }
     if (msg==WM_PAINT || msg==WM_PRINT) {
         PAINTSTRUCT paint{};
         HDC dc=msg==WM_PRINT ? reinterpret_cast<HDC>(w) : BeginPaint(hwnd,&paint);
         RECT r{};GetClientRect(hwnd,&r);
         HBRUSH brush=CreateSolidBrush(RGB(38,73,116));FillRect(dc,&r,brush);DeleteObject(brush);
         SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(255,255,255));
-        DrawTextW(dc,L"Lume 跨进程动画测试窗口",-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        if (!GetWindowLongPtrW(hwnd,GWLP_USERDATA))
+            DrawTextW(dc,L"Lume 跨进程动画测试窗口",-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
         if (msg==WM_PAINT) EndPaint(hwnd,&paint);
         return 0;
     }
@@ -379,11 +448,28 @@ LRESULT CALLBACK Fixture(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
             case 6: ShowWindow(hwnd,SW_HIDE);break;
             case 7: SetWindowPos(hwnd,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_SHOWWINDOW);break;
             case 8: DestroyWindow(hwnd);break;
+            case 10: ShowWindow(hwnd,SW_MAXIMIZE);break;
+            case 11: SetActiveWindow(nullptr);SetActiveWindow(hwnd);break;
+            case 15:
+                ShowWindow(hwnd,SW_SHOWMINIMIZED);
+                ShowWindow(hwnd,SW_RESTORE);
+                break;
+            case 12: {
+                // Like QQ Music's shadow: an owned layered popup with a border.
+                HWND shadow=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT,L"STATIC",L"shadow",
+                    WS_POPUP|WS_BORDER,160,120,640,460,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
+                SetLayeredWindowAttributes(shadow,0,60,LWA_ALPHA);
+                ShowWindow(shadow,SW_SHOWNOACTIVATE);
+                DestroyWindow(shadow);
+                break;
+            }
             case 9: {
                 wchar_t title[256]{};GetWindowTextW(hwnd,title,256);
-                const auto nextTitle=std::wstring(title)+L" launch";
-                HWND next=CreateWindowExW(0,L"LumeMinimizeFixture",nextTitle.c_str(),WS_OVERLAPPEDWINDOW,
+                const auto nextTitle=std::wstring(title)+(l<0 ? L" blank" : L" launch");
+                HWND next=CreateWindowExW(0,L"LumeMinimizeFixture",nextTitle.c_str(),l ? WS_POPUP : WS_OVERLAPPEDWINDOW,
                     210,170,600,420,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+                SetWindowLongPtrW(next,GWLP_USERDATA,l);
+                if (l>0) SetTimer(next,FirstPaintTimer,static_cast<UINT>(l),nullptr);
                 SetWindowPos(next,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_SHOWWINDOW);break;
             }
         }
@@ -449,7 +535,8 @@ int wmain(int argc,wchar_t** argv) {
     if (argc==3 && std::wstring(argv[1])==L"--child") return Child(argv[2]);
     const bool ownerMode=argc>=2 && std::wstring(argv[1])==L"--owner";
     Check(!ownerMode || argc>=4,"owner requires fixture thread and process IDs");
-    const auto payloadDirectory=PayloadDirectory(argc,argv,ownerMode ? 4 : 1);
+    const bool dockMode=argc>=2 && std::wstring(argv[1])==L"--dock";
+    const auto payloadDirectory=PayloadDirectory(argc,argv,ownerMode ? 4 : dockMode ? 2 : 1);
     if (ownerMode) {
         MinimizeAnimationScope scope;
         scope.threadId=std::wcstoul(argv[2],nullptr,10);scope.processId=std::wcstoul(argv[3],nullptr,10);
@@ -460,9 +547,11 @@ int wmain(int argc,wchar_t** argv) {
         Sleep(INFINITE);
         return 0;
     }
-    InitializationOwnerCrashRegression(executable);
-    ShutdownLeaseRegression(payloadDirectory);
-    RetainedOwnershipRegression(payloadDirectory);
+    if (!dockMode) {
+        InitializationOwnerCrashRegression(executable);
+        ShutdownLeaseRegression(payloadDirectory);
+        RetainedOwnershipRegression(payloadDirectory);
+    }
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
     const auto title=L"Lume minimize fixture "+std::to_wstring(GetCurrentProcessId());
     std::wstring command=L"\""+std::wstring(exe)+L"\" --child \""+title+L"\"";
@@ -503,6 +592,181 @@ int wmain(int argc,wchar_t** argv) {
     MinimizeAnimationRuntime runtime(scope);
     lume::minimize_animation::Preferences settings;settings.enabled=true;settings.durationMs=180;
     Check(!runtime.Snapshot().running && runtime.Snapshot().hostCount==0,"disabled has no host");
+    if (dockMode) {
+        settings.dockOnly=true;settings.close=true;settings.durationMs=400;
+        Check(runtime.Start(settings),"start Dock renderer and fixture-only window events");
+        const auto monitor=MonitorFromWindow(target,MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info{sizeof(info)};GetMonitorInfoW(monitor,&info);
+        const RECT anchor{info.rcWork.right-100,info.rcWork.bottom-100,info.rcWork.right-44,info.rcWork.bottom-44};
+        WNDCLASSW tileClass{};tileClass.lpfnWndProc=DefWindowProcW;tileClass.hInstance=GetModuleHandleW(nullptr);
+        tileClass.lpszClassName=L"LumeGenieTestTile";RegisterClassW(&tileClass);
+        HWND icon=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,tileClass.lpszClassName,L"Dock test slot",
+            WS_POPUP|WS_VISIBLE,anchor.left,anchor.top,56,56,nullptr,nullptr,nullptr,nullptr);
+        Check(icon!=nullptr,"create a visible fixture Dock icon");
+        dock_animation::Targets table{};
+        table.icons=table.bar=HandleToLong(icon);
+        table.count=1;table.slots[0]={dock_animation::CollectionProgram,0,dock_slots::ProgramKey(executable.wstring()),
+            anchor.left,anchor.top,anchor.right,anchor.bottom};
+        dock_animation::Publisher publisher;
+        publisher.Publish(monitor,table);
+        HANDLE mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,ObjectName(NativeBits,L"Control").c_str());
+        auto* shared=static_cast<SharedControl*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(SharedControl)));
+        Check(shared!=nullptr,"read presented frame counters");
+        auto play=[&](unsigned action,const char* label) {
+            const auto completed=Read(shared->dockCompleted),first=Read(shared->dockFrames);
+            auto previous=first;
+            std::vector<double> intervals;
+            using Timer=std::chrono::steady_clock;
+            auto last=Timer::now(),firstFrameTime=last;
+            RECT sourceRect{};
+            DwmGetWindowAttribute(target,DWMWA_EXTENDED_FRAME_BOUNDS,&sourceRect,sizeof(sourceRect));
+            bool pixelSeen=false, testedHit=false;
+            const bool sample=action==1;
+            RECT region{};
+            UnionRect(&region,&sourceRect,&anchor);
+            IntersectRect(&region,&region,&info.rcMonitor);
+            if (action == 13 || action == 14 || action == 15) {
+                Check(SendMessageTimeoutW(target,dock_animation::ActivatedMessage(),0,0,
+                    SMTO_ABORTIFHUNG,250,nullptr)!=0,"prepare the minimized Dock window before system restore");
+                if (action==15)
+                    Check(SendMessageTimeoutW(target,Action,15,0,SMTO_ABORTIFHUNG,250,nullptr)!=0,
+                        "repeat QQ minimized-state notification on the window thread before restore");
+                else if (action==13) ShowWindow(target,SW_RESTORE);
+                else Check(SendMessageTimeoutW(target,WM_SYSCOMMAND,SC_RESTORE,0,
+                    SMTO_ABORTIFHUNG,250,nullptr)!=0,"restore on the window thread after Dock preparation");
+            } else if (action == 11)
+                Check(SendNotifyMessageW(target,dock_animation::ActivatedMessage(),0,0),"notify the activated Dock window");
+            else Check(PostMessageW(target,Action,action,action==9 ? 450 : 0),"issue real fixture window command");
+            const auto deadline=GetTickCount64()+4000;
+            while (GetTickCount64()<deadline) {
+                MSG msg{};
+                while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) DispatchMessageW(&msg);
+                const auto current=Read(shared->dockFrames);
+                if (current!=previous) {
+                    if (action==9 && previous==first) {
+                        const auto next=FindWindowW(L"LumeMinimizeFixture",(title+L" launch").c_str());
+                        Check(next && !GetWindowLongPtrW(next,GWLP_USERDATA),"wait for actual first content");
+                    }
+                    const auto now=Timer::now();
+                    if (previous==first) firstFrameTime=now;
+                    if (sample && !pixelSeen) {
+                        const float t=std::chrono::duration<float,std::milli>(now-firstFrameTime).count()/settings.durationMs;
+                        if (t>.44f && t<.55f) {
+                            const auto shape=FixtureOutline(region);
+                            if (shape.visible) {
+                                std::cout<<"mid-frame neck/shoulder="<<shape.neckRatio
+                                         <<" deviation from straight sides="<<shape.curvature<<std::endl;
+                                pixelSeen=shape.neckRatio<.36 && shape.curvature>.065;
+                                HWND overlay=FindWindowW(dock_genie::OverlayClass,L"LumeDockGenie");
+                                testedHit=overlay && WindowFromPhysicalPoint(shape.interior)!=overlay;
+                            }
+                        }
+                    }
+                    if (previous!=first) intervals.push_back(std::chrono::duration<double,std::milli>(now-last).count()/(current-previous));
+                    previous=current;last=now;
+                }
+                if (Read(shared->dockCompleted)>completed && !ActiveWorkers(*shared)) break;
+                Sleep(1);
+            }
+            std::sort(intervals.begin(),intervals.end());
+            std::cout<<"dock "<<label<<" frames="<<Read(shared->dockFrames)-first<<" completed="<<Read(shared->dockCompleted)-completed
+                <<" median_ms="<<(intervals.empty()?0:intervals[intervals.size()/2])
+                <<" p95_ms="<<(intervals.empty()?0:intervals[(intervals.size()-1)*95/100])
+                <<" restored="<<Read(shared->restored)<<" failed="<<Read(shared->failed)
+                <<" captures="<<Read(shared->captures)<<" workers="<<ActiveWorkers(*shared)<<std::endl;
+            Check(Read(shared->dockCompleted)>completed && Read(shared->dockFrames)>first+2,label);
+            if (sample) {
+                Check(pixelSeen,"composited mid-frame has a curved shoulder and a narrow neck");
+                Check(testedHit,"composition overlay passes mouse input through its painted content");
+            }
+        };
+        const auto clickProgram = dock_slots::ProgramKey(executable.wstring());
+        const auto beforeFocus = Read(shared->dockCompleted);
+        Check(publisher.RecordClick(clickProgram, 0, anchor),"record visible Dock click for inactive window");
+        SendMessageW(target,Action,12,0);
+        Check(Read(shared->launched)==0 && Read(shared->captures)==0,"owned shadow leaves the click for the main window");
+        play(11,"Dock click activates an existing window");
+        PostMessageW(target,Action,11,0);
+        Sleep(500);
+        Check(Read(shared->dockCompleted)==beforeFocus+1,"ordinary activation does not replay the Dock click");
+        PostMessageW(target,Action,6,0);
+        Check(Until([&]{return !IsWindowVisible(target);}),"hide existing window like a tray application");
+        Check(publisher.RecordClick(clickProgram, 0, anchor),"record visible Dock click for hidden window");
+        play(7,"Dock click reopens the same hidden window");
+        play(1,"title-minimize");Check(IsIconic(target),"window minimized");
+        play(5,"restore");Check(!IsIconic(target),"window restored");
+        play(10,"maximize");Check(IsZoomed(target),"window maximized");
+        play(1,"minimize the maximized window");
+        Check(publisher.RecordClick(clickProgram,0,anchor),"record Dock click for maximized restore");
+        play(13,"Dock restores the maximized window through the system fallback");
+        Check(!IsIconic(target) && IsZoomed(target),"Dock restore preserves the maximized state");
+        play(1,"minimize the maximized window before a native Dock restore");
+        Check(publisher.RecordClick(clickProgram,0,anchor),"record Dock click before native restore notifications");
+        const auto restoredBeforeDock=Read(shared->restored),failedBeforeDock=Read(shared->failed);
+        play(14,"Dock restore survives the native restore notification");
+        Check(!IsIconic(target) && IsZoomed(target) && Read(shared->restored)==restoredBeforeDock+1 &&
+              Read(shared->failed)==failedBeforeDock,"duplicate restore notification preserves one completed animation");
+        play(1,"minimize maximized window before QQ restore sequence");
+        Check(publisher.RecordClick(clickProgram,0,anchor),"record Dock click before repeated minimize notification");
+        const auto restoredBeforeQQ=Read(shared->restored),failedBeforeQQ=Read(shared->failed);
+        play(15,"QQ repeated minimized-state notification preserves Dock restore");
+        Check(!IsIconic(target) && IsZoomed(target) && Read(shared->restored)==restoredBeforeQQ+1 &&
+              Read(shared->failed)==failedBeforeQQ,"redundant minimize keeps the prepared restore alive");
+        play(5,"unmaximize");
+        RECT bounds{};GetWindowRect(target,&bounds);
+        const RECT covered{bounds.left+56,bounds.top+56,bounds.left+112,bounds.top+112};
+        SetWindowPos(icon,HWND_NOTOPMOST,covered.left,covered.top,56,56,SWP_NOACTIVATE);
+        SetWindowPos(icon,HWND_BOTTOM,0,0,0,0,SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE);
+        SetForegroundWindow(target);
+        table.slots[0]={dock_animation::CollectionProgram,0,clickProgram,covered.left,covered.top,covered.right,covered.bottom};
+        publisher.Publish(monitor,table);
+        Check(GetAncestor(WindowFromPhysicalPoint({covered.left+28,covered.top+28}),GA_ROOT)==target,
+              "source window covers the desktop-layer collection tile");
+        play(0,"minimize into covered collection without a click");
+        SetWindowPos(icon,HWND_TOPMOST,anchor.left,anchor.top,56,56,SWP_NOACTIVATE);
+        table.slots[0]={dock_animation::CollectionProgram,0,clickProgram,anchor.left,anchor.top,anchor.right,anchor.bottom};
+        publisher.Publish(monitor,table);
+        play(5,"restore after minimizing into the covered collection");
+        ShowWindow(icon,SW_HIDE);
+        const LONG before=Read(shared->dockFrames);
+        PostMessageW(target,Action,1,0);
+        Check(Until([&]{return IsIconic(target)!=FALSE;}),"native minimize with hidden icon");
+        PostMessageW(target,Action,5,0);
+        Check(Until([&]{return !IsIconic(target);}),"native restore with hidden icon");
+        Check(before==Read(shared->dockFrames),"hidden icon produces zero Dock frames");
+        ShowWindow(icon,SW_SHOWNOACTIVATE);
+        settings.durationMs=180; Check(runtime.Configure(settings),"match legacy performance fixture duration");
+        const auto baseline=Read(shared->dockFrames);
+        for (int cycle=0;cycle<4;++cycle) {
+            play(0,"benchmark-minimize");
+            play(5,"benchmark-restore");
+        }
+        std::cout<<"dock benchmark 4 cycles 180ms frames="<<Read(shared->dockFrames)-baseline<<std::endl;
+        settings.durationMs=400; Check(runtime.Configure(settings),"restore default duration");
+        const auto launches=Read(shared->launched);
+        Check(publisher.RecordClick(clickProgram,0,anchor),"record Dock click for delayed first paint");
+        play(9,"first-show after delayed first paint");
+        const auto launch=FindWindowW(L"LumeMinimizeFixture",(title+L" launch").c_str());
+        DWORD cloak=99;
+        Check(GetPropW(launch,FirstShowCloaked)==LongToHandle(1) &&
+              SUCCEEDED(DwmGetWindowAttribute(launch,DWMWA_CLOAKED,&cloak,sizeof(cloak))) &&
+              !cloak && Read(shared->launched)==launches+1,"first show is covered before native presentation and revealed once");
+        const auto failed=Read(shared->failed),frames=Read(shared->dockFrames);
+        Check(publisher.RecordClick(clickProgram,0,anchor),"record Dock click for blank window");
+        Check(PostMessageW(target,Action,9,-1),"show window that supplies only blank captures");
+        Check(Until([&]{return Read(shared->failed)>failed && !ActiveWorkers(*shared);}),
+              "blank launch expires");
+        const auto blank=FindWindowW(L"LumeMinimizeFixture",(title+L" blank").c_str());
+        Check(IsWindowVisible(blank) && GetPropW(blank,FirstShowCloaked)==LongToHandle(1) &&
+              SUCCEEDED(DwmGetWindowAttribute(blank,DWMWA_CLOAKED,&cloak,sizeof(cloak))) &&
+              !cloak && Read(shared->dockFrames)==frames,"blank launch hands off to the visible native window without replay");
+        play(8,"close");
+        Check(Read(shared->dockClosed)==1 && Read(shared->dockZoomed)>=2,"separate close and zoom paths");
+        UnmapViewOfFile(shared);CloseHandle(mapping);
+        Check(runtime.Stop(),"stop Dock animation host");
+        DestroyWindow(icon); CloseHandle(pi.hProcess);
+        return 0;
+    }
     Check(runtime.Start(settings),"install hooks for fixture thread only");
     Check(runtime.Snapshot().running && runtime.Snapshot().hooks==2,"host confirms actual hook installation");
     Check(runtime.Snapshot().hostCount==1 && runtime.Snapshot().x64==(NativeBits==64) &&

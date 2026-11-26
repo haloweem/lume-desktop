@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(LumeNativeRebuild VERSION 1.1.3 LANGUAGES CXX)
+project(LumeNativeRebuild VERSION 1.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,7 @@ set(lume_acceptance_probe_targets
   lume-interface-scale-window-test
   lume-ui-integrity-test
   lume-window-layer-policy-test
+  lume-widget-display-restore-test
   lume-application-tray-menu-test
   lume-wallpaper-session-test
   lume-dynamic-island-test lume-desktop-dynamic-island-test

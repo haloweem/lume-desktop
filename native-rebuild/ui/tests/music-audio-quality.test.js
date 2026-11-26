@@ -12,7 +12,7 @@ test('playback failures distinguish platform refusals, network and preview permi
   assert.match(musicPlaybackError('music-source-entitlement'),/权限/);
 });
 
-const qualities=['standard','high','lossless','hires','jyeffect','sky','jymaster'];
+const qualities=['standard','high','lossless','hires'];
 const track=provider=>({id:`${provider}:1`,title:'Song',artist:'Artist',album:'',artwork:'',
   source:`online:${provider}:1`,duration:180});
 const state=provider=>{
@@ -69,7 +69,7 @@ test('each provider keeps the historical quality labels, order and membership im
   const expected={
     qq:['hires','lossless','high','standard'],
     kugou:['standard','high','lossless','hires'],
-    netease:['jyeffect','sky','jymaster','hires','lossless','high','standard'],
+    netease:['hires','lossless','high','standard'],
   };
   for(const [provider,values] of Object.entries(expected)) {
     const html=musicPage(state(provider),{view:{screen:'player'},library:{signedIn:true}});
@@ -90,11 +90,11 @@ test('qualities and member songs follow the signed-in account tier',()=>{
     memberships:memberships.map(([kind,active])=>({kind,label:kind,iconUrl:'',level:1,active}))}]});
   const options=(provider,library)=>Object.fromEntries([...musicPage(state(provider),{view:{screen:'player'},library})
     .matchAll(/data-music-quality-option="([^"]+)"([^>]*)>/g)].map(match=>[match[1],/ disabled/.test(match[2])]));
-  // 黑胶VIP: everything except the SVIP-only sky/jymaster.
+  // Folia exposes four quality levels for these platforms.
   assert.deepEqual(options('netease',account('netease',['netease-vip',true],['netease-svip',false])),
-    {jyeffect:false,sky:true,jymaster:true,hires:false,lossless:false,high:false,standard:false});
+    {hires:false,lossless:false,high:false,standard:false});
   assert.deepEqual(options('netease',account('netease',['netease-svip',true])),
-    {jyeffect:false,sky:false,jymaster:false,hires:false,lossless:false,high:false,standard:false});
+    {hires:false,lossless:false,high:false,standard:false});
   // 豪华绿钻 without SVIP: no 臻品; SVIP covers green.
   assert.deepEqual(options('qq',account('qq',['qq-green-vip',true],['qq-super-vip',false])),
     {hires:true,lossless:false,high:false,standard:false});

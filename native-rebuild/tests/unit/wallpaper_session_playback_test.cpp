@@ -432,6 +432,54 @@ void CoverageResumeStability(const fs::path& executable,const fs::path& video,co
     Pump(3500);Send(session,Action::Resume,display);
     Expect(Wait([&]{return HasScreenState(session,display,"playing")&&probe.Property("pause")==Json(false);})&&
         EmbeddedPlayers(parent)==beforeManual,"manual pause and resume also preserve player identity");
+    const auto advancing=[&] {
+        if (!probe.Follow(parent) || probe.Property("pause")!=Json(false))return false;
+        const auto before=probe.Property("time-pos");
+        Pump(230);
+        const auto after=probe.Property("time-pos");
+        return before.is_number() && after.is_number() && std::abs(after.get<double>()-before.get<double>())>.02;
+    };
+    const auto prefsBytes=[&] {
+        std::ifstream file(root/L"preferences.json",std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>());
+    };
+    const auto playingPrefs=prefsBytes();
+    for(unsigned i=0;i<3;++i){
+        session.SetGameIdle(true);Pump(100);session.SetGameIdle(false);Pump(120);
+    }
+    Expect(Wait(advancing),"three rapid game switches leave actual video time advancing");
+    session.SetGameIdle(true);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty() && OwnedProcesses().empty();},8000),
+        "a game on another display releases the real decoder process");
+    // Hold only the fixture's imported media unavailable for the first
+    // restart. Restore it without sending any command to Lume.
+    probe.Close();
+    const auto media=root/"media"/(first+".mp4");
+    const auto held=root/(first+".held");
+    std::error_code ec;
+    fs::rename(media,held,ec);
+    Expect(!ec,"temporarily withhold owned test media");
+    session.SetGameIdle(false);
+    Expect(Wait([&]{return HasScreenState(session,display,"failed");}),"first resume fails while media is unavailable");
+    fs::rename(held,media,ec);
+    Expect(!ec,"restore owned test media");
+    Expect(Wait(advancing,15000) && HasScreenState(session,display,"playing"),
+        "retry resumes actual video time without opening settings");
+    session.SetGameIdle(true);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty();},6000),"second game session releases player");
+    // Simulate the foreground observer losing its final exit notification.
+    Expect(Wait(advancing,15000) && HasScreenState(session,display,"playing"),
+        "expired game lease independently restarts playback after a missed exit");
+    Expect(prefsBytes()==playingPrefs,"game transitions preserve saved playback settings");
+    session.SetGameIdle(false);
+    Send(session,Action::Pause,display);
+    Expect(Wait([&]{return HasScreenState(session,display,"paused");}),"manually pause before game");
+    session.SetGameIdle(true);
+    Expect(Wait([&]{return EmbeddedPlayers(parent).empty() && OwnedProcesses().empty();},8000),
+        "manually paused decoder is released too");
+    session.SetGameIdle(false);
+    Expect(Wait([&]{return probe.Follow(parent)&&HasScreenState(session,display,"paused")&&probe.Property("pause")==Json(true);}),
+        "manually paused wallpaper stays paused after game");
     probe.Close();session.Shutdown();
     Expect(Wait([&]{return EmbeddedPlayers(parent).empty()&&OwnedProcesses().empty();},5000),
         "seamless coverage fixture releases its complete owned process tree");
@@ -778,9 +826,10 @@ int main(int argc,char** argv) {
     const auto output=fs::absolute(fs::u8path(argv[3]));
     const bool balancedRegression=argc==5&&std::string(argv[4])=="--balanced-regression";
     const bool watchdogRegression=argc==5&&std::string(argv[4])=="--watchdog-regression";
+    const bool gameRegression=argc==5&&std::string(argv[4])=="--game-regression";
     const bool resumeRegression=argc==5&&std::string(argv[4])=="--resume-regression";
     const bool earlyResumeRegression=argc==5&&std::string(argv[4])=="--early-resume-regression";
-    if(argc==5&&!balancedRegression&&!watchdogRegression&&!resumeRegression&&!earlyResumeRegression) {
+    if(argc==5&&!gameRegression&&!balancedRegression&&!watchdogRegression&&!resumeRegression&&!earlyResumeRegression) {
         const auto seconds=std::strtoul(argv[4],nullptr,10);
         if(seconds<3||seconds>30)return 2;
         resourceHoldMs=static_cast<DWORD>(seconds*1000);
@@ -816,9 +865,9 @@ int main(int argc,char** argv) {
         std::ofstream(output/L"early-resume-evidence.json")<<evidence.dump(2);
         return failures?1:0;
     }
-    if(resumeRegression) {
+    if(resumeRegression||gameRegression) {
         CoverageResumeStability(executable,video,root,display,parent);
-        ResumeRecovery(executable,video,root,display,parent);
+        if(!gameRegression)ResumeRecovery(executable,video,root,display,parent);
         DestroyWindow(parent);
         evidence["residual-pids"]=OwnedProcesses();
         for(const auto& item:ownedHandles)CloseHandle(item.second);

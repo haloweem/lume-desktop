@@ -992,7 +992,7 @@ private:
                 if (resolveFailure.size() > 32) resolveFailure.clear();
                 return {};
             } catch (...) { return {}; }
-            if (cancelled() || (source.url.rfind("https://", 0) != 0 &&
+            if (cancelled() || (!(options.issuedSource && options.issuedSource(source.url)) && source.url.rfind("https://", 0) != 0 &&
                 !(TrackProvider(*target.current) == "kugou" && music::IsKugouHttpAudioUrl(source.url)))) return {};
         }
         if (source.url.empty() || source.url.size() > 4096 || source.url.rfind("online:", 0) == 0 ||

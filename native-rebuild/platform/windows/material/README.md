@@ -71,6 +71,7 @@ month-picker frosted panel geometry.
 | 2 | original frosted panel overlay | full-resolution scene |
 | 3 | Dock, **launchpad (liquid)** | full-resolution scene, 3x wider kernel |
 | 4 | (reserved) | scene downsampled 4x, then the same kernel |
+| 6 | liquid desktop widgets | profile 1 appearance with a small blend of size-scaled bevel refraction |
 
 The frosted pane tint lives in one branch (`materials/frosted-glass.h`):
 

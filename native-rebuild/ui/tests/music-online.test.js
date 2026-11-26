@@ -9,6 +9,26 @@ const state=(request,action,values={})=>({version:1,type:'music-online-state',re
   action,status:'ready',error:'',data:{...data(),...(['home','likes'].includes(action)?{likedIds:[]}: {})},...values});
 const accounts=userId=>({accounts:[{provider:'netease',status:'signed-in',userId,displayName:'测试账号'}]});
 
+test('汽水目录和播放操作走同一在线协议，排除的平台被拒绝',()=>{
+  for(const provider of ['qishui']) {
+    const sent=[],online=createMusicOnline({now:()=>10,send:(action,fields)=>{sent.push({action,...fields});return true;}});
+    online.accounts({accounts:[{provider,status:'signed-in',userId:'fixture',displayName:'Test'}]});
+    online.setVisible(true);
+    const current=sent.at(-1),id=`${provider}:123`;
+    const reply={...state(current.request,'home'),provider,data:{...data(),likedIds:[],tracks:[{
+      id,title:'Test',artist:'Artist',album:'',source:`online:${id}`,artwork:'',duration:180,
+    }]}};
+    assert.equal(validMusicOnlineMessage(reply),true);
+    assert.equal(online.receive({...reply,provider:'qq'}),false,'other-provider replies cannot replace a current read');
+    assert.equal(online.receive(reply),true);
+    assert.equal(online.request('play',{id}),true);
+    assert.deepEqual([sent.at(-1).action,sent.at(-1).provider,sent.at(-1).id],['play',provider,id]);
+    online.dispose();
+  }
+  for(const provider of ['ytm','bodian','spotify','appleMusic'])
+    assert.equal(validMusicOnlineCommand('home',{provider,request:1}),false);
+});
+
 test('在线消息只允许固定操作、歌曲ID和有界分页，不接受URL与凭证',()=>{
   const base={provider:'netease',request:1};
   assert.equal(validMusicOnlineCommand('playlist',{...base,id:'123',offset:0,limit:50}),true);
@@ -176,6 +196,90 @@ test('账号快照不会把失败的搜索替换成首页',()=>{
   online.accounts(signed);
   assert.equal(homes(),before);
   assert.equal(online.snapshot().error,'network');
+  online.dispose();
+});
+
+test('四个平台恢复缓存后立即打开旧推荐，歌单类型和迟到请求均正确处理',()=>{
+  const previousStorage=globalThis.localStorage,store=new Map();
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{
+    getItem:key=>store.get(key)||null,setItem:(key,value)=>store.set(key,value),
+  }});
+  try {
+    for(const provider of ['netease','qq','kugou','qishui']) {
+      const sent=[],signed={accounts:[{provider,status:'signed-in',userId:'owner'}]};
+      const make=()=>createMusicOnline({cache:true,now:()=>100,send:(action,fields)=>{sent.push({action,...fields});return true;}});
+      const reply=(command,values={})=>state(command.request,command.action,{provider,...values});
+      let online=make();online.accounts(signed);online.setVisible(true);
+      const recommendation={id:`${provider}:old`,providerId:provider,type:'album',title:'旧推荐',artwork:'',owned:false,description:''};
+      online.receive(reply(sent.at(-1),{data:{...data(),recommendations:[recommendation],likedIds:[]}}));
+      online.dispose();online=make();online.accounts(signed);online.setVisible(true);
+      const refresh=sent.at(-1);
+      assert.equal(refresh.action,'home');
+      assert.equal(online.request('playlist',{id:recommendation.id}),true);
+      const playlist=sent.at(-1);
+      assert.equal(playlist.action,'playlist');assert.equal(playlist.collectionType,'album');
+      assert.equal(online.receive(reply(refresh)),false,'late home cannot replace the opened playlist');
+      assert.equal(online.receive(reply(playlist)),true);
+      online.dispose();
+    }
+  } finally {
+    if(previousStorage===undefined)delete globalThis.localStorage;
+    else Object.defineProperty(globalThis,'localStorage',{configurable:true,value:previousStorage});
+  }
+});
+
+test('缓存刷新失败后再次播放先登记，换歌或重排仍按歌曲 ID 播放',()=>{
+  const previousStorage=globalThis.localStorage,store=new Map();
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{
+    getItem:key=>store.get(key)||null,setItem:(key,value)=>store.set(key,value),
+  }});
+  try {
+    for(const provider of ['netease','qq','kugou','qishui']) {
+      const sent=[],signed={accounts:[{provider,status:'signed-in',userId:'owner'}]};
+      const make=()=>createMusicOnline({cache:true,now:()=>100,send:(action,fields)=>{sent.push({action,...fields});return true;}});
+      const track=id=>({...cacheTrack(id,id),id:`${provider}:${id}`,source:`online:${provider}:${id}`});
+      const reply=(command,values={})=>state(command.request,command.action,{provider,...values});
+      let online=make();online.accounts(signed);online.setVisible(true);
+      online.receive(reply(sent.at(-1),{data:{...data(),tracks:[track('kept'),track('removed')],likedIds:[]}}));
+      online.dispose();online=make();online.accounts(signed);online.setVisible(true);
+      const refresh=sent.at(-1);
+      online.request('play',{id:`${provider}:kept`});
+      online.receive(reply(refresh,{status:'error',error:'network'}));
+      const plays=()=>sent.filter(command=>command.action==='play').length;
+      assert.equal(plays(),0);
+      online.request('play',{id:`${provider}:kept`});
+      const recovery=sent.at(-1);
+      assert.equal(recovery.action,'home','retry rebuilds the native registry');
+      online.receive(reply(recovery,{data:{...data(),tracks:[track('new'),track('kept')],likedIds:[]}}));
+      assert.equal(plays(),1);assert.equal(sent.at(-1).id,`${provider}:kept`);
+      online.receive(reply(sent.at(-1)));
+      online.dispose();
+      // Restart with the cached list, then remove the clicked song on the platform.
+      online=make();online.accounts(signed);online.setVisible(true);
+      const changed=sent.at(-1),before=plays();
+      online.request('play',{id:`${provider}:kept`});
+      online.receive(reply(changed,{data:{...data(),tracks:[track('new')],likedIds:[]}}));
+      assert.equal(plays(),before,'a removed song never starts the new song at its old row');
+      assert.equal(online.snapshot().error,'not-found');
+      online.dispose();
+    }
+  } finally {
+    if(previousStorage===undefined)delete globalThis.localStorage;
+    else Object.defineProperty(globalThis,'localStorage',{configurable:true,value:previousStorage});
+  }
+});
+
+test('反复展示缓存不会续期，歌单到期后重新读取',()=>{
+  const sent=[];let now=100;
+  const online=createMusicOnline({cache:true,now:()=>now,send:(action,fields)=>{sent.push({action,...fields});return true;}});
+  online.accounts(accounts('owner'));online.setVisible(true);
+  online.receive(state(sent.at(-1).request,'home',{data:cacheHome(42,'old')}));
+  now=1000;online.request('home');
+  now=2000;online.request('home');
+  const reads=sent.filter(command=>command.action==='home').length;
+  now=300101;online.request('home');
+  assert.equal(sent.filter(command=>command.action==='home').length,reads+1);
+  assert.equal(online.snapshot().tracks[0].title,'old');
   online.dispose();
 });
 
@@ -610,6 +714,15 @@ test('原生公开曲目不含 source，归一化保留 ID 且在线、本地按
   const localPage=musicPage(snapshot,{view:{nav:'local'}});
   assert.match(localPage,/data-music-action="local-play"/);
   assert.equal(localPage.includes('Online fixture'),false);
+});
+
+test('home recommendations retain order, titles and covers in equal square cards',()=>{
+  const recommendations=Array.from({length:12},(_,i)=>({id:`qq:${i}`,providerId:'qq',title:`Playlist ${i}`,
+    artwork:`https://music-file.y.qq.com/fixture-${i}.jpg`,description:'Recommendation'}));
+  const page=musicPage(normalizeMusicState({}),{library:{signedIn:true,providerId:'qq',recommendations,tracks:[],playlists:[]}});
+  assert.equal((page.match(/class="MusicRecommendationCard"/g)||[]).length,12);
+  assert.doesNotMatch(page,/MusicRecommendationCard--featured|你的歌单补给站/);
+  for(const item of recommendations)assert.ok(page.includes(`src="${item.artwork}"`));
 });
 
 test('历史平台会员标识和已喜欢红心使用结构化视觉状态',()=>{

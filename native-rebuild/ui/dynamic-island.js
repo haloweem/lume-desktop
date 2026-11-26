@@ -6,10 +6,10 @@ import {todoBoardMarkup} from './todo-board.js';
 import {islandNotificationsPage,syncIslandNotifications} from './island-notifications.js';
 import {islandStyles,syncIslandStyles} from './island-styles.js';
 
-// Focus remains hidden; music, the calendar, to-dos, clock and performance
+// Focus remains hidden; music, the calendar, to-dos, clock, performance and countdown
 // are offered. The host keeps any saved layout and projects
 // it the same way, so a hidden-only layout falls back to music.
-const availableExpandedWidgets=[0,1,4,5,3];
+const availableExpandedWidgets=[0,1,4,5,3,6];
 const releasedLayout=code=>{
   const ids=decodeExpandedLayout(code??1);if(!ids)return 1;
   const shown=ids.filter(id=>availableExpandedWidgets.includes(id));
@@ -24,7 +24,7 @@ export function validIslandState(m) {
   const compact=Object.hasOwn(m||{},'leftWidget')&&Object.hasOwn(m||{},'rightWidget');
   const screens=Object.hasOwn(m||{},'screen')&&Array.isArray(m.screens);
   const animation=['hoverDelayMs','animationSpeed','bounce'].some(key=>Object.hasOwn(m||{},key));
-  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'expandedLayout')?1:0)+(Object.hasOwn(m,'clockStyle')?1:0)+(Object.hasOwn(m,'calendarStyle')?1:0)+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0)+(animation?3:0) &&
+  return !!m && typeof m==='object' && !Array.isArray(m) && Object.keys(m).length===keys.length+(Object.hasOwn(m,'expandedLayout')?1:0)+(Object.hasOwn(m,'clockStyle')?1:0)+(Object.hasOwn(m,'calendarStyle')?1:0)+(Object.hasOwn(m,'countdownStyle')?1:0)+['countdownDate','countdownTitle','countdownReminder'].filter(key=>Object.hasOwn(m,key)).length+(Object.hasOwn(m,'shape')?1:0)+(compact?2:0)+(screens?2:0)+(animation?3:0) &&
     keys.every(key=>Object.hasOwn(m,key)) && m.version===1 && m.type==='dynamicIsland-state' &&
     ['enabled','running','locked','expanded','focusing','finished','saved','hideFullscreen','topmost','hover','autoHide'].every(key=>typeof m[key]==='boolean') &&
     islandSizes.includes(m.size) && islandMaterials.includes(m.material) &&
@@ -32,6 +32,10 @@ export function validIslandState(m) {
     (!Object.hasOwn(m,'expandedLayout')||validExpandedLayout(m.expandedLayout)) &&
     (!Object.hasOwn(m,'clockStyle')||['simple','progress','digital','date','flip','pixel'].includes(m.clockStyle)) &&
     (!Object.hasOwn(m,'calendarStyle')||['default','chinese-almanac'].includes(m.calendarStyle)) &&
+    (!Object.hasOwn(m,'countdownStyle')||['standard','violet'].includes(m.countdownStyle)) &&
+    (!Object.hasOwn(m,'countdownDate')||Number.isInteger(m.countdownDate)&&m.countdownDate>=0&&m.countdownDate<=2932896) &&
+    (!Object.hasOwn(m,'countdownTitle')||typeof m.countdownTitle==='string'&&m.countdownTitle.length<=2000) &&
+    (!Object.hasOwn(m,'countdownReminder')||typeof m.countdownReminder==='boolean') &&
     (!compact||(Number.isInteger(m.leftWidget)&&m.leftWidget>=0&&m.leftWidget<=30&&Number.isInteger(m.rightWidget)&&m.rightWidget>=0&&m.rightWidget<=30))&&
     (!screens||(Number.isInteger(m.screen)&&m.screen>=0&&m.screen<=64&&m.screens.length>=1&&m.screens.length<=64&&m.screens.every((id,index)=>id===index+1)))&&
     (!animation||(validIslandHoverDelay(m.hoverDelayMs)&&islandAnimationSpeeds.includes(m.animationSpeed)&&islandBounces.includes(m.bounce)))&&
@@ -76,10 +80,9 @@ export function validIslandPreview(m) {
 }
 const materialOptions=()=>[['none',t('纯黑','Black')],['liquid-glass',t('液态玻璃','Liquid glass')],['frosted-glass',t('磨砂玻璃','Frosted glass')]];
 const sizeOptions=()=>[['small',t('小','Small')],['standard',t('标准','Standard')],['large',t('大','Large')]];
-// Display switches: [action, state key, label, hint].
+// Display switches: [action, state key, label].
 const displayToggles=()=>[
-  ['hideFullscreen','hideFullscreen',t('全屏时隐藏','Hide in fullscreen'),t('全屏应用在前台时隐藏灵动岛；独占游戏和系统演示保护始终优先。','Hide the island while a fullscreen app is in front. Exclusive games and system presentation protection always take priority.')],
-  ['autoHide','autoHide',t('空闲时隐藏','Hide when idle'),t('闲置几秒后收到屏幕最上方，只露出一条边；鼠标移上去即滑出，切歌或暂停时也会短暂出现','After a few idle seconds it slides up against the top of the screen, leaving a sliver; hover to bring it back. It also peeks out on track changes')],
+  ['autoHide','autoHide',t('空闲时隐藏','Hide when idle')],
 ];
 export function islandStatus(state) {
   const status=state.dynamicIslandStatus;
@@ -153,10 +156,9 @@ function islandHome(state) {
             <div class="setting-range" data-island-delay-range>
               <label class="island-appearance__label" for="island-hover-delay">${t('悬停延迟','Hover delay')}</label>
               <div class="island-animation__delay">
-                <input id="island-hover-delay" data-island-hover-delay type="range" min="100" max="1000" step="50" value="${p.hoverDelayMs??300}" aria-valuetext="${delayLabel(p.hoverDelayMs??300)}" aria-describedby="island-hover-delay-hint" ${busy(state)?'disabled':''}>
+                <input id="island-hover-delay" data-island-hover-delay type="range" min="100" max="1000" step="50" value="${p.hoverDelayMs??300}" aria-valuetext="${delayLabel(p.hoverDelayMs??300)}" ${busy(state)?'disabled':''}>
                 <output for="island-hover-delay">${delayLabel(p.hoverDelayMs??300)}</output>
               </div>
-              <span class="island-animation__hint" id="island-hover-delay-hint">${t('鼠标悬停后自动展开的等待时间，0.1～1 秒','Wait before expanding on hover, from 0.1 to 1 second')}</span>
             </div>
           </div>
           <div class="island-appearance__row">
@@ -180,7 +182,6 @@ function islandHome(state) {
     <section class="island-component-workspace is-expanded" data-island-component-workspace>
     <div class="island-component-workspace__head">
       <div class="island-component-workspace__title"><h2 data-island-component-title>${t('展开态组件','Expanded widgets')}</h2><span class="island-component-summary" data-island-component-summary aria-label="${t('已启用组件','Enabled widgets')}">${expandedSelectionSummary(p.expandedLayout??1)}</span></div>
-      <p data-island-component-hint>${t('点击开关启用音乐、日历、待办、时间或性能','Use the switches to enable music, calendar, to-dos, clock or performance.')}</p>
     </div>
     <div data-island-expanded-panel>${expandedWidgetPicker(state,availableExpandedWidgets)}</div>
     ${islandStyles(state)}
@@ -194,12 +195,12 @@ export function islandPage(state,tab='settings') {
   const p=state.dynamicIsland,disabled=busy(state);
   const button=(action,label,inactive=false)=>`<button type="button" class="reset" data-action="dynamicIsland-${action}" ${inactive?'disabled':''}>${label}</button>`;
   const preferences=
-    `<div class="setting-row island-option"><label>${t('显示层级','Display layer')}<small>${t('桌面层位于应用后方；应用上方可覆盖普通窗口，不抢占焦点。','The desktop layer stays behind apps. Above applications shows over ordinary windows without taking focus.')}</small></label>${settingsSelect('dynamicIsland-layer',t('显示层级','Display layer'),p.topmost?'above':'desktop',[
+    `<div class="setting-row island-option"><label>${t('显示层级','Display layer')}</label>${settingsSelect('dynamicIsland-layer',t('显示层级','Display layer'),p.topmost?'above':'desktop',[
       ['desktop',t('桌面层','Desktop layer')],['above',t('应用上方','Above applications')]],disabled)}</div>`+
-    displayToggles().map(([action,key,label,hint])=>`<div class="setting-row island-option"><label>${label}<small>${hint}</small></label>${toggle(p[key],label,`dynamicIsland-${action}`,disabled)}</div>`).join('')+
+    displayToggles().map(([action,key,label])=>`<div class="setting-row island-option"><label>${label}</label>${toggle(p[key],label,`dynamicIsland-${action}`,disabled)}</div>`).join('')+
     `<div class="reset-row">${button('reset',t('恢复默认设置','Restore defaults'),disabled)}</div>`;
   const details=
-    `<div class="settings-details"><h3>${t('功能说明','About the island')}</h3><p>${t('胶囊固定在顶部中央，点击展开或收起；展开后鼠标离开几秒会自动收起。','The capsule stays centered at the top and expands or collapses when clicked; it collapses a few seconds after the pointer leaves.')}</p><p>${t('默认在全屏程序和游戏前台时完全隐藏，不抢焦点。','By default it hides completely in front of fullscreen apps and games and never takes focus.')}</p><p>${t('展开后点击其他任意位置即收起；右键胶囊可切换材质。','When expanded, clicking anywhere else collapses it; right-click the capsule to change the material.')}</p><p>${t('播放音乐时显示封面、歌曲、歌手、进度和节奏频谱，并提供切歌与播放控制。','When music is playing, it shows the cover, track, artist, progress and beat spectrum with playback controls.')}</p></div>`;
+    `<div class="settings-details"><h3>${t('功能说明','About the island')}</h3><p>${t('胶囊固定在顶部中央，点击展开或收起；展开后鼠标离开几秒会自动收起。','The capsule stays centered at the top and expands or collapses when clicked; it collapses a few seconds after the pointer leaves.')}</p><p>${t('展开后点击其他任意位置即收起；右键胶囊可切换材质。','When expanded, clicking anywhere else collapses it; right-click the capsule to change the material.')}</p><p>${t('播放音乐时显示封面、歌曲、歌手、进度和节奏频谱，并提供切歌与播放控制。','When music is playing, it shows the cover, track, artist, progress and beat spectrum with playback controls.')}</p></div>`;
   const labels={home:t('首页','Home'),music:t('音乐','Music'),todo:t('待办','To-do'),'quick-launch':t('快捷启动','Quick launch'),clock:t('时钟','Clock'),notifications:t('通知','Notifications'),settings:t('设置','Settings'),details:t('详情','Details')};
   const body=tab==='home'?islandHome(state):tab==='settings'?preferences:tab==='details'?details:tab==='todo'?todoBoardMarkup('island'):tab==='notifications'?islandNotificationsPage(state):
     `<div class="island-editor"><h2>${labels[tab]||labels.home}</h2><p class="island-editor__empty">${t('此模块的灵动岛参数将在后续接入。','Island options for this module will be added later.')}</p></div>`;

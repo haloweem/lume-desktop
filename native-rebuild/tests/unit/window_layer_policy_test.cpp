@@ -1,5 +1,6 @@
 #include "platform/windows/widget_ui/desktop_level.h"
 #include <cstdio>
+#include "apps/shell/balanced_game_policy.h"
 #include <atomic>
 #include <thread>
 using namespace lume::platform::windows;
@@ -17,6 +18,68 @@ HRESULT WINAPI PeekAttribute(HWND,DWORD attribute,LPCVOID value,DWORD bytes){
     peekAttribute=attribute;peekBytes=bytes;
     if(value&&bytes==sizeof(BOOL))peekValue=*static_cast<const BOOL*>(value);
     return failPeekAttribute?E_FAIL:S_OK;
+}
+void BalancedGames(){
+    using namespace window_layer;
+    HWND widget=Make(L"LumeBalancedGameTest",{60,60,230,200});
+    Context simulated;
+    simulated.foreground=widget;simulated.foreignForeground=true;
+    ULONGLONG now=100;
+    lume::shell::BalancedGamePolicy policy;
+    contextReader=[&]{return simulated;};
+    balancedPolicy=[&](const Context& s){return policy.Observe(s,now);};
+    Start();Register(widget,Kind::Desktop);
+    // The fullscreen bounds deliberately do not cover this other screen.
+    const RECT secondDisplay{1000,0,2000,1000};
+    simulated.fullscreen.push_back(secondDisplay);Refresh();
+    Check(balancedIdle && !IsWindowVisible(widget),"fullscreen pauses the other desktop");
+    simulated.fullscreen.clear();now+=1500;Refresh();
+    Check(balancedIdle && !IsWindowVisible(widget),"short task switch keeps surfaces parked");
+    now+=600;Refresh();
+    Check(!balancedIdle && IsWindowVisible(widget),"return restores the desktop");
+    simulated.foregroundBounds=secondDisplay;
+    simulated.fullscreen.push_back(secondDisplay);
+    ApplyForegroundProtection(simulated,ShellSurfaceImage(L"C:/Windows/System32/ScreenClippingHost.exe"),
+        QUNS_RUNNING_D3D_FULL_SCREEN);
+    Refresh();
+    Check(!balancedIdle&&IsWindowVisible(widget)&&!simulated.foreignForeground&&
+        IsRectEmpty(&simulated.foregroundBounds),"system snipping overlay keeps balanced-mode widgets available");
+    simulated.foreignForeground=true;
+    wchar_t image[MAX_PATH]{};GetModuleFileNameW(nullptr,image,MAX_PATH);
+    policy.Configure(true,{std::filesystem::path(image).u8string()});Refresh();
+    Check(balancedIdle,"explicit windowed game matches its foreground executable");
+    policy.Configure(false,{std::filesystem::path(image).u8string()});Refresh();
+    Check(!balancedIdle && IsWindowVisible(widget),"turning off balanced mode restores immediately");
+    Stop();contextReader={};DestroyWindow(widget);
+}
+void FullscreenProtectionDisabled(){
+    using namespace window_layer;
+    HWND widget=Make(L"LumeCaptureWidget",{30,30,230,200});
+    HWND dock=Make(L"LumeCaptureDock",{30,500,770,585});
+    HWND island=Make(L"LumeCaptureIsland",{290,10,510,55});
+    Check(Register(widget,Kind::Desktop)&&Register(dock,Kind::Desktop)&&
+          Register(island,Kind::Island,nullptr,true,true),"register desktop capture fixtures");
+    Context simulated;
+    contextReader=[&]{return simulated;};
+    unsigned gameChecks=0;
+    balancedPolicy=[&](const Context&){++gameChecks;return true;};
+    Start(false);
+    const auto visible=[&]{
+        return IsWindowVisible(widget)&&IsWindowVisible(dock)&&IsWindowVisible(island)&&
+            !Suppressed(widget)&&!Suppressed(dock)&&!Suppressed(island)&&!balancedIdle;
+    };
+    constexpr RECT screen{0,0,800,600};
+    simulated.foreignForeground=true;
+    simulated.fullscreen={screen};
+    Refresh();Pump();
+    Check(visible()&&!Protected(screen,ReadContext()),"an unrecognized fullscreen crop overlay leaves all residents visible");
+    simulated.fullscreen.clear();simulated.exclusive=simulated.allDisplays=true;
+    Refresh();Pump();
+    Check(visible()&&gameChecks==0,"exclusive notifications and balanced mode cannot hide residents during capture");
+    simulated={};Refresh();Pump();
+    Check(visible(),"dismissed overlay leaves residents visible");
+    Stop();contextReader={};
+    for(HWND window:{island,dock,widget})DestroyWindow(window);
 }
 void DesktopPeekScenario(){
     using namespace window_layer;
@@ -94,7 +157,7 @@ void BlockedMaterialRestackScenario(){
     std::atomic<HWND> glass{nullptr};
     std::thread worker([&]{
         if(!SetThreadDesktop(desktop)){SetEvent(ready);return;}
-        const HWND surface=CreateWindowExW(WS_EX_TOOLWINDOW,type.lpszClassName,L"Blocked material fixture",WS_POPUP|WS_VISIBLE,
+        const HWND surface=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,type.lpszClassName,L"Blocked material fixture",WS_POPUP|WS_VISIBLE,
             40,40,200,160,nullptr,nullptr,type.hInstance,&fixture);
         if(surface)SetPropW(surface,lume::window_ids::GlassSurfaceOwnerProp,owner);
         glass=surface;SetEvent(ready);
@@ -106,7 +169,14 @@ void BlockedMaterialRestackScenario(){
         }
         if(surface)DestroyWindow(surface);
     });
-    WaitForSingleObject(ready,2000);Check(glass.load()!=nullptr,"worker owns an isolated material surface");
+    // CreateWindow can synchronously consult the desktop's other GUI thread.
+    // The simulated stall begins after creation, once the worker signals ready.
+    const auto readyDeadline=GetTickCount64()+3000;
+    while(WaitForSingleObject(ready,0)==WAIT_TIMEOUT && GetTickCount64()<readyDeadline) {
+        MsgWaitForMultipleObjects(1,&ready,FALSE,50,QS_SENDMESSAGE);
+        MSG sent{};PeekMessageW(&sent,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE);
+    }
+    Check(glass.load()!=nullptr,"worker owns an isolated material surface");
     // The watchdog makes the unfixed synchronous implementation fail a bounded
     // timing assertion instead of hanging the whole suite indefinitely.
     std::thread watchdog([&]{WaitForSingleObject(release,700);SetEvent(release);});
@@ -287,6 +357,7 @@ void Scenario(){
           "transient windows do not retain global topmost");
     Check(ShellSurfaceImage(L"C:/Windows/SystemApps/ShellExperienceHost_cw5n1h2txyewy/ShellExperienceHost.exe")&&
           ShellSurfaceImage(L"C:/Windows/SystemApps/MicrosoftWindows.Client.CBS_cw5n1h2txyewy/searchhost.exe")&&
+          ShellSurfaceImage(L"C:/WindowsApps/Microsoft.ScreenSketch/SnippingTool.exe")&&
           !ShellSurfaceImage(L"C:/Games/Game.exe")&&!ShellSurfaceImage(nullptr),"shell overlays never count as fullscreen applications");
     Check(Covers({0,0,800,600},{0,0,800,600})&&!Covers({0,0,800,560},{0,0,800,600}),"borderless fullscreen differs from work-area maximize");
     Start();next.fullscreen={{0,0,800,600}};next.foreignForeground=true;Update(next);Pump();
@@ -427,6 +498,50 @@ void DesktopRestoreScenario(){
     Check(!desktop_level::desktopPlacementAnchor.Get(),"placement anchor cleanup clears its native handle");
     for(HWND window:{widget,dock,app,view,host})DestroyWindow(window);
 }
+void DesktopMenuScenario(){
+    using namespace window_layer;
+    constexpr UINT flags=SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER;
+    HWND app=Make(L"LumePolicyMenuBrowser",{0,0,800,560},0);
+    HWND host=Make(L"LumePolicyMenuDesktop",{0,0,800,600});
+    HWND view=Make(L"SHELLDLL_DefView",{0,0,1,1},0,host,WS_CHILD|WS_VISIBLE);
+    HWND widget=Make(L"LumeNativeDesktopMenuWidget",{30,30,230,200});
+    HWND menu=Make(L"LumePolicyOwnedMenu",{80,80,260,340},WS_EX_TOOLWINDOW,widget);
+    HWND submenu=Make(L"LumePolicyOwnedSubmenu",{260,80,420,240},WS_EX_TOOLWINDOW,menu);
+    HWND manager=Make(L"LumePolicyMenuManager",{200,200,700,500});
+    ShowWindow(manager,SW_HIDE);
+    Check(Register(widget,Kind::Desktop)&&Register(menu,Kind::Popup,widget)&&Register(submenu,Kind::Popup,menu),
+          "register desktop menu family");
+    desktop_level::foregroundDesktop=nullptr;
+    SetWindowPos(host,HWND_TOPMOST,0,0,0,0,flags);SetWindowPos(host,HWND_NOTOPMOST,0,0,0,0,flags);
+    desktop_level::Watcher::ForegroundChanged(host);desktop_level::Place(widget,true);
+    Check(desktop_level::Above(host,app)&&desktop_level::Above(widget,host),
+          "show-desktop fixture leaves application behind host and widget above it");
+    for(HWND foreground:{widget,menu,submenu,menu}) {
+        desktop_level::Watcher::ForegroundChanged(foreground);
+        Check(desktop_level::DesktopForeground(host)&&desktop_level::IsDesktopInteractionForeground(foreground,host),
+              "widget and nested menus retain desktop interaction across policy ticks");
+        Check(desktop_level::ApplicationCeiling(host)!=app,
+              "menu never selects the application covered by Explorer as its ceiling");
+        desktop_level::Place(widget,false);Pump();
+        Check(desktop_level::Above(widget,host)&&IsWindowVisible(widget)&&!IsIconic(widget),
+              "opening a desktop menu never drops its component behind the host");
+        Check(!(GetWindowLongPtrW(widget,GWL_EXSTYLE)&WS_EX_TOPMOST),
+              "menu interaction does not make the desktop component topmost");
+    }
+    ShowWindow(manager,SW_SHOWNOACTIVATE);
+    desktop_level::Watcher::ForegroundChanged(manager);desktop_level::Place(widget,false);
+    Check(!desktop_level::DesktopForeground(host)&&!desktop_level::Above(widget,manager),
+          "the same-process manager ends the desktop exemption and covers widgets");
+    ShowWindow(manager,SW_HIDE);
+    desktop_level::Watcher::ForegroundChanged(app);desktop_level::Place(widget,false);
+    Check(!desktop_level::DesktopForeground(host)&&!desktop_level::Above(widget,app),
+          "returning to an application restores its ceiling even below the raised host");
+    desktop_level::Watcher::ForegroundChanged(menu);desktop_level::Place(widget,false);
+    Check(!desktop_level::DesktopForeground(host)&&!desktop_level::Above(widget,app),
+          "a menu cannot invent a desktop exemption after an application became foreground");
+    desktop_level::foregroundDesktop=nullptr;desktop_level::desktopPlacementAnchor.Reset();
+    for(HWND window:{submenu,menu,widget,manager,view,host,app})DestroyWindow(window);
+}
 struct ImmediateRestackFixture { unsigned messages=0; bool nested=false; };
 HWND immediateForeground=nullptr;
 HWND WINAPI ImmediateForeground(){return immediateForeground;}
@@ -479,7 +594,7 @@ int main(){
     wchar_t name[80]{};swprintf_s(name,L"LumeLayerPolicy-%lu",GetCurrentProcessId());
     HDESK desktop=CreateDesktopW(name,nullptr,nullptr,0,GENERIC_ALL,nullptr);
     if(!desktop)return 2;
-    std::thread test([&]{if(!SetThreadDesktop(desktop)){++failures;return;}DesktopPeekScenario();BlockedMaterialRestackScenario();ShellTransitionScenario();MaximizedWorkAreaTransitionScenario();FullscreenInputReleaseScenario();Scenario();DesktopRestoreScenario();ImmediateRestackScenario();});test.join();CloseDesktop(desktop);
+    std::thread test([&]{if(!SetThreadDesktop(desktop)){++failures;return;}BalancedGames();FullscreenProtectionDisabled();DesktopPeekScenario();BlockedMaterialRestackScenario();ShellTransitionScenario();MaximizedWorkAreaTransitionScenario();FullscreenInputReleaseScenario();Scenario();DesktopRestoreScenario();DesktopMenuScenario();ImmediateRestackScenario();});test.join();CloseDesktop(desktop);
     if(!failures)std::puts("PASS isolated display policy: fullscreen, multimonitor, families, late callbacks and application ceilings");
     return failures?1:0;
 }

@@ -16,15 +16,18 @@ public:
     void Start(HWND icons, HWND bar);
     void Stop();
     void Place();
+    bool Summon();
+    void Restore();
     void Consumed() { pending_ = false; }
     // True only during shared foreground fullscreen/exclusive protection.
     // Ordinary maximized/background windows just cover the resident Dock.
+    bool Summoned() const { return summoned_; }
     bool Covered() const { return covered_; }
 private:
     void Request();
     static void CALLBACK Event(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD);
     HWND icons_ = nullptr, bar_ = nullptr;
     std::array<HWINEVENTHOOK, 4> hooks_{};
-    bool pending_ = false, covered_ = false, fallback_ = false;
+    bool pending_ = false, covered_ = false, fallback_ = false, summoned_ = false;
 };
 }  // namespace lume::platform::windows

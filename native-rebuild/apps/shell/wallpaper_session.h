@@ -58,6 +58,7 @@ public:
     // Actual changes stay ordered: queued work expires after 2s, started work
     // waits for bounded IPC/rollback.
     // False guarantees that this request cannot change the mode later.
+    void SetGameIdle(bool idle);  // UI thread, transient across all displays
     bool SetBalancedMode(bool enabled);
     void HandlePage(const ui::WallpaperPageCommand&,HWND owner=nullptr);
     // Batch-local path deduplication, at most 32 successful imports, first error retained.

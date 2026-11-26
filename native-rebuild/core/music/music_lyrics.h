@@ -27,6 +27,7 @@ struct LyricLine {
     // Seconds on the same clock as the line; empty when no word timing was supplied.
     std::vector<LyricWord> words;
     std::string translation;
+    std::string romanization;
 };
 
 struct LocalLyricsResult {

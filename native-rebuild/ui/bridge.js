@@ -1,3 +1,4 @@
+import {islandStyleWidgets} from './island-styles.js';
 import {validTodoBoardCommand,validTodoBoardState} from "./todo-board.js";
 import {
   validAccountCommand, validAccountState,
@@ -14,7 +15,7 @@ import {validMusicLibraryCommand,validMusicLibraryMessage} from './music-library
 import {validMusicDesktopCommand,validMusicDesktopMessage} from './music-desktop.js';
 import {validNotesCommand,validNotesMessage} from './notes.js';
 import {validRadialShortcut,validRadialState} from './radial.js';
-import {validDockState} from './dock.js';
+import {validDockState,validDockSummonShortcut} from './dock.js';
 import {validIslandState,validIslandPreview} from './dynamic-island.js';
 import {validIslandNotificationCommand,validIslandNotificationState} from './island-notifications-protocol.js';
 import {validExpandedLayout} from './expanded-widgets.js';
@@ -27,7 +28,7 @@ const cities = ["auto","beijing","shanghai","guangzhou","shenzhen","hangzhou","c
 const taskbarErrors = ["","load","save","busy","unsupported","missing-payload","payload-integrity","conflict",
   "discover","read-appearance","apply-appearance","read-auto-hide","apply-auto-hide","core-start",
   "core-exited","core-stop","cancelled","recovery","watch","system-effects-disabled","runtime","read-visibility","apply-visibility","framework-install","core-access-denied",
-  "core-restart-required","core-attach-timeout","core-effect-unconfirmed"];
+  "core-restart-required","core-attach-timeout","core-effect-unconfirmed","core-failure"];
 const minimizeErrors = ["","save","rollback","invalid-settings","missing-host","already-running","ipc",
   "host-start","hook-install","stop-timeout","host-exited","unsupported-architecture","runtime"];
 const integerIn = (value,min,max) => Number.isSafeInteger(value) && value>=min && value<=max;
@@ -161,13 +162,15 @@ function validMusicLyrics(m) {
   let previousStart = 0, textBytes = 0, wordCount=0;
   const encoder = new TextEncoder();
   for (const line of m.lines) {
-    if (!exactKeys(line, ["startTime", "endTime", "fullText", "words", "translation"]) ||
+    if (!exactKeys(line, ["startTime", "endTime", "fullText", "words", "translation"], ["romanization"]) ||
         !Number.isFinite(line.startTime) || !Number.isFinite(line.endTime) || line.startTime < previousStart ||
         line.endTime <= line.startTime || line.endTime > 86400 || typeof line.fullText !== "string" ||
         line.fullText.length > 4096 || !Array.isArray(line.words) || line.words.length>1000 ||
-        typeof line.translation!=='string'||line.translation.length>4096) return false;
-    const bytes = encoder.encode(line.fullText).length,translated=encoder.encode(line.translation).length;
-    if (bytes > 4096 || translated>4096 || (textBytes += bytes+translated) > 262144) return false;
+        typeof line.translation!=='string'||line.translation.length>4096 ||
+        line.romanization!==undefined&&(typeof line.romanization!=='string'||line.romanization.length>4096)) return false;
+    const bytes = encoder.encode(line.fullText).length,translated=encoder.encode(line.translation).length,
+      romanized=encoder.encode(line.romanization||'').length;
+    if (bytes > 4096 || translated>4096 || romanized>4096 || (textBytes += bytes+translated+romanized) > 262144) return false;
     let previousWord=line.startTime;
     for(const word of line.words) {
       if(!exactKeys(word,['startTime','endTime','text'])||!Number.isFinite(word.startTime)||!Number.isFinite(word.endTime)||
@@ -378,10 +381,12 @@ export function validHostMessage(m) {
   if (m.type === "window") return typeof m.fullscreen === "boolean";
   if (m.type === "navigate") return m.page === "applicationSettings"
     ? exactKeys(m,["version","type","page","section"]) && ["general","user","autostart","diagnostics","support","about"].includes(m.section)
+    : m.page==='dynamicIsland'?exactKeys(m,['version','type','page'],['section'])&&
+      (!Object.hasOwn(m,'section')||islandStyleWidgets.includes(m.section))
     : m.page==='radial'?exactKeys(m,['version','type','page'],['section'])&&
       (!Object.hasOwn(m,'section')||m.section==='shortcut')
     : m.page==="music"&&m.section==="desktop"?exactKeys(m,["version","type","page","section"])
-    : exactKeys(m,["version","type","page"]) && ["clock","calendar","performance","spectrum","almanac","todayTodo","weather","organizer","icons","taskbar","minimize","music","dock","dynamicIsland"].includes(m.page);
+    : exactKeys(m,["version","type","page"]) && ["clock","calendar","performance","spectrum","almanac","todayTodo","weather","organizer","icons","taskbar","minimize","music","dock"].includes(m.page);
   if(m.type==='taskbar-state') {
     return exactKeys(m,['version','type','enabled','running','transparentTaskbar','autoHideTaskbar','hideBehavior',
       'applying','pendingRecovery','taskbars','mode','error','loadStatus','revision'],
@@ -435,7 +440,7 @@ export function validHostMessage(m) {
       (Object.hasOwn(m,"iconScale")&&!integerIn(m.iconScale,50,120)))return false;
     const title=value=>typeof value==="string"&&value.length>0&&[...value].length<=80;
     const collapsed=m.mode==="collapsed";
-    if(!validWidgetState(m,collapsed?44:216,120,["","runtime","save","rollback","editor","open","invalid","target","limit"],1200,720) ||
+    if(!validWidgetState(m,collapsed?44:216,120,["","runtime","save","rollback","editor","open","invalid","target","recycle","limit"],1200,720) ||
       (collapsed && (m.width!==260 || m.height!==44)) || !title(m.title) ||
       !integerIn(m.count,0,Number.MAX_SAFE_INTEGER) || !["expanded","collapsed"].includes(m.mode) || !["icons","list"].includes(m.layout) ||
       !Array.isArray(m.collections) || m.collections.length<1 || m.collections.length>64)return false;
@@ -521,9 +526,9 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
         return false;
       }
     },
-    // Builds the diagnostic report zip on the desktop, or opens the log folder.
+    // Creates diagnostics or opens the log folder and official troubleshooting guide.
     diagnosticReport(action, note = "") {
-      if (!["create", "open-logs", "copy", "self-check"].includes(action) || typeof note !== "string" || note.length > 1000 ||
+      if (!["create", "open-logs", "copy", "self-check", "open-help"].includes(action) || typeof note !== "string" || note.length > 1000 ||
           typeof webview?.postMessage !== "function") return false;
       try {
         webview.postMessage({version: 1, scope: "diagnostic-report", action, note});
@@ -615,8 +620,10 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='screen' && integerIn(value,0,64)) ||
             (action==='hoverDelayMs' && integerIn(value,100,1000)) ||
             (action==='expandedLayout' && validExpandedLayout(value)) ||
+            (action==='countdownDate' && integerIn(value,0,2932896)) ||
             (action==='clockStyle' && ['simple','progress','digital','date','flip','pixel'].includes(value)) ||
             (action==='calendarStyle' && ['default','chinese-almanac'].includes(value)) ||
+            (action==='countdownStyle' && ['standard','violet'].includes(value)) ||
             (action==='animationSpeed' && ['slow','normal','fast'].includes(value)) ||
             (action==='bounce' && ['subtle','normal','bouncy'].includes(value)) ||
             (action==='material' && ['none','liquid-glass','frosted-glass'].includes(value)))))) ||
@@ -626,11 +633,18 @@ export function createBridge(webview = globalThis.window?.chrome?.webview) {
             (action==='material' && materials.includes(value)) ||
             (action==='shortcut' && validRadialShortcut(value)))))) ||
         (kind === 'dock' && ((parts.length===2 && action==='reset') ||
-          (parts.length===3 && ((['enabled','reflection','showRunning','systemTray'].includes(action) && typeof value==='boolean') ||
+          (parts.length===3 && ((['enabled','reflection','showRunning','runningPreview','animation','animateRestore','animateLaunch','animateClose','showStartMenu','launchpadEnabled','systemTray','summonEnabled','summonCapture'].includes(action) && typeof value==='boolean') ||
+            (action==='screen' && integerIn(value,0,64)) ||
+            (action==='summonShortcut' && validDockSummonShortcut(value)) ||
+            (['reflectionRatio','reflectionTransparency'].includes(action) && integerIn(value,0,100)) ||
             (action==='iconScale' && integerIn(value,50,120)) ||
+            (action==='animationDuration' && integerIn(value,50,2000)) ||
             (action==='launchpadScale' && integerIn(value,60,140)) ||
             (action==='launchpadIconScale' && integerIn(value,50,120)) ||
             (action==='position' && integerIn(value,0,100)) ||
+            (action==='positionMode' && ['center','left','right'].includes(value)) ||
+            (action==='edge' && ['bottom','top','left','right'].includes(value)) ||
+            (action==='positionOffset' && integerIn(value,0,50)) ||
             (action==='bottomOffset' && integerIn(value,0,160)) ||
             (action==='iconSpacing' && integerIn(value,4,24)) ||
             (action==='material' && [...materials,'none'].includes(value)))))) ||

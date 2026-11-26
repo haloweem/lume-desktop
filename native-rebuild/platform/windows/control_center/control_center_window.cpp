@@ -1,4 +1,5 @@
 #include "platform/windows/control_center/control_center_window.h"
+#include "platform/windows/dock/dock_popup_bounds.h"
 #include "platform/windows/control_center/system_controls.h"
 #include "platform/windows/control_center/network_controls.h"
 #include "platform/windows/control_center/panel_worker.h"
@@ -26,6 +27,7 @@ namespace {
 using Json = nlohmann::json;
 constexpr wchar_t kClass[]=L"LumeControlCenter", kPasswordClass[]=L"LumeControlCenterPassword";
 constexpr UINT kState=WM_APP+0x6f6, kAction=WM_APP+0x6f8,kDismiss=WM_APP+0x6f9;
+constexpr UINT kTrayState=WM_APP+0x6fa;
 constexpr UINT_PTR kRefreshTimer=1,kContactTimer=2,kMaterialStartTimer=3;
 constexpr int kWidth=372,kGap=12;
 constexpr float kCornerRadius=22.f;
@@ -40,7 +42,7 @@ nlohmann::json Choices(const std::vector<cc::Choice>& items) {
 }
 nlohmann::json Encode(const cc::State& s) {
     return {{"wifi", {{"available", s.wifi.available}, {"on", s.wifi.on}, {"ssid", Utf8(s.ssid)}, {"signal", s.signal}}},
-            {"ethernet", s.ethernet},
+            {"ethernet", s.ethernet}, {"wifiAdapter",s.wifiAdapter.value_or(true)},
             {"bluetooth", {{"available", s.bluetooth.available}, {"on", s.bluetooth.on}}},
             {"hotspot", {{"available", s.hotspotAvailable}, {"on", s.hotspotOn}, {"reason", Utf8(s.hotspotReason)}}},
             {"airplane", {{"available", s.airplaneAvailable}, {"on", s.airplaneOn}}},
@@ -52,6 +54,11 @@ nlohmann::json Encode(const cc::State& s) {
             {"tray", s.trayAvailable}};
 }
 // Windows settings pages the panel may open; anything else is refused.
+bool LaunchSettings(HWND owner,const wchar_t* uri){
+    SHELLEXECUTEINFOW info{sizeof(info)};info.fMask=SEE_MASK_FLAG_NO_UI;info.hwnd=owner;
+    info.lpVerb=L"open";info.lpFile=uri;info.nShow=SW_SHOWNORMAL;
+    return ShellExecuteExW(&info)!=FALSE;
+}
 const wchar_t* SettingsUri(const std::string& page) {
     if (page == "wifi") return L"ms-settings:network-wifi";
     if (page == "bluetooth") return L"ms-settings:bluetooth";
@@ -73,12 +80,16 @@ struct Worker {
     // The newest Wi-Fi connection attempt (worker only).
     std::wstring joining;
     std::string joinStatus;  // started | needs-password | unsupported | failed | connected
+    Json pairResult=Json::object();
     ULONGLONG joinDeadline = 0;
+    std::optional<bool> trayResult;
+    unsigned trayRequest=0;
     std::string Execute(cc::PanelWorker::Generation current,const cc::PanelWorker::Job& job) {
-            if(generation!=current){generation=current;display.clear();view.clear();joining.clear();joinStatus.clear();joinDeadline=0;}
+            if(generation!=current){generation=current;display.clear();view.clear();joining.clear();joinStatus.clear();joinDeadline=0;trayResult.reset();trayRequest=0;pairResult.clear();}
             bool full = false;
             const auto& v = job.value;
             if (job.key == "refresh") full = v.is_boolean() && v.get<bool>();
+            else if (job.key == "tray" && v.is_object()) {trayResult=cc::OpenTrayOverflow({v.value("x",0),v.value("y",0)});trayRequest=v.value("request",0u);}
             else if (job.key == "wifi" && v.is_boolean()) cc::SetRadio(true, v.get<bool>());
             else if (job.key == "bluetooth" && v.is_boolean()) cc::SetRadio(false, v.get<bool>());
             else if (job.key == "airplane" && v.is_boolean()) cc::SetAirplane(v.get<bool>());
@@ -94,6 +105,9 @@ struct Worker {
                 if (view == "wifi") cc::ScanNetworks();
             }
             else if (job.key == "scan") cc::ScanNetworks();
+            else if (job.key == "pair" && v.is_string() && !v.get_ref<const std::string&>().empty()) {
+                const auto id=v.get<std::string>();pairResult={{"id",id},{"success",cc::PairDevice(Wide(id))}};
+            }
             else if (job.key == "disconnect") cc::Disconnect();
             else if (job.key == "connect" && v.is_object() && v.contains("ssid") && v["ssid"].is_string()) {
                 if (!joining.empty() && joinStatus == "started" && joining != Wide(v["ssid"].get<std::string>())) cc::ForgetCreatedProfile(joining);
@@ -110,6 +124,7 @@ struct Worker {
             const auto state = cc::Read(display, full);
             display = state.display;
             auto encoded = Encode(state);
+            if(trayResult){encoded["trayResult"]=*trayResult;encoded["trayRequest"]=trayRequest;}
             char accent[8]{};
             std::snprintf(accent, sizeof(accent), "#%06x", static_cast<unsigned>(cc::AccentColor() & 0xffffff));
             encoded["accent"] = accent;
@@ -125,8 +140,9 @@ struct Worker {
                 encoded["networks"] = rows;
             } else if (view == "bluetooth") {
                 auto rows = nlohmann::json::array();
-                for (const auto& d : cc::PairedDevices()) rows.push_back({{"name", Utf8(d.name)}, {"connected", d.connected}});
+                if(state.bluetooth.on)for (const auto& d : cc::BluetoothDevices()) rows.push_back({{"name", Utf8(d.name)}, {"id",Utf8(d.id)},{"connected", d.connected},{"paired",d.paired},{"canPair",!d.paired&&!d.id.empty()}});
                 encoded["devices"] = rows;
+                if(!pairResult.empty())encoded["pair"]=pairResult;
             }
             return encoded.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     }
@@ -149,7 +165,13 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
     HWND window=nullptr,owner=nullptr,passwordWindow=nullptr,passwordEdit=nullptr;
     HINSTANCE instance=nullptr;
     std::shared_ptr<cc::PanelWorker> worker;
+    std::shared_ptr<cc::PanelWorker> trayWorker;
+    std::function<bool(HWND,const wchar_t*)> openSettings;
+    bool settingsFailed=false;
+    bool trayBusy=false,trayFailed=false;
+    unsigned trayRequest=0;
     cc::PanelWorker::Generation workerGeneration=0;
+    cc::PanelWorker::Generation trayGeneration=0;
     std::unique_ptr<WidgetCanvas> canvas;
     LayeredSurface surface;
     WidgetMaterialRuntime material;
@@ -159,6 +181,7 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
     std::optional<HitTarget> pressedTarget;
     std::map<std::string,Pending> pending;
     RECT anchor{};
+    dock::Edge edge=dock::Edge::Bottom;
     Material look=Material::Liquid;
     bool closing=false,shown=false,fresh=false,haveState=false,en=false,solidFallback=false;
     int heightDip=432,pressed=-1,focus=-1,scroll=0,pickerScroll=0;
@@ -210,6 +233,19 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
     void BindWorker(){
         if(!workerGeneration)workerGeneration=worker->Bind([weak=weak_from_this()](auto generation){const auto self=weak.lock();return self&&self->window&&!self->closing&&PostMessageW(self->window,kState,static_cast<WPARAM>(generation),0)!=FALSE;});
     }
+    void OpenTray(){
+        trayFailed=false;
+        trayBusy=true;
+        Json request={{"x",(anchor.left+anchor.right)/2},{"y",anchor.top-MulDiv(kGap,static_cast<int>(Dpi()),96)},{"request",++trayRequest}};
+        if(!trayWorker){Push("tray",std::move(request));return;}
+        if(!trayGeneration)trayGeneration=trayWorker->Bind([weak=weak_from_this()](auto generation){const auto self=weak.lock();return self&&self->window&&PostMessageW(self->window,kTrayState,static_cast<WPARAM>(generation),0)!=FALSE;});
+        if(!trayWorker->Push(trayGeneration,{"tray",std::move(request)})){trayBusy=false;trayFailed=true;}
+    }
+    void TrayCompleted(const Json& value){
+        if(!trayBusy||!value.contains("trayResult")||value.value("trayRequest",0u)!=trayRequest)return;
+        trayBusy=false;trayFailed=!value.value("trayResult",false);
+        if(!trayFailed)Close();
+    }
     void ReadState(){
         BindWorker();const auto now=GetTickCount64();const bool full=!lastFullRead||now-lastFullRead>=30000;
         if(full)lastFullRead=now;worker->Push(workerGeneration,{"refresh",full});
@@ -244,12 +280,14 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
         if(!window)return;const int dpi=static_cast<int>(Dpi());
         MONITORINFO monitor{sizeof(monitor)};const POINT centre{(anchor.left+anchor.right)/2,anchor.top};
         if(!GetMonitorInfoW(MonitorFromPoint(centre,MONITOR_DEFAULTTONEAREST),&monitor))return;
-        const auto area=monitor.rcMonitor;const int margin=MulDiv(8,dpi,96);
-        const int width=std::min(MulDiv(kWidth,dpi,96),static_cast<int>(area.right-area.left)-2*margin);
-        const int height=std::min(MulDiv(heightDip,dpi,96),static_cast<int>(area.bottom-area.top)-2*margin);
-        const int left=std::clamp(static_cast<int>(centre.x)-width/2,static_cast<int>(area.left)+margin,static_cast<int>(area.right)-margin-width);
-        const int top=std::max(static_cast<int>(area.top)+margin,static_cast<int>(anchor.top)-MulDiv(kGap,dpi,96)-height);
-        SetWindowPos(window,HWND_TOPMOST,left,top,width,height,SWP_NOACTIVATE);
+        auto area=monitor.rcWork;const LONG margin=MulDiv(8,dpi,96);
+        InflateRect(&area,-margin,-margin);
+        const auto inside=SpaceInsideDock(area,anchor,edge,MulDiv(kGap,dpi,96));
+        const LONG width=std::min<LONG>(MulDiv(kWidth,dpi,96),area.right-area.left);
+        const LONG height=std::min<LONG>(MulDiv(heightDip,dpi,96),area.bottom-area.top);
+        const bool fits=inside.right-inside.left>=width&&inside.bottom-inside.top>=height;
+        const auto origin=DockPopupOrigin(fits?inside:area,anchor,edge,width,height);
+        SetWindowPos(window,HWND_TOPMOST,origin.x,origin.y,width,height,SWP_NOACTIVATE);
     }
     bool UpdateMaterial(){
         if(!window||closing||!shown||!UseGlass()||lastFrame.pixels.empty())return false;
@@ -305,8 +343,8 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
         Text(title,{x+56,y+14,detail?70.f:100.f,24},13.5f,alpha,true);
         Text(subtitle,{x+56,y+41,detail?70.f:100.f,18},11.5f,alpha*.68f);
         Hit({x,y,detail?127.f:165.f,72},key,!on,available);
-        if(detail){canvas->Line(x+127,y+1,x+127,y+71,0xffffff,.1f);Glyph("right",x+136,y+26,alpha);
-            Hit({x+127,y,38,72},"page",key,available);}
+        if(detail){canvas->Line(x+127,y+1,x+127,y+71,0xffffff,.1f);Glyph("right",x+136,y+26,1.f);
+            Hit({x+127,y,38,72},"page",key);}
     }
     void Slider(float y,const char* key,const char* group,const std::string& glyph){
         const auto info=Group(group);const bool available=fresh&&info.value("available",false);
@@ -322,7 +360,7 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
     }
     void Main(){
         Text(T(L"控制中心",L"Control center"),{16,16,96,32},15,1,true);Glyph("settings",329,22);Hit({322,16,34,32},"settings","home");
-        const auto wifi=Group("wifi");Panel({115,17,145,30},15,.08f);Text(state.value("ethernet",false)?T(L"以太网",L"Ethernet"):Wide(wifi.value("ssid",std::string{})),{124,16,127,32},12,.8f);
+        const auto wifi=Group("wifi");Panel({115,17,145,30},15,.08f);Text(settingsFailed?T(L"设置未能打开",L"Settings unavailable"):state.value("ethernet",false)?T(L"以太网",L"Ethernet"):Wide(wifi.value("ssid",std::string{})),{124,16,127,32},12,.8f);
         const auto battery=Group("battery");if(battery.value("available",false))Text(std::to_wstring(battery.value("percent",0))+L"%",{269,16,50,32},12,.75f);
         const auto sub=[&](const char* key){return !Available(key)?T(L"不可用",L"Unavailable"):On(key)?T(L"已开启",L"On"):T(L"已关闭",L"Off");};
         Tile(16,60,"wifi",L"Wi-Fi",wifi.value("ssid",std::string{}).empty()?sub("wifi"):Wide(wifi["ssid"].get<std::string>()),true);
@@ -338,7 +376,7 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
             const auto choices=group.value(list,Json::array());std::wstring name;
             for(const auto& item:choices)if(item.value("id",std::string{})==group.value(key,std::string{}))name=Wide(item.value("name",std::string{}));
             Button({16+i*175.f,330,165,34},name.empty()?(i?T(L"显示器",L"Display"):T(L"音频输出",L"Audio output")):name,"picker",key,!choices.empty()&&fresh);}
-        if(state.value("tray",false)){Glyph("tray",30,387);Button({16,376,340,40},T(L"系统托盘图标",L"Notification icons"),"tray");}
+        if(state.value("tray",false)){Glyph("tray",30,387);Button({16,376,340,40},trayBusy?T(L"正在打开托盘…",L"Opening notification icons…"):trayFailed?T(L"托盘未能打开，点击重试",L"Could not open icons. Retry"):T(L"系统托盘图标",L"Notification icons"),"tray",{},!trayBusy);}
         if(!picker.empty()){
             const auto group=Group(picker=="output"?"audio":"brightness");const auto choices=group.value(picker=="output"?"outputs":"displays",Json::array());
             const auto count=std::min<std::size_t>(choices.size(),8);pickerScroll=std::clamp(pickerScroll,0,std::max(0,static_cast<int>(choices.size())-8));const float y=326-static_cast<float>(count)*36;
@@ -346,33 +384,40 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
             for(std::size_t i=0;i<count;++i){const auto& choice=choices[i+static_cast<std::size_t>(pickerScroll)];Button({24,y+i*36.f,324,34},Wide(choice.value("name",std::string{})),picker,choice.value("id",std::string{}));}
         }
     }
-    void Details(){
+    void Details(float height){
         const bool wifi=page=="wifi";Glyph("back",20,22);Hit({16,16,32,32},"back");
         Text(wifi?L"Wi-Fi":T(L"蓝牙",L"Bluetooth"),{60,16,220,32},16,1,true);
         const bool on=On(page);Button({302,20,54,26},on?T(L"开",L"On"):T(L"关",L"Off"),page,!on,Available(page.c_str()));
-        Button({16,374,340,34},wifi?T(L"更多 Wi-Fi 设置",L"More Wi-Fi settings"):T(L"更多蓝牙设置",L"More Bluetooth settings"),"settings",wifi?"wifi-more":"bluetooth");
-        if(wifi)Button({270,330,86,30},T(L"刷新",L"Refresh"),"scan",{},Available("wifi"));
+        const float footer=height-44;
+        Button({16,footer,wifi?248.f:340.f,34},settingsFailed?T(L"设置未能打开，重试",L"Couldn't open settings. Retry"):wifi?T(L"更多 Wi-Fi 设置",L"More Wi-Fi settings"):T(L"更多蓝牙设置",L"More Bluetooth settings"),"settings",wifi?"wifi-more":"bluetooth");
+        if(wifi)Button({270,footer,86,34},T(L"刷新",L"Refresh"),"scan",{},Available("wifi"));
         const auto rows=state.value(wifi?"networks":"devices",Json::array());
-        const int total=static_cast<int>(rows.size()),visible=4;scroll=std::clamp(scroll,0,std::max(0,total-visible));
-        if(!on){Text(wifi?T(L"Wi-Fi 已关闭",L"Wi-Fi is off"):T(L"蓝牙已关闭",L"Bluetooth is off"),{16,130,340,80},13,.65f,false,WidgetTextAlign::Center);return;}
-        if(rows.empty()){Text(wifi?T(L"附近没有找到网络",L"No networks found nearby"):T(L"没有已配对的设备",L"No paired devices"),{16,130,340,80},13,.65f,false,WidgetTextAlign::Center);return;}
-        for(int i=0;i<visible&&i+scroll<total;++i){const auto& row=rows[static_cast<std::size_t>(i+scroll)];const float y=60+i*65.f;
-            const bool connected=row.value("connected",false);Panel({16,y,340,57},14,connected?.12f:.06f);
-            const int signal=row.value("signal",0);Glyph(wifi?"wifi":"bluetooth",28,y+18,1,signal>=75?4:signal>=50?3:signal>=25?2:1);const auto name=row.value(wifi?"ssid":"name",std::string{});
-            Text(Wide(name),{62,y+7,196,24},13,1,true);
-            std::wstring subtitle=connected?T(L"已连接",L"Connected"):wifi?(row.value("secured",false)?T(L"安全",L"Secured"):T(L"开放",L"Open network")):T(L"未连接",L"Not connected");
+        const int total=static_cast<int>(rows.size()),visible=std::max(1,static_cast<int>((footer-54)/48));scroll=std::clamp(scroll,0,std::max(0,total-visible));
+        const auto message=!fresh?T(L"正在读取…",L"Loading…"):!Available(page.c_str())?T(L"当前不可用",L"Unavailable"):!on?T(L"已关闭",L"Off"):!state.contains(wifi?"networks":"devices")?T(L"正在读取…",L"Loading…"):rows.empty()?T(L"未找到设备或网络",L"Nothing found nearby"):L"";
+        if(!message.empty()){Text(message,{16,54,340,std::max(20.f,footer-54)},13,.65f,false,WidgetTextAlign::Center);return;}
+        for(int i=0;i<visible&&i+scroll<total;++i){const auto& row=rows[static_cast<std::size_t>(i+scroll)];const float y=54+i*48.f;
+            const bool connected=row.value("connected",false);Panel({16,y,340,44},8,connected?.12f:.06f);
+            const int signal=row.value("signal",0);Glyph(wifi?"wifi":"bluetooth",28,y+13,1,signal>=75?4:signal>=50?3:signal>=25?2:1);const auto name=row.value(wifi?"ssid":"name",std::string{});
+            Text(Wide(name),{62,y+2,196,22},13,1,true);
+            std::wstring subtitle=connected?T(L"已连接",L"Connected"):wifi?(row.value("secured",false)?T(L"安全",L"Secured"):T(L"开放",L"Open network")):row.value("paired",true)?T(L"已配对 · 未连接",L"Paired · Disconnected"):T(L"未配对",L"Not paired");
             const auto join=state.value("join",Json::object());if(wifi&&join.value("ssid",std::string{})==name){const auto status=join.value("status",std::string{});
                 if(status=="started")subtitle=T(L"正在连接…",L"Connecting…");else if(status=="failed"||status=="needs-password")subtitle=T(L"连接失败，请重试",L"Could not connect. Try again.");else if(status=="unsupported")subtitle=T(L"请在 Windows 设置中连接",L"Use Windows settings");}
-            Text(subtitle,{62,y+31,202,19},11.5f,.65f);
-            if(wifi)Button({270,y+12,76,34},connected?T(L"断开",L"Disconnect"):T(L"连接",L"Connect"),connected?"disconnect":"network",row,Available("wifi"));
+            const auto pair=state.value("pair",Json::object());if(!wifi&&pair.value("id",std::string{})==row.value("id",std::string{})&&!pair.value("success",true))subtitle=T(L"请在 Windows 设置中配对",L"Pair in Windows settings");
+            Text(subtitle,{62,y+23,202,18},11.5f,.65f);
+            if(wifi)Button({270,y+6,76,32},connected?T(L"断开",L"Disconnect"):T(L"连接",L"Connect"),connected?"disconnect":"network",row,Available("wifi"));
+            else if(row.value("canPair",false))Button({270,y+6,76,32},T(L"配对",L"Pair"),"pair",row.value("id",std::string{}));
         }
+    }
+    void ChangePage(std::string target){
+        page=std::move(target);picker.clear();scroll=0;settingsFailed=false;
+        pressed=focus=-1;pressedTarget.reset();Push("view",page);
     }
     bool Render(){
         if(!window||closing||!shown||!canvas)return false;
         RECT client{};GetClientRect(window,&client);const float width=client.right*96.f/Dpi(),height=client.bottom*96.f/Dpi();
         if(!canvas->Begin(width,height,Dpi()))return false;
         canvas->Rounded({0,0,width,height},kCornerRadius,UseGlass()?0x000000:0x1e1e22,UseGlass()?.004f:1.f);
-        hits.clear();if(page.empty())Main();else Details();
+        hits.clear();if(page.empty())Main();else Details(height);
         if(focus>=0&&static_cast<std::size_t>(focus)<hits.size()){const auto r=hits[static_cast<std::size_t>(focus)].rect;canvas->Line(r.x,r.y+r.height-2,r.x+r.width,r.y+r.height-2,0x8ea5ff,1,2);}
         WidgetBitmap bitmap;if(!canvas->Finish(bitmap))return false;lastFrame=std::move(bitmap);
         if(UseGlass()){
@@ -456,11 +501,19 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
     void Activate(const HitTarget& hit){
         if(!hit.enabled||!shown)return;
         const auto& key=hit.key;
-        if(key=="page"){page=hit.value.get<std::string>();picker.clear();scroll=0;Push("view",page);}
-        else if(key=="back"){page.clear();picker.clear();scroll=0;Push("view","");}
+        if(key=="page")ChangePage(hit.value.get<std::string>());
+        else if(key=="back")ChangePage({});
         else if(key=="picker"){const auto next=hit.value.get<std::string>();picker=picker==next?"":next;pickerScroll=0;}
-        else if(key=="settings"){if(const auto uri=SettingsUri(hit.value.get<std::string>())){ShellExecuteW(nullptr,L"open",uri,nullptr,nullptr,SW_SHOWNORMAL);Close();}return;}
-        else if(key=="tray"){const POINT point{(anchor.left+anchor.right)/2,anchor.top-MulDiv(kGap,static_cast<int>(Dpi()),96)};Close();std::thread([point]{cc::OpenTrayOverflow(point);}).detach();return;}
+        else if(key=="settings"){
+            const auto target=hit.value.get<std::string>();const auto uri=SettingsUri(target);if(!uri)return;
+            const bool noWifi=(target=="wifi"||target=="wifi-more")&&fresh&&!Available("wifi")&&state.value("wifiAdapter",true)==false;
+            const auto launch=openSettings?openSettings:LaunchSettings;
+            bool opened=launch(window,noWifi?L"ms-settings:network-status":uri);
+            if(!opened&&(target=="wifi"||target=="wifi-more")&&!noWifi)opened=launch(window,L"ms-settings:network-status");
+            if(!opened&&target!="home")opened=launch(window,L"ms-settings:");
+            if(opened){Close();return;}settingsFailed=true;
+        }
+        else if(key=="tray")OpenTray();
         else if(key=="network"){
             const auto& row=hit.value;const auto ssid=row.value("ssid",std::string{});
             if(row.value("secured",false)&&!row.value("known",false))Password(ssid);else Push("connect",{{"ssid",ssid}});
@@ -468,13 +521,15 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
         Render();
     }
     void Close(){
-        if(!window||closing)return;shown=false;StopWatchingOutside();ShowWindow(window,SW_HIDE);
-        ClosePassword();KillTimer(window,kRefreshTimer);KillTimer(window,kContactTimer);KillTimer(window,kMaterialStartTimer);
+        if(!window||closing)return;shown=false;trayBusy=false;StopWatchingOutside();ShowWindow(window,SW_HIDE);
+        ClosePassword();page.clear();KillTimer(window,kRefreshTimer);KillTimer(window,kContactTimer);KillTimer(window,kMaterialStartTimer);
         if(workerGeneration)worker->Unbind(std::exchange(workerGeneration,0));
+        if(trayGeneration)trayWorker->Unbind(std::exchange(trayGeneration,0));
         if(GetCapture()==window)ReleaseCapture();dragging.clear();pressedTarget.reset();
         material.Detach();canvas.reset();surface.Release();lastFrame={};inputMask={};hits.clear();pending.clear();fresh=haveState;
     }
     bool Show(){
+        settingsFailed=false;
         if(!window||closing)return false;shown=true;solidFallback=false;en=english.load();page.clear();picker.clear();scroll=0;pressed=focus=-1;fresh=haveState;
         BindWorker();canvas=std::make_unique<WidgetCanvas>();opacity=1.f;Place();
         if(!Render()){Close();return false;}
@@ -505,10 +560,13 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
             if(hit>=0&&hit==previous&&self->pressedTarget){const auto action=self->hits[static_cast<std::size_t>(hit)];if(action.key==self->pressedTarget->key&&action.value==self->pressedTarget->value)self->Activate(action);}self->pressedTarget.reset();return 0;}
         case WM_CAPTURECHANGED:self->dragging.clear();self->pressed=-1;self->pressedTarget.reset();return 0;
         case WM_MOUSEWHEEL:if(!self->picker.empty()){self->pickerScroll=std::max(0,self->pickerScroll-GET_WHEEL_DELTA_WPARAM(wp)/WHEEL_DELTA);self->Render();}
-            else if(!self->page.empty()){self->scroll=std::max(0,self->scroll-GET_WHEEL_DELTA_WPARAM(wp)/WHEEL_DELTA);self->Render();}return 0;
+            else if(!self->page.empty()){self->scroll=std::max(0,self->scroll-GET_WHEEL_DELTA_WPARAM(wp)/WHEEL_DELTA);self->focus=-1;self->Render();}return 0;
         case WM_KEYDOWN:
-            if(wp==VK_ESCAPE){if(!self->picker.empty()){self->picker.clear();self->Render();}else if(!self->page.empty()){self->page.clear();self->Push("view","");self->Render();}else self->Close();}
-            else if(wp==VK_TAB&&!self->hits.empty()){const int count=static_cast<int>(self->hits.size());for(int i=0;i<count;++i){self->focus=(self->focus+(GetKeyState(VK_SHIFT)<0?count-1:1)+count)%count;if(self->hits[static_cast<std::size_t>(self->focus)].enabled)break;}self->Render();}
+            if(wp==VK_ESCAPE){if(!self->picker.empty()){self->picker.clear();self->Render();}else if(!self->page.empty()){self->ChangePage({});self->Render();}else self->Close();}
+            else if((wp==VK_TAB||(!self->page.empty()&&(wp==VK_UP||wp==VK_DOWN)))&&!self->hits.empty()){
+                const int count=static_cast<int>(self->hits.size());const bool previous=wp==VK_UP||(wp==VK_TAB&&GetKeyState(VK_SHIFT)<0);
+                for(int i=0;i<count;++i){self->focus=self->focus<0?(previous?count-1:0):(self->focus+(previous?count-1:1))%count;
+                    if(self->hits[static_cast<std::size_t>(self->focus)].enabled)break;}self->Render();}
             else if((wp==VK_LEFT||wp==VK_RIGHT||wp==VK_UP||wp==VK_DOWN||wp==VK_HOME||wp==VK_END)&&self->focus>=0&&static_cast<std::size_t>(self->focus)<self->hits.size()){
                 const auto hit=self->hits[static_cast<std::size_t>(self->focus)];if(hit.enabled&&hit.key.rfind("slider:",0)==0){const auto key=hit.key.substr(7);const auto info=self->Group(key=="volume"?"audio":"brightness");
                     const int current=self->Value(key,info.value(key=="volume"?"volume":"level",0)).get<int>();
@@ -518,7 +576,7 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
             // Disabling the active parent before showing its password popup
             // can send WA_INACTIVE with no destination. That popup handles its
             // own focus loss and remains protected by the outside-click watch.
-            if(LOWORD(wp)==WA_INACTIVE&&self->shown&&(!self->passwordWindow||(lp&&reinterpret_cast<HWND>(lp)!=self->passwordWindow)))self->Dismiss();return 0;
+            if(LOWORD(wp)==WA_INACTIVE&&self->shown){const auto to=reinterpret_cast<HWND>(lp);if(!(self->passwordWindow&&(!to||to==self->passwordWindow)))self->Dismiss();}return 0;
         case WM_ACTIVATEAPP:if(!wp&&self->shown)self->Dismiss();return 0;
         case kDismiss:if(self->shown&&static_cast<cc::PanelWorker::Generation>(wp)==self->workerGeneration)self->Dismiss();return 0;
         case WM_TIMER:
@@ -526,7 +584,11 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
             else if(wp==kContactTimer&&self->shown){POINT cursor{};GetCursorPos(&cursor);if(cursor.x!=self->cursor.x||cursor.y!=self->cursor.y){self->cursor=cursor;if(!self->UpdateMaterial())self->Fallback();}}
             else if(wp==kMaterialStartTimer&&self->shown)self->CheckMaterial(true);return 0;
         case LumeMaterialStatusChangedMessage:self->CheckMaterial();return 0;
-        case kState:if(self->workerGeneration&&static_cast<cc::PanelWorker::Generation>(wp)==self->workerGeneration){const auto value=Json::parse(self->worker->Take(self->workerGeneration),nullptr,false);if(value.is_object()){self->state=value;self->fresh=self->haveState=true;if(self->shown)self->Render();}if(!self->shown)self->worker->Unbind(std::exchange(self->workerGeneration,0));}return 0;
+        case kTrayState:if(self->trayGeneration&&static_cast<cc::PanelWorker::Generation>(wp)==self->trayGeneration){
+            self->TrayCompleted(Json::parse(self->trayWorker->Take(self->trayGeneration),nullptr,false));if(self->shown)self->Render();}return 0;
+        case kState:if(self->workerGeneration&&static_cast<cc::PanelWorker::Generation>(wp)==self->workerGeneration){const auto value=Json::parse(self->worker->Take(self->workerGeneration),nullptr,false);if(value.is_object()){self->state=value;self->fresh=self->haveState=true;
+            self->TrayCompleted(value);
+            if(self->shown)self->Render();}if(!self->shown)self->worker->Unbind(std::exchange(self->workerGeneration,0));}return 0;
         case WM_DPICHANGED:self->Place();self->Render();return 0;
         case WM_CLOSE:self->Close();return 0;
         case WM_DESTROY:if(self->window==hwnd){self->Close();self->window=nullptr;self->closing=true;SetWindowLongPtrW(hwnd,GWLP_USERDATA,0);}return 0;
@@ -536,13 +598,21 @@ struct ControlCenterWindow::Impl : std::enable_shared_from_this<Impl> {
 };
 
 ControlCenterWindow::ControlCenterWindow()=default;
-ControlCenterWindow::ControlCenterWindow(std::shared_ptr<cc::PanelWorker> worker):worker_(std::move(worker)){}
+ControlCenterWindow::ControlCenterWindow(std::shared_ptr<cc::PanelWorker> worker,std::function<bool(HWND,const wchar_t*)> openSettings):worker_(std::move(worker)),openSettings_(std::move(openSettings)){}
 ControlCenterWindow::~ControlCenterWindow(){if(impl_)impl_->Destroy();}
 void ControlCenterWindow::SetEnglish(bool value){english=value;}
-bool ControlCenterWindow::Create(HINSTANCE instance,HWND owner,RECT anchor,Material look,bool show){
+bool ControlCenterWindow::Create(HINSTANCE instance,HWND owner,RECT anchor,Material look,bool show,dock::Edge edge){
     if(impl_){impl_->Destroy();impl_.reset();}
-    auto state=std::make_shared<Impl>();state->instance=instance;state->owner=owner;state->anchor=anchor;state->look=look;state->worker=worker_?worker_:SharedWorker();
+    auto state=std::make_shared<Impl>();state->instance=instance;state->owner=owner;state->anchor=anchor;state->edge=edge;state->look=look;state->worker=worker_?worker_:SharedWorker();
+    if(!worker_){
+        static const auto tray=std::make_shared<cc::PanelWorker>([](auto,const cc::PanelWorker::Job& job){
+            const auto& value=job.value;
+            return Json{{"trayResult",cc::OpenTrayOverflow({value.value("x",0),value.value("y",0)})},{"trayRequest",value.value("request",0u)}}.dump();
+        });
+        state->trayWorker=tray;
+    }
     WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=instance;wc.lpfnWndProc=Impl::Proc;wc.lpszClassName=kClass;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+    state->openSettings=openSettings_;
     if(!RegisterClassExW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
     const auto window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,kClass,english?L"Lume control center":L"Lume 控制中心",WS_POPUP,0,0,1,1,owner,nullptr,instance,state.get());
     if(!window)return false;impl_=state;window_layer::Register(window,window_layer::Kind::ExplicitTool,owner);
@@ -554,11 +624,11 @@ bool ControlCenterWindow::Prewarm(HINSTANCE instance,HWND owner,Material look){
     if(!impl_||!impl_->window||impl_->owner!=owner||impl_->look!=look)if(!Create(instance,owner,{},look,false))return false;
     return impl_->Prewarm();
 }
-bool ControlCenterWindow::Toggle(HINSTANCE instance,HWND owner,RECT anchor,Material look){
+bool ControlCenterWindow::Toggle(HINSTANCE instance,HWND owner,RECT anchor,Material look,dock::Edge edge){
     if(IsOpen()){Close();return true;}
     if(GetTickCount64()-lastDismiss.load()<350)return true;
-    if(impl_&&impl_->window&&impl_->owner==owner&&impl_->look==look){impl_->anchor=anchor;return impl_->Show();}
-    return Create(instance,owner,anchor,look,true);
+    if(impl_&&impl_->window&&impl_->owner==owner&&impl_->look==look){impl_->anchor=anchor;impl_->edge=edge;return impl_->Show();}
+    return Create(instance,owner,anchor,look,true,edge);
 }
 void ControlCenterWindow::Close(){if(impl_)impl_->Close();}
 bool ControlCenterWindow::IsOpen()const noexcept{return impl_&&impl_->window&&impl_->shown;}

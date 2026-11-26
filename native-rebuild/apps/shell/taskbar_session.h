@@ -14,6 +14,7 @@ public:
     ~TaskbarSession();
     bool Restore();
     bool Apply(taskbar::Preferences);
+    bool RevealForTray();
     taskbar::Preferences Preferences() const;
     std::wstring State() const;
     bool Running() const;

@@ -37,12 +37,17 @@ struct NativeWidgetWindow::State {
         if(window&&GetWindowRect(window,&r)){p.placed=true;p.x=r.left;p.y=r.top;p.width=MulDiv(r.right-r.left,96,static_cast<int>(dpi));p.height=MulDiv(r.bottom-r.top,96,static_cast<int>(dpi));}
         return p;
     }
-    void Action(WidgetAction action){const auto callback=ports.action;const auto bounds=Bounds();if(callback)callback(action,bounds);}
-    bool Place(){
-        if(!window)return false;
-        auto p=prefs;POINT point{p.x,p.y};MONITORINFO monitor{};monitor.cbSize=sizeof(monitor);
+    void Action(WidgetAction action){
+        // Only a completed user move/resize replaces the preferred placement.
+        // Display-mode changes refit the HWND without publishing a save action.
+        if(action==WidgetAction::Bounds)prefs=Bounds();
+        const auto callback=ports.action;const auto bounds=prefs;if(callback)callback(action,bounds);
+    }
+    std::optional<RECT> PlacementFor(widget::Preferences p)const{
+        if(!window)return {};
+        POINT point{p.x,p.y};MONITORINFO monitor{};monitor.cbSize=sizeof(monitor);
         const auto selected=p.placed?MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST):MonitorFromWindow(window,MONITOR_DEFAULTTOPRIMARY);
-        if(!GetMonitorInfoW(selected,&monitor))return false;
+        if(!(ports.monitorInfo?ports.monitorInfo(selected,monitor):GetMonitorInfoW(selected,&monitor)!=FALSE))return {};
         if(!p.placed&&limits.fitToScreen){
             const double fit=widget_placement::MonitorFitScale(selected);
             p.width=window::FitLength(p.width,fit,limits.minWidth);p.height=window::FitLength(p.height,fit,limits.minHeight);
@@ -52,7 +57,15 @@ struct NativeWidgetWindow::State {
         // A size saved on a larger display shrinks to this work area.
         const auto fitted=window::FitInside({p.x,p.y,width,height},widget_placement::ToRect(monitor.rcWork),
             MulDiv(limits.minWidth,static_cast<int>(dpi),96),MulDiv(limits.minHeight,static_cast<int>(dpi),96));
-        return SetWindowPos(window,nullptr,fitted.x,fitted.y,fitted.width,fitted.height,SWP_NOACTIVATE|SWP_NOZORDER)!=FALSE;
+        return widget_placement::ToRECT(fitted);
+    }
+    bool Place(){
+        const auto rect=PlacementFor(prefs);
+        if(!rect||!SetWindowPos(window,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOACTIVATE|SWP_NOZORDER))return false;
+        // A first placement becomes the user's baseline. Previously placed
+        // windows retain their original geometry even on a smaller monitor.
+        if(!prefs.placed)prefs=Bounds();
+        return true;
     }
     // Taskbar resized, moved or set to auto-hide: keep the widget in the new work area.
     void WorkAreaChanged(){
@@ -60,7 +73,7 @@ struct NativeWidgetWindow::State {
         RECT before{};GetWindowRect(window,&before);
         configuring=true;Place();configuring=false;
         RECT after{};GetWindowRect(window,&after);
-        if(!EqualRect(&before,&after)){Paint();Action(WidgetAction::Bounds);}
+        if(!EqualRect(&before,&after)){hitDirty=true;Paint();}
     }
     bool Configure(const widget::Preferences& next){
         placementFailed=false;
@@ -102,7 +115,7 @@ struct NativeWidgetWindow::State {
         return true;
     }
     void Stop(){
-        stopping=true;PublishVisibility();moveAnchored=false;ClearSnapGuides();material.Detach();
+        stopping=true;PublishVisibility();moveAnchored=false;interacting=false;ClearSnapGuides();material.Detach();
         if(window){auto old=window;window=nullptr;if(GetCapture()==old)ReleaseCapture();DestroyWindow(old);}
         if(display){RemovePropW(display,lume::window_ids::DesktopCompanionOwnerProp);DestroyWindow(display);display=nullptr;}
         surface.Release();displaySurface.Release();canvas.reset();bitmap={};hitBitmap={};hover=false;pressed=false;stopping=false;
@@ -155,12 +168,17 @@ struct NativeWidgetWindow::State {
         // clear, so the desktop icons or Dock under it keep their clicks.
         const float radius=CornerRadius(w,h);
         const float body=ports.materialBottomInset?std::max(1.f,h-static_cast<float>(ports.materialBottomInset(w,h))):h;
-        if(prefs.solid){canvas->Rounded({0,0,w,h},radius,static_cast<std::uint32_t>(prefs.panelColor),1);}
+        const auto reveal=ports.revealBounds?ports.revealBounds(w,h):std::nullopt;
+        const auto pane=reveal.value_or(WidgetRect{0,0,w,body});
+        if(prefs.solid){canvas->Rounded(reveal.value_or(WidgetRect{0,0,w,h}),radius,static_cast<std::uint32_t>(prefs.panelColor),1);}
         // A bottom widget (the spectrum) has no hit surface at all: only what it
         // draws catches the mouse, and clicks elsewhere reach the Dock or icons.
         // With a hitShape its frames go to the display window instead.
-        else if(!ports.bottom&&!display)canvas->Rounded({0,0,w,body},radius,0xffffff,!ports.glass&&ports.hoverPane&&(hover||pressed)?.08f:1.f/255);
+        else if(!ports.bottom&&!display)canvas->Rounded(pane,radius,0xffffff,!ports.glass&&ports.hoverPane&&(hover||pressed)?.08f:1.f/255);
+        const bool clipped=reveal&&canvas->PushClip(pane);
+        if(clipped)canvas->Offset(pane.x,pane.y);
         if(ports.draw)ports.draw(*canvas,w,h);
+        if(clipped){canvas->Offset(0,0);canvas->PopClip();}
         if(ports.showCloseButton&&(hover||pressed)){
             const WidgetRect close{w-26,4,20,20};
             if(closeHover||pressed)canvas->Rounded(close,4,0xffffff,pressed?.15f:.12f);
@@ -198,8 +216,12 @@ struct NativeWidgetWindow::State {
     void UpdateMaterial(){
         if(!window||stopping)return;
         if(prefs.solid||!ports.glass){if(material.State()!=WidgetMaterialState::Detached)material.Detach();return;}
-        LumeMaterialParameters p{};p.size=sizeof(p);p.owner=window;p.frosted=prefs.frosted;p.opticalProfile=1;p.lightForeground=1;
+        LumeMaterialParameters p{};p.size=sizeof(p);p.owner=window;p.frosted=prefs.frosted;
+        p.opticalProfile=prefs.frosted?1u:6u;p.lightForeground=1;
         p.cornerRadius=CornerRadius(Width(),Height());
+        if(ports.revealBounds)if(const auto pane=ports.revealBounds(Width(),Height())){
+            p.lensOverride=1;p.lensX=pane->x;p.lensY=pane->y;p.lensWidth=pane->width;p.lensHeight=pane->height;
+        }
         if(ports.materialBottomInset)
             p.bottomInset=std::min(ports.materialBottomInset(Width(),Height()),
                                   static_cast<unsigned>(std::max(0.f,Height()-1.f)));
@@ -303,7 +325,7 @@ struct NativeWidgetWindow::State {
                 case WM_TIMER:case WM_TIMECHANGE:case WM_SETTINGCHANGE:case WM_POWERBROADCAST:
                 case WM_MOUSEWHEEL:case WM_MOUSEHWHEEL:case WM_KEYDOWN:case WM_SYSKEYDOWN:
                 case WM_LBUTTONDOWN:case WM_LBUTTONDBLCLK:case WM_SETFOCUS:case WM_KILLFOCUS:
-                case WM_MOUSEMOVE:case WM_MOUSELEAVE:case WM_LBUTTONUP:case WM_CAPTURECHANGED:
+                case WM_MOUSEMOVE:case WM_MOUSEHOVER:case WM_MOUSELEAVE:case WM_LBUTTONUP:case WM_CAPTURECHANGED:
                 case WM_DROPFILES:case WM_COMMAND:case WM_CONTEXTMENU:case WM_GETMINMAXINFO:case WM_CTLCOLOREDIT:
                     if(const auto result=s->ports.event(hwnd,message,w,l))return *result;
                     break;
@@ -312,6 +334,14 @@ struct NativeWidgetWindow::State {
         switch(message){
             case WM_ERASEBKGND:return 1;
             case WM_PAINT:{PAINTSTRUCT paint{};BeginPaint(hwnd,&paint);EndPaint(hwnd,&paint);return 0;}
+            case WM_PRINTCLIENT:{
+                if(!s->bitmap.pixels.empty()){
+                    const auto& frame=s->bitmap;BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+                    info.bmiHeader.biWidth=static_cast<LONG>(frame.width);info.bmiHeader.biHeight=-static_cast<LONG>(frame.height);
+                    info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
+                    SetDIBitsToDevice(reinterpret_cast<HDC>(w),0,0,frame.width,frame.height,0,0,0,frame.height,frame.pixels.data(),&info,DIB_RGB_COLORS);
+                }return 0;
+            }
             case WM_NCHITTEST:return s->Hit(l);
             case WM_GETMINMAXINFO:{auto* mm=reinterpret_cast<MINMAXINFO*>(l);
                 mm->ptMinTrackSize={MulDiv(s->limits.minWidth,static_cast<int>(s->dpi),96),MulDiv(s->limits.minHeight,static_cast<int>(s->dpi),96)};
@@ -349,11 +379,10 @@ struct NativeWidgetWindow::State {
                 if(!s->stopping&&s->ports.event)s->ports.event(hwnd,message,w,l);
                 return 0;
             case WM_MOVE:
-                if(!s->configuring)s->UpdateMaterial();
                 if(!s->stopping&&s->ports.event)s->ports.event(hwnd,message,w,l);
                 return 0;
             case WM_ENTERSIZEMOVE:
-                s->resizing=false;widget_snap::BeginInteraction(hwnd);
+                s->interacting=true;s->resizing=false;widget_snap::BeginInteraction(hwnd);
                 s->moveAnchored=GetWindowRect(hwnd,&s->moveOrigin)&&GetCursorPos(&s->moveCursor);
                 return 0;
             case WM_MOVING:
@@ -383,7 +412,7 @@ struct NativeWidgetWindow::State {
                 }
                 break;
             case WM_EXITSIZEMOVE:{
-                s->moveAnchored=false;
+                s->moveAnchored=false;s->interacting=false;
                 const auto edges=s->snap.Edges();
                 s->snap.Clear(!s->resizing);if(s->snap.Edges())SetTimer(hwnd,SnapTimer,260,nullptr);
                 if(edges!=s->snap.Edges())s->Paint();
@@ -391,17 +420,19 @@ struct NativeWidgetWindow::State {
             }
             case WM_DPICHANGED:{
                 s->dpi=HIWORD(w);s->hitDirty=true;const auto* rect=reinterpret_cast<RECT*>(l);
-                SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);
+                if(s->interacting||s->configuring)
+                    SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);
+                else s->WorkAreaChanged();
                 if(s->moveAnchored){
                     // A monitor transition can change the accepted origin as
                     // well as the size. Continue dragging from that new frame.
                     s->moveAnchored=GetWindowRect(hwnd,&s->moveOrigin)&&GetCursorPos(&s->moveCursor);
                     s->snap.Clear();
                 }
-                if(!s->configuring){s->Paint();s->Action(WidgetAction::Bounds);}
+                if(!s->configuring)s->Paint();
                 if(!s->stopping&&s->ports.event)s->ports.event(hwnd,message,w,l);
                 return 0;}
-            case WM_DISPLAYCHANGE:if(!s->configuring){s->Configure(s->Bounds());s->Action(WidgetAction::Bounds);}return 0;
+            case WM_DISPLAYCHANGE:s->WorkAreaChanged();return 0;
             case LumeMaterialStatusChangedMessage:
                 if(!s->stopping){
                     // The first layered foreground may have been submitted
@@ -423,7 +454,7 @@ struct NativeWidgetWindow::State {
     HINSTANCE instance;std::wstring title;widget::Limits limits;WidgetWindowPorts ports;widget::Preferences prefs;
     HWND window=nullptr;unsigned dpi=96;std::unique_ptr<WidgetCanvas> canvas;WidgetBitmap bitmap;WidgetMaterialRuntime material;
     WidgetSnapController snap;unsigned remoteEdges=0;HWND remoteSource=nullptr;
-    RECT moveOrigin{};POINT moveCursor{};bool moveAnchored=false;
+    RECT moveOrigin{};POINT moveCursor{};bool moveAnchored=false,interacting=false;
     LayeredSurface surface;
     // hitShape widgets only: the display window, its surface and the hit mask.
     HWND display=nullptr;LayeredSurface displaySurface;WidgetBitmap hitBitmap;bool hitDirty=true;
@@ -442,5 +473,7 @@ bool NativeWidgetWindow::ContentVisible()const{return state_->ContentVisible();}
 bool NativeWidgetWindow::PlacementFailed()const{return state_->placementFailed;}
 HWND NativeWidgetWindow::Handle()const{return state_->window;}
 widget::Preferences NativeWidgetWindow::Bounds()const{return state_->Bounds();}
+std::optional<RECT> NativeWidgetWindow::PlacementFor(const widget::Preferences& p)const{return state_->PlacementFor(p);}
+widget::Preferences NativeWidgetWindow::PreferredBounds()const{return state_->prefs;}
 WidgetMaterialState NativeWidgetWindow::MaterialState()const{return state_->material.State();}
 }

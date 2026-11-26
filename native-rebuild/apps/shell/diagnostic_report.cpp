@@ -806,7 +806,7 @@ std::optional<DiagnosticReportCommand> ParseDiagnosticReportCommand(std::wstring
     if (!value.is_object() || value.value("version", 0) != 1 || value.value("scope", std::string{}) != "diagnostic-report") return std::nullopt;
     DiagnosticReportCommand command{value.value("action", std::string{}), value.value("note", std::string{})};
     if (command.action != "create" && command.action != "open-logs" && command.action != "copy" &&
-        command.action != "self-check") return std::nullopt;
+        command.action != "self-check" && command.action != "open-help") return std::nullopt;
     if (command.note.size() > 4000) command.note.resize(4000);
     return command;
 }

@@ -45,7 +45,8 @@ bool ValidateLyrics(const std::vector<LyricLine>& lines) noexcept {
         if (!std::isfinite(line.startTime) || !std::isfinite(line.endTime) ||
             line.startTime < previousStart || line.endTime <= line.startTime ||
             line.endTime > kLyricsMaxSeconds || !textValid(line.fullText) ||
-            !textValid(line.translation) || line.words.size() > kLyricsMaxWordsPerLine)
+            !textValid(line.translation) || !textValid(line.romanization) ||
+            line.words.size() > kLyricsMaxWordsPerLine)
             return false;
         words += line.words.size();
         if (words > kLyricsMaxWords) return false;

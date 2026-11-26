@@ -119,7 +119,7 @@ struct WeatherProvider::State {
         HttpRequest request;
         request.url = std::move(url);
         request.timeoutMs = met ? 12000 : 10000;
-        request.headers = {{"User-Agent", "Lume/1.1.3 (Windows desktop weather)"},
+        request.headers = {{"User-Agent", "Lume/1.1.4 (Windows desktop weather)"},
             {"Accept", met ? "application/json" : "text/html, application/json"},
             {"Accept-Encoding", "gzip, deflate"}};
         if (!modified.empty() && SafeHeader(modified))

@@ -36,9 +36,11 @@ public:
                   std::uint32_t rgb,float alpha,WidgetTextWeight,WidgetTextAlign align=WidgetTextAlign::Center);
     // Wrapped layouts are bounded and retained independently of the drawing surface.
     float MeasureWrappedText(const std::wstring&,float width,float size,
-                             WidgetTextWeight weight=WidgetTextWeight::Normal);
+                             WidgetTextWeight weight=WidgetTextWeight::Normal,
+                             WidgetTextAlign align=WidgetTextAlign::Left);
     void WrappedText(const std::wstring&,WidgetRect,float size,std::uint32_t rgb=0xffffff,
-                     float alpha=1,WidgetTextWeight weight=WidgetTextWeight::Normal);
+                     float alpha=1,WidgetTextWeight weight=WidgetTextWeight::Normal,
+                     WidgetTextAlign align=WidgetTextAlign::Left,bool trim=false);
     void ScrollText(const std::wstring&,WidgetRect viewport,float size,float offset,
                     std::uint32_t rgb=0xffffff,float alpha=1);
     // Direct2D clip stack only; no extra surface, buffer or worker.

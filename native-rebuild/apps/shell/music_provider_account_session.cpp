@@ -2,6 +2,7 @@
 #include "platform/windows/music_provider_credentials.h"
 #include "platform/windows/music_provider_http.h"
 #include "platform/windows/music_login_diagnosis.h"
+#include "platform/windows/folia_music_runtime.h"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -27,7 +28,6 @@ std::vector<std::string> LoginHosts(music::auth::Provider provider) {
 namespace {
 using namespace music::auth;
 constexpr std::uint64_t MaxCounter = 9007199254740991ULL;
-constexpr std::array<Provider, 3> Providers{Provider::Netease, Provider::QQ, Provider::Kugou};
 // The device each provider sees (QQ: "device", the MI 6 profile; Kugou: KUGOU_API_*;
 // NetEase: deviceId). Like Folia's qq-music-api, which keeps its device in a state
 // file apart from the login, it belongs to this install and outlives sign-outs:
@@ -63,10 +63,11 @@ bool PublicText(const std::string& text, std::size_t limit) {
 }
 bool PublicReply(const Reply& reply) {
     const std::set<std::string> statuses{"signed-out", "authorizing", "signed-in", "expired", "error"};
-    const std::set<std::string> kinds{"qq-green-vip", "qq-super-vip", "netease-vip", "netease-svip", "kugou-vip"};
+    const std::set<std::string> kinds{"qq-green-vip", "qq-super-vip", "netease-vip", "netease-svip", "kugou-vip", "qishui-vip"};
     const std::set<std::string> errors{"", "network", "service", "invalid-response", "storage", "expired", "cancelled",
+        "unavailable", "unsupported", "access-denied", "timeout", "signed-out",
         "qq-status-response", "qq-authorization-response", "qq-device-response", "qq-credential-response", "qq-profile-response",
-        "rate-limited", "not-confirmed"};
+        "rate-limited", "not-confirmed", "runtime-download"};
     const auto credentialError = [&] {
         const auto& error = reply.error;
         // Login self-check verdicts are short tokens such as network-ipv6-failed.
@@ -86,7 +87,8 @@ bool PublicReply(const Reply& reply) {
         return false;
     };
     if (!statuses.count(reply.status) || (!errors.count(reply.error) && !credentialError()) ||
-        (reply.phase != "" && reply.phase != "waiting" && reply.phase != "scanned") ||
+        (reply.phase != "" && reply.phase != "waiting" && reply.phase != "scanned" && reply.phase != "browser") ||
+        (reply.loginMode != "qr" && reply.loginMode != "browser") ||
         !PublicText(reply.userId, 128) || !PublicText(reply.displayName, 256) ||
         reply.qrImage.size() > 350000 || !PublicText(reply.qrText, 2048) ||
         !PublicImageUrl(reply.avatarUrl) || reply.memberships.size() > 8) return false;
@@ -135,7 +137,7 @@ std::optional<MusicProviderAccountCommand> ParseMusicProviderAccountCommand(std:
         command.action = json.at("action").get<std::string>();
         if (command.action == "snapshot") return json.size() == 3 ? std::optional{command} : std::nullopt;
         if (command.action != "begin" && command.action != "cancel" &&
-            command.action != "refresh" && command.action != "logout") return {};
+            command.action != "refresh" && command.action != "logout" && command.action != "reopen") return {};
         if (json.size() != 5 || !json.at("request").is_number_unsigned()) return {};
         command.request = json.at("request").get<std::uint64_t>();
         if (!command.request || command.request > MaxCounter) return {};
@@ -177,6 +179,8 @@ struct MusicProviderAccountSession::Impl {
         condition.notify_all();
     }
     void CancelLocked(Entry& entry) {
+        if (options.runtime && (entry.pending || entry.polling || entry.reply.status == "authorizing"))
+            options.runtime->CancelLogin(Providers[static_cast<std::size_t>(&entry - entries.data())], entry.generation.load());
         if (entry.action == "restore" && (entry.pending || entry.reply.status == "loading"))
             entry.initialized = false;
         ++entry.generation;
@@ -231,6 +235,14 @@ struct MusicProviderAccountSession::Impl {
         if (command.request <= entry.request) return StateLocked();
         if (entry.action == "logout" && entry.reply.status == "loading")
             return StateLocked();
+        if (command.action == "reopen") {
+            if (entry.reply.status == "authorizing" && entry.reply.loginMode == "browser") {
+                entry.request = command.request;
+                entry.action = "reopen"; entry.pending = true;
+                StartLocked(); ChangedLocked();
+            }
+            return StateLocked();
+        }
         if (command.action == "begin") {
             for (auto& other : entries) if (&other != &entry &&
                 (other.polling || (other.action == "begin" && other.reply.status == "loading"))) CancelLocked(other);
@@ -241,11 +253,12 @@ struct MusicProviderAccountSession::Impl {
         entry.request = command.request;
         if (command.action != "cancel") entry.initialized = true;
         entry.action = command.action;
+        if (command.action == "begin" || command.action == "refresh") preparationFailed = false;
         if (command.action != "cancel") {
             entry.pending = true;
             entry.reply.status = "loading";
             entry.reply.error.clear();
-            entry.expires = Clock::now() + options.qrLifetime;
+            entry.expires = Clock::now() + (command.provider == Provider::Qishui ? std::chrono::milliseconds(300000) : options.qrLifetime);
             StartLocked();
         }
         ChangedLocked();
@@ -261,7 +274,7 @@ struct MusicProviderAccountSession::Impl {
                 {"status", reply.status}, {"phase", reply.phase}, {"userId", reply.userId},
                 {"displayName", reply.displayName}, {"qrImage", reply.qrImage},
                 {"qrText", reply.qrText}, {"error", reply.error},
-                {"avatarUrl", reply.avatarUrl}, {"memberships", reply.memberships}});
+                {"avatarUrl", reply.avatarUrl}, {"memberships", reply.memberships}, {"loginMode", reply.loginMode}});
         }
         return Wide(Json{{"version", 1}, {"type", "music-provider-account-state"},
             {"revision", revision}, {"accounts", std::move(accounts)}}.dump());
@@ -290,7 +303,124 @@ struct MusicProviderAccountSession::Impl {
         if (identity.empty()) Clear(provider);
         else Save(provider, identity);
     }
+    void RunRuntime(std::size_t index, std::uint64_t generation, const std::string& action, Clock::time_point expires) {
+        auto& entry = entries[index];
+        const auto provider = Providers[index];
+        const auto superseded = [&] { return (action != "logout" && stopped.load()) || entry.generation.load() != generation; };
+        const auto expired = [&] { return (action == "begin" || action == "poll" || action == "reopen") && Clock::now() >= expires; };
+        const Cancelled cancel = [&] { return superseded() || expired(); };
+        Reply reply;
+        try {
+            const auto json = options.runtime->Request("auth", provider,
+                {{"operation", action == "restore" ? "refresh" : action}, {"attempt", generation}}, cancel);
+            reply.status = json.value("status", "error"); reply.phase = json.value("phase", "");
+            reply.userId = json.value("userId", ""); reply.displayName = json.value("displayName", "");
+            reply.qrImage = json.value("qrImage", ""); reply.qrText = json.value("qrText", "");
+            reply.error = json.value("error", ""); reply.avatarUrl = json.value("avatarUrl", "");
+            reply.loginMode = json.value("loginMode", "qr");
+            if (!PublicImageUrl(reply.avatarUrl)) reply.avatarUrl.clear();
+            for (const auto& member : json.value("memberships", Json::array())) {
+                reply.memberships.push_back({member.value("kind", ""), member.value("label", ""),
+                    member.value("level", std::int64_t{0}), member.value("active", false),
+                    member.value("iconUrl", ""), member.value("expiresAt", std::int64_t{0})});
+            }
+            if (!PublicReply(reply)) throw std::runtime_error("invalid-response");
+            if (action == "begin" && reply.status == "authorizing" && reply.loginMode == "qr" &&
+                (reply.qrImage.empty() == reply.qrText.empty())) throw std::runtime_error("invalid-response");
+        } catch (const std::exception& error) {
+            reply = ErrorReply(error.what());
+            if (!PublicReply(reply)) reply.error = "service";
+        } catch (...) { reply = ErrorReply("service"); }
+        std::lock_guard lock(mutex);
+        if (superseded()) return;
+        if (expired()) { options.runtime->CancelLogin(provider, generation); reply = ErrorReply("expired"); reply.status = "expired"; }
+        if (reply.status == "authorizing" && reply.loginMode == "qr" &&
+            reply.qrImage.empty() && reply.qrText.empty()) {
+            reply.qrImage = entry.reply.qrImage;
+            reply.qrText = entry.reply.qrText;
+        }
+        if (action == "poll" && reply.status == "error" && RetryablePoll(reply.error) && entry.pollFailures < 3) {
+            ++entry.pollFailures; entry.polling = true;
+            entry.due = std::min(expires, Clock::now() + std::min(options.pollInterval * (1 << (entry.pollFailures - 1)), std::chrono::milliseconds(5000)));
+            return;
+        }
+        entry.pollFailures = 0;
+        if (action == "refresh" && reply.status == "error" && entry.committed.status == "signed-in") {
+            const auto error = reply.error; reply = entry.committed; reply.status = "error"; reply.error = error;
+        }
+        entry.polling = reply.status == "authorizing";
+        if (entry.polling) entry.due = std::min(expires, Clock::now() + options.pollInterval);
+        else { reply.qrImage.clear(); reply.qrText.clear(); reply.phase.clear(); }
+        if (reply.status == "signed-in" || reply.status == "signed-out" ||
+            ((action == "restore" || action == "refresh") && reply.status == "expired")) entry.committed = reply;
+        entry.reply = std::move(reply); ChangedLocked();
+    }
+    bool PrepareRuntime(std::size_t index, std::uint64_t generation, const std::string& action,
+                        Clock::time_point& expires) {
+        if (!options.runtime && !options.prepareRuntime) return true;
+        auto& entry = entries[index];
+        const Cancelled cancelled = [&] {
+            return (action != "logout" && stopped.load()) || entry.generation.load() != generation;
+        };
+        try {
+            CheckCancelled(cancelled);
+            const bool available = options.runtime ? options.runtime->Available() : runtimePrepared;
+            if (!available) {
+                {
+                    std::lock_guard lock(mutex);
+                    if (cancelled()) return false;
+                    // One failed download must not be repeated by the remaining
+                    // providers' queued restores or by passive state delivery.
+                    if (action == "restore" && preparationFailed) {
+                        entry.reply = ErrorReply("runtime-download"); ChangedLocked(); return false;
+                    }
+                }
+                const auto phase = [&](std::string_view value) {
+                    if (value != "downloading" && value != "extracting") return;
+                    std::lock_guard lock(mutex);
+                    if (cancelled()) return;
+                    for (auto& pending : entries) if (pending.reply.status == "loading" && pending.action != "logout") {
+                        pending.reply.phase = value;
+                        pending.reply.qrImage.clear(); pending.reply.qrText.clear();
+                    }
+                    ChangedLocked();
+                };
+                if (options.prepareRuntime) options.prepareRuntime(cancelled, phase);
+                else options.runtime->Prepare(cancelled, phase);
+                CheckCancelled(cancelled);
+                std::lock_guard lock(mutex);
+                if (cancelled()) return false;
+                runtimePrepared = true; preparationFailed = false;
+                for (auto& pending : entries) {
+                    if (pending.reply.status == "loading") pending.reply.phase.clear();
+                    // Retry also restores the other platforms' saved accounts.
+                    if (&pending != &entry && pending.action == "restore" && pending.reply.error == "runtime-download") {
+                        pending.pending = true; pending.reply = {}; pending.reply.status = "loading";
+                        ++pending.generation;
+                    }
+                }
+                ChangedLocked();
+            }
+            if (action == "begin") {
+                std::lock_guard lock(mutex);
+                if (cancelled()) return false;
+                expires = Clock::now() + (Providers[index] == Provider::Qishui ? std::chrono::milliseconds(300000) : options.qrLifetime);
+                entry.expires = expires;
+            }
+            return true;
+        } catch (...) {
+            std::lock_guard lock(mutex);
+            if (cancelled()) return false;
+            preparationFailed = true;
+            entry.reply = ErrorReply("runtime-download");
+            entry.polling = false;
+            ChangedLocked();
+            return false;
+        }
+    }
     void RunOne(std::size_t index, std::uint64_t generation, const std::string& action, Clock::time_point expires) {
+        if (!PrepareRuntime(index, generation, action, expires)) return;
+        if (options.runtime) { RunRuntime(index, generation, action, expires); return; }
         auto& entry = entries[index];
         const auto provider = Providers[index];
         const auto superseded = [&] {
@@ -501,11 +631,12 @@ struct MusicProviderAccountSession::Impl {
     MusicProviderAccountOptions options;
     mutable std::mutex mutex;
     std::condition_variable condition;
-    std::array<Entry, 3> entries;
+    std::array<Entry, std::size(Providers)> entries;
     std::thread worker;
     std::atomic<bool> stopped{false};
     std::uint64_t revision = 0;
     bool notification = false, closed = false, finished = true;
+    bool preparationFailed = false, runtimePrepared = false;
 };
 
 MusicProviderAccountSession::MusicProviderAccountSession(MusicProviderAccountOptions options)
@@ -538,7 +669,7 @@ std::optional<MusicProviderCredentialLease> MusicProviderAccountSession::Acquire
         lease.userId = entry.committed.userId;
     }
     try {
-        lease.credentials = impl_->Load(provider);
+        lease.credentials = impl_->options.runtime ? Json{{"runtime", "folia"}} : impl_->Load(provider);
         if (!lease.credentials.is_object() || lease.credentials.empty() || !IsCurrent(lease)) return {};
         return lease;
     } catch (...) { return {}; }

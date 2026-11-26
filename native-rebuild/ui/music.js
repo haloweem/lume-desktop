@@ -1,21 +1,18 @@
 import {MUSIC_ICONS} from './music-icons.js';
 import {musicCollectionKey} from './music-collections.js';
 import {musicPlayerPanel} from './music-player-panel.js';
-import {musicProviderButtons} from './music-provider-account.js';
+import {musicProviderButtons,MUSIC_PROVIDERS} from './music-provider-account.js';
 import {musicOnlineError,musicTrackLiked,canLikeMusicTrack} from './music-online.js';
 import {settingsFrame} from './settings-frame.js';
 
 const icon = name => MUSIC_ICONS[name] || MUSIC_ICONS.queue;
 const text = value => typeof value === 'string' ? value : '';
 const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
-const onlineTrack = track => /^(netease|qq|kugou):/.test(track?.id||'');
+const onlineTrack = track => MUSIC_PROVIDERS.some(provider=>track?.id?.startsWith(`${provider}:`));
 const localTrack = track => track?.id?.startsWith('local-');
-const membershipBadges = new Set(['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip']);
+const membershipBadges = new Set(['qq-green-vip','qq-super-vip','netease-vip','netease-svip','kugou-vip','qishui-vip']);
 const qualityOptions = {
   netease:[
-    ['jyeffect','沉浸环绕声','Surround Audio','netease-vip'],
-    ['sky','臻音全景声','Audio Vivid','netease-svip'],
-    ['jymaster','超清母带','母带级音质','netease-svip'],
     ['hires','Hi-Res','Hi-Res 音质','netease-vip'],
     ['lossless','无损','无损音质','netease-vip'],
     ['high','极高','HQ · 最高 320kbps'],['standard','标准','128kbps'],
@@ -30,18 +27,21 @@ const qualityOptions = {
     ['standard','128K','标准音质'],['high','320K','高品质','kugou-vip'],
     ['lossless','无损','无损音质','kugou-vip'],['hires','Hi-Res','Hi-Res 音质','kugou-vip'],
   ],
+  qishui:[['standard','标准','平台提供的音源']],
 };
-// Higher tiers include the lower ones (live 2026-10-11: a 黑胶VIP account
-// resolved sky/jymaster down to jyeffect, a 豪华绿钻 account has no SVIP).
+// Higher membership tiers include the lower ones.
 const membershipNames = {'qq-green-vip':'QQ音乐绿钻','qq-super-vip':'QQ音乐超级会员',
-  'netease-vip':'网易云黑胶VIP','netease-svip':'网易云黑胶SVIP','kugou-vip':'酷狗VIP'};
+  'netease-vip':'网易云黑胶VIP','netease-svip':'网易云黑胶SVIP','kugou-vip':'酷狗VIP',
+  'qishui-vip':'汽水音乐会员'};
 const membershipCovers = {'qq-green-vip':['qq-green-vip','qq-super-vip'],'qq-super-vip':['qq-super-vip'],
-  'netease-vip':['netease-vip','netease-svip'],'netease-svip':['netease-svip'],'kugou-vip':['kugou-vip']};
+  'netease-vip':['netease-vip','netease-svip'],'netease-svip':['netease-svip'],'kugou-vip':['kugou-vip'],
+  'qishui-vip':['qishui-vip']};
 // '' when the signed-in account of that platform holds the tier, otherwise
 // the notice to show. Unknown kinds never block.
 export function musicMembershipBlocked(library, kind) {
   if (!membershipBadges.has(kind)) return '';
-  const account = library?.accounts?.find(item=>item.provider===kind.split('-')[0]);
+  const provider=kind.split('-')[0];
+  const account = library?.accounts?.find(item=>item.provider===provider);
   const held = (account?.memberships||[]).some(item=>item.active===true&&membershipCovers[kind].includes(item.kind));
   return held ? '' : `需要${membershipNames[kind]}`;
 }
@@ -58,7 +58,7 @@ function safeImage(value) {
     const url = new URL(value);
     if(/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}\/[a-f0-9]{64}\/media\.png$/.test(value)&&Number(url.port)<=65535)return url.href;
     if (!['https:','http:'].includes(url.protocol) || url.username || url.password || url.port) return '';
-    const providerHost = ['music.126.net','qq.com','gtimg.cn','kugou.com','kgimg.com']
+    const providerHost = ['music.126.net','qq.com','gtimg.cn','kugou.com','kgimg.com','douyinpic.com','byteimg.com']
       .some(domain=>url.hostname===domain||url.hostname.endsWith(`.${domain}`));
     if (!['static.lumedesktop.com', 'lume-wallpaper.local', 'lume-12345-1444884137.cos.ap-nanjing.myqcloud.com']
       .includes(url.hostname) && !providerHost) return '';
@@ -160,7 +160,7 @@ export function musicPlaybackError(error) {
 
 function artwork(track, className, fallback='disc') {
   const source = safeImage(track?.artwork);
-  return `<span class="${className}">${icon(fallback)}${source ? `<img data-music-image src="${escapeHtml(source)}" alt="" loading="lazy" decoding="async" draggable="false">` : ''}</span>`;
+  return `<span class="${className}">${icon(fallback)}${source ? `<img data-music-image src="${escapeHtml(source)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" draggable="false">` : ''}</span>`;
 }
 
 function control(action, label, name, {disabled=false, active=false, extra=''} = {}) {
@@ -236,7 +236,7 @@ function sidebar(state, view, library) {
 function guestState(library) {
   return `<section class="MusicGuest" aria-labelledby="music-guest-title">
     <div class="MusicGuestIcon">${icon('user')}</div><div class="MusicGuestCopy"><h1 id="music-guest-title">登录，开启你的音乐</h1>
-    <p>扫码连接音乐平台账户。</p></div>
+    <p>连接音乐平台账号，继续收听你的音乐。</p></div>
     <div class="MusicProviderButtons">${musicProviderButtons(library.accounts)}</div>
     <button class="MusicTextButton" type="button" data-music-action="import-local">${icon('upload')}导入本地音乐</button>
   </section>`;
@@ -245,12 +245,11 @@ function guestState(library) {
 function recommendations(items, library) {
   if (!items.length) return '';
   const name = library.accounts?.find(account=>account.provider===library.providerId)?.displayName?.trim();
-  const card = (item, featured=false) => `<button class="MusicRecommendationCard${featured ? ' MusicRecommendationCard--featured' : ''}" type="button" data-music-playlist="${escapeHtml(musicCollectionKey(item))}">
-    <span class="MusicRecommendationArtwork">${artwork(item,'MusicRecommendationImage','queue')}<span class="MusicRecommendationShade"></span>${featured ? `<strong>${escapeHtml(item.title)}</strong>` : ''}</span>
-    ${featured ? '' : `<strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.description || '推荐歌单')}</span>`}</button>`;
+  const card = item => `<button class="MusicRecommendationCard" type="button" data-music-playlist="${escapeHtml(musicCollectionKey(item))}">
+    <span class="MusicRecommendationArtwork">${artwork(item,'MusicRecommendationImage','queue')}</span>
+    <strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.description || '推荐歌单')}</span></button>`;
   return `<section class="MusicRecommendations" data-music-home-recommendation-playlists>
-    <h2>${name ? `Hi ${escapeHtml(name)}，` : ''}今日为你推荐</h2><div class="MusicRecommendationGrid MusicRecommendationGrid--featured">${items.slice(0,5).map((item,index)=>card(item,index===0)).join('')}</div>
-    ${items.length > 5 ? `<h2 class="MusicSupplyTitle">你的歌单补给站</h2><div class="MusicRecommendationGrid MusicRecommendationGrid--supply">${items.slice(5,65).map(item=>card(item)).join('')}</div>` : ''}</section>`;
+    <h2>${name ? `Hi ${escapeHtml(name)}，` : ''}为你推荐</h2><div class="MusicRecommendationGrid MusicRecommendationGrid--supply">${items.map(card).join('')}</div></section>`;
 }
 
 function trackTable(state, tracks, query='', {queue=false,rail=false,library={}}={}) {

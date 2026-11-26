@@ -531,7 +531,7 @@ int main(int argc, char** argv) {
 
     Fixture disabledUpdates;
     Check(disabledUpdates.service.Load() && disabledUpdates.service.BeginCheck(), "load compatible update fixture");
-    disabledUpdates.service.FinishCheck({{"available", "1.1.3", 0}, {}});
+    disabledUpdates.service.FinishCheck({{"available", "1.1.4", 0}, {}});
     Check(disabledUpdates.service.State().update.status == "available",
           "compatible release remains available for the native downloader");
     disabledUpdates.service.UnsupportedUpdate();
@@ -540,7 +540,7 @@ int main(int argc, char** argv) {
     Check(disabledUpdates.service.State().error == "update-disabled", "repeated disabled operations do not mislabel a compatible source");
     const auto jsonText = SerializeSnapshot(startup.service.State());
     const auto json = nlohmann::json::parse(jsonText);
-    Check(json.size() == 12 && json.at("version") == 1 && json.at("type") == "app-settings-state" &&
+    Check(json.size() == 13 && json.at("gamePrograms").is_array() && json.at("version") == 1 && json.at("type") == "app-settings-state" &&
           json.at("revision").is_number_unsigned() && json.at("update").size() == 3 &&
           json.at("dataDirectory").is_string() && json.at("wallpaperDirectory").is_string(),
           "fixed public snapshot contract");
@@ -567,5 +567,10 @@ int main(int argc, char** argv) {
         const auto bytes=std::string(R"({"version":3,"language":"en","balancedMode":true,"autostart":false,"wallpaperDirectory":"","interfaceScale":)")+invalid+"}";
         Check(!DecodePreferences(bytes).error.empty(),"persisted scale is a bounded integer");
     }
+    const std::vector<std::string> games={"C:/Games/Example.exe"};
+    Check(scale.service.SetGamePrograms(games)&&DecodePreferences(scale.file.value.bytes).preferences.gamePrograms==games,
+          "windowed game list survives persistence");
+    Check(scale.service.SetGamePrograms({})&&DecodePreferences(scale.file.value.bytes).preferences.gamePrograms.empty(),
+          "removing last game clears persisted selection");
     std::cout << "application settings service passed\n";
 }

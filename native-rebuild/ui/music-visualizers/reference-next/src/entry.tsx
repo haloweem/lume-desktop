@@ -6,6 +6,7 @@ import {MODES,acceptsMessage,createStateReducer,localArtwork,EMPTY_ANALYSIS,appl
 import {prepareLines} from 'reference:defaults';
 import {resolvePreferenceTheme} from 'reference:preference-theme';
 import {loaders} from 'reference:modes';
+import {DEFAULT_HANABI_TUNING,DEFAULT_MACHI_TUNING} from 'reference:new-defaults';
 
 const mode=location.hash.slice(1);
 const host=document.getElementById('reference-stage')!;
@@ -14,7 +15,7 @@ const clock=motionValue(0),audioPower=motionValue(0);
 const audioBands=Object.fromEntries(['bass','lowMid','mid','vocal','treble'].map(key=>[key,motionValue(0)]));
 audioBands.spectrum=motionValue(new Uint8Array(128));
 const reducer=createStateReducer(prepareLines);
-const background={shellOwnsWallpaper:true};
+const background={shellOwnsWallpaper:true,transparent:mode==='nebbia'};
 let root:any=null,Renderer:any=null,loading:Promise<void>|null=null,disposed=false,failed=false;
 let renders=0;
 let lastAnalysis=EMPTY_ANALYSIS;
@@ -43,6 +44,8 @@ class Boundary extends React.Component<any,{failed:boolean}> {
 
 function Stage({state}:any) {
   const theme=useMemo(()=>resolvePreferenceTheme(mode,state.preferences),[state.preferences]);
+  const subtitleContentMode=state.preferences?.subtitleContentMode||'translation';
+  host.dataset.referenceSubtitleMode=subtitleContentMode;
   useEffect(()=>{
     // Historical Word components subscribe after mounting. dirty publishes even an unchanged time,
     // so mounting in the middle of a paused line does not leave them in their invisible waiting pose.
@@ -56,7 +59,10 @@ function Stage({state}:any) {
     duration={state.duration}
     seed={current?.id||current?.source||current?.title||`geometry-${mode}`}
     paused={!state.playing} staticMode={false} isPreviewMode={false} background={background}
-    showText={true} lyricsFontScale={1} subtitleFontScale={1} subtitleContentMode="translation" />;
+    showText={true} lyricsFontScale={1} subtitleFontScale={1} subtitleContentMode={subtitleContentMode}
+    hideTranslationSubtitle={subtitleContentMode==='none'}
+    subtitleOverlayLayout={(subtitleContentMode==='both'?'romanization+translation':subtitleContentMode==='none'?'translation':subtitleContentMode)+'|only'}
+    hanabiTuning={DEFAULT_HANABI_TUNING} machiTuning={DEFAULT_MACHI_TUNING} />;
 }
 
 function render() {

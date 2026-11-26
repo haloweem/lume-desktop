@@ -193,6 +193,7 @@ bool AllowedHeader(const Route& route, std::string_view name, std::string_view v
         case Provider::QQ: return value == "https://xui.ptlogin2.qq.com/" ||
             value == "https://graph.qq.com/" || value == "https://y.qq.com/" || value == "https://y.qq.com";
         case Provider::Kugou: return value == "https://www.kugou.com/" || value == "https://www.kugou.com";
+        default: return false;
         }
     }
     return false;
@@ -389,6 +390,7 @@ Reply ExecuteProvider(Provider provider, Operation operation, Json& secrets, con
     case Provider::Netease: return RunNetease(operation, secrets, cancelled, SendHttp);
     case Provider::QQ: return RunQQ(operation, secrets, cancelled, SendHttp);
     case Provider::Kugou: return RunKugou(operation, secrets, cancelled, SendHttp);
+    default: break;
     }
     Invalid();
 }

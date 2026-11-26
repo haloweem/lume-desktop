@@ -1,5 +1,7 @@
 #include "core/application_settings/application_settings.h"
 #include <utility>
+#include <algorithm>
+
 namespace lume::application_settings {
 Service::Service(IPreferencesFile& file, IStartupRegistration& startup, std::wstring executable,
                  std::function<bool(bool)> apply, const Cancellation* cancellation, bool restoreStartup)
@@ -120,6 +122,7 @@ bool Service::Save(const Preferences& preferences, bool saveAutostart, bool rest
                 (initializeAutostart_ ||
                  decoded.preferences.language != preferences.language ||
                  decoded.preferences.balancedMode != preferences.balancedMode ||
+                 decoded.preferences.gamePrograms != preferences.gamePrograms ||
                  decoded.preferences.interfaceScale != preferences.interfaceScale ||
                  decoded.preferences.autostart != autostartIntent_)) {
                 Fail("preferences-save");
@@ -148,6 +151,15 @@ bool Service::SetLanguage(const std::string& language) {
     if (language != "zh-CN" && language != "en") { Fail("language-invalid"); return false; }
     auto next = state_.preferences;
     next.language = language;
+    return Save(next);
+}
+bool Service::SetGamePrograms(std::vector<std::string> programs) {
+    if (!Ready()) return false;
+    if (programs.size()>16 || std::any_of(programs.begin(),programs.end(),[](const auto& p){
+        return p.empty() || p.size()>2048 || p.find_first_of("\r\n")!=std::string::npos || p.find('\0')!=std::string::npos;
+    })) { Fail("preferences-save"); return false; }
+    auto next=state_.preferences;
+    next.gamePrograms=std::move(programs);
     return Save(next);
 }
 bool Service::SetBalancedMode(bool enabled) {

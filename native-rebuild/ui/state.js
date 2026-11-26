@@ -1,5 +1,6 @@
 import {enterMusic, leaveMusic} from "./music-navigation.js";
 import {initialIslandState,reduceIslandState,unavailableIslandState} from './island-state.js';
+import {dockAnimationDurationDefault,dockReflectionDefaults,dockSummonShortcutDefault} from './dock.js';
 import {initialSystemFeatureState,reduceSystemFeatureState,unavailableSystemFeatureState} from './system-feature-state.js';
 export {taskbarDisplayedPreferences} from './system-feature-state.js';
 
@@ -57,7 +58,7 @@ export const initialState = () => ({
   ...initialSystemFeatureState(),
   radial:{enabled:false,running:false,visible:false,material:"liquid-glass",shortcutCode:9},
   radialStatus:"loading",radialError:"",radialLoadStatus:"fresh",radialMaterialStatus:"inactive",
-  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,showRunning:true,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
+  dock:{enabled:false,running:false,material:"liquid-glass",reflection:false,...dockReflectionDefaults,screen:1,screenCount:1,showRunning:true,runningPreview:false,animation:false,animateRestore:true,animateLaunch:true,animateClose:true,animationDuration:dockAnimationDurationDefault,showStartMenu:true,launchpadEnabled:true,edge:'bottom',systemTray:false,summonEnabled:false,summonShortcutCode:dockSummonShortcutDefault,summonHotkeyRegistered:false,iconScale:100,position:50,positionMode:'center',positionOffset:0,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:0,added:0},
   dockStatus:"loading",dockError:"",dockLoadStatus:"fresh",dockMaterialStatus:"inactive",
   ...initialIslandState(),
   wallpaper:{revision:-1,status:"idle",error:"",loadStatus:"fresh",playerAvailable:false,
@@ -215,7 +216,10 @@ export function reduce(state, event) {
         const failed=!!m.error||m.loadStatus==="failed";
         const pending=state.dockStatus==="saving"&&m.result==="snapshot"&&!failed;
         const {enabled,running,material,reflection,systemTray,iconScale,position,bottomOffset,iconSpacing,pinned,added}=m;
-        return {...state,dock:{enabled,running,material,reflection,showRunning:m.showRunning??true,systemTray,iconScale,position,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
+        return {...state,dock:{enabled,running,material,reflection,screen:m.screen??1,screenCount:m.screenCount??1,
+          reflectionRatio:m.reflectionRatio??dockReflectionDefaults.reflectionRatio,
+          reflectionTransparency:m.reflectionTransparency??dockReflectionDefaults.reflectionTransparency,
+          showRunning:m.showRunning??true,runningPreview:m.runningPreview??false,animation:m.animation??false,animateRestore:m.animateRestore??true,animateLaunch:m.animateLaunch??true,animateClose:m.animateClose??true,animationDuration:m.animationDuration??dockAnimationDurationDefault,showStartMenu:m.showStartMenu??true,launchpadEnabled:m.launchpadEnabled??true,edge:m.edge??'bottom',systemTray,summonEnabled:m.summonEnabled??false,summonShortcutCode:m.summonShortcutCode??dockSummonShortcutDefault,summonHotkeyRegistered:m.summonHotkeyRegistered??false,iconScale,position,positionMode:m.positionMode??'center',positionOffset:m.positionOffset??0,bottomOffset,iconSpacing,launchpadScale:m.launchpadScale??100,launchpadIconScale:m.launchpadIconScale??100,pinned,added},
           dockError:m.error,dockLoadStatus:m.loadStatus,dockMaterialStatus:m.materialStatus,
           dockStatus:pending?"saving":failed?"error":m.saved?"saved":m.loadStatus==="recovered"?"recovered":"idle"};
       }

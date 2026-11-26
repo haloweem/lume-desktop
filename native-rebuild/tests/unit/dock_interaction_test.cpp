@@ -45,7 +45,7 @@ LPARAM At(const DockWindow& dock, std::size_t i) {
 }
 LPARAM Move(LPARAM p, int dx, int dy = 0) { return MAKELPARAM(GET_X_LPARAM(p) + dx, GET_Y_LPARAM(p) + dy); }
 void Hover(DockWindow& dock, std::size_t i) {
-    SendMessageW(dock.Handle(), WM_MOUSEMOVE, 0, At(dock, i)); Pump(360);
+    SendMessageW(dock.Handle(), WM_MOUSEMOVE, 0, At(dock, i)); Pump(600);
 }
 LPARAM Drag(DockWindow& dock, std::size_t i, int dx, int dy = 0) {
     Hover(dock, i);
@@ -68,6 +68,13 @@ void CALLBACK ChoosePenultimate(HWND, UINT, UINT_PTR timer, DWORD) {
     KillTimer(nullptr, timer);
     PostMessageW(menu, WM_KEYDOWN, VK_END, 0);
     PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);
+    PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
+}
+void CALLBACK ChooseFirst(HWND, UINT, UINT_PTR timer, DWORD) {
+    const auto menu = Find(L"LumeWidgetMenuWindow");
+    if (!menu) return;
+    KillTimer(nullptr, timer);
+    PostMessageW(menu, WM_KEYDOWN, VK_HOME, 0);
     PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
 }
 LRESULT CALLBACK FixtureProcedure(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
@@ -117,17 +124,58 @@ void Scenario(bool visual) {
         {Kind::Pinned, "C:/pin1.exe", "左一", false, 0}, {Kind::Pinned, "C:/pin2.exe", "左二", false, 1},
         {Kind::Separator}, {Kind::Running, "C:/A.exe", "应用 A", true},
         {Kind::Running, "C:/B.exe", "应用 B", true}, {Kind::Running, "C:/C.exe", "应用 C", true}};
+    // Only the application area is visible. Observe the real popup moving inward on each edge.
+    Item pinned{Kind::Pinned, "C:/A.lnk", "Pinned A", true, 0};
+    pinned.target = windows.front().executable;
+    BOOL animation = TRUE;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animation, 0);
+    for (auto edge : {lume::dock::Edge::Bottom, lume::dock::Edge::Top, lume::dock::Edge::Left, lume::dock::Edge::Right}) {
+        DockAppearance look;
+        look.edge = edge;
+        look.transparent = true;
+        Check(dock.Show({pinned, items[3]}, look), "show pinned apps without a running area");
+        Pump(300);
+        Hover(dock, 1);
+        HWND gallery = Find(L"LumeNativeDockPreview");
+        Check(!gallery || !IsWindowVisible(gallery), "closed pin has no gallery");
+        SendMessageW(dock.Handle(), WM_MOUSEMOVE, 0, At(dock, 0));
+        Pump(350);
+        gallery = Find(L"LumeNativeDockPreview");
+        Check(!gallery || !IsWindowVisible(gallery), "brief hover keeps the gallery closed");
+        const auto timeout = GetTickCount64() + 1000;
+        do { Pump(3); gallery = Find(L"LumeNativeDockPreview"); }
+        while ((!gallery || !IsWindowVisible(gallery)) && GetTickCount64() < timeout);
+        Check(gallery && IsWindowVisible(gallery), "running pin opens the window gallery without the running area");
+        RECT start{}, end{};
+        GetWindowRect(gallery, &start); Pump(300); GetWindowRect(gallery, &end);
+        const LONG dx = end.left - start.left, dy = end.top - start.top;
+        if (animation) {
+            const auto inward = edge == lume::dock::Edge::Bottom ? -dy : edge == lume::dock::Edge::Top ? dy :
+                                edge == lume::dock::Edge::Left ? dx : -dx;
+            Check(inward > 1, "gallery slides inward from its Dock edge");
+        } else Check(dx == 0 && dy == 0, "reduced motion shows the final gallery immediately");
+    }
+    items[5].window = h1;
     Check(dock.Show(items, false), "running Dock shows"); Pump(650);
     Hover(dock, 5);
     auto popup = Find(L"LumeNativeDockPreview");
     Check(popup && IsWindowVisible(popup) && Title(popup).find(L"1 个窗口") != std::wstring::npos,
         "single running window has a visible preview and count");
     Check(!(GetWindowLongPtrW(popup, GWL_EXSTYLE) & WS_EX_TRANSPARENT), "preview receives clicks");
+    Check(dock.SummonTemporarily(), "summon Dock for a preview");
+    SendMessageW(dock.Handle(), WM_CANCELMODE, 0, 0);
+    Hover(dock, 5); Pump(250);
+    RECT popupBounds{}; GetWindowRect(popup, &popupBounds);
+    POINT middle{(popupBounds.left + popupBounds.right)/2, (popupBounds.top + popupBounds.bottom)/2};
+    Check(IsWindowVisible(popup) && (GetWindowLongPtrW(popup, GWL_EXSTYLE) & WS_EX_TOPMOST) &&
+          dock.ContainsPreviewPoint(middle), "summoned preview follows the Dock and receives clicks outside the bar");
     const int unit = static_cast<int>(GetDpiForWindow(popup));
     const auto card = [&](int column) { return MAKELPARAM(MulDiv(110 + column * 224, unit, 96), MulDiv(105, unit, 96)); };
     SendMessageW(popup, WM_LBUTTONDOWN, MK_LBUTTON, card(0));
     SendMessageW(popup, WM_LBUTTONUP, 0, card(0));
     Check(selected == h1 && !IsWindowVisible(popup), "single preview selects its HWND and dismisses");
+    dock.RestoreDesktopLayer();
+    Check(!dock.ContainsPreviewPoint(middle), "closing a summoned preview releases its click area");
     windows.push_back({"C:/A.exe", "文档二", h2, false});
     SendMessageW(dock.Handle(), WM_MOUSELEAVE, 0, 0); Hover(dock, 5);
     Check(IsWindowVisible(popup) && Title(popup).find(L"2 个窗口") != std::wstring::npos, "all grouped windows appear");
@@ -159,21 +207,23 @@ void Scenario(bool visual) {
     SendMessageW(dock.Handle(), WM_RBUTTONUP, 0, At(dock, 5));
     Check(activated == "C:/A.exe" && contextual == "C:/A.exe", "reordered click and context keep application identity");
 
-    const auto cancelled = Drag(dock, 5, -pitch * 2);
-    (void)cancelled;
+    Drag(dock, 5, left1.left - dock.IconBounds(5).left);
     SendMessageW(dock.Handle(), WM_KEYDOWN, VK_ESCAPE, 0); Pump(650);
-    Check(dock.IconBounds(7).left < dock.IconBounds(5).left, "Escape restores prior running order");
+    Check(places == 0 && dock.IconBounds(7).left < dock.IconBounds(5).left, "Escape cancels cross-section pinning and restores running order");
+    const auto runningPoint = At(dock, 5);
+    Drag(dock, 5, left1.left - dock.IconBounds(5).left);
+    Release(dock, runningPoint);
+    Check(places == 0 && discarded.empty(), "returning to running area before release cancels pinning");
     auto away = Drag(dock, 5, 0, -MulDiv(200, unit, 96));
     const auto ghost = Find(L"LumeNativeDockDragIcon");
     Check(dock.Removing() && ghost && IsWindowVisible(ghost) && Title(ghost) == L"关闭窗口",
         "dragging running icon outside displays close-window feedback");
     if (visual) { Pump(12000); }
-    // Returning over the left collection cannot pin, collect, or move left items.
-    auto back = At(dock, 1);
+    auto back = At(dock, 2);
     SendMessageW(dock.Handle(), WM_MOUSEMOVE, MK_LBUTTON, back); Pump(250);
     Check(!dock.Removing(), "returning to Dock cancels close feedback");
     Release(dock, back);
-    Check(discarded.empty() && places == 0 && collections == 0, "drag back does not close, pin, or collect");
+    Check(discarded.empty() && places == 1 && collections == 0, "dropping back into the apps section pins rather than closing or collecting");
     Check(dock.IconBounds(2).left < dock.IconBounds(3).left && dock.IconBounds(3).left < dock.IconBounds(5).left,
         "left pinned icons remain before all running icons");
     away = Drag(dock, 5, 0, -MulDiv(200, unit, 96));
@@ -183,11 +233,14 @@ void Scenario(bool visual) {
     Check(discarded == "C:/A.exe", "drag-out closes the captured application despite pending refresh");
     Check(dock.IconBounds(2).left < dock.IconBounds(3).left, "drag-out preserves left order");
     SetTimer(nullptr, 0, visual ? 12000 : 30, ChoosePenultimate);
-    Check(LumeWidgetMenu::ShowDockItem(dock.Handle(), {300, 300}, true, false, true, false, true) == 21,
+    Check(LumeWidgetMenu::ShowDockItem(dock.Handle(), {300, 300}, true, false, false, true) == 21,
         "left remove action is directly above Close Dock");
     SetTimer(nullptr, 0, visual ? 12000 : 30, ChoosePenultimate);
-    Check(LumeWidgetMenu::ShowDockItem(dock.Handle(), {300, 300}, false, false, true, false, true, false, false, true) == 24,
+    Check(LumeWidgetMenu::ShowDockItem(dock.Handle(), {300, 300}, false, false, false, true, false, false, true) == 24,
         "right close-window action is directly above Close Dock");
+    SetTimer(nullptr, 0, 30, ChooseFirst);
+    Check(LumeWidgetMenu::ShowDockItem(dock.Handle(), {300, 300}, true, false, false, true) == 40,
+        "pinned Dock menu starts with new collection instead of open location");
     dock.Stop(); DestroyWindow(first); DestroyWindow(second); CoUninitialize();
     std::puts("PASS single/multiple previews, preview selection, gap transition, running reorder/refresh/cancel/identity, drag-out/back, section isolation, bottom menu actions");
 }

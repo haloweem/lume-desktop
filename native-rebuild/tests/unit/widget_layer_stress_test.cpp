@@ -54,10 +54,19 @@ HWND Surface(HWND owner) {
 }
 
 bool Below(HWND window, HWND ceiling) {
-    if (!IsWindow(window) || !IsWindow(ceiling)) return false;
-    for (HWND above = GetWindow(window, GW_HWNDPREV); above; above = GetWindow(above, GW_HWNDPREV))
-        if (above == ceiling) return true;
-    return false;
+    if (!window || !ceiling || window == ceiling) return false;
+    // Sample both ranks in a single enumeration. Following HWNDs across
+    // separate GetWindow calls can skip the ceiling when a glass worker moves.
+    struct Sample { HWND window, ceiling; bool sawCeiling = false, below = false; };
+    Sample sample{window, ceiling};
+    EnumWindows([](HWND candidate, LPARAM data) -> BOOL {
+        auto& s = *reinterpret_cast<Sample*>(data);
+        if (candidate == s.ceiling) s.sawCeiling = true;
+        if (candidate != s.window) return TRUE;
+        s.below = s.sawCeiling;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&sample));
+    return sample.below;
 }
 
 LRESULT CALLBACK FixtureProcedure(HWND window, UINT message, WPARAM w, LPARAM l) {
@@ -205,10 +214,7 @@ void CheckLayer(const std::array<HWND, 3>& owners, HWND manager, const char* sta
     for (const auto owner : owners) {
         const auto glass = Surface(owner);
         if (!Below(owner, ceiling) || !glass || !Below(glass, ceiling) || !Below(glass, owner)) {
-            // Capture one ordered enumeration before further diagnostics. A
-            // worker can move a different glass while the legacy GW_HWNDPREV
-            // walk is following it; retain the original assertion below, but
-            // report all comparisons against this same fixed HWND list too.
+            // Capture all pairs in the same enumeration for diagnostics.
             std::vector<HWND> fixedOrder;
             EnumWindows([](HWND window, LPARAM data) -> BOOL {
                 reinterpret_cast<std::vector<HWND>*>(data)->push_back(window);

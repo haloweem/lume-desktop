@@ -13,23 +13,21 @@ public:
 		int scalePercent, bool locked, int timeStyle = 0);
     // Radial popup has no draggable position; command 13 opens shortcut settings.
 	static UINT ShowRadial(HWND owner, POINT position, bool frosted);
-    // Organizer: checked collapse toggle (4 on, 5 off), list/icons 6/7, colors 230..235.
-    // item: opened on an icon, so the menu starts with 删除图标 (13).
-    static UINT ShowOrganizer(HWND, POINT, bool collapsed, bool list, bool frosted, bool locked, bool item = false, int accent = 0);
+    static constexpr UINT OrganizerRemoveIcon=13, OrganizerDeleteIcon=14;
+    static UINT ShowOrganizer(HWND, POINT, bool collapsed, bool list, bool frosted, bool locked,
+                              bool item = false, bool canDelete = false);
     // 50 edit, 51 delete, 52 new task, 53 new checklist; other widget commands unchanged.
     static UINT ShowTodayTodo(HWND, POINT, bool item, bool writable, bool canCreate, bool frosted, bool locked, bool solid = false);
     static UINT ShowNotes(HWND owner, POINT position, bool frosted, bool locked);
-    // Dock background: 40 new collection, 46 add a system icon, 47 system tray, 8/9 material, 11 settings, 10 reset, 1 close.
+    enum DockSystemCommand : UINT { AddStartMenu = 60, AddThisPC, AddRecycleBin, AddControlPanel, AddNetwork, AddUserFolder };
     // Material submenu adds "无" (command 7) for a Dock without glass.
-    static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false, bool systemTray = false);
-    // Dynamic island: 8/9 material, 7 none, 2 expand/collapse, 11 settings, 10 reset, 1 close.
-    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool expanded,
-                           bool canExpand = true);
+    static UINT ShowDock(HWND owner, POINT position, bool frosted, bool none = false, bool startPinned = true);
+    // Dynamic island: 8/9 material, 7 none, 11 settings, 12 countdown edit, 1 close.
+    static UINT ShowIsland(HWND owner, POINT position, bool frosted, bool none, bool editCountdown);
     // Dock or launchpad item: 20 pin, 21 unpin, 22 open location, 23 remove from launchpad.
-    // `canReveal` is false for virtual entries such as the Lume manager item.
-    static UINT ShowDockItem(HWND owner, POINT position, bool pinned, bool removable, bool canReveal = true,
+    static UINT ShowDockItem(HWND owner, POINT position, bool pinned, bool removable,
                              bool inCollection = false, bool dockActions = false, bool frosted = false, bool none = false,
-                             bool runningItem = false, bool systemTray = false);
+                             bool runningItem = false, bool startPinned = true);
     // Launchpad add button: a single "add files" entry plus "new collection",
     // followed by a small file/folder choice for the add entry.
     static UINT ShowLaunchpadAdd(HWND owner, POINT position);
@@ -44,7 +42,7 @@ public:
 	static UINT ShowItems(HWND owner, POINT position, const std::vector<Action>& items, bool compact = false,
 		Scope scope = Scope::Desktop);
 	static UINT ShowScreenshotPin(HWND owner, POINT position);
-	// Audio spectrum: 30 + style index (样式一, 样式二), IDM_LUME_WIDGET_SIZE_FIRST.. for 50..300%,
-	// then 11 settings, 12 lock, 10 reset, 1 close.
-	static UINT ShowSpectrum(HWND owner, POINT position, int style, int scalePercent, bool locked);
+	// Audio spectrum: 30 + style index, IDM_LUME_WIDGET_SIZE_FIRST.. for 50..300%,
+	// shared position commands, then 11 settings, 12 lock, 10 reset, 1 close.
+	static UINT ShowSpectrum(HWND owner, POINT position, int style, int scalePercent, bool locked, int x, int y);
 };

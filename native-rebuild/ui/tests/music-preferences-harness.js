@@ -1,6 +1,6 @@
 // Install after the production-page bridge fixture. No real settings or storage.
 export function installMusicPreferencesHarness() {
-  const defaults={version:3,mode:'partita',fontFamily:'',animationIntensity:'normal',effectMode:'none',
+  const defaults={version:4,mode:'partita',fontFamily:'',animationIntensity:'normal',effectMode:'none',subtitleContentMode:'translation',
     lyricsFontColor:'#ffffff',lyricsKaraokeFillColor:'#ffffff',
     sonnetColors:{lyricsFontColor:'#ffffff',karaokeFillColor:'#38bdf8',glowColor:'#60a5fa'}};
   let preferences=structuredClone(defaults),revision=0;

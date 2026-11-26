@@ -105,6 +105,7 @@ async function inspectPopup(page,popup,report,name) {
       viewport:{width:innerWidth,height:innerHeight},background:getComputedStyle(node).backgroundColor,
       backgroundImage:getComputedStyle(node).backgroundImage,
       kind:node.getAttribute('data-settings-choice-popup')||'legacy',
+      desktopBeauty:node.classList.contains('settings-choice-popup--desktop-beauty')||!!node.closest('.settings--sidebar,.DesktopBeautyLayout'),
       selected:selected.map(option=>({text:option.textContent.trim(),background:getComputedStyle(option).backgroundColor,
         image:getComputedStyle(option).backgroundImage,color:getComputedStyle(option).color,
         column:option.closest('[data-settings-choice-column]')?.dataset.settingsChoiceColumn||''}))};
@@ -118,13 +119,13 @@ async function inspectPopup(page,popup,report,name) {
   assert.ok(['rgb(34, 34, 34)','rgb(36, 36, 36)'].includes(appearance.background),
     name+' keeps a neutral dark menu background: '+appearance.background);
   for(const selected of appearance.selected) {
-    const purple=appearance.kind==='legacy'||selected.column==='minute';
+    const purple=!appearance.desktopBeauty&&(appearance.kind==='legacy'||selected.column==='minute');
     assert.equal(selected.image,'none',name+' selected row has no mixed gradient');
-    assert.equal(selected.background,purple?'rgb(121, 84, 201)':'rgb(22, 119, 255)',
-      name+' uses '+(purple?'solid purple':'solid blue')+' only on the selected row');
+    assert.equal(selected.background,appearance.desktopBeauty?'rgb(91, 123, 234)':purple?'rgb(121, 84, 201)':'rgb(22, 119, 255)',
+      name+' selected row uses its desktop-style or application accent');
   }
   if(appearance.kind==='time')assert.deepEqual(appearance.selected.map(selected=>selected.column),['hour','minute'],
-    name+' shows solid-blue hours and solid-purple minutes together');
+    name+' shows the selected hour and minute');
   report.appearances.push({name,...appearance});
   await page.screenshot({path:path.join(report.output,report.prefix+'-'+name+'.png'),fullPage:true});
 }
@@ -132,8 +133,8 @@ async function inspectPopup(page,popup,report,name) {
 test('shared settings choices: real Edge popups, native acknowledgements and keyboard/lifecycle behavior',
   {skip:process.env.LUME_UI_BROWSER_TESTS!=='1',timeout:150000},async t=>{
     const harness=await createBrowserHarness(process.env.LUME_SETTINGS_CHOICE_OUTPUT||
-      fileURLToPath(new URL('../../../build-artifacts/blue-purple-choices-20261110',import.meta.url)));
-    harness.report.scope='Neutral dark select/time popups; solid blue hour/select and solid purple minute/legacy selection; native bridge contracts';
+      fileURLToPath(new URL('../../../build-artifacts/native-rebuild/browser/settings-choice/',import.meta.url)));
+    harness.report.scope='Desktop style accents and application selection colors, native acknowledgements and keyboard navigation';
     try {
       for(const [width,height,language] of [[1536,864,'zh-CN'],[1280,720,'en'],[680,864,'zh-CN'],[680,864,'en']])
         await t.test(width+'px '+language,async()=>{
@@ -277,7 +278,7 @@ test('shared settings choices: real Edge popups, native acknowledgements and key
             await legacyPopup.locator('[data-select-value="above"]').click();
             assert.equal(await page.evaluate(()=>choiceFixture.commands.filter(c=>c==='v1|dynamicIsland|topmost|true').length),1);
             await legacy.click();await page.keyboard.press('Escape');assert.equal(await legacy.getAttribute('aria-expanded'),'false');
-            report.cases.push('existing custom select retains native command with neutral menu and solid purple selection');
+            report.cases.push('existing custom select retains native command with neutral menu and matching desktop blue selection');
             assert.deepEqual(report.errors,[]);assert.deepEqual(report.remote,[]);
             report.passed=true;
           } catch(error) {

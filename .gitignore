@@ -2,5 +2,15 @@ build-artifacts/
 native-rebuild/build/
 native-rebuild/out/
 native-rebuild/.vs/
+native-rebuild/.cache/
+native-rebuild/music-runtime/node_modules/
+native-rebuild/music-runtime/dist/
+native-rebuild/music-runtime/runtime/
+LumeSetup-*.exe
 *.user
 *.suo
+*.log
+*.pfx
+*.p12
+.env
+.env.local

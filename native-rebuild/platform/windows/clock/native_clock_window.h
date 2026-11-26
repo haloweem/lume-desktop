@@ -24,6 +24,7 @@ public:
     HWND Handle() const { return window_; }
     bool IsRunning() const { return window_ != nullptr && !suspended_; }
     void Center();
+    void CenterHorizontally();
 
 private:
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);

@@ -15,7 +15,7 @@ export function todayTodoStatus(state) {
     rollback:t('待办清单组件恢复失败，请重新启用组件','Could not restore the to-do list widget. Enable it again.'),
   }[state.todayTodoError] || t('待办清单配置读取失败，当前使用默认设置；尚未保存','Could not load to-do list settings. Using defaults; not yet saved.');
   if(state.todayTodoLoadStatus==='recovered')return t('已从备份恢复待办清单配置，尚未保存到主配置','To-do list settings restored from backup; not yet saved to the main configuration.');
-  if(state.todayTodoMaterialStatus==='transparent-fallback')return t('材质暂不可用，当前为透明显示','Material unavailable. Using a transparent fallback.');
+  if(state.todayTodoMaterialStatus==='transparent-fallback')return t('当前使用兼容材质','Using a compatible material.');
   return '';
 }
 export function todayTodoNotice(state,{previousStatus,hasInlineStatus=false}={}) {

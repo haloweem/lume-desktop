@@ -5,7 +5,7 @@
 #error OutputDir must be supplied by package-original-pages.ps1
 #endif
 #ifndef OutputBaseFilename
-#define OutputBaseFilename "LumeSetup-1.1.3"
+#define OutputBaseFilename "LumeSetup-1.1.4"
 #endif
 #ifndef IconFile
 #error IconFile must be supplied by package-original-pages.ps1
@@ -38,7 +38,7 @@ SignToolRetryCount=1
 #endif
 AppId={{8B29B016-65A4-4F35-8F0A-F6D7B9C10101}
 AppName=Lume
-AppVersion=1.1.3
+AppVersion=1.1.4
 AppPublisher=Lume
 AppPublisherURL=https://lumedesktop.com/
 AppSupportURL=https://lumedesktop.com/
@@ -65,11 +65,11 @@ CloseApplications=no
 RestartApplications=no
 LanguageDetectionMethod=uilanguage
 ShowLanguageDialog=yes
-VersionInfoVersion=1.1.3
+VersionInfoVersion=1.1.4
 VersionInfoCompany=Lume
 VersionInfoDescription=Lume Setup
 VersionInfoProductName=Lume
-VersionInfoProductVersion=1.1.3
+VersionInfoProductVersion=1.1.4
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "{#SourcePath}\installer-languages\ChineseSimplified.isl"
@@ -88,7 +88,7 @@ Source: "{#WebView2RuntimeInstallerFile}"; DestDir: "{tmp}"; DestName: "Microsof
 Source: "{#SourceDir}\LumeLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeShell.exe"; DestDir: "{app}"; Flags: ignoreversion
 #if DirExists(SourceDir + "\notification-identity")
-; Optional files only: registration is an explicit user action after install.
+; A signed identity is registered for the original user before launch.
 Source: "{#SourceDir}\notification-identity\*"; DestDir: "{app}\notification-identity"; Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 #if DirExists(SourceDir + "\Assets")
@@ -102,6 +102,10 @@ Source: "{#SourceDir}\LumeGlass.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeGlass.NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 Source: "{#SourceDir}\LumeMusicHost.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\music-runtime.json"; DestDir: "{app}"; Flags: ignoreversion
+#if DirExists(SourceDir + "\music-runtime")
+Source: "{#SourceDir}\music-runtime\*"; DestDir: "{app}\music-runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 Source: "{#SourceDir}\LumeIconHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeMinimizeHost32.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LumeMinimizeHost64.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -168,11 +172,11 @@ function IsVerifiedLumeStart: Boolean; forward;
 #include "installer_shutdown.iss"
 #include "installer_ui_integrity.iss"
 
-var NotificationIdentityReady: Boolean;
+var InstallPreparedForLaunch: Boolean;
 
 function IsVerifiedLumeStart: Boolean;
 begin
-  Result := UiWasVerified and NotificationIdentityReady;
+  Result := UiWasVerified and InstallPreparedForLaunch;
 end;
 
 function IsVerifiedLumeUpdate: Boolean;
@@ -185,11 +189,7 @@ var
   PackageFile: String;
   ResultCode: Integer;
 begin
-  if NotificationIdentityReady then
-    Exit;
   #ifdef SignedNotificationIdentity
-  if not UiWasVerified then
-    VerifyAllInstalledUi;
   PackageFile := ExpandConstant('{app}\notification-identity\Lume.NotificationIdentity.msix');
   if CompareText(GetSHA256OfFile(PackageFile), '{#NotificationIdentityPackageSha256}') <> 0 then
     RaiseException('通知身份安装文件校验失败，Lume 尚未启动。请重新下载安装包。');
@@ -200,23 +200,27 @@ begin
     '" -IdentityPackagePath "' + PackageFile + '" -InstallDirectory "' + ExpandConstant('{app}') + '" -CloseRunningLume',
     ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    Log('Signed notification identity registration could not be launched for the original user.');
-    RaiseException('无法为原登录用户启动通知身份注册，Lume 尚未自动启动。请查看安装日志并重试。');
+    Log('Notification identity registration could not start (Windows error ' + IntToStr(ResultCode) + '). Continuing with desktop fallback.');
+    Exit;
   end;
   Log('Signed notification identity registration result: ' + IntToStr(ResultCode));
   if ResultCode <> 0 then
-    RaiseException('通知功能注册未完成（退出码 ' + IntToStr(ResultCode) + '），Lume 尚未自动启动。具体原因已记录到当前登录用户的 %LOCALAPPDATA%\Lume\Logs\notification-identity-install.log。请将该日志提供给支持人员。');
+  begin
+    Log('Notification identity unavailable. Continuing with desktop fallback. See %LOCALAPPDATA%\Lume\Logs\notification-identity-install.log for registration details.');
+    Exit;
+  end;
   Log('notification-identity=signed-auto-registration; original-user registration completed before launch.');
   #else
   Log('notification-identity=metadata-only-not-user-ready; no signed package, registration skipped, desktop fallback retained.');
   #endif
-  NotificationIdentityReady := True;
 end;
 
 procedure PrepareInstalledLume;
 begin
+  InstallPreparedForLaunch := False;
   VerifyAllInstalledUi;
   RegisterSignedNotificationIdentity;
+  InstallPreparedForLaunch := True;
 end;
 
 procedure RemoveOwnedLoginProtocol(RootKey: Integer);

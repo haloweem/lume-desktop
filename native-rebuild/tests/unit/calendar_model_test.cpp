@@ -72,6 +72,11 @@ void TestDateValidationAndArithmetic() {
     Expect(DayOfYear({2024, 3, 1}) == 61 && DayOfYear({2026, 3, 1}) == 60 &&
         DayOfYear({2024, 12, 31}) == 366 && DayOfYear({2100, 12, 31}) == 365,
         "one-based day of year");
+    Expect(DaysSinceUnixEpoch({1970, 1, 1}) == 0 &&
+        DaysSinceUnixEpoch({1970, 1, 2}) == 1 &&
+        DaysSinceUnixEpoch({2026, 11, 25}) == 20782 &&
+        DaysSinceUnixEpoch({0, 1, 1}) == 0,
+        "Unix epoch day conversion handles the epoch, later dates and invalid dates");
     Expect(AddDays({2024, 2, 28}, 1) == Date{2024, 2, 29} &&
         AddDays({2024, 3, 1}, -1) == Date{2024, 2, 29} &&
         AddDays({1900, 2, 28}, 1) == Date{1900, 3, 1} &&

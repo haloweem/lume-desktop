@@ -21,7 +21,35 @@ namespace {
 void Check(bool value,const char* text){if(!value){std::cerr<<"FAIL: "<<text<<'\n';std::exit(1);}}
 struct Apartment {HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);Apartment(){Check(SUCCEEDED(result),"match the production shell's UI COM apartment");}void Close(){if(SUCCEEDED(result))CoUninitialize();result=E_FAIL;}~Apartment(){Close();}};
 void Pump(unsigned duration=10){const auto end=GetTickCount64()+duration;do{MSG message{};while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}Sleep(2);}while(GetTickCount64()<end);}
+unsigned prewarmShows=0;
+void CALLBACK PrewarmShow(HWINEVENTHOOK,DWORD,HWND window,LONG object,LONG,DWORD,DWORD){
+    wchar_t name[64]{};
+    if(object==OBJID_WINDOW&&GetClassNameW(window,name,64)&&wcscmp(name,L"LumeControlCenter")==0)++prewarmShows;
+}
 template<class F>void Wait(F test,const char* text){const auto end=GetTickCount64()+3000;while(!test()&&GetTickCount64()<end)Pump();Check(test(),text);Pump();}
+void PrewarmVisibilityRegression(HWND owner){
+    std::atomic<unsigned> reads{0};
+    auto worker=std::make_shared<cc::PanelWorker>([&](auto,const auto&){++reads;Sleep(35);return std::string("{}");});
+    const auto hook=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_SHOW,nullptr,PrewarmShow,GetCurrentProcessId(),0,WINEVENT_OUTOFCONTEXT);
+    Check(hook!=nullptr,"observe transient prewarm show events");prewarmShows=0;
+    unsigned samples=0;
+    {
+        ControlCenterWindow center(worker);
+        const ControlCenterWindow::Material modes[]{ControlCenterWindow::Material::Liquid,ControlCenterWindow::Material::Frosted,ControlCenterWindow::Material::None};
+        for(unsigned cycle=0;cycle<6;++cycle){
+            Check(center.Prewarm(GetModuleHandleW(nullptr),owner,modes[cycle%3]),"Dock startup and changed materials prewarm successfully");
+            const auto window=center.Handle();const auto dpi=GetDpiForWindow(window);RECT suggested{8,8,380,428};
+            SendMessageW(window,WM_DPICHANGED,MAKEWPARAM(dpi,dpi),reinterpret_cast<LPARAM>(&suggested));
+            const auto until=GetTickCount64()+2200;
+            do{Pump(2);++samples;Check(!IsWindowVisible(window)&&!center.IsOpen(),"prewarm stays hidden through asynchronous state and DPI callbacks");}while(GetTickCount64()<until);
+            Check(!worker->Running(),"prewarm completes without hidden polling");
+        }
+    }
+    UnhookWinEvent(hook);
+    Check(prewarmShows==0&&reads==6,"six prewarm generations have no transient show event");
+    Check(!GetModuleHandleW(L"WebView2Loader.dll")&&!GetModuleHandleW(L"LumeGlass.dll"),"prewarm does not create a browser or material surface");
+    std::cout<<"PREWARM_VISIBILITY_PASS cycles=6 materials=3 samples="<<samples<<" shows=0 reads=6\n";
+}
 LPARAM Point(HWND window,int x,int y){const auto dpi=GetDpiForWindow(window);return MAKELPARAM(MulDiv(x,dpi,96),MulDiv(y,dpi,96));}
 void Click(HWND window,int x,int y){const auto point=Point(window,x,y);SendMessageW(window,WM_LBUTTONDOWN,MK_LBUTTON,point);SendMessageW(window,WM_LBUTTONUP,0,point);Pump();}
 HWND Password(){HWND result=nullptr;EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL{wchar_t name[64]{};GetClassNameW(window,name,64);if(std::wstring(name)==L"LumeControlCenterPassword"){*reinterpret_cast<HWND*>(data)=window;return FALSE;}return TRUE;},reinterpret_cast<LPARAM>(&result));return result;}
@@ -82,13 +110,15 @@ int main(int argc,char** argv){
     Apartment apartment;
     if(firstFrame){WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpfnWndProc=BackdropProc;wc.lpszClassName=L"LumeControlCenterFirstFrameBackdrop";RegisterClassW(&wc);}
     const auto owner=CreateWindowExW(firstFrame?WS_EX_TOPMOST|WS_EX_TOOLWINDOW:0,firstFrame?L"LumeControlCenterFirstFrameBackdrop":L"STATIC",L"Control center test owner",WS_POPUP|WS_VISIBLE,20,20,firstFrame?800:400,firstFrame?1040:100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);Check(owner!=nullptr,"owner window");
-    std::atomic<int> refreshes{0},wifiChanges{0},volume{-1},connections{0},outputs{0};std::atomic<bool> wifiOn{true},muted{false},slow{false};
+    std::atomic<int> refreshes{0},wifiChanges{0},volume{-1},connections{0},outputs{0},trayCalls{0},pairings{0};std::atomic<bool> wifiOn{true},muted{false},slow{false};
     auto queue=std::make_shared<cc::PanelWorker>([&](auto,const cc::PanelWorker::Job& job){
         if(job.key=="refresh"){++refreshes;if(slow)std::this_thread::sleep_for(std::chrono::milliseconds(700));}
         else if(job.key=="wifi"){wifiOn=job.value.get<bool>();++wifiChanges;}
         else if(job.key=="volume")volume=job.value.get<int>();else if(job.key=="mute")muted=job.value.get<bool>();
         else if(job.key=="connect"){Check(job.value.value("ssid",std::string{})=="Native test network","connect targets the chosen SSID");Check(job.value.value("password",std::string{})=="test-only-password","native password passed only to the fake backend");++connections;}
         else if(job.key=="output"){Check(job.value=="speaker-2","selected endpoint id passed to worker");++outputs;}
+        else if(job.key=="tray"){++trayCalls;}
+        else if(job.key=="pair"){Check(job.value=="test-device-id","Bluetooth pairs the selected device");++pairings;}
         Json state={{"wifi",{{"available",true},{"on",wifiOn.load()},{"ssid","Native test network"},{"signal",80}}},
             {"bluetooth",{{"available",true},{"on",true}}},{"hotspot",{{"available",false},{"on",false}}},
             {"airplane",{{"available",true},{"on",false}}},{"audio",{{"available",true},{"volume",volume.load()<0?35:volume.load()},{"muted",muted.load()},{"output",outputs.load()?"speaker-2":"speaker-1"},
@@ -96,11 +126,15 @@ int main(int argc,char** argv){
             {"brightness",{{"available",true},{"level",65},{"display","display-1"},{"displays",Json::array({{{"id","display-1"},{"name","Display 1"}}})}}},
             {"battery",{{"available",false}}},{"tray",true},{"accent","#5b7bea"},
             {"networks",Json::array({{{"ssid","Native test network"},{"signal",80},{"secured",true},{"known",false},{"connected",false}}})}};
+        if(job.key=="tray"){state["trayResult"]=trayCalls.load()>=2;state["trayRequest"]=job.value.value("request",0u);}
+        state["devices"]=Json::array({{{"id","test-device-id"},{"name","Test headset"},{"canPair",pairings.load()==0},{"paired",pairings.load()>0}}});
         return state.dump();
     });
     const auto children=Children();ULONGLONG firstMs=0;
+    if(!interaction&&!firstFrame&&!fallback)PrewarmVisibilityRegression(owner);
     {
-        ControlCenterWindow center(queue);const auto warming=GetTickCount64();Check(center.Prewarm(GetModuleHandleW(nullptr),owner,look),"snapshot prewarm starts asynchronously");
+        std::vector<std::wstring> opened;bool allowLaunch=false;
+        ControlCenterWindow center(queue,[&](HWND,const wchar_t* uri){opened.emplace_back(uri);return allowLaunch;});const auto warming=GetTickCount64();Check(center.Prewarm(GetModuleHandleW(nullptr),owner,look),"snapshot prewarm starts asynchronously");
         Check(GetTickCount64()-warming<200&&center.Handle()&&!IsWindowVisible(center.Handle()),"prewarm keeps only a hidden lightweight host");
         Wait([&]{return refreshes.load()>0&&!queue->Running();},"one-shot snapshot completes and its worker retires");
         const auto prewarmed=refreshes.load();Pump(80);Check(refreshes.load()==prewarmed,"prewarming does not leave hidden polling");
@@ -128,17 +162,22 @@ int main(int argc,char** argv){
         }
         if(fallback){DestroyWindow(owner);Pump();apartment.Close();SetThreadDesktop(previous);CloseDesktop(desktop);return 0;}
         Wait([&]{return refreshes.load()>0;},"background state arrives");Pump(100);const auto window=center.Handle();
+        const auto detailsAt=[&](int x){
+            RECT before{},after{};GetWindowRect(window,&before);
+            Click(window,x,95);GetWindowRect(window,&after);
+            Check(center.IsOpen()&&center.Handle()==window&&EqualRect(&before,&after)&&!FindWindowW(L"LumeControlCenterDetails",nullptr),"list stays in the existing center without a second window or layout jump");
+        };
+        const auto settingsClick=[&]{RECT bounds{};GetClientRect(window,&bounds);Click(window,100,MulDiv(bounds.bottom,96,GetDpiForWindow(window))-27);};
         if(interaction){
             WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpfnWndProc=OutsideProc;wc.lpszClassName=L"LumeControlCenterNoActivateTest";wc.hbrBackground=static_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH));RegisterClassW(&wc);
             RECT bounds{};GetWindowRect(window,&bounds);const auto outside=CreateWindowExW(WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW,wc.lpszClassName,L"Outside click test",WS_POPUP,bounds.left-96,bounds.top+60,80,80,nullptr,nullptr,wc.hInstance,nullptr);Check(outside!=nullptr,"nonactivating outside test window");ShowWindow(outside,SW_SHOWNOACTIVATE);
             POINT original{};GetCursorPos(&original);const POINT inside{bounds.left+30,bounds.top+20},away{bounds.left-56,bounds.top+100};
             MouseClick(inside);Check(center.IsOpen(),"a real inside click keeps the panel open");
-            Click(window,160,95);Pump(100);Click(window,306,90);Wait([&]{return Password()!=nullptr&&center.IsOpen();},"an active panel retains its own password popup");
-            RECT passwordBounds{};GetWindowRect(Password(),&passwordBounds);MouseClick({passwordBounds.left+30,passwordBounds.top+20});Check(center.IsOpen()&&Password(),"a real click inside the password popup does not dismiss its parent");
-            MouseClick(away);Wait([&]{return !center.IsOpen()&&!Password();},"a real outside click dismisses the panel and password even when the clicked window does not activate");
+            detailsAt(160);settingsClick();Pump(80);Check(!opened.empty()&&center.IsOpen(),"failed settings launch retains the inline list");
+            MouseClick(away);Wait([&]{return !center.IsOpen();},"a real outside click dismisses the panel even when the clicked window does not activate");
             POINT current{};if(GetCursorPos(&current)&&std::abs(current.x-away.x)<=2&&std::abs(current.y-away.y)<=2)SetCursorPos(original.x,original.y);
             Wait([&]{return !queue->Running();},"outside dismissal removes the worker binding");DestroyWindow(outside);DestroyWindow(owner);UnregisterClassW(wc.lpszClassName,wc.hInstance);
-            std::cout<<"NATIVE_CONTROL_CENTER_INTERACTION_PASS material="<<static_cast<int>(look)<<" insideClick=retained passwordClick=retained outsideNoActivateClick=dismissed browserChildren="<<Children()-children<<'\n';return 0;
+            std::cout<<"NATIVE_CONTROL_CENTER_INTERACTION_PASS material="<<static_cast<int>(look)<<" insideClick=retained settingsFailure=retained outsideNoActivateClick=dismissed browserChildren="<<Children()-children<<'\n';return 0;
         }
         if(argc>1){std::filesystem::create_directories(argv[1]);Shot(window,std::filesystem::path(argv[1])/"native-control-center.bmp");}
         Click(window,60,95);Wait([&]{return wifiChanges.load()==1&&!wifiOn.load();},"native Wi-Fi toggle uses fake worker");
@@ -146,11 +185,23 @@ int main(int argc,char** argv){
         Click(window,233,246);Wait([&]{return volume.load()==75;},"native volume slider keeps correct scaling");
         SendMessageW(window,WM_KEYDOWN,VK_RIGHT,0);Pump();Wait([&]{return volume.load()==76;},"focused slider supports keyboard adjustment");
         Click(window,36,246);Wait([&]{return muted.load();},"mute button uses worker state");
-        Click(window,160,95);Pump(100);Click(window,306,90);Wait([&]{return Password()!=nullptr;},"unknown secured network opens native password input");
-        const auto password=Password();Check((GetWindowLongPtrW(GetDlgItem(password,1),GWL_STYLE)&ES_PASSWORD)!=0,"password edit masks its contents");
-        SetWindowTextW(GetDlgItem(password,1),L"test-only-password");SendMessageW(GetDlgItem(password,2),BM_CLICK,0,0);Pump();Wait([&]{return connections.load()==1;},"connect reaches only the injected fake backend");Check(!Password(),"password input released after submit");
-        SendMessageW(window,WM_KEYDOWN,VK_ESCAPE,0);Pump();Check(center.IsOpen(),"back from list retains panel");
+        detailsAt(160);Check(opened.empty(),"Wi-Fi arrow stays in Lume");
+        Click(window,308,73);const auto password=Password();Check(password&&GetWindow(password,GW_OWNER)==window,"an unfamiliar secured network requests its password");
+        SetWindowTextW(GetDlgItem(password,1),L"test-only-password");
+        SendMessageW(password,WM_COMMAND,MAKEWPARAM(2,BN_CLICKED),0);
+        Wait([&]{return connections.load()==1;},"Wi-Fi list connects through the worker");
+        Check(!IsWindow(password)&&center.IsOpen(),"password submission returns to the inline Wi-Fi list");
+        settingsClick();Pump();Check(opened==std::vector<std::wstring>{L"ms-settings:network-wifisettings",L"ms-settings:network-status",L"ms-settings:"}&&center.IsOpen(),"Wi-Fi settings falls back to Windows Settings and retains the center if no page opens");
+        Click(window,32,32);
+        detailsAt(337);Click(window,308,73);Wait([&]{return pairings.load()==1;},"back returns to the main controls and inline Bluetooth can pair");
+        SendMessageW(window,WM_KEYDOWN,VK_ESCAPE,0);Check(center.IsOpen(),"escape returns to the main controls without closing the center");
+        detailsAt(337);allowLaunch=true;settingsClick();Pump();Check(opened.back()==L"ms-settings:bluetooth"&&!center.IsOpen(),"Bluetooth settings remains available for more management");
+        Check(center.Toggle(GetModuleHandleW(nullptr),owner,RECT{500,800,540,840},look),"reopen after settings");Pump();
         Click(window,90,346);Click(window,90,306);Wait([&]{return outputs.load()==1;},"native output picker selects second endpoint");
+        Click(window,160,395);Wait([&]{return trayCalls.load()==1;},"tray uses the bound worker");Pump(60);
+        Check(center.IsOpen(),"failed tray open retains a visible retry action");
+        Click(window,160,395);Wait([&]{return trayCalls.load()==2&&!center.IsOpen();},"verified tray open dismisses the center");
+        Check(center.Toggle(GetModuleHandleW(nullptr),owner,RECT{500,800,540,840},look),"reopen after tray action");
         center.Close();Check(!center.IsOpen()&&!IsWindowVisible(window),"close hides the native host");Wait([&]{return !queue->Running();},"close unbinds and releases the worker thread");
         const auto idle=refreshes.load();Pump(80);Check(refreshes.load()==idle&&queue->Queued()==0,"closed panel stops all system polling");
         slow=true;Check(center.Toggle(GetModuleHandleW(nullptr),owner,RECT{500,800,540,840},ControlCenterWindow::Material::None),"reopen starts a new worker generation");

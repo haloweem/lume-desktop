@@ -1,6 +1,8 @@
 ﻿param(
     [switch]$IncludeWallpaperValidationRuntime,
     [string]$WallpaperRuntimeRoot = '',
+    [string]$MusicRuntimeRoot = '',
+    [switch]$BundledMusicRuntime = $true,
     [switch]$WallpaperValidationOnly,
     [switch]$AllowDirtySource,
     [ValidateSet('Quick', 'Incremental', 'Full')][string]$VerificationMode = 'Incremental',
@@ -67,7 +69,7 @@ $packageRoot = Join-Path $repoRoot ('build-artifacts\native-rebuild\package-orig
 $stage = Join-Path $packageRoot 'stage'
 $outputRoot = Join-Path $packageRoot 'output'
 $extractRoot = Join-Path $packageRoot 'extracted'
-$outputName = 'LumeSetup-1.1.3.exe'
+$outputName = 'LumeSetup-1.1.4.exe'
 $output = Join-Path $OutputDirectory $outputName
 # LUME_ISCC / LUME_INNOUNP select other installs of Inno Setup 6 and innounp.
 $iscc = if ($env:LUME_ISCC) { $env:LUME_ISCC } else { Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe' }
@@ -96,12 +98,31 @@ if ($WallpaperValidationOnly -and -not $IncludeWallpaperValidationRuntime) {
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 $configureLog = Join-Path $packageRoot 'release-configure.log'
 $buildLog = Join-Path $packageRoot 'release-build.log'
+$identityReuseVersion = ''
+if ($NotificationIdentityPackage) {
+    # Inspect only a signed, bounded sparse identity and validate every expected
+    # capability/asset through the existing checks after CMake configuration.
+    . (Join-Path $repoRoot 'native-rebuild\packaging\notification-identity\Identity-Common.ps1')
+    $identityReusePath = (Resolve-Path -LiteralPath $NotificationIdentityPackage).Path
+    if ((Get-AuthenticodeSignature -LiteralPath $identityReusePath).Status -ne 'Valid') { throw 'Reused notification identity signature is not valid.' }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $identityReuseArchive = [IO.Compression.ZipFile]::OpenRead($identityReusePath)
+    try {
+        $identityReuseEntries = @($identityReuseArchive.Entries | Where-Object { $_.FullName -ceq 'AppxManifest.xml' })
+        if ($identityReuseEntries.Count -ne 1 -or $identityReuseEntries[0].Length -gt 65536) { throw 'Invalid reused identity manifest.' }
+        $identityReuseStream = $identityReuseEntries[0].Open()
+        try { $identityReuseManifest = Read-LumeIdentityXml $identityReuseStream } finally { $identityReuseStream.Dispose() }
+        $identityReuseVersion = [string]$identityReuseManifest.Package.Identity.Version
+        if ($identityReuseVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'Invalid reused identity version.' }
+    } finally { $identityReuseArchive.Dispose() }
+}
+$identityReuseArgument = '-DLUME_NOTIFICATION_IDENTITY_REUSE_VERSION=' + $identityReuseVersion
 if ($codeSigningEnabled) {
     $signingCMakeCache = Join-Path $packageRoot 'signing-publisher.cmake'
     Write-LumeSigningCMakeCache -Context $codeSigningContext -Path $signingCMakeCache
-    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') -C $signingCMakeCache *> $configureLog
+    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') -C $signingCMakeCache $identityReuseArgument *> $configureLog
 } else {
-    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') *> $configureLog
+    & cmake --preset windows-release -S (Join-Path $repoRoot 'native-rebuild') $identityReuseArgument *> $configureLog
 }
 if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath $configureLog -Tail 50; throw 'Release configure failed before packaging' }
 Complete-PackagePhase 'configure-and-prerequisites'
@@ -177,7 +198,7 @@ $settingsAccountProbes = @(
   'lume-material-presentation-recovery-test',
   'lume-mpv-process-controller-test',
   'lume-interface-scale-window-test',
-  'lume-window-layer-policy-test',
+  'lume-window-layer-policy-test', 'lume-widget-display-restore-test',
   'lume-application-tray-menu-test',
   'lume-dynamic-island-test', 'lume-desktop-dynamic-island-test', 'lume-island-shape-mask-test',
   'lume-island-almanac-test',
@@ -294,6 +315,41 @@ $products = @('LumeLauncher.exe', 'LumeShell.exe', 'LumeMusicHost.exe', 'LumeIco
 foreach ($name in $products) {
     Copy-Item -LiteralPath (Join-Path $releaseRoot $name) -Destination (Join-Path $stage $name)
 }
+$musicRuntimeSource = Join-Path $repoRoot 'native-rebuild\music-runtime'
+$musicRuntimeStage = Join-Path $stage 'music-runtime'
+$musicRuntimeVerifier = Join-Path $repoRoot 'native-rebuild\tools\verify-folia-runtime.cjs'
+$musicRuntimeNode = (Get-Command node.exe -ErrorAction Stop).Source
+if ($MusicRuntimeRoot) {
+    $MusicRuntimeRoot = (Resolve-Path -LiteralPath $MusicRuntimeRoot).Path
+    # Validate both all payload bytes and the current source/bundle inputs before
+    # reusing a stage; a matching version string alone cannot authorize reuse.
+    & $musicRuntimeNode $musicRuntimeVerifier $musicRuntimeSource $MusicRuntimeRoot *> (Join-Path $packageRoot 'music-runtime-reuse-verification.json')
+    if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath (Join-Path $packageRoot 'music-runtime-reuse-verification.json') -Tail 25; throw 'Reused music runtime is stale or invalid.' }
+} else {
+    $MusicRuntimeRoot = Join-Path $packageRoot 'music-runtime-stage'
+    & (Join-Path $repoRoot 'native-rebuild\tools\build-folia-runtime.ps1') -Destination $MusicRuntimeRoot `
+        -NodePath $musicRuntimeNode -LogDirectory (Join-Path $packageRoot 'music-runtime-build')
+}
+& $musicRuntimeNode $musicRuntimeVerifier $musicRuntimeSource $MusicRuntimeRoot *> (Join-Path $packageRoot 'music-runtime-verification.json')
+if ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath (Join-Path $packageRoot 'music-runtime-verification.json') -Tail 25; throw 'Staged music runtime verification failed.' }
+$musicRuntimeVerification = Get-Content -LiteralPath (Join-Path $packageRoot 'music-runtime-verification.json') -Raw | ConvertFrom-Json
+$musicRuntimeOutput = if ($BundledMusicRuntime) { Join-Path $packageRoot 'music-runtime-download' } else { $OutputDirectory }
+$musicRuntimeDownload = & (Join-Path $repoRoot 'native-rebuild\tools\package-folia-runtime.ps1') `
+    -RuntimeRoot $MusicRuntimeRoot -OutputDirectory $musicRuntimeOutput -NodePath $musicRuntimeNode
+Copy-Item -LiteralPath $musicRuntimeDownload.descriptorPath -Destination (Join-Path $stage 'music-runtime.json')
+if ($BundledMusicRuntime) {
+    Copy-Item -LiteralPath $MusicRuntimeRoot -Destination $musicRuntimeStage -Recurse
+    & $musicRuntimeNode $musicRuntimeVerifier $musicRuntimeSource $musicRuntimeStage (Join-Path $stage 'music-runtime.json') *> (Join-Path $packageRoot 'music-runtime-bundled-verification.json')
+    if ($LASTEXITCODE -ne 0) { throw 'Bundled music runtime copy verification failed.' }
+    $musicRuntimeMode = 'bundled'
+    $musicRuntimeDeliveryNote = '安装包已包含在线音乐运行环境。'
+    $musicRuntimeDownloadBytes = 0
+} else {
+    $musicRuntimeMode = 'first-use-download'
+    $musicRuntimeDeliveryNote = '在线音乐运行环境将在首次使用时下载一次。'
+    $musicRuntimeDownloadBytes = $musicRuntimeDownload.size
+}
+$musicRuntimeDownload | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot 'music-runtime-download-artifact.json') -Encoding utf8
 $notificationIdentityRoot = Join-Path $releaseRoot 'notification-identity'
 $notificationIdentityEnabled = Select-String -LiteralPath (Join-Path $releaseRoot 'CMakeCache.txt') -Pattern '^LUME_NOTIFICATION_IDENTITY:BOOL=ON$' -Quiet
 $notificationIdentityMode = 'metadata-only-not-user-ready'
@@ -321,6 +377,9 @@ if ($NotificationIdentityPackage) {
     . (Join-Path $notificationIdentityRoot 'Identity-Common.ps1')
     $compiledIdentityConfig = Get-Content -LiteralPath (Join-Path $notificationIdentityRoot 'identity-config.json') -Raw | ConvertFrom-Json
     $validatedIdentityPackage = Assert-LumeSignedIdentityPackage $NotificationIdentityPackage $compiledIdentityConfig
+    if ($identityReuseVersion -and $identityReuseManifest.OuterXml -cne $identityManifest.OuterXml) {
+        throw 'Reused notification identity metadata differs from the compiled manifest; sign an updated identity instead.'
+    }
     $stagedIdentityPackage = Join-Path $stage 'notification-identity\Lume.NotificationIdentity.msix'
     Copy-Item -LiteralPath $validatedIdentityPackage -Destination $stagedIdentityPackage
     $notificationIdentityPackageHash = (Get-FileHash -LiteralPath $stagedIdentityPackage -Algorithm SHA256).Hash
@@ -471,6 +530,9 @@ foreach ($entry in $musicOnlineNotices.GetEnumerator()) {
 Copy-Item -LiteralPath (Join-Path $repoRoot 'native-rebuild\packaging\AcceptanceNotes-seven-features.txt') -Destination (Join-Path $stage 'AcceptanceNotes.txt')
 Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("`r`nSource: " + $sourceDescription) -Encoding utf8
 Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("notification-identity=" + $notificationIdentityMode) -Encoding utf8
+Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("music-runtime=folia-four-platforms; inventory-sha256=" + $musicRuntimeVerification.inventorySha256) -Encoding utf8
+Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("music-runtime-delivery=" + $musicRuntimeMode + "; download-bytes=" + $musicRuntimeDownloadBytes) -Encoding utf8
+Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value $musicRuntimeDeliveryNote -Encoding utf8
 if ($codeSigningEnabled) {
     Add-Content -LiteralPath (Join-Path $stage 'AcceptanceNotes.txt') -Value ("code-signing=selected-certificate; publisher=" + $codeSigningContext.Subject) -Encoding utf8
 }
@@ -485,11 +547,11 @@ if ($WallpaperValidationOnly) {
 
 本包为音乐、设置、账号和壁纸本机验收模式。校验模式：$VerificationMode。每包重新检查完整解包、所有载荷哈希、播放器、WebView2 首屏/关闭、安装退出与真实磨砂和桌面层级；其他隔离回归可复用 24 小时内相同测试程序、运行依赖和环境的成功记录，具体执行/复用列表见打包记录 probe-results.json。Full 模式重新执行全部回归。
 依赖当前桌面焦点、鼠标位置或系统窗口时序的组件交互探针本轮未执行，不能据此判断全部组件验收通过。
-音乐三平台仅应用内扫码；在线推荐/搜索/歌单/授权播放（T10）已有原生适配和生产接线，真实账号授权、联网读写和播放仍待用户验收。
+音乐采用固定 Folia 版本的网易云、QQ音乐、酷狗和汽水四个平台链路；原生界面/音频继续保留，协议运行时按需启动。运行时全部文件、生产依赖、来源和源码新鲜度已校验；真实账号登录、订阅歌曲、联网读写和播放仍待用户验收。
 新增本地库、元数据/封面、队列恢复、音量/静音、真实音频分析，以及默认隐藏的原生桌面音乐组件和系统媒体控制。
 桌面音乐包探针仅离屏或verification，不显示实际组件、不注册SMTC；在线包探针使用假传输，不执行匿名或真实账号联网探测。
 本地图片缩略图及已授权当前目录条目的LUMEWP01到LUMEWP02转换已实现；旧库自动发现/清单导入、视频缩略图仍未完成。包内背景测试未传历史夹具，旧密文迁移专项跳过。
-系统/导入字体、独立背景图库与原版底栏玻璃保留；QQ加密歌词/KRC逐字解码、T11歌词偏移UI、完整设置差异、最终视觉签收和整进程内存对比仍未完成。
+系统/导入字体、独立背景图库与原版底栏玻璃保留；Folia歌词协议已接入，真实歌词覆盖、T11歌词偏移UI、完整设置差异、最终视觉签收和整进程内存对比仍待验收。
 在线原生协议来源和相关许可见licenses/music-online；携带文本不代表正式发行许可审查已经完成。
 "@ -Encoding utf8
 }
@@ -723,7 +785,7 @@ foreach ($run in $acceptanceRuns) {
         'lume-todo-sheet-native-test', 'lume-control-center-native-test',
         'lume-ui-integrity-test',
         'lume-interface-scale-window-test',
-        'lume-window-layer-policy-test',
+        'lume-window-layer-policy-test', 'lume-widget-display-restore-test',
         'lume-application-tray-menu-test',
         'lume-dynamic-island-test',
         'lume-island-notification-audio-test',
@@ -819,13 +881,13 @@ Complete-PackagePhase 'acceptance-probes'
 $previousHash = $null
 if (Test-Path -LiteralPath $output -PathType Leaf) {
     $previousHash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
-    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.1.3.exe'
+    $previous = Join-Path $packageRoot 'previous-LumeSetup-1.1.4.exe'
     Copy-Item -LiteralPath $output -Destination $previous
     if ((Get-FileHash -LiteralPath $previous -Algorithm SHA256).Hash -ne $previousHash) { throw 'Previous installer backup verification failed' }
 }
 foreach ($suffix in @('.sha256.txt', '.验收说明.txt')) {
     if (Test-Path -LiteralPath ($output + $suffix) -PathType Leaf) {
-        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.1.3.exe' + $suffix))
+        Copy-Item -LiteralPath ($output + $suffix) -Destination (Join-Path $packageRoot ('previous-LumeSetup-1.1.4.exe' + $suffix))
     }
 }
 # Prepare and verify on the destination volume, then replace the installer in
@@ -874,9 +936,17 @@ $verificationLines = @(
     'clean-path-music-desktop-controls-and-session=pass; offscreen-or-verification; no-widget-show-or-smtc-registration'
     'clean-path-desktop-music-library-manager-close-reopen=pass; real-webview-fake-audio-verification'
     'music-online-provenance-and-license-payload-hashes=pass; licenses/music-online'
+    ("music-runtime=folia-four-platforms; files=" + $musicRuntimeVerification.files + "; packages=" + $musicRuntimeVerification.packages + "; source-files=" + $musicRuntimeVerification.sourceFiles)
+    ("music-runtime-inventory-sha256=" + $musicRuntimeVerification.inventorySha256)
+    ("music-runtime-delivery=" + $musicRuntimeMode + "; archive-bytes=" + $musicRuntimeDownload.size)
+    ("music-runtime-download-sha256=" + $musicRuntimeDownload.sha256)
+    'music-runtime-archive-payload-and-current-source-inventory=pass; every ZIP entry hash verified'
+    'music-runtime-descriptor-payload-hash=pass; included in complete installer extraction verification'
+    if ($BundledMusicRuntime) { 'music-runtime-download-availability=not-required-bundled' }
+    else { 'music-runtime-download-availability=pending-separate-upload-verification' }
     'music-background-legacy-conversion=not-run; historical-fixture-not-supplied'
     'music-real-provider-authorization-network-mutations-and-playback=pending-user-verification'
-    'music-qq-encrypted-lyrics-krc-word-decoding-and-t11-offset-ui=not-complete'
+    'music-provider-lyrics=folia-protocols; real-account-coverage-and-t11-offset-ui=pending'
     'music-visual-video-settings-parity-and-process-memory-ab=pending'
     'clean-path-installer-shutdown-and-helper-hash=pass'
     'clean-path-update-observer-policy-schedule-hidden-shell=pass'

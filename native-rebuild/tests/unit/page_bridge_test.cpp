@@ -18,6 +18,28 @@ void Expect(bool value, const char* message) {
 }
 
 void TestExactVersionedCommands() {
+    Expect(ParsePageCommand(L"v1|dynamicIsland|calendarStyle|chinese-almanac") == PageCommand::IslandCalendarChineseAlmanac,
+           "calendar style is accepted by the maximum message length guard");
+    Expect(ParsePageCommand(L"v1|dynamicIsland|countdownStyle|standard") == PageCommand::IslandCountdownStandard &&
+           ParsePageCommand(L"v1|dynamicIsland|countdownStyle|violet") == PageCommand::IslandCountdownViolet,
+           "countdown style commands");
+    Expect(ParsePageCommand(L"v1|dynamicIsland|countdownStyle|anniversary") == PageCommand::Invalid &&
+           ParsePageCommand(L"v1|dynamicIsland|countdownStyle|unknown") == PageCommand::Invalid,
+           "unknown countdown style is rejected");
+    Expect(ParsePageCommand(L"v1|dock|summonEnabled|true") == PageCommand::DockSummonEnable,
+           "Dock summon enable command");
+    Expect(ParsePageCommand(L"v1|dock|summonEnabled|false") == PageCommand::DockSummonDisable,
+           "Dock summon disable command");
+    Expect(ParsePageCommand(L"v1|dock|summonCapture|true") == PageCommand::DockSummonCaptureBegin &&
+           ParsePageCommand(L"v1|dock|summonCapture|false") == PageCommand::DockSummonCaptureEnd,
+           "Dock shortcut recording pauses and resumes global registration");
+    Expect(ParsePageCommand(L"v1|dock|summonShortcut|0") == PageCommand::DockSummonShortcutFirst &&
+           ParsePageCommand(L"v1|dock|summonShortcut|544") ==
+               static_cast<PageCommand>(static_cast<int>(PageCommand::DockSummonShortcutFirst) + 544),
+           "Dock summon shortcut values use the bounded numeric command range");
+    Expect(ParsePageCommand(L"v1|dock|summonShortcut|371") == PageCommand::Invalid &&
+           ParsePageCommand(L"v1|dock|summonShortcut|4096") == PageCommand::Invalid,
+           "reserved and out-of-range Dock summon shortcuts are rejected");
     for (const auto* message : {L"v1|taskbar|enabled|true",L"v1|taskbar|transparent|false",
         L"v1|taskbar|autoHide|true",L"v1|taskbar|hideBehavior|auto-hide",L"v1|taskbar|hideBehavior|fully-hidden",L"v1|taskbar|reset",L"v1|minimize|enabled|true",
         L"v1|minimize|restore|false",L"v1|minimize|launch|true",L"v1|minimize|multiMonitor|false",

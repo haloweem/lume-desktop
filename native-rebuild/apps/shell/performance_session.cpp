@@ -56,7 +56,7 @@ struct PerformanceSession::Impl{
         if(stopped||applying)return false;
         applying=true;const auto previous=prefs;
         if(!Runtime(next)){const bool layer=window.PlacementFailed();Runtime(previous);error=layer?L"layer":L"runtime";applying=false;return false;}
-        if(next.enabled){const auto bounds=widget::Clamped(window.Bounds(),Limits);next.x=bounds.x;next.y=bounds.y;next.placed=bounds.placed;next.width=bounds.width;next.height=bounds.height;}
+        if(next.enabled){const auto bounds=widget::Clamped(window.PreferredBounds(),Limits);next.x=bounds.x;next.y=bounds.y;next.placed=bounds.placed;next.width=bounds.width;next.height=bounds.height;}
         if(!store.Save(path,next)){
             const bool rollback=Runtime(previous);error=rollback?L"save":L"rollback";applying=false;return false;
         }

@@ -11,6 +11,7 @@ public:
     WeatherTimezone(const WeatherTimezone&) = delete;
     WeatherTimezone& operator=(const WeatherTimezone&) = delete;
     std::optional<std::string> Local(weather::Millis utc, std::string_view ianaZone);
+    std::string SystemZone();
 private:
     struct State;
     std::unique_ptr<State> state_;

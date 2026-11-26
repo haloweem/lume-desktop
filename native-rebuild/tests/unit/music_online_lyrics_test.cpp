@@ -152,6 +152,21 @@ void TestKugou() {
 }
 
 void TestValidationAndBounds() {
+    Json normalized = {{"foliaLines", Json::array({{
+        {"startTime", 1.0}, {"endTime", 3.0}, {"fullText", "AB"}, {"translation", "translated"},
+        {"romanization", "ā bē"},
+        {"words", Json::array({{{"startTime", 1.0}, {"endTime", 2.0}, {"text", "A"}},
+                              {{"startTime", 2.0}, {"endTime", 3.0}, {"text", "B"}}})}
+    }})}};
+    for (const auto provider : lume::music::auth::Providers) {
+        const auto parsed = ParseOnlineLyrics(provider, normalized);
+        Check(parsed.error.empty() && parsed.lines.size() == 1 && parsed.lines[0].words.size() == 2 &&
+            parsed.lines[0].translation == "translated" && parsed.lines[0].romanization == "ā bē",
+            "Folia normalized translation and romanization accepted for every provider");
+    }
+    normalized["foliaLines"][0]["words"][0]["endTime"] = 9.0;
+    Check(!ParseOnlineLyrics("qishui", normalized).error.empty(), "Folia malformed timing rejected");
+    Check(ParseOnlineLyrics("qishui", Json{{"foliaLines", Json::array()}}).error.empty(), "Folia pure music allowed");
     const std::vector<LyricLine> valid{
         {1, 3, "AB", {{1, 2, "A"}, {1.5, 1.5, "B"}}, "translation"},
         {2, 4, "C", {{2.5, 4, "C"}}, ""}

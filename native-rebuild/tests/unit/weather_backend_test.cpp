@@ -44,7 +44,7 @@ struct Harness {
     void Responses() {
         replies = {{200, Json{{"city", u8"蘇州市"}, {"latitude", Shanghai.latitude},
             {"longitude", Shanghai.longitude}, {"timezone", "Asia/Shanghai"}}.dump(), {}, {}, {}},
-            {}, {200, MetBody().dump(), {}, {}, {}}};
+            {}, {}, {200, MetBody().dump(), {}, {}, {}}};
     }
 };
 void LivePathAndPersistence() {
@@ -55,21 +55,20 @@ void LivePathAndPersistence() {
     const auto first = backend->Fetch("auto", h.cancel);
     Expect(first.result.snapshot && first.result.snapshot->source == Source::MetNorway &&
         first.result.snapshot->cityName == u8"苏州市" && first.result.snapshot->location.name == u8"苏州市" &&
-        h.requests == 3 && !first.cacheWriteFailed, "IP location to real provider parsing and Simplified Chinese output");
+        h.requests == 4 && !first.cacheWriteFailed, "IP location to real provider parsing and Simplified Chinese output");
     Expect(h.saved.size() == 3 && h.saved.count(WeatherCacheKind::Location),
         "bounded raw and display snapshots and the trusted automatic location persisted");
     const auto beforeWrites = h.writes;
-    Expect(backend->Fetch("auto", h.cancel).result.snapshot.has_value() && h.requests == 3 && h.writes == beforeWrites,
+    Expect(backend->Fetch("auto", h.cancel).result.snapshot.has_value() && h.requests == 4 && h.writes == beforeWrites,
         "fresh location/provider caches avoid repeated network and identical disk writes");
     backend.reset();
     auto restored = h.Backend();
     Expect(restored->Load("auto").has_value() && !restored->Load("beijing"), "display cache restored only for matching city");
-    // Automatic geolocation is deliberately not persisted; one fresh IP call,
-    // public source retry, then the persisted MET cache is sufficient.
+    // The saved location is revalidated against both providers on restart.
     h.replies = {{200, Json{{"city", u8"蘇州市"}, {"latitude", Shanghai.latitude},
-        {"longitude", Shanghai.longitude}, {"timezone", "Asia/Shanghai"}}.dump(), {}, {}, {}}, {}};
+        {"longitude", Shanghai.longitude}, {"timezone", "Asia/Shanghai"}}.dump(), {}, {}, {}}, {}, {}};
     const auto next = restored->Fetch("auto", h.cancel);
-    Expect(next.result.snapshot && h.requests == 5, "raw MET cache restores across backend lifetime without another forecast request");
+    Expect(next.result.snapshot && h.requests == 7, "raw MET cache restores across backend lifetime without another forecast request");
     h.now += Day + 1;
     Expect(!restored->Load("auto"), "expired display never restored");
 }

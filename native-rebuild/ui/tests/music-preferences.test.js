@@ -8,7 +8,7 @@ const message=(revision,request,preferences=defaults,error='')=>({version:1,type
 test('music preferences validate their independent bounded wire contract',()=>{
   assert.ok(validMusicPreferences(defaults));
   assert.ok(validMusicPreferences({...defaults,mode:'motif'}),'retired visualizer settings remain loadable for migration');
-  for(const patch of [{version:4},{mode:'latent'},{fontFamily:'a'.repeat(129)},
+  for(const patch of [{version:5},{mode:'latent'},{fontFamily:'a'.repeat(129)},
     {fontFamily:'字'.repeat(43)},{fontFamily:'bad\nfont'},{lyricsFontColor:'red'},
     {lyricsKaraokeFillColor:'#FFFFFF'},{animationIntensity:'fast'},{source:'C:/media'}])
     assert.equal(validMusicPreferences({...defaults,...patch}),false);
@@ -20,9 +20,9 @@ test('music preferences validate their independent bounded wire contract',()=>{
 });
 
 test('current preferences retain independent Sonnet colors and upgrade exact v1 snapshots',()=>{
-  assert.equal(defaults.version,3);
+  assert.equal(defaults.version,4);
   assert.deepEqual(defaults.sonnetColors,{lyricsFontColor:'#ffffff',karaokeFillColor:'#38bdf8',glowColor:'#60a5fa'});
-  const {sonnetColors,effectMode,...legacy}=defaults;
+  const {sonnetColors,effectMode,subtitleContentMode,...legacy}=defaults;
   legacy.version=1;legacy.lyricsFontColor='#123456';
   const state=createMusicPreferences({send:()=>true});
   assert.equal(state.receive(message(4,0,legacy)),true);
@@ -33,18 +33,23 @@ test('current preferences retain independent Sonnet colors and upgrade exact v1 
   assert.equal(validMusicPreferences({...legacy,sonnetColors}),false,'v1 never accepts unversioned extensions');
 });
 
-test('v3 effect modes are bounded, independently saved, rolled back and migrated from v2',()=>{
+test('subtitle content modes are bounded, independently saved, rolled back and migrated from v2/v3',()=>{
   assert.equal(defaults.effectMode,'none');
+  assert.equal(defaults.subtitleContentMode,'translation');
+  for(const subtitleContentMode of ['translation','romanization','both','none'])
+    assert.equal(validMusicPreferences({...defaults,subtitleContentMode}),true);
+  for(const subtitleContentMode of ['translated','romaji','off',''])
+    assert.equal(validMusicPreferences({...defaults,subtitleContentMode}),false);
   for(const effectMode of ['none','rain-window','snow','star-river'])
     assert.equal(validMusicPreferences({...defaults,effectMode}),true);
   for(const effectMode of ['rain','stars','ripples','',null,[],{},42])
     assert.equal(validMusicPreferences({...defaults,effectMode}),false);
-  const {effectMode,...legacy}=defaults;
+  const {effectMode,subtitleContentMode,...legacy}=defaults;
   legacy.version=2;legacy.sonnetColors={...legacy.sonnetColors,glowColor:'#123abc'};
   const sent=[];
   const state=createMusicPreferences({send:(...args)=>{sent.push(args);return true;}});
   assert.equal(state.receive(message(8,0,legacy)),true);
-  assert.deepEqual(state.snapshot().preferences,{...legacy,version:3,effectMode:'none'});
+  assert.deepEqual(state.snapshot().preferences,{...legacy,version:4,effectMode:'none',subtitleContentMode:'translation'});
   assert.equal(validMusicPreferences({...legacy,effectMode:'snow'}),false);
   assert.equal(validMusicPreferences({...legacy,version:3}),false);
   state.commit({effectMode:'snow'});
@@ -55,8 +60,13 @@ test('v3 effect modes are bounded, independently saved, rolled back and migrated
   state.commit({effectMode:'rain-window'});
   state.receive(message(9,2,sent[1][1].preferences));
   assert.equal(state.snapshot().preferences.effectMode,'rain-window');
+  state.commit({subtitleContentMode:'both'});
+  assert.equal(sent.at(-1)[1].preferences.subtitleContentMode,'both');
+  state.receive(message(10,3,sent.at(-1)[1].preferences));
+  assert.equal(state.snapshot().preferences.subtitleContentMode,'both');
   state.reset();
   assert.equal(state.snapshot().preferences.effectMode,'none');
+  assert.equal(state.snapshot().preferences.subtitleContentMode,'translation');
 });
 
 test('Sonnet preview, queued saves, acknowledgements and rollback own immutable nested snapshots',()=>{

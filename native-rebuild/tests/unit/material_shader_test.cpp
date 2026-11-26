@@ -57,7 +57,7 @@ Constants Parameters(unsigned profile,float dpi=1.0f,float radius=0.0f){
     c.sampleBoundsMax[0]=c.sampleBoundsMax[1]=static_cast<float>(kSize-1);
     c.readability[0]=c.readability[1]=1.0f;
     c.optical[1]=static_cast<float>(profile);
-    c.optical[2]=profile==2?.92f:profile==1?1.0f:0.0f;
+    c.optical[2]=profile==2?.92f:profile==1||profile==6?1.0f:0.0f;
     c.optical[3]=radius*dpi;
     return c;
 }
@@ -250,6 +250,19 @@ void OpticalDetail(Renderer& renderer){
     }
     Expect(glint>140,"edge highlight survives neutral body transmission");
     std::cout<<"optics: checker dark/light="<<dark<<'/'<<light<<", refracted rim pixels="<<altered<<", edge glint="<<glint<<'\n';
+
+    const auto widget=renderer.Render(checker,Parameters(6));
+    const auto widgetGray=renderer.Render(Solid(128),Parameters(6));
+    Expect(std::memcmp(gray.data(),widgetGray.data(),gray.size()*sizeof(Pixel))==0,
+        "widget refraction keeps legacy shading and coverage on a uniform backdrop");
+    int shiftedRim=0;
+    for(int y=80;y<240;++y)for(int x=kOrigin+1;x<kOrigin+18;++x){
+        const auto& pixel=At(widget,x,y);
+        if(pixel.alpha==255&&std::abs(static_cast<int>(pixel.red)-At(rendered,x,y).red)>12)++shiftedRim;
+    }
+    Expect(shiftedRim>30,"widget bevel changes how the scene bends along the rim");
+    Expect(At(widget,152,152).red<70&&At(widget,168,152).red>150,
+        "widget transmission keeps scene detail readable");
 }
 }
 void AnnulusCoverage(Renderer& renderer){

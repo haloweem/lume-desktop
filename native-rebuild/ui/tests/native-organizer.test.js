@@ -133,7 +133,10 @@ test('organizer settings explain reference-only removal and confirmed state',()=
   assert.doesNotMatch(html,/data-action="organizer-toggle"/);
   assert.match(card({id:'organizer',title:'图标收纳'},state,true),/aria-checked="true"[^>]*data-action="organizer-toggle"/);
   assert.match(html,/data-select-value="frosted-glass"/);
-  assert.match(organizerPage(state,'details'),/移除项目只移除引用/);
+  const details=organizerPage(state,'details');
+  assert.match(details,/显示方式.*折叠或展开.*列表或图标/);
+  assert.match(details,/删除设置.*移除图标.*原文件保留/);
+  assert.match(details,/删除图标.*确认.*回收站/);
   assert.doesNotMatch(html,/未接入/);
   const pending=reduce(state,{type:'request',scope:'organizer'});
   assert.match(card({id:'organizer',title:'图标收纳'},pending,true),/data-action="organizer-toggle" disabled/);

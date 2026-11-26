@@ -58,10 +58,10 @@ public:
     enum class Presentation { Launchpad, CollectionPopup };
     LaunchpadWindow(HINSTANCE, LaunchpadPorts, Presentation = Presentation::Launchpad);
     ~LaunchpadWindow();
-    bool Show(RECT dock, bool frosted);
+    bool Show(RECT dock, bool frosted, dock::Edge edge = dock::Edge::Bottom);
     // Creates the window and its glass while hidden, so the first Show does not
     // pay the material start-up during its opening animation.
-    bool Prepare(RECT dock, bool frosted);
+    bool Prepare(RECT dock, bool frosted, dock::Edge edge = dock::Edge::Bottom);
     // Animated close; Visible() is false immediately.
     void Hide();
     bool Visible() const;

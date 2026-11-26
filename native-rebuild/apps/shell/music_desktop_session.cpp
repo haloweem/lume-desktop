@@ -155,7 +155,7 @@ struct MusicDesktopSession::Impl {
             error = Runtime(previous) ? "runtime" : "rollback";
             return false;
         }
-        if (!options.verification && next.enabled) next = controls.Bounds();
+        if (!options.verification && next.enabled) next = controls.PreferredBounds();
         bool saved = false;
         try {
             saved = options.path.find('\0') == std::string::npos && store.Save(options.path, next);

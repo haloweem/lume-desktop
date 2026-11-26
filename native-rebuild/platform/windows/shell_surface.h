@@ -11,7 +11,8 @@ inline bool ShellSurfaceImage(const wchar_t* path) {
     const wchar_t* name = path;
     for (const wchar_t* at = path; *at; ++at) if (*at == L'\\' || *at == L'/') name = at + 1;
     for (const wchar_t* shell : {L"ShellExperienceHost.exe", L"StartMenuExperienceHost.exe", L"SearchHost.exe",
-                                 L"SearchApp.exe", L"SearchUI.exe", L"TextInputHost.exe", L"ShellHost.exe"})
+                                 L"SearchApp.exe", L"SearchUI.exe", L"TextInputHost.exe", L"ShellHost.exe",
+                                 L"SnippingTool.exe", L"ScreenClippingHost.exe"})
         if (_wcsicmp(name, shell) == 0) return true;
     return false;
 }

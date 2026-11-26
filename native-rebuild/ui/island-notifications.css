@@ -26,7 +26,7 @@
 .in-module__head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 2px 13px; }
 .in-module__head h2 { margin: 0; font-size: 15px; line-height: 1.5; font-weight: 650; color: #e8ecf3; }
 .in-module__head p { margin: 4px 0 0; color: var(--in-muted); font-size: 11.5px; line-height: 1.4; }
-.in-card { padding: 4px 18px; border: 1px solid rgba(255,255,255,.025); border-radius: 17px; background: var(--in-surface); }
+.in-card { padding: 4px 18px; border: 1px solid rgba(255,255,255,.035); border-radius: 14px; background: var(--in-surface); }
 .in-row-shell + .in-row-shell { border-top: 1px dotted rgba(255,255,255,.12); }
 .in-row { display: flex; align-items: center; gap: 12px; min-height: 77px; padding: 12px 0; }
 .in-icon { display: inline-flex; justify-content: center; align-items: center; width: 40px; height: 40px; flex: 0 0 40px; }

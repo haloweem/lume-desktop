@@ -13,6 +13,15 @@ namespace lume::platform::windows {
 // browser. It shares command validation and persistence with the manager board.
 class TodoSheetWindow final {
   public:
+    enum class Mode { Task, Countdown };
+    struct CountdownAppearance {
+        bool singleColor = false;
+        std::uint32_t textColor = 0x262626;
+        std::uint32_t backgroundColor = 0x2183c0;
+        unsigned textAlpha = 255;
+        unsigned backgroundAlpha = 255;
+        bool countUp = false;
+    };
     using Save = std::function<todo::CommandResult(const todo::Command &)>;
     using Closed = std::function<void()>;
     using Now = std::function<todo::Millis()>;
@@ -23,7 +32,9 @@ class TodoSheetWindow final {
     // seed.type Add (with a schedule giving the day) or Update (with existing).
     bool Open(HINSTANCE instance, HWND owner, RECT hostBoundsPhysical, unsigned dpi,
               const calendar::Preferences &, const todo::ILocalTimePort &, todo::Command seed,
-              todo::Millis now, std::optional<todo::TaskView> existing, Save, Closed = {}, Now = {});
+              todo::Millis now, std::optional<todo::TaskView> existing, Save, Closed = {}, Now = {}, Mode = Mode::Task,
+              std::optional<CountdownAppearance> = {});
+    std::optional<CountdownAppearance> CountdownColors() const;
     void Close(bool restoreFocus = true);
     HWND Handle() const noexcept;
     bool IsOpen() const noexcept;

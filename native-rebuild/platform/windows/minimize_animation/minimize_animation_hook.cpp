@@ -4,6 +4,8 @@
 #include "platform/windows/minimize_animation/minimize_animation_ipc.h"
 #include "platform/windows/lume_window_ids.h"
 #include <windows.h>
+#include "platform/windows/dock/dock_animation_targets.h"
+#include "dock_genie_packet.h"
 #include <dwmapi.h>
 #include <d2d1.h>
 #include <shellapi.h>
@@ -24,7 +26,7 @@ using namespace lume::minimize_animation;
 using namespace lume::platform::windows::minimize_detail;
 namespace {
 constexpr wchar_t BypassProperty[]=L"Lume.MinimizeAnimation.Bypass.v1";
-constexpr wchar_t OwnedProperty[]=L"Lume.MinimizeAnimation.Active.v1";
+constexpr auto& OwnedProperty=lume::window_ids::AnimationOwnerProperty;
 struct Connection {
     HANDLE mapping=nullptr, stop=nullptr, owner=nullptr,host=nullptr;
     SharedControl* state=nullptr;
@@ -128,7 +130,13 @@ struct Bitmap {
         width=w;height=h; return true;
     }
 };
-enum class Kind { Minimize, Restore, Launch };
+using Kind=lume::platform::windows::dock_genie::Motion;
+namespace dock_genie=lume::platform::windows::dock_genie;
+namespace dock_animation=lume::platform::windows::dock_animation;
+struct PhysicalCoordinates {
+    DPI_AWARENESS_CONTEXT previous=SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    ~PhysicalCoordinates() { if (previous) SetThreadDpiAwarenessContext(previous); }
+};
 struct Animation {
     std::shared_ptr<Connection> link;
     Preferences settings;
@@ -138,8 +146,11 @@ struct Animation {
     HANDLE cancel=nullptr, captured=nullptr, firstFrame=nullptr;
     Bitmap image;
     RECT rect{};
+    dock_animation::Destination destination{};
     std::atomic_bool ready{false};
     std::atomic_bool capturing{false};
+    bool captureAttempted=false;  // Only accessed on the window thread.
+    bool captureAfterShow=false;
     bool ownsCloak=false, transitionsChanged=false;
     BOOL previousTransitions=FALSE;
     bool deferred=false, revealedTaskbar=false;
@@ -228,6 +239,9 @@ bool Eligible(HWND target) {
     const auto style=GetWindowLongPtrW(target,GWL_STYLE);
     const auto ex=GetWindowLongPtrW(target,GWL_EXSTYLE);
     if ((style&WS_CHILD) || (ex&WS_EX_TOOLWINDOW) || GetPropW(target,BypassProperty)) return false;
+    // Program-path matches also match Chromium helpers and QQ Music's separate
+    // layered shadow. Only independent application windows can own a transition.
+    if (!(ex&WS_EX_APPWINDOW) && ((ex&WS_EX_NOACTIVATE) || GetWindow(target,GW_OWNER))) return false;
     wchar_t name[96]{};
     GetClassNameW(target,name,96);
     if (!wcscmp(name,L"Shell_TrayWnd") || !wcscmp(name,L"Shell_SecondaryTrayWnd") ||
@@ -240,8 +254,9 @@ bool Capture(Animation& a) {
     RECT raw{}; if (!GetWindowRect(a.target,&raw)) return false;
     a.rect=raw;
     RECT extended{};
-    if (SUCCEEDED(DwmGetWindowAttribute(a.target,DWMWA_EXTENDED_FRAME_BOUNDS,&extended,sizeof(extended))))
-        a.rect=extended;
+    RECT frame{};
+    if (SUCCEEDED(DwmGetWindowAttribute(a.target,DWMWA_EXTENDED_FRAME_BOUNDS,&extended,sizeof(extended))) &&
+        IntersectRect(&frame,&raw,&extended)) a.rect=frame;
     const int w=a.rect.right-a.rect.left,h=a.rect.bottom-a.rect.top;
     const int rawW=raw.right-raw.left,rawH=raw.bottom-raw.top;
     if (w<40 || h<40 || !SnapshotBytes(rawW,rawH) || !a.image.Create(w,h)) return false;
@@ -257,29 +272,36 @@ bool Capture(Animation& a) {
             source+(static_cast<std::size_t>(y+oy)*rawW+ox)*4,static_cast<std::size_t>(w)*4);
         for (int x=0;x<w;++x) destination[(static_cast<std::size_t>(y)*w+x)*4+3]=255;
     }
+    if (a.settings.dockOnly) {
+        // Some accelerated windows acknowledge PrintWindow before painting their first frame.
+        const auto* pixels=static_cast<const DWORD*>(a.image.bits);
+        if (std::all_of(pixels+1,pixels+static_cast<std::size_t>(w)*h,
+                        [first=*pixels](DWORD pixel){return pixel==first;})) return false;
+    }
     InterlockedIncrement(&a.link->state->captures);
     return true;
 }
 // The Dock shows minimized windows as they looked here. The mapping stays open
 // while the window lives; closing the last handle (window destroyed or this
 // DLL unloaded) removes it, and the Dock falls back to DWM's thumbnail.
-std::map<HWND,HANDLE> snapshots;  // guarded by activeMutex
+struct CloseMapping { void operator()(void* handle) const { CloseHandle(handle); } };
+using SnapshotHandle=std::unique_ptr<void,CloseMapping>;
+std::map<HWND,SnapshotHandle> snapshots;  // guarded by activeMutex
 void PublishSnapshot(HWND target,const Bitmap& image) {
     namespace slots=lume::platform::windows::dock_slots;
     if (!image.bits || image.width<=0 || image.height<=0) return;
-    HANDLE mapping=nullptr;
+    unsigned char* view=nullptr;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        if (const auto found=snapshots.find(target);found!=snapshots.end()) mapping=found->second;
+        auto found=snapshots.find(target);
+        if (found==snapshots.end()) {
+            SnapshotHandle mapping(CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,slots::SnapshotBytes,
+                slots::SnapshotName(reinterpret_cast<std::uintptr_t>(target)).c_str()));
+            if (!mapping) return;
+            found=snapshots.emplace(target,std::move(mapping)).first;
+        }
+        view=static_cast<unsigned char*>(MapViewOfFile(found->second.get(),FILE_MAP_WRITE,0,0,slots::SnapshotBytes));
     }
-    if (!mapping) {
-        mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,slots::SnapshotBytes,
-                                   slots::SnapshotName(reinterpret_cast<std::uintptr_t>(target)).c_str());
-        if (!mapping) return;
-        std::lock_guard<std::mutex> lock(activeMutex);
-        snapshots[target]=mapping;
-    }
-    auto* view=static_cast<unsigned char*>(MapViewOfFile(mapping,FILE_MAP_WRITE,0,0,slots::SnapshotBytes));
     if (!view) return;
     auto& header=*reinterpret_cast<slots::SnapshotHeader*>(view);
     const float fit=std::min(1.f,static_cast<float>(slots::SnapshotSide)/std::max(image.width,image.height));
@@ -304,6 +326,33 @@ void PublishSnapshot(HWND target,const Bitmap& image) {
     header.width=w;header.height=h;
     InterlockedIncrement(&header.serial);
     UnmapViewOfFile(view);
+}
+bool RestoreSnapshot(Animation& a) {
+    if (!a.image.dc || a.image.width!=a.rect.right-a.rect.left || a.image.height!=a.rect.bottom-a.rect.top) return false;
+    namespace slots=lume::platform::windows::dock_slots;
+    const BYTE* view=nullptr;
+    {
+        std::lock_guard<std::mutex> lock(activeMutex);
+        const auto found=snapshots.find(a.target);
+        if (found!=snapshots.end()) view=static_cast<const BYTE*>(MapViewOfFile(
+            found->second.get(),FILE_MAP_READ,0,0,slots::SnapshotBytes));
+    }
+    if (!view) return false;
+    const auto& header=*reinterpret_cast<const slots::SnapshotHeader*>(view);
+    const auto serial=header.serial,w=header.width,h=header.height;
+    bool ok=false;
+    if (!(serial&1) && w>0 && h>0 && w<=slots::SnapshotSide && h<=slots::SnapshotSide) {
+        BITMAPINFO info{};
+        info.bmiHeader={sizeof(BITMAPINFOHEADER),w,-h,1,32,BI_RGB};
+        SetStretchBltMode(a.image.dc,HALFTONE);
+        SetBrushOrgEx(a.image.dc,0,0,nullptr);
+        const int rows=StretchDIBits(a.image.dc,0,0,a.image.width,a.image.height,0,0,w,h,
+            view+sizeof(header),&info,DIB_RGB_COLORS,SRCCOPY);
+        GdiFlush();
+        ok=rows>0 && header.serial==serial;
+    }
+    UnmapViewOfFile(view);
+    return ok;
 }
 HWND Taskbar(HMONITOR monitor) {
     HWND tray=FindWindowW(L"Shell_TrayWnd",nullptr);
@@ -588,12 +637,87 @@ bool ClassicFrame(Surface& s,Animation& a,const TargetGeometry& g,float progress
     }
     return true;
 }
+HWND SubmitDockFrame(Animation& a) {
+    const auto receiver=static_cast<HWND>(LongToHandle(Read(a.link->state->rendererWindow)));
+    DWORD pid=0;
+    GetWindowThreadProcessId(receiver,&pid);
+    if (!receiver || pid!=static_cast<DWORD>(Read(a.link->state->hostPid))) return nullptr;
+    const auto bytes=SnapshotBytes(a.image.width,a.image.height);
+    if (!bytes) return nullptr;
+    const dock_genie::Packet header{a.rect,a.destination.rect,a.destination.edge,a.kind};
+    std::vector<BYTE> packet(sizeof(header)+bytes);
+    std::memcpy(packet.data(),&header,sizeof(header));
+    std::memcpy(packet.data()+sizeof(header),a.image.bits,bytes);
+    COPYDATASTRUCT data{dock_genie::SnapshotMessage,static_cast<DWORD>(packet.size()),packet.data()};
+    DWORD_PTR result=0;
+    if (!SendMessageTimeoutW(receiver,WM_COPYDATA,reinterpret_cast<WPARAM>(a.target),
+        reinterpret_cast<LPARAM>(&data),SMTO_BLOCK|SMTO_ABORTIFHUNG,200,&result)) return nullptr;
+    return static_cast<HWND>(LongToHandle(static_cast<LONG>(result)));
+}
+void CancelDockFrame(const Animation& a,HWND ghost) {
+    const HWND receiver=static_cast<HWND>(LongToHandle(Read(a.link->state->rendererWindow)));
+    DWORD pid=0; GetWindowThreadProcessId(receiver,&pid);
+    if (receiver && pid==static_cast<DWORD>(Read(a.link->state->hostPid)))
+        PostMessageW(receiver,dock_genie::CancelPlayback,reinterpret_cast<WPARAM>(a.target),reinterpret_cast<LPARAM>(ghost));
+}
+UINT RetryCaptureMessage() {
+    static const UINT message=RegisterWindowMessageW(L"Lume.Dock.Genie.RetryCapture.v1");
+    return message;
+}
 void Render(Animation& a) {
     RenderSlot slot;
     if (!slot.acquired) return;
     if (a.kind!=Kind::Minimize) {
         HANDLE events[]={a.captured,a.cancel,a.link->stop,a.link->owner,a.link->host};
-        if (WaitForMultipleObjects(5,events,FALSE,400)!=WAIT_OBJECT_0 || !a.ready || a.Stopping()) return;
+        const bool firstShow=a.captureAfterShow && a.kind==Kind::Launch;
+        const auto deadline=GetTickCount64()+(firstShow ? 1200 : 400);
+        const auto remaining=[&]() -> DWORD {
+            const auto now=GetTickCount64();
+            return now<deadline ? static_cast<DWORD>(deadline-now) : 0;
+        };
+        DWORD wait=WAIT_TIMEOUT;
+        if (a.captureAfterShow) {
+            // A newly created GPU surface may take several compositor frames
+            // longer than a restored window to supply its first real image.
+            for (DWORD delay : {32u,64u,96u,128u,160u,224u,256u,256u}) {
+                if (!firstShow && delay>96) break;
+                wait=WaitForMultipleObjects(5,events,FALSE,std::min(delay,remaining()));
+                if (wait!=WAIT_TIMEOUT || !remaining()) break;
+                // Send through the window procedure. Chromium can filter a posted
+                // private message in its loop before WH_CALLWNDPROCRET observes it.
+                SendMessageTimeoutW(a.target,RetryCaptureMessage(),0,0,SMTO_BLOCK|SMTO_ABORTIFHUNG,
+                                    std::min<DWORD>(60,remaining()),nullptr);
+            }
+        }
+        if (wait==WAIT_TIMEOUT) wait=WaitForMultipleObjects(5,events,FALSE,remaining());
+        if (wait!=WAIT_OBJECT_0 || !a.ready || a.Stopping()) return;
+    }
+    if (a.settings.dockOnly) {
+        const HWND ghost=SubmitDockFrame(a);
+        if (!ghost) return;
+        if (a.kind!=Kind::Minimize && (a.Stopping() || (!a.ownsCloak && !a.Hide()))) {
+            CancelDockFrame(a,ghost);
+            return;
+        }
+        ++a.presented;
+        SetEvent(a.firstFrame);
+        if (a.kind==Kind::Minimize) {
+            // The GUI thread cloaks its surface after the host has a painted
+            // frame. Release it as soon as Windows has applied the minimize.
+            WaitForSingleObject(a.captured,250);
+            const auto limit=GetTickCount64()+250;
+            while (!IsIconic(a.target) && GetTickCount64()<limit && a.Wait(4)) {}
+            if (!IsIconic(a.target)) CancelDockFrame(a,ghost);
+            return;
+        }
+        // The host also owns close animations after the application exits.
+        // Only an incoming transition needs the source to remain cloaked.
+        const auto deadline=GetTickCount64()+a.settings.durationMs+250;
+        while (IsWindow(ghost) && GetTickCount64()<deadline && a.Wait(4)) {
+            if (GetPropW(ghost,dock_genie::LastFrameProperty)) return;
+        }
+        CancelDockFrame(a,ghost);
+        return;
     }
     auto geometry=GeometryFor(a);
     Surface surface; if (!surface.Create(a,geometry)) return;
@@ -658,21 +782,58 @@ DWORD WINAPI Worker(void* value) {
 }
 // Return true only for a successfully started deferred minimize: CBT then
 // cancels the original transition while the worker owns its eventual replay.
-bool Start(HWND target,Kind kind) {
+enum class Origin { Command, DockClick, BeforeShow, LegacyShow };
+bool Start(HWND target,Kind kind,Origin origin=Origin::Command) {
     if (!Eligible(target)) return false;
+    PhysicalCoordinates coordinates;
     auto link=std::make_shared<Connection>();if (!link->Open()) return false;
     Entry entry(link);
     Preferences preferences;
     if (link->Stopping() || !ReadSettings(*link->state,preferences) || !preferences.enabled ||
         (link->state->targetProcess && static_cast<DWORD>(link->state->targetProcess)!=GetCurrentProcessId()))
         return false;
-    if ((kind==Kind::Restore && !preferences.restore) || (kind==Kind::Launch && !preferences.launch)) return false;
+    if (((kind==Kind::Restore || kind==Kind::Zoom) && !preferences.restore) ||
+        (kind==Kind::Launch && !preferences.launch) ||
+        (kind==Kind::Close && !preferences.close) ||
+        (!preferences.dockOnly && (kind==Kind::Zoom || kind==Kind::Close))) return false;
+    // QQ repeats SW_SHOWMINIMIZED while restoring a maximized window. A
+    // window already minimized has no outgoing transition to cancel or start.
+    if (kind==Kind::Minimize && IsIconic(target)) return false;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        if (auto it=active.find(target);it!=active.end()) {SetEvent(it->second->cancel);return false;}
+        if (const auto it=active.find(target);it!=active.end()) {
+            // Native restore may emit another restore/maximize notification.
+            // Keep the prepared transition and its one-use Dock click intact.
+            const bool continuingRestore=it->second->kind==Kind::Restore &&
+                (kind==Kind::Restore || kind==Kind::Zoom);
+            if (kind!=Kind::Launch && !continuingRestore) SetEvent(it->second->cancel);
+            return false;
+        }
+    }
+    dock_animation::Destination destination{};
+    if ((origin==Origin::BeforeShow || origin==Origin::DockClick) && !preferences.dockOnly) return false;
+    if (origin==Origin::LegacyShow && preferences.dockOnly) return false;
+    bool clickOnly=origin==Origin::DockClick;
+    if (origin==Origin::BeforeShow || origin==Origin::LegacyShow) {
+        const bool caption=(GetWindowLongPtrW(target,GWL_STYLE)&WS_CAPTION)==WS_CAPTION;
+        std::lock_guard<std::mutex> lock(activeMutex);
+        if (active.count(target)) return false;
+        clickOnly=!caption || seen.count(target)!=0 || seen.size()>=4096;
+        if (clickOnly && !preferences.dockOnly) return false;
+    }
+    if (preferences.dockOnly) {
+        BOOL animations=TRUE;
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+        DWORD affinity=0;
+        if (!animations || (GetWindowDisplayAffinity(target,&affinity) && affinity!=WDA_NONE) ||
+            !dock_animation::Find(target,link->state->ownerPid,destination,kind != Kind::Close,clickOnly,
+                                  kind==Kind::Minimize)) return false;
+        if (kind==Kind::Zoom && FAILED(DwmGetWindowAttribute(target,DWMWA_EXTENDED_FRAME_BOUNDS,
+            &destination.rect,sizeof(RECT))) && !GetWindowRect(target,&destination.rect)) return false;
     }
     auto a=std::make_shared<Animation>(); a->link=std::move(link);a->settings=preferences;
-    a->target=target;a->kind=kind;
+    a->target=target;a->kind=kind;a->destination=destination;
+    a->captureAfterShow=origin==Origin::BeforeShow || (preferences.dockOnly && kind==Kind::Restore);
     a->cancel=CreateEventW(nullptr,TRUE,FALSE,nullptr);
     a->captured=CreateEventW(nullptr,TRUE,FALSE,nullptr);
     a->firstFrame=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -683,15 +844,23 @@ bool Start(HWND target,Kind kind) {
         active.emplace(target,a);
     }
     Registration registration{a};
-    if (kind==Kind::Minimize) {
+    if (kind==Kind::Minimize || kind==Kind::Close) {
         DWORD cloaked=0;
         DwmGetWindowAttribute(target,DWMWA_CLOAKED,&cloaked,sizeof(cloaked));
         if (cloaked || !IsWindowVisible(target) || IsIconic(target) || !Capture(*a)) return false;
         a->ready=true;
+        if (kind==Kind::Close) {
+            if (SubmitDockFrame(*a)) InterlockedIncrement(&a->link->state->dockClosed);
+            return false;
+        }
         PublishSnapshot(target,a->image);
     } else {
-        if (!a->Hide()) return false;
-        if (kind==Kind::Launch) {a->ready=Capture(*a);SetEvent(a->captured);if (!a->ready)return false;}
+        // Claim the incoming surface while it is still hidden or minimized. Let
+        // its UI thread finish showing/painting before asking it for pixels.
+        if ((!preferences.dockOnly || a->captureAfterShow) && !a->Hide()) return false;
+        if (kind==Kind::Launch && !a->captureAfterShow) {
+            a->ready=Capture(*a);SetEvent(a->captured);if (!a->ready)return false;
+        }
     }
     Rect dockTarget{};
     const auto targetMonitor=preferences.multiMonitor ? MonitorFromWindow(target,MONITOR_DEFAULTTONEAREST) :
@@ -736,42 +905,73 @@ bool Start(HWND target,Kind kind) {
     CloseHandle(thread);
     if (kind==Kind::Minimize) InterlockedIncrement(&a->link->state->minimized);
     else if (kind==Kind::Restore) InterlockedIncrement(&a->link->state->restored);
+    else if (kind==Kind::Zoom) InterlockedIncrement(&a->link->state->dockZoomed);
     else InterlockedIncrement(&a->link->state->launched);
     {
         std::lock_guard<std::mutex> lock(activeMutex);
         if (seen.size()<4096) seen.insert(target);
     }
-    if (kind==Kind::Minimize) {
+    if (kind==Kind::Minimize || (kind==Kind::Launch && preferences.dockOnly && !a->captureAfterShow)) {
         HANDLE events[]={a->firstFrame,a->link->stop,a->link->owner};
         if (WaitForMultipleObjects(3,events,FALSE,200)!=WAIT_OBJECT_0 || !a->presented) {
             SetEvent(a->cancel);return false;
         }
+        if (kind==Kind::Minimize && preferences.dockOnly) {
+            a->Hide();
+            SetEvent(a->captured);
+        }
     }
     return a->deferred;
 }
-void Shown(HWND hwnd,UINT message,LPARAM parameter) {
+void Shown(HWND hwnd,UINT message,WPARAM w,LPARAM parameter) {
+    if (message==WM_SHOWWINDOW || message==WM_WINDOWPOSCHANGING) {
+        const auto* position=reinterpret_cast<const WINDOWPOS*>(parameter);
+        const bool showing=message==WM_SHOWWINDOW ? w!=0 && parameter==0 :
+            position && (position->flags&SWP_SHOWWINDOW);
+        if (showing && !IsWindowVisible(hwnd) && !IsIconic(hwnd))
+            Start(hwnd,Kind::Launch,Origin::BeforeShow);
+        return;
+    }
+    const bool retry=message==RetryCaptureMessage();
+    if (retry && !GetPropW(hwnd,OwnedProperty)) return;
+    if (!retry && message != WM_WINDOWPOSCHANGED && message != dock_animation::ActivatedMessage()) return;
     if (!Eligible(hwnd)) return;
-    if (message!=WM_WINDOWPOSCHANGED) return;
+    if (message == dock_animation::ActivatedMessage()) {
+        if (IsWindowVisible(hwnd))
+            Start(hwnd,IsIconic(hwnd) ? Kind::Restore : Kind::Launch,Origin::DockClick);
+        return;
+    }
     std::shared_ptr<Animation> restore;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
         const auto found=active.find(hwnd);
-        if (found!=active.end() && found->second->kind==Kind::Restore &&
+        if (found!=active.end() && (found->second->captureAfterShow || found->second->kind==Kind::Restore || found->second->kind==Kind::Zoom) &&
             WaitForSingleObject(found->second->captured,0)==WAIT_TIMEOUT) restore=found->second;
     }
-    if (restore && !IsIconic(hwnd) && IsWindowVisible(hwnd) && !restore->capturing.exchange(true)) {
+    if (restore && (!restore->captureAttempted || retry) && !IsIconic(hwnd) && IsWindowVisible(hwnd) &&
+        !restore->capturing.exchange(true)) {
         Entry entry(restore->link);
-        restore->ready=Capture(*restore);SetEvent(restore->captured);return;
+        PhysicalCoordinates coordinates;
+        restore->captureAttempted=true;
+        restore->ready=Capture(*restore);
+        if (!restore->ready && restore->captureAfterShow) {
+            if (restore->kind==Kind::Restore) restore->ready=RestoreSnapshot(*restore);
+            if (!restore->ready) {
+                restore->capturing=false;
+                return;
+            }
+        }
+        SetEvent(restore->captured);return;
     }
+    if (retry) return;
     const auto* position=reinterpret_cast<const WINDOWPOS*>(parameter);
     if (position && (position->flags&SWP_SHOWWINDOW) && IsWindowVisible(hwnd) &&
-        !IsIconic(hwnd) && (GetWindowLongPtrW(hwnd,GWL_STYLE)&WS_CAPTION)) {
-        bool fresh=false;
-        {
-            std::lock_guard<std::mutex> lock(activeMutex);
-            fresh=seen.size()<4096 && seen.insert(hwnd).second;
-        }
-        if (fresh) Start(hwnd,Kind::Launch);
+        !IsIconic(hwnd)) {
+        // A Dock launch can only begin before the native show. Never rewind a
+        // window that has already reached the desktop into a second opening.
+        Start(hwnd,Kind::Launch,Origin::LegacyShow);
+        std::lock_guard<std::mutex> lock(activeMutex);
+        if (seen.size()<4096) seen.insert(hwnd);
     }
 }
 }
@@ -785,20 +985,37 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK LumeMinimizeCbt(int code,WPARA
             } else if (IsIconic(hwnd) && (command==SW_RESTORE || command==SW_SHOWNORMAL ||
                                         command==SW_SHOWMAXIMIZED || command==SW_SHOW))
                 Start(hwnd,Kind::Restore);
+            else if (IsWindowVisible(hwnd) && !IsIconic(hwnd) &&
+                     ((!IsZoomed(hwnd) && command==SW_SHOWMAXIMIZED) ||
+                      (IsZoomed(hwnd) && (command==SW_RESTORE || command==SW_SHOWNORMAL))))
+                Start(hwnd,Kind::Zoom);
+        } catch (...) {}
+    } else if (code==HCBT_ACTIVATE) {
+        const auto hwnd=reinterpret_cast<HWND>(w);
+        try {
+            if (IsWindowVisible(hwnd) && !IsIconic(hwnd) && GetForegroundWindow()!=hwnd) {
+                bool existing=false;
+                {
+                    std::lock_guard<std::mutex> lock(activeMutex);
+                    existing=seen.count(hwnd) && !active.count(hwnd);
+                }
+                if (existing) Start(hwnd,Kind::Launch,Origin::DockClick);
+            }
         } catch (...) {}
     } else if (code==HCBT_DESTROYWND) {
         const auto hwnd=reinterpret_cast<HWND>(w);
+        try { if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) Start(hwnd,Kind::Close); } catch (...) {}
         std::lock_guard<std::mutex> lock(activeMutex);
         if (const auto found=active.find(hwnd);found!=active.end()) SetEvent(found->second->cancel);
         seen.erase(hwnd);
-        if (const auto snapshot=snapshots.find(hwnd);snapshot!=snapshots.end()) {CloseHandle(snapshot->second);snapshots.erase(snapshot);}
+        snapshots.erase(hwnd);
     }
     return CallNextHookEx(nullptr,code,w,l);
 }
 extern "C" __declspec(dllexport) LRESULT CALLBACK LumeMinimizeShown(int code,WPARAM w,LPARAM l) {
     if (code>=0 && l) {
         const auto* message=reinterpret_cast<const CWPRETSTRUCT*>(l);
-        try { Shown(message->hwnd,message->message,message->lParam); } catch (...) {}
+        try { Shown(message->hwnd,message->message,message->wParam,message->lParam); } catch (...) {}
     }
     return CallNextHookEx(nullptr,code,w,l);
 }

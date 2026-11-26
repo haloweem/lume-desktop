@@ -29,6 +29,7 @@ struct TaskbarCoreTimings {
     std::uint32_t readySettleMs = 1200;
     std::uint32_t waitSliceMs = 50;
     std::uint32_t stopTimeoutMs = 3000;
+    std::uint32_t xamlWaitMs = 15000;
 };
 // A narrow Win32 boundary also lets isolated tests observe the real creation
 // instant and inject failed waits without replacing the child process itself.

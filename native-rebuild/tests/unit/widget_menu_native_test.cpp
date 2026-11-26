@@ -87,66 +87,54 @@ int main()
         },reinterpret_cast<LPARAM>(&menuProbe));
         return menuProbe.menu;
     };
-    const auto selectOrganizer=[&](bool collapsed,bool list,bool item,unsigned down,UINT expected){
-        std::atomic<bool> opened=false,childOpened=false;
-        std::thread organizerDriver([&]{
-            HWND root=nullptr;
-            for(int attempt=0;attempt<5000&&!root;++attempt){root=findOwned(owner);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    const auto waitForMenu=[&](HWND parent){
+        const auto deadline=GetTickCount64()+3000;
+        while(GetTickCount64()<deadline){
+            if(HWND window=findOwned(parent))return window;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return static_cast<HWND>(nullptr);
+    };
+    const auto focusRow=[](HWND window,int row){
+        PostMessageW(window,WM_KEYDOWN,VK_HOME,1);
+        for(int i=0;i<row;++i)PostMessageW(window,WM_KEYDOWN,VK_DOWN,1);
+    };
+    const auto selectOrganizer=[&](bool item,bool canDelete,int rootRow,int childRow,UINT expected){
+        std::thread menuDriver([&]{
+            HWND root=waitForMenu(owner);
             if(!root)return;
-            opened=true;
-            PostMessageW(root,WM_KEYDOWN,VK_HOME,1);
-            for(unsigned index=0;index<down;++index)PostMessageW(root,WM_KEYDOWN,VK_DOWN,1);
-            // The former first-row size submenu must now be a direct action.
-            PostMessageW(root,WM_KEYDOWN,VK_RIGHT,1);
-            PostMessageW(root,WM_KEYDOWN,VK_RETURN,1);
-            const auto deadline=GetTickCount64()+2000;
-            while(IsWindow(root)&&GetTickCount64()<deadline){
-                if(const HWND child=findOwned(root)){
-                    childOpened=true;PostMessageW(child,WM_KEYDOWN,VK_ESCAPE,1);PostMessageW(root,WM_KEYDOWN,VK_ESCAPE,1);break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            focusRow(root,rootRow);
+            HWND target=root;
+            if(childRow>=0){
+                PostMessageW(root,WM_KEYDOWN,VK_RIGHT,1);
+                target=waitForMenu(root);
+                if(!target){PostMessageW(root,WM_KEYDOWN,VK_ESCAPE,1);return;}
+                focusRow(target,childRow);
             }
+            PostMessageW(target,WM_KEYDOWN,VK_RETURN,1);
+            // If a direct row unexpectedly opens a submenu, end the failed case.
+            const auto deadline=GetTickCount64()+2000;
+            while(IsWindow(root)&&GetTickCount64()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            if(HWND child=findOwned(root))PostMessageW(child,WM_KEYDOWN,VK_ESCAPE,1);
             if(IsWindow(root))PostMessageW(root,WM_KEYDOWN,VK_ESCAPE,1);
         });
-        const UINT selected=LumeWidgetMenu::ShowOrganizer(owner,{200,200},collapsed,list,true,false,item);
-        organizerDriver.join();
-        if(!opened||childOpened||selected!=expected){
-            std::cerr<<"FAIL organizer direct menu action: expected "<<expected<<", got "<<selected<<'\n';return false;
-        }
-        return true;
+        const auto selected=LumeWidgetMenu::ShowOrganizer(owner,{200,200},childRow%2==0,childRow>=2,true,false,item,canDelete);
+        menuDriver.join();
+        if(selected==expected)return true;
+        std::cerr<<"FAIL organizer menu row "<<rootRow<<", child "<<childRow<<": expected "<<expected<<", got "<<selected<<'\n';
+        return false;
     };
     bool organizerMenus=true;
-    for(const bool collapsed:{false,true}){
-        organizerMenus=selectOrganizer(collapsed,false,false,0,collapsed?5u:4u)&&organizerMenus;
-        organizerMenus=selectOrganizer(collapsed,false,true,0,13)&&organizerMenus;
-        organizerMenus=selectOrganizer(collapsed,false,true,1,collapsed?5u:4u)&&organizerMenus;
-    }
-    organizerMenus=selectOrganizer(false,false,false,1,6)&&organizerMenus;
-    organizerMenus=selectOrganizer(true,true,false,1,7)&&organizerMenus;
-    for(int accent=0;accent<6;++accent){
-        std::atomic<bool> opened=false;
-        std::thread colorDriver([&]{
-            HWND root=nullptr,child=nullptr;
-            for(int attempt=0;attempt<5000&&!root;++attempt){root=findOwned(owner);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
-            if(!root)return;
-            PostMessageW(root,WM_KEYDOWN,VK_HOME,1);
-            for(int row=0;row<4;++row)PostMessageW(root,WM_KEYDOWN,VK_DOWN,1);
-            PostMessageW(root,WM_KEYDOWN,VK_RIGHT,1);
-            for(int attempt=0;attempt<5000&&!child;++attempt){child=findOwned(root);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
-            if(!child){PostMessageW(root,WM_KEYDOWN,VK_ESCAPE,1);return;}
-            opened=true;
-            PostMessageW(child,WM_KEYDOWN,VK_HOME,1);
-            for(int row=0;row<accent;++row)PostMessageW(child,WM_KEYDOWN,VK_DOWN,1);
-            PostMessageW(child,WM_KEYDOWN,VK_RETURN,1);
-        });
-        const auto selected=LumeWidgetMenu::ShowOrganizer(owner,{32000,32000},false,false,true,false,false,accent);
-        colorDriver.join();
-        if(!opened||selected!=static_cast<UINT>(230+accent)){
-            std::cerr<<"FAIL organizer color submenu: expected "<<230+accent<<", got "<<selected<<'\n';organizerMenus=false;
-        }
-    }
+    for(int option=0;option<4;++option)
+        organizerMenus=selectOrganizer(false,false,0,option,static_cast<UINT>(4+option))&&organizerMenus;
+    organizerMenus=selectOrganizer(true,true,2,0,8)&&organizerMenus; // Material immediately precedes deletion.
+    organizerMenus=selectOrganizer(true,true,3,0,LumeWidgetMenu::OrganizerRemoveIcon)&&organizerMenus;
+    organizerMenus=selectOrganizer(true,true,3,1,LumeWidgetMenu::OrganizerDeleteIcon)&&organizerMenus;
+    organizerMenus=selectOrganizer(true,false,3,1,LumeWidgetMenu::OrganizerRemoveIcon)&&organizerMenus; // Disabled delete is skipped.
+    organizerMenus=selectOrganizer(false,false,3,-1,11)&&organizerMenus; // Background has no item actions.
+    organizerMenus=selectOrganizer(true,true,6,-1,1)&&organizerMenus; // Close follows lock directly.
     DestroyWindow(owner);
     if(!organizerMenus)return 1;
-	std::cout << "PASS popup opens and closes; organizer direct actions and all six color submenu actions\n";
+	std::cout << "PASS organizer display choices, deletion submenu, disabled delete and root menu order\n";
 	return 0;
 }

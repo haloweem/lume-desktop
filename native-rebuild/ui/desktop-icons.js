@@ -28,11 +28,11 @@ export function desktopIconsNotice(state,{previousStatus,hasInlineStatus=false}=
 }
 export function desktopIconsPage(state,tab='settings') {
   const p=state.icons,disabled=state.iconsStatus==='saving';
-  const row=(label,help,control)=>`<div class="setting-row"><div><label>${label}</label><p class="setting-help">${help}</p></div>${control}</div>`;
+  const row=(label,control)=>`<div class="setting-row"><label>${label}</label>${control}</div>`;
   const body=tab==='settings'?
-    row(t('自动隐藏空闲桌面图标','Auto-hide idle desktop icons'),t('系统空闲达到指定时长后自动隐藏桌面图标','Hide desktop icons after the specified idle time'),toggle(p.enableAutoHide,t('自动隐藏空闲桌面图标','Auto-hide idle desktop icons'),'icons-autoHide',disabled))+
-    `<div class="setting-row"><div><label for="icons-delay">${t('自动隐藏延迟秒数','Auto-hide delay (seconds)')}</label><p class="setting-help">${t('范围为 3 到 60 秒','Range: 3 to 60 seconds')}</p></div><input class="setting-number" id="icons-delay" type="number" min="3" max="60" step="1" value="${p.autoHideDelay}" ${disabled?'disabled':''}></div>`+
-    row(t('任意输入时恢复图标','Restore icons on any input'),t('仅恢复自动隐藏的图标，不影响手动隐藏的图标','Only restore automatically hidden icons, not manually hidden ones'),toggle(p.showIconsOnAnyInput,t('任意输入时恢复图标','Restore icons on any input'),'icons-restoreOnInput',disabled))+
+    row(t('自动隐藏空闲桌面图标','Auto-hide idle desktop icons'),toggle(p.enableAutoHide,t('自动隐藏空闲桌面图标','Auto-hide idle desktop icons'),'icons-autoHide',disabled))+
+    `<div class="setting-row"><label for="icons-delay">${t('自动隐藏延迟秒数','Auto-hide delay (seconds)')}</label><input class="setting-number" id="icons-delay" type="number" min="3" max="60" step="1" value="${p.autoHideDelay}" ${disabled?'disabled':''}></div>`+
+    row(t('任意输入时恢复图标','Restore icons on any input'),toggle(p.showIconsOnAnyInput,t('任意输入时恢复图标','Restore icons on any input'),'icons-restoreOnInput',disabled))+
     `<div class="reset-row"><button class="reset" data-action="icons-reset" ${disabled?'disabled':''}>${t('恢复默认','Restore defaults')}</button></div>`:
     `<p>${t('双击桌面空白处隐藏或显示图标。手动隐藏的图标不会因鼠标移动或键盘输入自动恢复。','Double-click an empty desktop area to hide or show icons. Manually hidden icons stay hidden during mouse or keyboard input.')}</p><p>${t('图标由空闲自动隐藏时，启用“任意输入时恢复图标”可在再次输入时恢复。关闭功能会恢复被此功能隐藏的图标。','Enable Restore icons on any input to restore icons hidden while idle. Disabling the feature restores the icons it hid.')}</p>`;
   return settingsFrame({title:t('图标隐藏','Icon hiding'),description:description(),tab,body,scope:'icons',

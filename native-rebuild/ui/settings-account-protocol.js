@@ -19,6 +19,7 @@ export function validAccountCommand(action, fields) {
 }
 
 export function validApplicationSettingsCommand(action, fields) {
+  if (action==="removeGame") return exact(fields,["value"]) && integer(fields.value) && fields.value<16;
   if (["interfaceScale","previewInterfaceScale"].includes(action))
     return exact(fields,["value"]) && Number.isInteger(fields.value) && fields.value>=50 && fields.value<=75;
   if (action === "language")
@@ -26,7 +27,7 @@ export function validApplicationSettingsCommand(action, fields) {
   if (["balancedMode", "autostart"].includes(action))
     return exact(fields, ["value"]) && typeof fields.value === "boolean";
   return ["snapshot", "checkUpdate", "downloadUpdate", "installUpdate",
-    "chooseWallpaperDirectory", "chooseDataDirectory"].includes(action) && exact(fields, []);
+    "chooseWallpaperDirectory", "chooseDataDirectory", "chooseGame"].includes(action) && exact(fields, []);
 }
 
 function validAvatar(value) {
@@ -50,6 +51,10 @@ export function validAccountState(message) {
 export function validApplicationSettingsState(message) {
   const base = ["version", "type", "revision", "language", "balancedMode", "autostart", "busy",
     "error", "update"];
+  if (Object.hasOwn(message||{},"gamePrograms")) {
+    if (!Array.isArray(message.gamePrograms)||message.gamePrograms.length>16||!message.gamePrograms.every(p=>text(p,2048)&&p.length>0))return false;
+    base.push("gamePrograms");
+  }
   const withPaths = [...base, "dataDirectory", "wallpaperDirectory"];
   // Older states carry no paths; accept both shapes so a host upgrade cannot
   // lock the page out, but validate the paths whenever they are present.

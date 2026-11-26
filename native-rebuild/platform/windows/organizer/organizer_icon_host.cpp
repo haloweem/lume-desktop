@@ -1,13 +1,16 @@
 #include "platform/windows/organizer/organizer_icon_protocol.h"
 #include "platform/windows/organizer/shell_open.h"
+#include "platform/windows/windows_settings.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <objbase.h>
 #include <wincodec.h>
+#include <algorithm>
 #include <cwchar>
 #include <string_view>
+#include <vector>
 
 namespace {
 using namespace lume::platform::windows::organizer_icon_ipc;
@@ -79,26 +82,76 @@ bool ResourceIcon(IWICImagingFactory* factory,const wchar_t* path,int index,Mess
         SUCCEEDED(factory->CreateBitmapFromHICON(icon.value,source.Put()))&&
         CopyPixels(factory,source.value,message);
 }
+bool HasExtension(const wchar_t* path,const wchar_t* extension) {
+    const auto* dot=wcsrchr(path,L'.');
+    return dot&&_wcsicmp(dot,extension)==0;
+}
+bool NativeAppIcon(const wchar_t* path) {
+    return HasExtension(path,L".exe")||HasExtension(path,L".ico");
+}
+bool ExtractImage(IWICImagingFactory* factory,Message& message) {
+    using namespace lume::platform::windows;
+    if (_wcsicmp(message.path, WindowsSettingsImage().c_str()) == 0) {
+        const auto app = std::wstring(L"shell:AppsFolder\\") + WindowsSettingsAppId;
+        if (ShellImage(factory, app.c_str(), message)) return true;
+    }
+    if(HasExtension(message.path,L".lnk")) {
+        Com<IShellLinkW> shortcut;Com<IPersistFile> file;
+        if(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(shortcut.Put())))&&
+           SUCCEEDED(shortcut->QueryInterface(IID_PPV_ARGS(file.Put())))&&
+           SUCCEEDED(file->Load(message.path,STGM_READ))) {
+            wchar_t target[MaxPath]{};int index=0;
+            const bool hasTarget=SUCCEEDED(shortcut->GetPath(target,static_cast<int>(MaxPath),nullptr,SLGP_RAWPATH))&&*target;
+            wchar_t icon[MaxPath]{};
+            const bool hasCustom=SUCCEEDED(shortcut->GetIconLocation(icon,static_cast<int>(MaxPath),&index))&&*icon;
+            // The Shell image list can wrap undersized app icons in a faint
+            // square. Read the actual resource, retaining custom icon indices.
+            if(hasCustom&&ResourceIcon(factory,icon,index,message))return true;
+            if(!hasCustom&&hasTarget&&NativeAppIcon(target)&&ResourceIcon(factory,target,0,message))return true;
+            if(ShellImage(factory,message.path,message))return true;
+            return hasTarget&&(ShellImage(factory,target,message)||ResourceIcon(factory,target,0,message));
+        }
+    }
+    if(NativeAppIcon(message.path)&&ResourceIcon(factory,message.path,0,message))return true;
+    return ShellImage(factory,message.path,message)||ResourceIcon(factory,message.path,0,message);
+}
+void NormalizeArtwork(IWICImagingFactory* factory,Message& message) {
+    const unsigned width=message.width,height=message.height,side=message.requestedSide;
+    unsigned left=width,top=height,right=0,bottom=0;
+    for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x) {
+        if((message.pixels[y*width+x]>>24)<48)continue;
+        left=std::min(left,x);top=std::min(top,y);right=std::max(right,x+1);bottom=std::max(bottom,y+1);
+    }
+    if(right<=left||bottom<=top)return;
+    const auto artwork=std::max(right-left,bottom-top);
+    const auto canvas=std::max(width,height);
+    if(artwork*100>=canvas*86)return;
+    // Keep a small margin for antialiasing and shadow around the visible art.
+    const unsigned pad=std::max(1u,artwork/32);
+    left=left>pad?left-pad:0;top=top>pad?top-pad:0;
+    right=std::min(width,right+pad);bottom=std::min(height,bottom+pad);
+    const unsigned cropWidth=right-left,cropHeight=bottom-top;
+    const unsigned longest=std::max(cropWidth,cropHeight);
+    const unsigned outWidth=std::max(1u,(cropWidth*side+longest/2)/longest);
+    const unsigned outHeight=std::max(1u,(cropHeight*side+longest/2)/longest);
+    Com<IWICBitmap> bitmap;Com<IWICBitmapClipper> clip;Com<IWICBitmapScaler> scaler;
+    WICRect crop{static_cast<INT>(left),static_cast<INT>(top),static_cast<INT>(cropWidth),static_cast<INT>(cropHeight)};
+    if(FAILED(factory->CreateBitmapFromMemory(width,height,GUID_WICPixelFormat32bppPBGRA,width*4,width*height*4,
+            reinterpret_cast<BYTE*>(message.pixels),bitmap.Put()))||
+       FAILED(factory->CreateBitmapClipper(clip.Put()))||FAILED(clip->Initialize(bitmap.value,&crop))||
+       FAILED(factory->CreateBitmapScaler(scaler.Put()))||
+       FAILED(scaler->Initialize(clip.value,outWidth,outHeight,WICBitmapInterpolationModeFant)))return;
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(outWidth)*outHeight);
+    if(FAILED(scaler->CopyPixels(nullptr,outWidth*4,outWidth*outHeight*4,reinterpret_cast<BYTE*>(pixels.data()))))return;
+    std::copy(pixels.begin(),pixels.end(),message.pixels);message.width=outWidth;message.height=outHeight;
+}
 bool Extract(Message& message) {
     Com<IWICImagingFactory> factory;
     if(FAILED(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(factory.Put()))))return false;
-    if(ShellImage(factory.value,message.path,message))return true;
-    const auto* extension=wcsrchr(message.path,L'.');
-    if(extension&&_wcsicmp(extension,L".lnk")==0) {
-        Com<IShellLinkW> shortcut;Com<IPersistFile> file;
-        if(FAILED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(shortcut.Put())))||
-           FAILED(shortcut->QueryInterface(IID_PPV_ARGS(file.Put())))||
-           FAILED(file->Load(message.path,STGM_READ)))return false;
-        wchar_t path[MaxPath]{};int index=0;
-        if(SUCCEEDED(shortcut->GetIconLocation(path,static_cast<int>(MaxPath),&index))&&*path&&
-            ResourceIcon(factory.value,path,index,message))return true;
-        if(SUCCEEDED(shortcut->GetPath(path,static_cast<int>(MaxPath),nullptr,SLGP_RAWPATH))&&*path)
-            return ShellImage(factory.value,path,message)||ResourceIcon(factory.value,path,0,message);
-        return false;
-    }
-    return ResourceIcon(factory.value,message.path,0,message);
+            IID_PPV_ARGS(factory.Put())))||!ExtractImage(factory.value,message))return false;
+    NormalizeArtwork(factory.value,message);
+    return true;
 }
 }
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,LPWSTR,int) {

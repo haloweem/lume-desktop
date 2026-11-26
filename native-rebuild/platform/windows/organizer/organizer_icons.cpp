@@ -1,4 +1,5 @@
 #include "platform/windows/organizer/organizer_icons.h"
+#include "platform/windows/shell_location.h"
 #include "platform/windows/organizer/organizer_icon_client.h"
 #include <windows.h>
 #include <algorithm>
@@ -47,7 +48,7 @@ struct OrganizerIconCache::Impl {
         if(!pixelSize||pixelSize>256)return false;
         std::set<std::wstring> nextWanted;
         for(const auto& path:paths){
-            if(!Local(path))return false;
+            if(!Local(path)&&!IsDockShellTarget(path))return false;
             nextWanted.insert(path);
         }
         // Count unique paths: the Dock often supplies the same executable via

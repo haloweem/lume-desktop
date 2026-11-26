@@ -61,7 +61,7 @@ HWND ApplicationCeiling(HWND host) {
 // Only the shared foreground fullscreen/exclusive policy suppresses its monitor.
 bool FullscreenProtected(HWND bar) {
     RECT area{};GetWindowRect(bar,&area);
-    return window_layer::enabled && window_layer::Protected(area,window_layer::ReadContext());
+    return window_layer::enabled && (window_layer::balancedIdle || window_layer::Protected(area,window_layer::ReadContext()));
 }
 constexpr UINT Flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
 HWND NextVisible(HWND window) {
@@ -99,11 +99,12 @@ void DockDesktopLayer::Start(HWND icons, HWND bar) {
     if (fallback_) SetTimer(icons_, FallbackTimer, 1500, nullptr);
 }
 void DockDesktopLayer::Stop() {
+    if (summoned_) Restore();
     for (auto& hook : hooks_) { if (hook) UnhookWinEvent(hook); hook = nullptr; }
     if (icons_) KillTimer(icons_, FallbackTimer);
     watchers.erase(std::remove(watchers.begin(), watchers.end(), this), watchers.end());
     icons_ = bar_ = nullptr;
-    pending_ = covered_ = fallback_ = false;
+    pending_ = covered_ = fallback_ = summoned_ = false;
 }
 void DockDesktopLayer::Request() {
     if (!pending_ && icons_ && (covered_ || IsWindowVisible(icons_) || IsWindowVisible(bar_) || window_layer::WantsDesktop(icons_)))
@@ -127,6 +128,25 @@ void CALLBACK DockDesktopLayer::Event(HWINEVENTHOOK hook, DWORD event, HWND wind
 }
 void DockDesktopLayer::Place() {
     if (!icons_ || !bar_) return;
+    if (summoned_) {
+        covered_ = false;
+        KillTimer(icons_, FallbackTimer);
+        for (const HWND window : {bar_, icons_}) {
+            desktop_level::PlacementScope placement(window);
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, Flags | SWP_SHOWWINDOW);
+        }
+        desktop_level::KeepOwnedGlassBelow(bar_);
+        return;
+    }
+    if(window_layer::balancedIdle) {
+        // The shared foreground watcher resumes every display. An invisible
+        // Dock needs neither its own recovery timer nor a desktop Z-order scan.
+        KillTimer(icons_,FallbackTimer);
+        covered_=true;
+        window_layer::Apply(icons_);
+        window_layer::Apply(bar_);
+        return;
+    }
     window_layer::RestoreDesktop(icons_);
     // The bar follows the icon root, including its minimized state. Its
     // application ceiling and visibility are restored as the same pair below.
@@ -216,5 +236,30 @@ void DockDesktopLayer::Place() {
         SetWindowPos(bar_, icons_, 0, 0, 0, 0, Flags | SWP_SHOWWINDOW);
     }
     desktop_level::KeepOwnedGlassBelow(bar_);
+}
+bool DockDesktopLayer::Summon() {
+    if (!icons_ || !bar_) return false;
+    if (!window_layer::SetFullscreenBypass(icons_, true)) return false;
+    if (!window_layer::SetFullscreenBypass(bar_, true)) {
+        window_layer::SetFullscreenBypass(icons_, false);
+        return false;
+    }
+    summoned_ = true;
+    covered_ = false;
+    KillTimer(icons_, FallbackTimer);
+    bool ok = true;
+    for (const HWND window : {bar_, icons_}) {
+        desktop_level::PlacementScope placement(window);
+        ok = SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, Flags | SWP_SHOWWINDOW) != FALSE && ok;
+    }
+    if (!ok) { Restore(); return false; }
+    desktop_level::KeepOwnedGlassBelow(bar_);
+    return true;
+}
+void DockDesktopLayer::Restore() {
+    summoned_ = false;
+    if (bar_) window_layer::SetFullscreenBypass(bar_, false);
+    if (icons_) window_layer::SetFullscreenBypass(icons_, false);
+    Place();
 }
 }  // namespace lume::platform::windows

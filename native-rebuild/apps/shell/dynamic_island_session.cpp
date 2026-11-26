@@ -3,6 +3,7 @@
 #include "apps/shell/island_notification_preferences.h"
 #include "core/widget/widget_preferences_store.h"
 #include "platform/windows/local_settings_file_store.h"
+#include "platform/windows/text_util.h"
 #include "platform/windows/dynamic_island/island_window.h"
 #include "platform/windows/dynamic_island/island_preview.h"
 #include "platform/windows/dynamic_island/notification_receiver.h"
@@ -89,6 +90,7 @@ struct DynamicIslandSession::Impl {
     ULONGLONG screensChecked=0;
     std::string error;
     IslandDisplay display;
+    int lastCountdownNoticeDay=0;
     std::unique_ptr<IslandPreviewRenderer> previewRenderer;
     bool stopped = false, english = false;
     bool weatherRequested = false, previewActive = false;
@@ -112,7 +114,8 @@ struct DynamicIslandSession::Impl {
     Impl(HINSTANCE module, DynamicIslandSessionOptions o, settings::IFileStore* f)
         : options(std::move(o)), instance(module), files(f?*f:local), notificationPreferences(files,options.preferencesPath),
           store(files,limits), prefs(widget::Defaults(limits)),
-          window(module,[this](dynamic_island::Action action){Action(action);},options.notificationAllowed) {
+          window(module,[this](dynamic_island::Action action){Action(action);},options.notificationAllowed,
+              options.editWidget) {
         window.SetTodoSource(options.todos);
         const auto loaded=store.Load(options.preferencesPath);prefs=loaded.value;load=loaded.state;
         prefs.locked = true;
@@ -149,7 +152,7 @@ struct DynamicIslandSession::Impl {
     static bool Released(dynamic_island::ExpandedWidget value) {
         return value==dynamic_island::ExpandedWidget::Music||value==dynamic_island::ExpandedWidget::CalendarWeather||
             value==dynamic_island::ExpandedWidget::Todos||value==dynamic_island::ExpandedWidget::Clock||
-            value==dynamic_island::ExpandedWidget::System;
+            value==dynamic_island::ExpandedWidget::System||value==dynamic_island::ExpandedWidget::Countdown;
     }
     void StopWindows() {analysisVisible=false;mirrors.clear();window.Stop();}
     bool ProjectDisplay(const widget::Preferences& next,const IslandDisplay& value) {
@@ -165,7 +168,7 @@ struct DynamicIslandSession::Impl {
             auto mirror=std::make_unique<IslandWindow>(instance,[this,mirrorIndex](dynamic_island::Action action){
                 // Only the first window polls media and the display inventory.
                 if(action!=dynamic_island::Action::Tick)Action(action,mirrorIndex<mirrors.size()?mirrors[mirrorIndex]->Handle():nullptr);
-            },options.notificationAllowed);
+            },options.notificationAllowed,options.editWidget);
             mirror->SetTodoSource(options.todos);mirrors.push_back(std::move(mirror));
         }
         const auto released=ReleasedDisplay(value);
@@ -200,6 +203,12 @@ struct DynamicIslandSession::Impl {
     static const char* SizeName(IslandSize size){return size==IslandSize::Small?"small":size==IslandSize::Large?"large":"standard";}
     static const char* ShapeName(IslandShape shape){return shape==IslandShape::Standard?"standard":"capsule";}
     static const char* CalendarStyleName(IslandCalendarStyle style){return style==IslandCalendarStyle::ChineseAlmanac?"chinese-almanac":"default";}
+    static const char* CountdownStyleName(IslandCountdownStyle style){
+        switch(style){
+        case IslandCountdownStyle::Violet:return "violet";
+        default:return "standard";
+        }
+    }
     static const char* ClockStyleName(IslandClockStyle style){
         switch(style){
         case IslandClockStyle::Progress:return "progress";
@@ -270,6 +279,36 @@ struct DynamicIslandSession::Impl {
         const auto calendarStyle=json.find("calendarStyle");
         if(calendarStyle!=json.end()&&calendarStyle->is_string()&&*calendarStyle=="chinese-almanac")
             display.calendarStyle=IslandCalendarStyle::ChineseAlmanac;
+        const auto countdownStyle=json.find("countdownStyle");
+        if(countdownStyle!=json.end()&&countdownStyle->is_string()){
+            // Removed layouts from older releases fall back to the standard card.
+            if(*countdownStyle=="violet")display.countdownStyle=IslandCountdownStyle::Violet;
+        }
+        if(const auto day=json.find("lastCountdownNoticeDay");day!=json.end()&&day->is_number_integer()&&*day>0&&*day<=2932896)
+            lastCountdownNoticeDay=day->get<int>();
+        const auto countdownDate=json.find("countdownDate");
+        if(countdownDate!=json.end()&&countdownDate->is_number_integer()&&*countdownDate>=0&&*countdownDate<=2932896)
+            display.countdownDate=countdownDate->get<int>();
+        const auto countdownCountUp=json.find("countdownCountUp");
+        if(countdownCountUp!=json.end()&&countdownCountUp->is_boolean())
+            display.countdownCountUp=countdownCountUp->get<bool>();
+        const auto countdownTitle=json.find("countdownTitle");
+        if(countdownTitle!=json.end()&&countdownTitle->is_string()&&countdownTitle->get<std::string>().size()<=2000)
+            display.countdownTitle=countdownTitle->get<std::string>();
+        const auto countdownReminder=json.find("countdownReminder");
+        if(countdownReminder!=json.end()&&countdownReminder->is_boolean())
+            display.countdownReminder=countdownReminder->get<bool>();
+        const auto color=[&](const char* key,std::uint32_t& value,unsigned maximum=0xffffff){
+            const auto field=json.find(key);
+            if(field!=json.end()&&field->is_number_integer()&&*field>=0&&*field<=maximum)
+                value=field->get<std::uint32_t>();
+        };
+        color("countdownTextColor",display.countdownTextColor);
+        color("countdownBackgroundColor",display.countdownBackgroundColor);
+        color("countdownSolidColor",display.countdownSolidColor);
+        color("countdownTextAlpha",display.countdownTextAlpha,255);
+        color("countdownBackgroundAlpha",display.countdownBackgroundAlpha,255);
+        color("countdownSolidAlpha",display.countdownSolidAlpha,255);
     }
     bool SaveDisplay(const IslandDisplay& next) {
         const auto path=DisplayPath();if(path.empty())return true;
@@ -278,6 +317,14 @@ struct DynamicIslandSession::Impl {
             {"expandedLayout",dynamic_island::EncodeExpandedLayout(next.expandedWidgets)},
             {"material",MaterialName(next.material)},{"shape",ShapeName(next.shape)},{"clockStyle",ClockStyleName(next.clockStyle)},
             {"calendarStyle",CalendarStyleName(next.calendarStyle)},
+            {"countdownStyle",CountdownStyleName(next.countdownStyle)},
+            {"countdownDate",next.countdownDate},{"lastCountdownNoticeDay",lastCountdownNoticeDay},
+            {"countdownCountUp",next.countdownCountUp},
+            {"countdownTitle",next.countdownTitle},{"countdownReminder",next.countdownReminder},
+            {"countdownTextColor",next.countdownTextColor},{"countdownBackgroundColor",next.countdownBackgroundColor},
+            {"countdownSolidColor",next.countdownSolidColor},
+            {"countdownTextAlpha",next.countdownTextAlpha},{"countdownBackgroundAlpha",next.countdownBackgroundAlpha},
+            {"countdownSolidAlpha",next.countdownSolidAlpha},
             {"hoverDelayMs",next.hoverDelayMs},{"animationSpeed",SpeedName(next.animationSpeed)},{"bounce",BounceName(next.bounce)},
             {"leftWidget",dynamic_island::CompactWidgetId(next.leftWidget)},
             {"rightWidget",dynamic_island::CompactWidgetId(next.rightWidget)}}.dump();
@@ -309,12 +356,7 @@ struct DynamicIslandSession::Impl {
         SYSTEMTIME localTime{};GetLocalTime(&localTime);
         tick.minuteOfDay=localTime.wHour*60+localTime.wMinute;
         tick.secondOfMinute=localTime.wSecond;
-        localTime.wHour=localTime.wMinute=localTime.wSecond=localTime.wMilliseconds=0;
-        FILETIME day{};
-        if(SystemTimeToFileTime(&localTime,&day)){
-            ULARGE_INTEGER value{};value.LowPart=day.dwLowDateTime;value.HighPart=day.dwHighDateTime;
-            tick.localDay=static_cast<std::int64_t>(value.QuadPart/864000000000ULL);
-        }
+        tick.localDay=calendar::DaysSinceUnixEpoch({localTime.wYear,localTime.wMonth,localTime.wDay});
         LASTINPUTINFO input{sizeof(input)};
         if(GetLastInputInfo(&input))tick.idleMs=static_cast<DWORD>(GetTickCount()-input.dwTime);
         else tick.locked=true;
@@ -481,6 +523,15 @@ struct DynamicIslandSession::Impl {
                 diag::Log("island-notifications","deferred type="+pendingNotifications.front().notice.icon);
             }
         }
+        else if(display.countdownReminder&&display.countdownDate>0&&tick.localDay==display.countdownDate&&
+                lastCountdownNoticeDay!=display.countdownDate&&dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::Countdown)){
+            IslandNotification notice{"countdown-"+std::to_string(display.countdownDate),
+                display.countdownTitle.empty()?(english?L"Countdown":L"倒数日"):lume::text::Wide(display.countdownTitle),
+                english?L"Today is the target date.":L"今天是目标日。"};
+            bool shown=false;
+            EachWindow([&](auto& target){shown=target.ShowNotification(notice)||shown;});
+            if(shown){lastCountdownNoticeDay=display.countdownDate;SaveDisplay(display);}
+        }
         NotifyNotificationRuntime();
     }
     std::optional<std::wstring> HandleNotifications(std::wstring_view raw){
@@ -521,12 +572,15 @@ struct DynamicIslandSession::Impl {
             {"topmost",display.topmost},{"hover",display.hoverExpand},{"autoHide",display.autoHide},{"size",SizeName(display.size)},
             {"material",MaterialName(display.material)},{"shape",ShapeName(display.shape)},{"clockStyle",ClockStyleName(display.clockStyle)},
             {"calendarStyle",CalendarStyleName(display.calendarStyle)},
+            {"countdownStyle",CountdownStyleName(display.countdownStyle)},
+            {"countdownDate",display.countdownDate},
+            {"countdownTitle",display.countdownTitle},{"countdownReminder",display.countdownReminder},
             {"hoverDelayMs",display.hoverDelayMs},{"animationSpeed",SpeedName(display.animationSpeed)},{"bounce",BounceName(display.bounce)},
             {"leftWidget",static_cast<int>(display.leftWidget)},{"rightWidget",static_cast<int>(display.rightWidget)},
             {"expandedLayout",dynamic_island::EncodeExpandedLayout(ReleasedDisplay(display).expandedWidgets)},
             {"loadStatus",LoadStatus()},{"error",error},
             {"result",applied?"applied":"snapshot"},{"saved",saved}}.dump();
-        return std::wstring(json.begin(),json.end());
+        return lume::text::Wide(json);
     }
     void Notify() {if(!stopped&&options.notify)options.notify(State());}
     void Paint() {
@@ -570,8 +624,9 @@ struct DynamicIslandSession::Impl {
         case Action::Tick:{
             RefreshAnalysisVisibility();
             PollNotifications();
-            RefreshScreens();
             const bool focusChanged=model.Tick(Now());
+            if (window_layer::balancedIdle) return;
+            RefreshScreens();
             if(focusChanged)Paint();
             if(!analysisVisible.load(std::memory_order_relaxed))return;
             // Lume Music has priority; otherwise follow the current Windows media
@@ -627,6 +682,11 @@ struct DynamicIslandSession::Impl {
             if(saved){load=widget::LoadState::Loaded;
                 if(!dynamic_island::HasExpandedWidget(display.expandedWidgets,dynamic_island::ExpandedWidget::Focus))model.CancelFocus();
                 Paint();}
+            return State(true,saved);
+        }
+        if(number>=static_cast<int>(PageCommand::IslandCountdownDateFirst)&&number<=static_cast<int>(PageCommand::IslandCountdownDateLast)){
+            auto value=display;value.countdownDate=number-static_cast<int>(PageCommand::IslandCountdownDateFirst);
+            const bool saved=CommitDisplay(value);if(saved){load=widget::LoadState::Loaded;Paint();}
             return State(true,saved);
         }
         if(number>=static_cast<int>(PageCommand::IslandHoverDelayFirst)&&number<=static_cast<int>(PageCommand::IslandHoverDelayLast)){
@@ -699,6 +759,7 @@ struct DynamicIslandSession::Impl {
         case PageCommand::IslandClockDigital:case PageCommand::IslandClockDate:
         case PageCommand::IslandClockFlip:case PageCommand::IslandClockPixel:
         case PageCommand::IslandCalendarDefault:case PageCommand::IslandCalendarChineseAlmanac:
+        case PageCommand::IslandCountdownStandard:case PageCommand::IslandCountdownViolet:
         case PageCommand::IslandShapeStandard:case PageCommand::IslandShapeCapsule:case PageCommand::IslandResetAppearance:{
             auto value=display;
             switch(command) {
@@ -732,6 +793,8 @@ struct DynamicIslandSession::Impl {
             case PageCommand::IslandClockPixel:value.clockStyle=IslandClockStyle::Pixel;break;
             case PageCommand::IslandCalendarDefault:value.calendarStyle=IslandCalendarStyle::Default;break;
             case PageCommand::IslandCalendarChineseAlmanac:value.calendarStyle=IslandCalendarStyle::ChineseAlmanac;break;
+            case PageCommand::IslandCountdownStandard:value.countdownStyle=IslandCountdownStyle::Standard;break;
+            case PageCommand::IslandCountdownViolet:value.countdownStyle=IslandCountdownStyle::Violet;break;
             case PageCommand::IslandResetAppearance:value.shape=IslandShape::Capsule;value.size=IslandSize::Standard;value.material=IslandMaterial::None;break;
             default:break;
             }
@@ -750,7 +813,7 @@ struct DynamicIslandSession::Impl {
     }
     void Open() {if(stopped)return;auto next=prefs;next.enabled=true;if(Commit(next))EachWindow([](auto& target){target.Expand(true);});Notify();}
     void ReleasePreview(){previewRenderer.reset();window.ReleasePreview();previewActive=false;SyncWeatherConsumer(prefs.enabled);}
-    void Shutdown() {if(stopped)return;ClearNotifications();notificationReceiver.SetWakeTarget(nullptr,0,0);notificationReceiver.Shutdown();SyncNotificationWake(false);notificationsEnabled=false;ReleasePreview();EachWindow([](auto& target){target.SetTodoSource({});});StopWindows();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.weatherActive={};}
+    void Shutdown() {if(stopped)return;ClearNotifications();notificationReceiver.SetWakeTarget(nullptr,0,0);notificationReceiver.Shutdown();SyncNotificationWake(false);notificationsEnabled=false;ReleasePreview();EachWindow([](auto& target){target.SetTodoSource({});});StopWindows();SyncWeatherConsumer(false);stopped=true;model.CancelFocus();options.notify={};options.control={};options.openSettings={};options.editWidget={};options.weatherActive={};}
     ~Impl(){Shutdown();}
 };
 DynamicIslandSession::DynamicIslandSession(HINSTANCE instance,DynamicIslandSessionOptions options,settings::IFileStore* files)
@@ -787,6 +850,26 @@ bool DynamicIslandSession::ShowNotice(const std::string& id,const std::wstring& 
 }
 void DynamicIslandSession::RefreshTodos(){if(!impl_->stopped)impl_->EachWindow([](auto& target){target.RefreshTodos();});}
 void DynamicIslandSession::RefreshWeather(){impl_->RefreshWeather();}
+IslandCountdownSettings DynamicIslandSession::CountdownSettings()const{
+    const auto& display=impl_->display;
+    return {display.countdownTitle,display.countdownDate,display.countdownReminder,display.countdownStyle,
+        display.countdownTextColor,display.countdownBackgroundColor,display.countdownSolidColor,
+        display.countdownTextAlpha,display.countdownBackgroundAlpha,display.countdownSolidAlpha,display.countdownCountUp};
+}
+bool DynamicIslandSession::SaveCountdownSettings(IslandCountdownSettings settings){
+    if(impl_->stopped||settings.date<0||settings.date>2932896||settings.title.size()>2000||
+        settings.textColor>0xffffff||settings.backgroundColor>0xffffff||settings.solidColor>0xffffff||
+        settings.textAlpha>255||settings.backgroundAlpha>255||settings.solidAlpha>255)return false;
+    auto next=impl_->display;next.countdownTitle=std::move(settings.title);next.countdownDate=settings.date;
+    next.countdownCountUp=settings.countUp;
+    next.countdownReminder=settings.reminder;
+    next.countdownTextColor=settings.textColor;next.countdownBackgroundColor=settings.backgroundColor;
+    next.countdownSolidColor=settings.solidColor;
+    next.countdownTextAlpha=settings.textAlpha;next.countdownBackgroundAlpha=settings.backgroundAlpha;
+    next.countdownSolidAlpha=settings.solidAlpha;
+    if(!impl_->CommitDisplay(next))return false;
+    impl_->load=widget::LoadState::Loaded;impl_->Paint();impl_->Notify();return true;
+}
 void DynamicIslandSession::ReleasePreview(){impl_->ReleasePreview();}
 bool DynamicIslandSession::Running()const{return impl_->window.Handle()!=nullptr;}
 bool DynamicIslandSession::AnalysisActive()const{return impl_->analysisVisible.load(std::memory_order_relaxed);}

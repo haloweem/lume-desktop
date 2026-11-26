@@ -10,6 +10,7 @@
 #include <shlobj.h>
 #include "core/dynamic_island/island_shape.h"
 #include "platform/windows/dynamic_island/island_shape_mask.h"
+#include "core/calendar/calendar_date.h"
 #include "core/calendar/lunar_calendar.h"
 #include "platform/windows/diagnostics/runtime_log.h"
 #include "platform/windows/text_util.h"
@@ -45,7 +46,9 @@ namespace lume::platform::windows {
 namespace {
 constexpr wchar_t ClassName[] = L"LumeWindowsDynamicIsland";
 constexpr UINT_PTR TickTimer = 1, AnimationTimer = 2, HoverTimer = 3, CollapseTimer = 4, BarsTimer = 5, IdleTimer = 6, NoticeTimer = 7,
-    CalendarTimer = 8, ClockFlipTimer = 9;
+    CalendarTimer = 8, ClockFlipTimer = 9, EditHintTimer = 10;
+constexpr UINT EditHintDelayMs = 500;
+constexpr float EditHintAnimationSeconds = .28f;
 constexpr UINT ForegroundMessage = WM_APP + 0x6e2, OutsideMessage = WM_APP + 0x6e3, FrameMessage = WM_APP + 0x6e4,
                PerformanceMessage = WM_APP + 0x6e5;
 // Base sizes in DIP before the size option scales them.
@@ -222,19 +225,7 @@ SpringParameters MotionParameters(int axis, const IslandDisplay& display) {
 }
 }  // namespace
 
-std::vector<IslandMonitor> ConnectedIslandMonitors() {
-    std::vector<IslandMonitor> monitors;
-    EnumDisplayMonitors(nullptr,nullptr,[](HMONITOR monitor,HDC,LPRECT,LPARAM data)->BOOL{
-        MONITORINFOEXW info{};info.cbSize=sizeof(info);
-        if(GetMonitorInfoW(monitor,&info)&&!IsRectEmpty(&info.rcMonitor)&&!IsRectEmpty(&info.rcWork))
-            reinterpret_cast<std::vector<IslandMonitor>*>(data)->push_back({info.szDevice,info.rcMonitor,info.rcWork,(info.dwFlags&MONITORINFOF_PRIMARY)!=0});
-        return TRUE;
-    },reinterpret_cast<LPARAM>(&monitors));
-    // Keep numbering deterministic when Windows changes its enumeration order.
-    std::sort(monitors.begin(),monitors.end(),[](const auto& a,const auto& b){return a.device<b.device;});
-    if(monitors.size()>64)monitors.resize(64);
-    return monitors;
-}
+std::vector<IslandMonitor> ConnectedIslandMonitors() { return ConnectedDisplayMonitors(); }
 
 struct IslandWindow::Impl {
     HINSTANCE instance;
@@ -255,6 +246,10 @@ struct IslandWindow::Impl {
     std::uint32_t accent = 0x30d158;
     bool expanded = false, hoverExpanded = false, hovered = false, suppressed = false, visible = false;
     int pressed = -1, hoverHit = -1;
+    std::optional<dynamic_island::ExpandedWidget> hoveredWidget;
+    POINT editHintAnchor{};
+    double editHintAnimationAt=0;
+    bool editHintVisible=false,editHintAnimating=false;
     Spring width, height, presence, tuck, shape; // shape: 0 capsule, 1 attached.
     Spring pageFade;  // 0 right after a page change, 1 settled.
     float workspaceReveal=0; // Content opacity must not reverse with the shell's bounce.
@@ -309,11 +304,14 @@ struct IslandWindow::Impl {
     int pageDirection = 1;          // +1 slides in from the right, -1 from the left.
     std::vector<WidgetRect> reminderRows;
     struct WorkspaceHit { WidgetRect rect; int action; std::optional<IslandTodo> todo; };
+    struct WorkspaceWidgetHit { WidgetRect rect; dynamic_island::ExpandedWidget widget; };
     std::vector<WorkspaceHit> workspaceHits;
+    std::vector<WorkspaceWidgetHit> workspaceWidgets;
     // Calendar module: the shown month and selected day reset to today on
     // every expansion. Transitions are short time-based curves repainted by
     // CalendarTimer only while they run.
     static constexpr int CalendarDayHit=900,CalendarPrevHit=940,CalendarNextHit=941,CalendarTodayHit=942,CalendarAreaHit=950;
+    static constexpr int WorkspaceEditFirst=1000;
     struct CalendarMotion { double start=-1; int direction=1; calendar::Date from{}; };
     calendar::Date calendarSelected{};
     std::optional<IslandAlmanacReading> almanacReading;
@@ -338,11 +336,12 @@ struct IslandWindow::Impl {
     bool menuOpen = false, animating = false;
     WidgetMaterialRuntime glass;
     LumeMaterialParameters lastGlass{};
+    EditWidget editWidget;
     static inline std::vector<Impl*> instances;
     static inline HHOOK outsideHook=nullptr;  // Shared only while at least one island is expanded.
 
-    Impl(HINSTANCE i, Act a, std::function<bool()> allow = {})
-        : instance(i), act(std::move(a)), notificationAllowed(std::move(allow)) {}
+    Impl(HINSTANCE i, Act a, std::function<bool()> allow = {}, EditWidget edit = {})
+        : instance(i), act(std::move(a)), notificationAllowed(std::move(allow)), editWidget(std::move(edit)) {}
     ~Impl() { Stop(); }
 
     float ScaleFactor() const {
@@ -376,10 +375,13 @@ struct IslandWindow::Impl {
     float WidgetWidth(dynamic_island::ExpandedWidget value) const {
         using W=dynamic_island::ExpandedWidget;
         switch(value){case W::Music:return 232;case W::CalendarWeather:return display.calendarStyle==IslandCalendarStyle::ChineseAlmanac?IslandAlmanacWidth:300;
-        case W::Focus:return 130;case W::System:return 276;case W::Todos:return 232;case W::Clock:return 200;}
+        case W::Focus:return 130;case W::System:return 276;case W::Todos:return 232;case W::Clock:return 200;
+        case W::Countdown:return display.countdownStyle==IslandCountdownStyle::Standard?248.f:320.f;}
         return 180;
     }
     float WidgetHeight(dynamic_island::ExpandedWidget value) const {
+        if(value==dynamic_island::ExpandedWidget::Countdown)
+            return display.countdownStyle==IslandCountdownStyle::Standard?208.f:144.f;
         return value==dynamic_island::ExpandedWidget::CalendarWeather&&display.calendarStyle==IslandCalendarStyle::ChineseAlmanac
             ?IslandAlmanacHeight:ModuleHeight;
     }
@@ -1328,8 +1330,178 @@ struct IslandWindow::Impl {
         DrawIslandClockCard(*canvas,card,compactData.time,view.english,display.clockStyle,alpha,
             flipping?&clockFlip.previous:nullptr,flipping?clockFlip.Progress(now):1.f);
     }
+    void HorizontalCountdownCard(WidgetRect card,float alpha) {
+        auto& c=*canvas;
+        const float x=card.x,y=card.y,w=card.width,h=card.height;
+
+        std::wstring count=L"—";
+        std::wstring dateLabel=display.countdownCountUp?
+            (view.english?L"Start date not set":L"未设置起始日"):
+            (view.english?L"Target date not set":L"未设置目标日");
+        std::wstring intervalLabel;
+        if(display.countdownDate>0){
+            if(const auto date=calendar::AddDays({1970,1,1},display.countdownDate)){
+                const int delta=calendar::DaysSinceUnixEpoch(today)-display.countdownDate;
+                const auto twoDigits=[](int value){return value<10?L"0"+std::to_wstring(value):std::to_wstring(value);};
+                const auto displayDate=std::to_wstring(date->year)+L"-"+twoDigits(date->month)+L"-"+twoDigits(date->day);
+                if(view.english){
+                    dateLabel=(display.countdownCountUp?L"Start: ":L"Target: ")+displayDate;
+                    if(display.countdownCountUp){
+                        count=std::to_wstring(delta>=0?delta:-delta);
+                        intervalLabel=delta>=0?count+L" days elapsed":count+L" days to start";
+                    }else if(delta<=0){
+                        count=std::to_wstring(-delta);intervalLabel=count+L" days remaining";
+                    }else{count=L"0";intervalLabel=L"Target date reached";}
+                }else{
+                    constexpr wchar_t digits[]=L"〇一二三四五六七八九";
+                    const auto chineseNumber=[&](int value){
+                        if(value<10)return std::wstring(1,digits[value]);
+                        return (value>=20?std::wstring(1,digits[value/10]):std::wstring{})+L"十"+
+                            (value%10?std::wstring(1,digits[value%10]):std::wstring{});
+                    };
+                    std::wstring yearLabel;
+                    for(const auto digit:std::to_wstring(date->year))yearLabel+=digits[digit-L'0'];
+                    const auto dayLabel=date->day>20&&date->day<30?L"廿"+std::wstring(1,digits[date->day%10]):chineseNumber(date->day);
+                    dateLabel=(display.countdownCountUp?L"起始日：":L"目标日：")+yearLabel+L"年"+
+                        chineseNumber(date->month)+L"月"+dayLabel;
+                    if(display.countdownCountUp){
+                        count=std::to_wstring(delta>=0?delta:-delta);
+                        intervalLabel=delta>=0?L"已经"+count+L"天":L"距离开始还有"+count+L"天";
+                    }else if(delta<=0){
+                        count=std::to_wstring(-delta);intervalLabel=L"还有"+count+L"天";
+                    }else{count=L"0";intervalLabel=L"已到达目标日";}
+                }
+            }
+        }
+        const std::wstring title=display.countdownTitle.empty()?(view.english?L"Countdown":L"倒数日"):lume::text::Wide(display.countdownTitle);
+        alpha*=display.countdownSolidAlpha/255.f;
+        const auto tint=[&](unsigned white){
+            const auto channel=[&](unsigned shift){return (((display.countdownSolidColor>>shift)&255)*(100-white)+255*white+50)/100;};
+            return (channel(16)<<16)|(channel(8)<<8)|channel(0);
+        };
+        const auto background=tint(88),divider=tint(72);
+        const auto color=display.countdownSolidColor;
+        const auto brightest=std::max({(color>>16)&255,(color>>8)&255,color&255});
+        const float shade=brightest>190?190.f/brightest:1.f;
+        const auto ink=(static_cast<unsigned>(((color>>16)&255)*shade)<<16)|
+            (static_cast<unsigned>(((color>>8)&255)*shade)<<8)|static_cast<unsigned>((color&255)*shade);
+        c.Rounded(card,std::min(22.f,h*.16f),background,alpha);
+        const float dividerX=x+w*.30f;
+        c.Rounded({dividerX,y+h*.2f,1.5f,h*.6f},.75f,divider,alpha);
+        const float numberWidth=dividerX-x-18.f;
+        const float numberSize=std::min(54.f,numberWidth/(std::max<std::size_t>(1,count.size())*.62f));
+        c.SerifText(count,{x+9,y+19,numberWidth,h*.52f},numberSize,ink,alpha,WidgetTextWeight::Bold,WidgetTextAlign::Center);
+        c.Text(view.english?L"days":L"天",{x+9,y+h*.61f,numberWidth,22},13.f,ink,alpha,
+            WidgetTextWeight::Medium,WidgetTextAlign::Center);
+
+        const float detailX=dividerX+18.f;
+        const float detailWidth=x+w-16.f-detailX;
+        c.Text(FitWeightedText(c,title,detailWidth,20.f,WidgetTextWeight::Bold),
+            {detailX,y+h*.20f,detailWidth,30},20.f,ink,alpha,WidgetTextWeight::Bold);
+        c.Text(FitWeightedText(c,dateLabel,detailWidth,12.f,WidgetTextWeight::Normal),
+            {detailX,y+h*.45f,detailWidth,22},12.f,ink,alpha*.8f,WidgetTextWeight::Normal);
+        c.Text(FitWeightedText(c,intervalLabel,detailWidth,10.5f,WidgetTextWeight::Normal),
+            {detailX,y+h*.65f,detailWidth,22},10.5f,ink,alpha*.8f,WidgetTextWeight::Normal);
+    }
+    void CountdownCard(WidgetRect card,float alpha) {
+        if(display.countdownStyle!=IslandCountdownStyle::Standard){HorizontalCountdownCard(card,alpha);return;}
+        auto& c=*canvas;
+        const float x=card.x,y=card.y,w=card.width,h=card.height,header=40,footer=38;
+        const float radius=std::clamp(std::max(22.f,std::min(w*.064705882353f,h*.061111111111f)),0.f,std::min(w,h)/2);
+        // Draw each band once so translucent colors retain uniform opacity.
+        if(c.PushClip({x,y,w,header})){
+            c.Rounded(card,radius,display.countdownBackgroundColor,alpha*display.countdownBackgroundAlpha/255.f);c.PopClip();
+        }
+        if(c.PushClip({x,y+header,w,h-header-footer})){
+            c.Rounded(card,radius,0xfafafa,alpha);c.PopClip();
+        }
+        if(c.PushClip({x,y+h-footer,w,footer})){
+            c.Rounded(card,std::min(radius,footer*.5f),0xf4f3f1,alpha);c.PopClip();
+        }
+        const auto title=display.countdownTitle.empty()?std::wstring(view.english?L"Countdown":L"倒数日"):lume::text::Wide(display.countdownTitle);
+        const auto background=display.countdownBackgroundColor;
+        const auto headerInk=(((background>>16)&255)*299+((background>>8)&255)*587+(background&255)*114)>180000?0x262626u:0xffffffu;
+        c.Text(FitWeightedText(c,title,w-16,15,WidgetTextWeight::Semibold),{x+8,y,w-16,header},15,headerInk,alpha,
+            WidgetTextWeight::Semibold,WidgetTextAlign::Center);
+
+        std::wstring number=L"—",dateLabel=view.english?L"Target: --":L"目标日：--";
+        if(display.countdownDate>0){
+            const auto target=calendar::AddDays({1970,1,1},display.countdownDate);
+            if(target){
+                const int days=display.countdownDate-calendar::DaysSinceUnixEpoch(today);
+                number=std::to_wstring(std::max(0,days));
+                dateLabel=(display.countdownCountUp?(view.english?L"Start: ":L"起始日："):
+                    (view.english?L"Target: ":L"目标日："))+std::to_wstring(target->year)+L"-"+
+                    std::to_wstring(target->month)+L"-"+std::to_wstring(target->day)+L" "+CalendarWeekday(*target);
+                if(display.countdownCountUp){
+                    const int delta=calendar::DaysSinceUnixEpoch(today)-display.countdownDate;
+                    number=std::to_wstring(delta>=0?delta:-delta);
+                }
+                else number=std::to_wstring(std::max(0,display.countdownDate-calendar::DaysSinceUnixEpoch(today)));
+            }
+        }
+        const float middleHeight=h-header-footer;
+        const float numberWidth=c.MeasureText(number,94,WidgetTextWeight::Bold);
+        const float numberSize=94*std::min(1.f,(w-24)/std::max(1.f,numberWidth));
+        c.Text(number,{x+12,y+header,w-24,middleHeight},numberSize,display.countdownTextColor,alpha*display.countdownTextAlpha/255.f,
+            WidgetTextWeight::Bold,WidgetTextAlign::Center);
+        c.Text(FitWeightedText(c,dateLabel,w-16,11.5f,WidgetTextWeight::Normal),{x+8,y+h-footer+4,w-16,footer-7},11.5f,0x929292,alpha,
+            WidgetTextWeight::Normal,WidgetTextAlign::Center);
+    }
+    static int WorkspaceEditAction(dynamic_island::ExpandedWidget widget) {
+        return WorkspaceEditFirst+static_cast<int>(widget);
+    }
+    static bool Inside(WidgetRect rect,float x,float y){
+        return x>=rect.x&&y>=rect.y&&x<rect.x+rect.width&&y<rect.y+rect.height;
+    }
+    WidgetRect EditHintRect() const {
+        constexpr float hintWidth=74,hintHeight=34;
+        const float left=std::clamp(static_cast<float>(editHintAnchor.x)+13,8.f,std::max(8.f,width.x-hintWidth-8));
+        const float top=std::clamp(static_cast<float>(editHintAnchor.y)+14,14.f,std::max(14.f,height.x-hintHeight-8));
+        return {left,top,hintWidth,hintHeight};
+    }
+    float EditHintProgress() const {
+        return editHintAnimating?std::clamp(static_cast<float>((Seconds()-editHintAnimationAt)/EditHintAnimationSeconds),0.f,1.f):1.f;
+    }
+    void EditHint(float alpha) {
+        if(!editWidget||!editHintVisible||!hoveredWidget||!expanded||page!=IslandPage::Music||notificationDetail)return;
+        const auto target=EditHintRect();
+        const float progress=EditHintProgress(),spring=SpringSettle(progress);
+        const float scale=.78f+.22f*spring,opacity=EaseOut(progress)*alpha;
+        const float w=target.width*scale,h=target.height*scale;
+        const float x=target.x+(target.width-w)/2,y=target.y+(target.height-h)/2+(1-spring)*5;
+        constexpr std::uint32_t bubble=0x22252b;
+        canvas->Polygon({x+8,y+5,x+20,y+5,x+2,y-6},0x000000,.22f*opacity);
+        canvas->Rounded({x+1,y+2,w,h},8,0x000000,.28f*opacity);
+        canvas->Polygon({x+8,y+4,x+20,y+4,x+2,y-6},bubble,.98f*opacity);
+        canvas->Rounded({x,y,w,h},8,bubble,.98f*opacity);
+        canvas->Text(view.english?L"Edit":L"编辑",{x,y,w,h},11*scale,0xffffff,opacity,
+            WidgetTextWeight::Medium,WidgetTextAlign::Center);
+    }
+    void ClearEditHint() {
+        if(hwnd)KillTimer(hwnd,EditHintTimer);
+        editHintVisible=false;
+        editHintAnimating=false;
+    }
+    void UpdateEditHint(std::optional<dynamic_island::ExpandedWidget> widget,LPARAM l) {
+        const float scale=96.f/static_cast<float>(CanvasDpi());
+        const POINT position{static_cast<LONG>(GET_X_LPARAM(l)*scale),static_cast<LONG>(GET_Y_LPARAM(l)*scale)};
+        if(widget==hoveredWidget){
+            if(widget&&!editHintVisible)editHintAnchor=position;
+            return;
+        }
+        ClearEditHint();
+        hoveredWidget=widget;
+        if(!widget||!editWidget||!expanded||Expansion()<.9f||notificationDetail||page!=IslandPage::Music)return;
+        editHintAnchor=position;
+        if(hwnd&&!SetTimer(hwnd,EditHintTimer,EditHintDelayMs,nullptr)){
+            editHintVisible=true;
+            editHintAnimationAt=Seconds();
+        }
+    }
     void WorkspaceView(float w,float,float alpha) {
         workspaceHits.clear();
+        workspaceWidgets.clear();
         if(alpha<=.01f)return;
         using W=dynamic_island::ExpandedWidget;
         auto& c=*canvas;
@@ -1361,6 +1533,8 @@ struct IslandWindow::Impl {
             const float cardWidth=WidgetWidth(kind),cardHeight=WidgetHeight(kind),x=nextX,y=WorkspaceTop+(WorkspaceHeight()-cardHeight)/2;
             nextX+=cardWidth+WorkspaceGap;
             const WidgetRect card{x,y,cardWidth,cardHeight};
+            workspaceWidgets.push_back({card,kind});
+            if(kind==W::Countdown){CountdownCard(card,alpha);continue;}
             if(kind==W::CalendarWeather){CalendarCard(card,alpha);continue;}
             if(kind==W::Clock){ClockCard(card,alpha);continue;}
             if(kind==W::System){DrawIslandPerformanceCard(c,card,performanceSample,compactData,view.english,alpha);continue;}
@@ -1417,6 +1591,10 @@ struct IslandWindow::Impl {
             c.PopClip();
         }
         for(auto& hit:workspaceHits){
+            hit.rect.x=hit.rect.x*rowScale+savedSlide+centered;hit.rect.y*=rowScale;
+            hit.rect.width*=rowScale;hit.rect.height*=rowScale;
+        }
+        for(auto& hit:workspaceWidgets){
             hit.rect.x=hit.rect.x*rowScale+savedSlide+centered;hit.rect.y*=rowScale;
             hit.rect.width*=rowScale;hit.rect.height*=rowScale;
         }
@@ -1764,6 +1942,7 @@ struct IslandWindow::Impl {
     }
     void SetPage(IslandPage next, int direction = 0) {
         if (next == page) return;
+        if(next!=IslandPage::Music){ClearEditHint();hoveredWidget.reset();}
         if (!direction) {
             const auto pages = Pages();
             const auto from = std::find(pages.begin(), pages.end(), page), to = std::find(pages.begin(), pages.end(), next);
@@ -1862,10 +2041,13 @@ struct IslandWindow::Impl {
         viewSlide = slide;
         canvas->Offset(slide, 0);
         switch (page) {
-        case IslandPage::Music: if(Workspace())WorkspaceView(w,h,content);else Expanded(w, content); break;
+        case IslandPage::Music: if(Workspace())WorkspaceView(w,h,content);
+            else Expanded(w,content);
+            break;
         case IslandPage::Reminder: ReminderPage(w, h, content); break;
         }
         canvas->Offset(0, 0);
+        if(page==IslandPage::Music)EditHint(content);
         canvas->PopClip();
         if (e > .9f) Dots(w, h, content);
         return FinishShape();
@@ -1889,7 +2071,7 @@ struct IslandWindow::Impl {
         RECT area{}; MONITORINFO monitorInfo{sizeof(monitorInfo)};
         if(hwnd)GetWindowRect(hwnd,&area);
         if(IsRectEmpty(&area)&&ReadMonitor(monitorInfo))area=monitorInfo.rcMonitor;
-        return window_layer::Protected(area,window_layer::ReadContext(),display.hideFullscreen)||window_layer::Suppressed(hwnd);
+        return window_layer::balancedIdle || window_layer::Protected(area,window_layer::ReadContext(),display.hideFullscreen)||window_layer::Suppressed(hwnd);
     }
     void CheckForeground() {
         const bool hasNotifications = (notice && notice->transient) ||
@@ -2041,6 +2223,7 @@ struct IslandWindow::Impl {
         if (!next && notificationDetail) { DismissNotice(); return; }
         if (next && notice && notice->transient && !notice->activate && !notificationDetail) { OpenNotificationDetail(); return; }
         if (!hwnd || expanded == next) return;
+        if(!next){ClearEditHint();hoveredWidget.reset();}
         StopClockFlip();GetLocalTime(&compactData.time);clockFlip.Observe(compactData.time,GetTickCount64(),false);
         if (next && notice && notice->transient && !notificationDetail) ClearNotifications();
         expanded = next;
@@ -2087,9 +2270,14 @@ struct IslandWindow::Impl {
             }
             return 299;
         }
+        if(editWidget&&editHintVisible&&hoveredWidget&&Inside(EditHintRect(),x,y))
+            return WorkspaceEditAction(*hoveredWidget);
         if(Workspace()){
             for(const auto& hit:workspaceHits){const auto& r=hit.rect;
                 if(x>=r.x&&x<r.x+r.width&&y>=r.y&&y<r.y+r.height)return hit.action;
+            }
+            for(const auto& hit:workspaceWidgets){const auto& r=hit.rect;
+                if(editWidget&&hit.widget==dynamic_island::ExpandedWidget::Countdown&&Inside(r,x,y))return WorkspaceEditAction(hit.widget);
             }
             return 0;
         }
@@ -2101,6 +2289,18 @@ struct IslandWindow::Impl {
             if (std::abs(x - (cx + 72)) < 22) return 3;
         }
         return y < 104 ? 0 : -1;
+    }
+    std::optional<dynamic_island::ExpandedWidget> WidgetAt(LPARAM l) const {
+        if(!editWidget||!expanded||Expansion()<.9f||notificationDetail||page!=IslandPage::Music)return {};
+        const float scale=96.f/static_cast<float>(CanvasDpi());
+        const float x=static_cast<float>(GET_X_LPARAM(l))*scale,y=static_cast<float>(GET_Y_LPARAM(l))*scale;
+        if(x<0||x>=width.x||y<0||y>=height.x||dynamic_island::MorphShapeDistance(x,y,width.x,height.x,Radius(),shape.x)>0)return {};
+        if(editHintVisible&&hoveredWidget&&Inside(EditHintRect(),x,y))return hoveredWidget;
+        if(!Workspace())return dynamic_island::ExpandedWidget::Music;
+        for(const auto& hit:workspaceWidgets){const auto& r=hit.rect;
+            if(x>=r.x&&x<r.x+r.width&&y>=r.y&&y<r.y+r.height)return hit.widget;
+        }
+        return {};
     }
     void FileMenu() {
         POINT at{};GetCursorPos(&at);
@@ -2128,6 +2328,10 @@ struct IslandWindow::Impl {
         Activity();
     }
     void Click(int hit) {
+        if(hit>=WorkspaceEditFirst&&hit<WorkspaceEditFirst+7){
+            if(editWidget)editWidget(static_cast<dynamic_island::ExpandedWidget>(hit-WorkspaceEditFirst),hwnd);
+            return;
+        }
         if(hit>CalendarDayHit&&hit<=CalendarDayHit+31){EnsureCalendar();SelectCalendarDay({calendarYear,calendarMonth,hit-CalendarDayHit});return;}
         if(hit==CalendarPrevHit||hit==CalendarNextHit){ShiftCalendarMonth(hit==CalendarNextHit?1:-1);return;}
         if(hit==CalendarTodayHit){CalendarToday();return;}
@@ -2201,24 +2405,23 @@ struct IslandWindow::Impl {
         default: break;
         }
     }
-    void Menu(POINT at) {
+    void Menu(POINT at,bool editCountdown) {
         Gdiplus::GdiplusStartupInput input;
         ULONG_PTR token = 0;
         if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) return;
         menuOpen = true;
         KillTimer(hwnd, CollapseTimer);
         const bool frosted = display.material == IslandMaterial::Frosted, none = display.material == IslandMaterial::None;
-        const UINT command = LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, expanded, true);
+        const UINT command = LumeWidgetMenu::ShowIsland(hwnd, at, frosted, none, editCountdown);
         menuOpen = false;
         Gdiplus::GdiplusShutdown(token);
         using dynamic_island::Action;
         switch (command) {
-        case 2: Expand(!expanded); break;
         case 7: if (act) act(Action::MaterialNone); break;
         case 8: if (act) act(Action::MaterialLiquid); break;
         case 9: if (act) act(Action::MaterialFrosted); break;
-        case 10: if (act) act(Action::Reset); break;
         case 11: if (act) act(Action::Settings); break;
+        case 12: if(editWidget)editWidget(dynamic_island::ExpandedWidget::Countdown,hwnd);break;
         case 1: if (act) act(Action::Close); break;  // May stop this window.
         default:
             if (hwnd && expanded && !hovered) SetTimer(hwnd, CollapseTimer, 3500, nullptr);
@@ -2239,7 +2442,7 @@ struct IslandWindow::Impl {
             SyncHoverExpansion();
         } else {
             KillTimer(hwnd, HoverTimer);
-            hoverHit = -1;
+            hoverHit = -1;hoveredWidget.reset();ClearEditHint();
             // Collapse after leaving: quickly when opened by hover, otherwise after a pause.
             if (expanded) SetTimer(hwnd, CollapseTimer, hoverExpanded ? 450 : 3500, nullptr);
             Activity(LeaveDelay, false);
@@ -2320,6 +2523,11 @@ struct IslandWindow::Impl {
         case WM_TIMER:
             switch (w) {
             case TickTimer:
+                if (window_layer::balancedIdle) {
+                    self->SyncPerformance();
+                    if (self->act) self->act(dynamic_island::Action::Tick);
+                    return 0;
+                }
                 self->SyncPerformance();
                 self->compactData.Refresh();self->compactData.files=static_cast<unsigned>(self->heldFiles.size());
                 self->TickClockFlip();
@@ -2332,8 +2540,6 @@ struct IslandWindow::Impl {
                     if (self->visible && !self->animating) self->Place();
                 }
                 // Other topmost windows may have covered the island.
-                if (self->visible && self->AboveApplications())
-                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 if (self->act) self->act(dynamic_island::Action::Tick);
                 return 0;
             case AnimationTimer: self->Frame(); return 0;
@@ -2355,6 +2561,25 @@ struct IslandWindow::Impl {
                 KillTimer(hwnd, HoverTimer);
                 if (self->display.hoverExpand&&self->hovered&&!self->suppressed&&!self->menuOpen&&
                     (!self->notice||!self->notice->transient)) self->Expand(true, true);
+                return 0;
+            case EditHintTimer:
+                if(self->editHintAnimating){
+                    if(self->EditHintProgress()>=1){
+                        self->editHintAnimating=false;
+                        KillTimer(hwnd,EditHintTimer);
+                    }
+                    if(!self->animating)self->Place();
+                    return 0;
+                }
+                KillTimer(hwnd,EditHintTimer);
+                if(self->hovered&&self->hoveredWidget&&self->editWidget&&self->expanded&&!self->suppressed&&
+                   !self->menuOpen&&!self->notificationDetail&&self->page==IslandPage::Music&&self->Expansion()>=.9f){
+                    self->editHintVisible=true;
+                    self->editHintAnimating=true;
+                    self->editHintAnimationAt=Seconds();
+                    if(!SetTimer(hwnd,EditHintTimer,16,nullptr))self->editHintAnimating=false;
+                    if(!self->animating)self->Place();
+                }
                 return 0;
             case CollapseTimer:
                 KillTimer(hwnd, CollapseTimer);
@@ -2378,8 +2603,12 @@ struct IslandWindow::Impl {
             return 0;
         case WM_MOUSEMOVE: {
             self->Hover(true);
+            const auto widget=self->WidgetAt(l);
+            const bool changed=widget!=self->hoveredWidget;
+            self->UpdateEditHint(widget,l);
             const auto hit = self->Hit(l);
-            if (self->hoverHit != hit) {
+            SetCursor(LoadCursorW(nullptr,hit>=WorkspaceEditFirst&&hit<WorkspaceEditFirst+7?IDC_HAND:IDC_ARROW));
+            if (changed||self->hoverHit != hit) {
                 self->hoverHit = hit;
                 if (!self->animating) self->Place();
             }
@@ -2400,9 +2629,10 @@ struct IslandWindow::Impl {
         case WM_CONTEXTMENU: return 0;
         case WM_RBUTTONUP: {
             self->hoverHit = self->Hit(l);
+            const auto widget=self->WidgetAt(l);
             POINT point{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
             ClientToScreen(hwnd, &point);
-            self->Menu(point);
+            self->Menu(point,widget==dynamic_island::ExpandedWidget::Countdown);
             return 0;
         }
         case WM_DPICHANGED:
@@ -2429,8 +2659,8 @@ struct IslandWindow::Impl {
         return DefWindowProcW(hwnd, message, w, l);
     }
 };
-IslandWindow::IslandWindow(HINSTANCE i, Act act, std::function<bool()> allow)
-    : impl_(std::make_unique<Impl>(i, std::move(act), std::move(allow))) {}
+IslandWindow::IslandWindow(HINSTANCE i, Act act, std::function<bool()> allow, EditWidget edit)
+    : impl_(std::make_unique<Impl>(i, std::move(act), std::move(allow), std::move(edit))) {}
 IslandWindow::~IslandWindow() = default;
 std::optional<performance::Snapshot> IslandWindow::PerformanceReading() const { return impl_->performanceSample; }
 bool IslandWindow::Start(const widget::Preferences& p, const IslandDisplay& d) { return impl_->Start(p, d); }

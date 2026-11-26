@@ -216,6 +216,7 @@ TaskbarSession::TaskbarSession(HINSTANCE i, platform::windows::TaskbarPaths p, N
 TaskbarSession::~TaskbarSession() = default;
 bool TaskbarSession::Restore() { return impl_->window && !impl_->stopped && impl_->runtime.Restore(); }
 bool TaskbarSession::Apply(taskbar::Preferences p) { return impl_->Apply(p); }
+bool TaskbarSession::RevealForTray() { return impl_->window && !impl_->stopped && impl_->runtime.RevealForTray(); }
 taskbar::Preferences TaskbarSession::Preferences() const { return impl_->requested; }
 std::wstring TaskbarSession::State() const { return impl_->State(); }
 bool TaskbarSession::Running() const { return impl_->runtime.Snapshot().state.running; }

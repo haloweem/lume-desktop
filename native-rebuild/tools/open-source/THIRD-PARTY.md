@@ -8,6 +8,7 @@ Lume 客户端整体按 AGPL-3.0 发布（见 `LICENSE`）。其中包含的第�
 | 项目 | 许可 | 位置 | 说明 |
 |---|---|---|---|
 | Folia Major（chthollyphile/folia-major） | AGPL-3.0 | `native-rebuild/ui/music-visualizers/`、`ui/music-effects/reference/`、`ui/music-background/`、`ui/music-material/`；在线音乐协议 `platform/windows/music_online_provider.cpp`、`platform/windows/music_providers/` | 原始源码保存在各目录的 `source/` 下，`manifest.json` 记录哈希；Lume 的改动见各目录 `README.md`/`SOURCES.md` |
+| Folia 在线音乐适配器 | AGPL-3.0 | `native-rebuild/music-runtime/vendor/folia/` | 四个平台适配器源码及上游信息见 `music-runtime/vendor/SOURCES.md`，宿主适配位于 `music-runtime/provider/` |
 | Mineradio（XxHuberrr/Mineradio） | GPL-3.0 | 星河粒子着色器与几何：`ui/music-effects/reference/`、`ui/music-visualizers/vendor/` | 经 Folia 移植 |
 | TranslucentTB 2026.1 | GPL-3.0 | `native-rebuild/vendor/taskbar-runtime/2026.1/` | Windows 11 任务栏核心，独立进程。上游源码提交 `322e2b7395a51975150126276308b415970e080b`，Lume 补丁 `lume-taskbar-core.patch`，详见同目录 `NOTICE.md` |
 | mpv（含 FFmpeg、libplacebo） | GPL-2.0+ / LGPL | 安装包 `wallpaper-runtime/mpv.exe`（不在本仓库） | 壁纸播放器，独立进程。版本：mpv v0.41.0-724-g71ebd0840，FFmpeg N-124864-gf8af47b64，libplacebo v7.365.0。源码见 https://github.com/mpv-player/mpv 、https://ffmpeg.org 、https://code.videolan.org/videolan/libplacebo |

@@ -663,7 +663,7 @@ struct MusicDesktopControls::Impl {
     }
     void Hide() {
         CancelGesture();
-        if (window->Handle()) prefs = window->Bounds();
+        if (window->Handle()) prefs = window->PreferredBounds();
         prefs.enabled = false;
         if (tooltip) { DestroyWindow(tooltip); tooltip = nullptr; }
         if (window->Handle()) RemoveWindowSubclass(window->Handle(), WidgetProc, 1);
@@ -1023,6 +1023,9 @@ bool MusicDesktopControls::Visible() const { return impl_->window->Handle() != n
 HWND MusicDesktopControls::Handle() const { return impl_->window->Handle(); }
 widget::Preferences MusicDesktopControls::Bounds() const {
     return Handle() ? impl_->window->Bounds() : impl_->prefs;
+}
+widget::Preferences MusicDesktopControls::PreferredBounds() const {
+    return Handle() ? impl_->window->PreferredBounds() : impl_->prefs;
 }
 const MusicDesktopState& MusicDesktopControls::State() const { return impl_->state; }
 HRESULT MusicDesktopControls::EnableSystemMediaControls(HWND owner) { return impl_->Enable(owner); }

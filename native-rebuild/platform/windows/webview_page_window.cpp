@@ -226,7 +226,15 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
     ComPtr<ICoreWebView2_3> lifecycleView;
     ComPtr<ICoreWebView2_19> memoryView;
     ui::WebViewLifecycle lifecycle;
-    bool suspendInFlight = false;
+    bool suspendInFlight = false, gameCovered = false;
+    void UpdateVisibility(bool minimized) {
+        if (closing) return;
+        const bool show=!gameCovered && !minimized;
+        if (controller) controller->put_IsVisible(show);
+        const auto actions=show ? lifecycle.OnVisible() : lifecycle.OnHidden();
+        ApplyLifecycleActions(actions);
+        if(show && actions.empty() && ready) Post(L"{\"version\":1,\"type\":\"visibility\",\"visible\":true}");
+    }
     EventRegistrationToken messageToken{}, navigationToken{}, popupToken{}, completedToken{};
     bool messageRegistered = false, navigationRegistered = false, popupRegistered = false, completedRegistered = false;
     EventRegistrationToken fontResourceToken{};
@@ -373,7 +381,7 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
                     if(action.visible)KillTimer(hwnd,kCleanupTimeout);
                     else SetTimer(hwnd,kCleanupTimeout,2000,nullptr);
                 }
-                if (!action.visible && visibilityHandler) visibilityHandler(false);
+                if (!action.visible && !gameCovered && visibilityHandler) visibilityHandler(false);
                 Post(std::wstring(L"{\"version\":1,\"type\":\"visibility\",\"visible\":")+
                     (action.visible ? L"true" : L"false")+L",\"generation\":"+
                     std::to_wstring(action.generation)+L"}");
@@ -489,6 +497,7 @@ struct WebViewPageWindow::State : std::enable_shared_from_this<State> {
         if(command==C::Ready&&!closing&&hwnd) {
             Startup("page-ready");
             ShowWindow(hwnd,SW_SHOWNORMAL);UpdateWindow(hwnd);
+            if (gameCovered) UpdateVisibility(IsIconic(hwnd)!=FALSE);
         }
         if(command==C::Ready && verification && !closing && view && !verificationReadyScript.empty()) {
             const auto script=std::move(verificationReadyScript);
@@ -732,16 +741,7 @@ LRESULT CALLBACK WebViewPageWindow::WindowProc(HWND hwnd, UINT message, WPARAM w
     switch (message) {
     case WM_SIZE:
         if (state->resizingInterface) { state->Layout(); return 0; }
-        if (wparam == SIZE_MINIMIZED) {
-            if (state->controller) state->controller->put_IsVisible(FALSE);
-            state->ApplyLifecycleActions(state->lifecycle.OnHidden());
-        } else {
-            if (state->controller) state->controller->put_IsVisible(TRUE);
-            const auto actions = state->lifecycle.OnVisible();
-            state->ApplyLifecycleActions(actions);
-            if (actions.empty() && state->ready)
-                state->Post(L"{\"version\":1,\"type\":\"visibility\",\"visible\":true}");
-        }
+        state->UpdateVisibility(wparam==SIZE_MINIMIZED);
         state->Layout(); return 0;
     case WM_DPICHANGED: {
         auto* rect = reinterpret_cast<RECT*>(lparam);
@@ -949,6 +949,11 @@ bool WebViewPageWindow::SetInterfaceScale(int percent) {
     if (state_ && state_->hwnd && !state_->SetScale(percent)) return false;
     interfaceScale_=percent;
     return true;
+}
+void WebViewPageWindow::SetGameCovered(bool covered) {
+    if(!state_ || !state_->hwnd || state_->gameCovered==covered)return;
+    state_->gameCovered=covered;
+    state_->UpdateVisibility(IsIconic(state_->hwnd)!=FALSE);
 }
 void WebViewPageWindow::RequestClose() { if (state_ && state_->hwnd) PostMessageW(state_->hwnd, WM_CLOSE, 0, 0); }
 HWND WebViewPageWindow::Handle() const { return state_?state_->hwnd:nullptr; }

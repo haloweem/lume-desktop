@@ -1,10 +1,14 @@
 import {
   Hourglass
-} from "./chunks/chunk-VROG7HKI.js";
+} from "./chunks/chunk-IILEHPBG.js";
+import {
+  colorWithAlpha,
+  mixColors
+} from "./chunks/chunk-OQTUD4EG.js";
 import {
   layoutWithLines,
   prepareWithSegments
-} from "./chunks/chunk-KECZQD7W.js";
+} from "./chunks/chunk-4FZ23TN3.js";
 import {
   resolveWordColor
 } from "./chunks/chunk-FIS2XO7C.js";
@@ -16,24 +20,22 @@ import {
   publishLiquidGlassWebGLSceneFrame,
   registerLumeTopVisualLayer,
   unregisterLiquidGlassWebGLSceneCanvas
-} from "./chunks/chunk-CIZK54KT.js";
+} from "./chunks/chunk-NWUU2L3H.js";
 import {
   Shell_default,
-  colorWithAlpha,
   getRecentCompletedLine,
-  getUpcomingLines,
-  mixColors
-} from "./chunks/chunk-FTFNLWFP.js";
+  getUpcomingLines
+} from "./chunks/chunk-HIWFRBEV.js";
 import {
   buildWordGraphemeTimings
 } from "./chunks/chunk-LDALZVSS.js";
 import {
   motion,
   require_jsx_runtime
-} from "./chunks/chunk-AS2U3CHD.js";
+} from "./chunks/chunk-XSUOVEKG.js";
 import {
   require_react
-} from "./chunks/chunk-RG3JEOUL.js";
+} from "./chunks/chunk-CWOU647E.js";
 import {
   getLineRenderEndTime,
   getLineRenderHints,
@@ -48,7 +50,7 @@ import {
 } from "./chunks/chunk-2CN2J6VF.js";
 import {
   __toESM
-} from "./chunks/chunk-XCBH6NLF.js";
+} from "./chunks/chunk-NZLE2WMY.js";
 
 // src/components/visualizer/fume/VisualizerFume.tsx
 var import_react = __toESM(require_react(), 1);

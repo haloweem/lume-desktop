@@ -23,6 +23,7 @@ struct LumeMaterialParameters {
     HWND owner;
     // 0: liquid widget, 1: frosted widget, 2: original frosted panel overlay.
     // opticalProfile 5: island optics with attached top shoulders (profiles 0-4 unchanged).
+    // opticalProfile 6: widget liquid glass with subtle edge refraction.
     uint32_t frosted,opticalProfile,lightForeground;
     uint32_t pressed,reducedMotion;
     float contactX,contactY;

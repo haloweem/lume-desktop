@@ -114,6 +114,10 @@ try {
       ['reference.css','titlebar.css','app.css','clock.css','calendar.css','radial.css','settings-frame.css','dynamic-island.css',
         'island-notifications.css','todo-board.css','lume-icons.css','application-settings.css','music.css','interaction-motion.css','settings-choice.css']);
     await page.locator('[data-titlebar-settings]').click();
+    await page.evaluate(()=>harness.settingsSnapshot({gamePrograms:['C:/Games/Example.exe']}));
+    assert.equal(await page.locator('[data-game-settings]').count(),0);
+    assert.equal(await page.locator('[data-setting="balancedMode"]').isVisible(),true);
+    await page.evaluate(()=>harness.settingsSnapshot({gamePrograms:[]}));
     for(const section of ['general','user','autostart',...(DIAGNOSTICS_ENABLED?['diagnostics']:[]),'support','about']) {
       await page.locator(`button[data-settings-section="${section}"]`).click();
       const geometry=await page.evaluate(section=>{
@@ -335,7 +339,7 @@ try {
     await islandPage.evaluate(()=>harness.receive({version:1,type:'navigate',page:'dynamicIsland'}));
     await islandPage.locator('[data-island-styles]').waitFor();
     assert.equal(await islandPage.locator('[data-island-compact-widget],[data-island-native-preview]').count(),0);
-    assert.equal(await islandPage.locator('[data-island-style-widget]').count(),5);
+    assert.equal(await islandPage.locator('[data-island-style-widget]').count(),6);
     await islandPage.locator('[data-island-style-widget="system"]').click();
     assert.equal(await islandPage.locator('[data-island-style-card]').count(),1);
     await islandPage.locator('[data-island-style-widget="clock"]').click();
@@ -347,9 +351,7 @@ try {
     await layer.click();
     await islandPage.locator('[data-select-owner="dynamicIsland-layer"][data-select-value="above"]').click();
     await islandPage.waitForFunction(()=>document.querySelector('#dynamicIsland-layer')?.textContent.includes('应用上方'));
-    const hide=islandPage.locator('[data-action="dynamicIsland-hideFullscreen"]');
-    await hide.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-hideFullscreen"]').getAttribute('aria-checked')==='false');
-    await hide.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-hideFullscreen"]').getAttribute('aria-checked')==='true');
+    assert.equal(await islandPage.locator('[data-action="dynamicIsland-hideFullscreen"]').count(),0);
     const idle=islandPage.locator('[data-action="dynamicIsland-autoHide"]');
     assert.equal(await idle.getAttribute('aria-label'),'空闲时隐藏');
     await idle.click();await islandPage.waitForFunction(()=>document.querySelector('[data-action="dynamicIsland-autoHide"]').getAttribute('aria-checked')==='false');
@@ -359,7 +361,7 @@ try {
     await islandPage.waitForFunction(()=>document.querySelector('[data-settings-scope="dynamicIsland"] .status')?.textContent.includes('失败'));
     assert.match(await layer.textContent(),/应用上方/,'failed save retains the confirmed layer');
     const commands=await islandPage.evaluate(()=>harness.commands.filter(c=>typeof c==='string'&&/dynamicIsland\|(topmost|hideFullscreen|autoHide)\|/.test(c)));
-    assert.deepEqual(commands,['v1|dynamicIsland|topmost|true','v1|dynamicIsland|hideFullscreen|false','v1|dynamicIsland|hideFullscreen|true',
+    assert.deepEqual(commands,['v1|dynamicIsland|topmost|true',
       'v1|dynamicIsland|autoHide|false','v1|dynamicIsland|autoHide|true','v1|dynamicIsland|topmost|false']);
     assert.equal(await islandPage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     await layer.click();await islandPage.locator('[data-select-owner="dynamicIsland-layer"][data-select-value="above"]').click();

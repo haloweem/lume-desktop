@@ -13,7 +13,7 @@ class CalendarTodoPicker final {
     using ReminderChanged=std::function<void(todo::ReminderDraft)>;
     using CurrentTime=std::function<std::optional<todo::LocalDateTime>()>;
     using ChoiceChanged=std::function<void(int)>;
-    CalendarTodoPicker();
+    explicit CalendarTodoPicker(bool opaque=false);
     ~CalendarTodoPicker();
     CalendarTodoPicker(const CalendarTodoPicker &)=delete;
     CalendarTodoPicker &operator=(const CalendarTodoPicker &)=delete;
@@ -29,6 +29,7 @@ class CalendarTodoPicker final {
     bool IsOpen() const noexcept;
  private:
     struct Impl;
+    bool opaque_;
     std::shared_ptr<Impl> impl_;
 };
 }

@@ -15,6 +15,19 @@
 #include <string_view>
 
 namespace lume::shell {
+struct IslandCountdownSettings {
+    std::string title;
+    int date = 0;
+    bool reminder = false;
+    platform::windows::IslandCountdownStyle style = platform::windows::IslandCountdownStyle::Standard;
+    std::uint32_t textColor = 0x262626;
+    std::uint32_t backgroundColor = 0x2183c0;
+    std::uint32_t solidColor = 0x8264a5;
+    unsigned textAlpha = 255;
+    unsigned backgroundAlpha = 255;
+    unsigned solidAlpha = 255;
+    bool countUp = false;
+};
 struct DynamicIslandSessionOptions {
     std::string preferencesPath;
     // UI-thread ports. The host validates media identity and queues playback work.
@@ -24,6 +37,7 @@ struct DynamicIslandSessionOptions {
     std::function<void(dynamic_island::Action)> externalControl;
     std::function<void(bool playing)> externalSetPlaying;
     std::function<void()> openSettings;
+    platform::windows::IslandWindow::EditWidget editWidget;
     std::function<std::uint64_t()> monotonicMillis;
     // The calendar todo store shared with the calendar and today todo widgets.
     platform::windows::IslandTodoSource todos;
@@ -67,6 +81,8 @@ public:
     void RefreshTodos();
     // Re-reads the weather component for compact widgets.
     void RefreshWeather();
+    IslandCountdownSettings CountdownSettings() const;
+    bool SaveCountdownSettings(IslandCountdownSettings);
     void ReleasePreview();
     bool ShowNotice(const std::string& taskId,const std::wstring& title,const std::wstring& time);
     const widget::Preferences& Snapshot() const;

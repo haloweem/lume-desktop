@@ -13,6 +13,8 @@ struct Preferences {
     bool unhideTaskbar = true;
     int unhideDurationMs = 450;
     Engine engine = Engine::Modern;
+    // Dock-owned runtime options are persisted with the Dock preferences.
+    bool dockOnly = false, close = false;
 };
 bool operator==(const Preferences&, const Preferences&) noexcept;
 inline bool operator!=(const Preferences& a, const Preferences& b) noexcept { return !(a == b); }

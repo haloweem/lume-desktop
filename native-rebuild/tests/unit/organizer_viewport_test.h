@@ -20,19 +20,21 @@ inline bool VerifyOrganizerViewport(){
     const auto icon=std::make_shared<const WidgetBitmap>(WidgetBitmap{1,1,{0xffff00ffu}});
     for(const bool list:{false,true})for(const unsigned dpi:{96u,120u,144u,192u}){
         collection.layout=list?lume::organizer::Layout::List:lume::organizer::Layout::Icons;
+        constexpr float width=420.f;
+        const float height=list?392.f:450.f;
         OrganizerViewState view;view.scroll=list?17.f:47.f;view.selected=0;
-        const auto layout=LayoutOrganizer(420,392,collection,view);
+        const auto layout=LayoutOrganizer(width,height,collection,view);
         const auto viewport=layout.viewport;
         WidgetCanvas canvas;WidgetBitmap pixels,baseline;
-        check(canvas.Begin(420,392,dpi),"canvas begins",dpi,list);
+        check(canvas.Begin(width,height,dpi),"canvas begins",dpi,list);
         std::set<std::string> requested;
-        DrawOrganizer(canvas,420,392,collection,{},[&](const lume::organizer::Item& item){
+        DrawOrganizer(canvas,width,height,collection,{},[&](const lume::organizer::Item& item){
             requested.insert(item.id);return icon;
         },view);
         check(canvas.Finish(pixels),"drawing finishes",dpi,list);
         auto empty=collection;empty.items.clear();
-        check(canvas.Begin(420,392,dpi),"baseline begins",dpi,list);
-        DrawOrganizer(canvas,420,392,empty,{}, {},view);
+        check(canvas.Begin(width,height,dpi),"baseline begins",dpi,list);
+        DrawOrganizer(canvas,width,height,empty,{}, {},view);
         check(canvas.Finish(baseline),"baseline finishes",dpi,list);
         unsigned outsideChanged=0,topInk=0,bottomInk=0;
         const auto top=layout.cells.front();
@@ -53,12 +55,12 @@ inline bool VerifyOrganizerViewport(){
         for(const auto* cell:{&top,&bottom}){
             const float x=cell->bounds.x+cell->bounds.width/2;
             const float first=std::max(viewport.y,cell->bounds.y),last=std::min(viewport.y+viewport.height,cell->bounds.y+cell->bounds.height);
-            const auto hit=HitOrganizer(420,392,collection,x,(first+last)/2,view);
+            const auto hit=HitOrganizer(width,height,collection,x,(first+last)/2,view);
             check(hit.kind==OrganizerHit::Kind::Item&&hit.index==cell->index,
                 "visible part of clipped row must remain interactive",dpi,list);
         }
-        const auto above=HitOrganizer(420,392,collection,top.bounds.x+top.bounds.width/2,viewport.y-1,view);
-        const auto below=HitOrganizer(420,392,collection,bottom.bounds.x+bottom.bounds.width/2,viewport.y+viewport.height+1,view);
+        const auto above=HitOrganizer(width,height,collection,top.bounds.x+top.bounds.width/2,viewport.y-1,view);
+        const auto below=HitOrganizer(width,height,collection,bottom.bounds.x+bottom.bounds.width/2,viewport.y+viewport.height+1,view);
         check(above.kind==OrganizerHit::Kind::None&&below.kind==OrganizerHit::Kind::None,
             "clipped-off row area must not be interactive",dpi,list);
         bool hiddenRequested=false;

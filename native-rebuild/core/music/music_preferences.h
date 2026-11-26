@@ -15,9 +15,10 @@ inline constexpr std::size_t kMusicPreferencesMaxFontBytes = 128;
 inline constexpr std::uint64_t kMusicPreferencesMaxSafeInteger = 9007199254740991ULL;
 
 struct MusicPreferences {
-    int version = 3;
+    int version = 4;
     std::string mode = "partita";
     std::string effectMode = "none";
+    std::string subtitleContentMode = "translation";
     std::string fontFamily;
     std::string animationIntensity = "normal";
     std::string lyricsFontColor = "#ffffff";

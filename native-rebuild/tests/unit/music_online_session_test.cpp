@@ -361,6 +361,10 @@ void SharedLyricsOwnerCancellation() {
     Require(session.LoadLyrics(track, {}).lines.size() == 1 && calls == 2, "successful follower result is cached");
 }
 void Parser() {
+    const auto album = ParseMusicOnlineCommand(LR"({"version":1,"scope":"music-online","action":"playlist","provider":"netease","request":1,"id":"netease:123","collectionType":"album"})");
+    Require(album && album->arguments.value("collectionType", "") == "album", "restored album keeps its catalog type");
+    Require(!ParseMusicOnlineCommand(LR"({"version":1,"scope":"music-online","action":"playlist","provider":"qq","request":1,"id":"qq:123","collectionType":"private-route"})"),
+        "collection type cannot select an arbitrary provider route");
     Require(ParseMusicOnlineCommand(LR"({"version":1,"scope":"music-online","action":"search","provider":"netease","request":1,"query":"fixture"})").has_value(),
         "valid parser fixture");
     for (const auto* input : {

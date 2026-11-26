@@ -1,15 +1,15 @@
 import {
   layoutWithLines,
   prepareWithSegments
-} from "./chunks/chunk-KECZQD7W.js";
+} from "./chunks/chunk-4FZ23TN3.js";
 import {
   VisualizerSubtitleOverlay_default,
   useTranslation
-} from "./chunks/chunk-CIZK54KT.js";
+} from "./chunks/chunk-NWUU2L3H.js";
 import {
   Shell_default,
   useVisualizerRuntime
-} from "./chunks/chunk-FTFNLWFP.js";
+} from "./chunks/chunk-HIWFRBEV.js";
 import {
   buildWordGraphemeTimings
 } from "./chunks/chunk-LDALZVSS.js";
@@ -18,10 +18,10 @@ import {
   motion,
   motionValue,
   require_jsx_runtime
-} from "./chunks/chunk-AS2U3CHD.js";
+} from "./chunks/chunk-XSUOVEKG.js";
 import {
   require_react
-} from "./chunks/chunk-RG3JEOUL.js";
+} from "./chunks/chunk-CWOU647E.js";
 import {
   getLineRenderEndTime
 } from "./chunks/chunk-LSTKNWUO.js";
@@ -34,7 +34,7 @@ import {
 } from "./chunks/chunk-2CN2J6VF.js";
 import {
   __toESM
-} from "./chunks/chunk-XCBH6NLF.js";
+} from "./chunks/chunk-NZLE2WMY.js";
 
 // src/components/visualizer/tilt/VisualizerTilt.tsx
 var import_react = __toESM(require_react(), 1);
@@ -52,11 +52,12 @@ function findStringMatch(str, text, fromIndex = 0) {
   return idx === -1 ? null : { start: idx, end: idx + str.length };
 }
 var SentenceLayout = class _SentenceLayout {
+  text;
+  words = [];
+  startTime = 0;
+  endTime = 0;
+  isSemantic = true;
   constructor(text) {
-    this.words = [];
-    this.startTime = 0;
-    this.endTime = 0;
-    this.isSemantic = true;
     this.text = text;
   }
   static splitIntoSentences(text, targetCount, timeSeed) {
@@ -173,9 +174,7 @@ var SentenceLayout = class _SentenceLayout {
     }
     return parts.length > 1 ? parts : [text];
   }
-  static {
-    this.charCountCache = /* @__PURE__ */ new Map();
-  }
+  static charCountCache = /* @__PURE__ */ new Map();
   static getGlobalCount(text, char) {
     const key = `${text.length}:${char}`;
     if (_SentenceLayout.charCountCache.has(key)) {
@@ -1011,7 +1010,7 @@ var VisualizerTilt = (props) => {
             isPlayerChromeHidden,
             hideTranslationSubtitle: false,
             showSubtitleTranslation: true,
-            subtitleContentMode: "translation"
+            subtitleContentMode
           }
         )
       ]

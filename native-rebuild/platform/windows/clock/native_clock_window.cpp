@@ -235,6 +235,15 @@ void NativeClockWindow::Center() {
               static_cast<int>(std::clamp(position.y+contentOffset_.y,-32768L,32767L))});
 }
 
+void NativeClockWindow::CenterHorizontally() {
+    const POINT current{appearance_.x,appearance_.y};
+    const HMONITOR monitor=window_ ? MonitorFromWindow(window_,MONITOR_DEFAULTTONEAREST) : MonitorFromPoint(current,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{}; info.cbSize=sizeof(info);
+    if(!GetMonitorInfoW(monitor,&info)) return;
+    const LONG x=info.rcWork.left+(info.rcWork.right-info.rcWork.left-size_.cx)/2+contentOffset_.x;
+    Dispatch({clock::ActionType::Position,static_cast<int>(std::clamp(x,-32768L,32767L)),appearance_.y});
+}
+
 void NativeClockWindow::ShowMenu(POINT position) {
     if(menuOpen_ || !window_) return;
     MenuGraphics graphics;
@@ -265,6 +274,8 @@ void NativeClockWindow::ShowMenu(POINT position) {
         action={clock::ActionType::Color,(color.red<<16)|(color.green<<8)|color.blue,color.alpha};
     } else if(command==IDM_LUME_WIDGET_CENTER) {
         menuOpen_=false; Center(); return;
+    } else if(command==IDM_LUME_WIDGET_CENTER_HORIZONTAL) {
+        menuOpen_=false; CenterHorizontally(); return;
     } else accepted=false;
     if(!*alive) return;
     menuOpen_=false;

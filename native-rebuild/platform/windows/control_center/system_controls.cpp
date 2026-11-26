@@ -3,6 +3,8 @@
 #include <iptypes.h>
 #include "platform/windows/control_center/system_controls.h"
 #include "platform/windows/silent_privacy.h"
+#include "platform/windows/diagnostics/runtime_log.h"
+#include <dwmapi.h>
 #include <wlanapi.h>
 #include <mmdeviceapi.h>
 #include <endpointvolume.h>
@@ -75,20 +77,22 @@ void ReadWifi(State& state) {
     }
     WlanCloseHandle(handle, nullptr);
 }
-bool EthernetUp() {
+void ReadAdapters(State& state) {
     ULONG bytes = 16 * 1024;
     std::vector<unsigned char> buffer(bytes);
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto result = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
                                                  nullptr, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()), &bytes);
         if (result == ERROR_BUFFER_OVERFLOW) { buffer.resize(bytes); continue; }
-        if (result != NO_ERROR) return false;
-        for (auto* adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()); adapter; adapter = adapter->Next)
+        if (result != NO_ERROR) return;
+        state.wifiAdapter=false;
+        for (auto* adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data()); adapter; adapter = adapter->Next) {
+            if(adapter->IfType==IF_TYPE_IEEE80211) state.wifiAdapter=true;
             if (adapter->OperStatus == IfOperStatusUp && adapter->IfType == IF_TYPE_ETHERNET_CSMACD && adapter->FirstUnicastAddress)
-                return true;
-        return false;
+                state.ethernet=true;
+        }
+        return;
     }
-    return false;
 }
 
 // --- mobile hotspot -------------------------------------------------------
@@ -328,15 +332,24 @@ void ReadBrightness() {
 HWND Win10Chevron() {
     const HWND notify = FindWindowExW(FindWindowW(L"Shell_TrayWnd", nullptr), nullptr, L"TrayNotifyWnd", nullptr);
     const HWND button = notify ? FindWindowExW(notify, nullptr, L"Button", nullptr) : nullptr;
-    return button && IsWindowVisible(button) ? button : nullptr;
+    // IsWindowVisible also tests the parent, which Lume may have hidden.
+    return button && (GetWindowLongPtrW(button,GWL_STYLE)&WS_VISIBLE) ? button : nullptr;
 }
 // Windows 11: the chevron is the leftmost SystemTray.NormalButton and, unlike
 // app icons, has no Image child. Language independent.
-com_ptr<IUIAutomationElement> Win11Chevron(com_ptr<IUIAutomation>& automation) {
-    if (!FindWindowW(L"TopLevelWindowForOverflowXamlIsland", nullptr)) return nullptr;
-    if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(automation.put())))) return nullptr;
-    com_ptr<IUIAutomationElement> root;
-    if (FAILED(automation->ElementFromHandle(FindWindowW(L"Shell_TrayWnd", nullptr), root.put())) || !root) return nullptr;
+com_ptr<IUIAutomationInvokePattern> Win11Chevron(HWND tray) {
+    // Explorer creates the overflow lazily. Its absence before the first click
+    // says nothing about whether the chevron exists.
+    com_ptr<IUIAutomation> automation;
+    if (FAILED(CoCreateInstance(__uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(automation.put()))) &&
+        FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(automation.put())))) return nullptr;
+    if (const auto limits=automation.try_as<IUIAutomation2>()) {
+        limits->put_ConnectionTimeout(500);
+        limits->put_TransactionTimeout(700);
+    }
+    // Hidden taskbars expose no descendants through their root UIA provider.
+    // Explorer's XAML child still exposes the chevron without revealing the bar.
+    const HWND bridge=FindWindowExW(tray,nullptr,L"Windows.UI.Composition.DesktopWindowContentBridge",nullptr);
     VARIANT name;
     VariantInit(&name);
     name.vt = VT_BSTR;name.bstrVal = SysAllocString(L"SystemTray.NormalButton");
@@ -347,28 +360,61 @@ com_ptr<IUIAutomationElement> Win11Chevron(com_ptr<IUIAutomation>& automation) {
     VariantInit(&type);
     type.vt = VT_I4;type.lVal = UIA_ImageControlTypeId;
     automation->CreatePropertyCondition(UIA_ControlTypePropertyId, type, image.put());
-    com_ptr<IUIAutomationElementArray> buttons;
-    if (!byClass || FAILED(root->FindAll(TreeScope_Descendants, byClass.get(), buttons.put())) || !buttons) return nullptr;
-    int count = 0;
-    buttons->get_Length(&count);
-    com_ptr<IUIAutomationElement> best;
-    LONG left = LONG_MAX;
-    for (int i = 0; i < count; ++i) {
-        com_ptr<IUIAutomationElement> button;
-        RECT bounds{};
-        if (FAILED(buttons->GetElement(i, button.put())) || FAILED(button->get_CurrentBoundingRectangle(&bounds))) continue;
-        if (bounds.left < left) { left = bounds.left;best = button; }
+    com_ptr<IUIAutomationCacheRequest> cache;
+    if(!byClass||!image||FAILED(automation->CreateCacheRequest(cache.put()))||!cache||FAILED(cache->AddProperty(UIA_BoundingRectanglePropertyId)))return nullptr;
+    const auto started=GetTickCount64();
+    for(HWND host : {bridge,tray}) {
+        if(!host)continue;
+        if(GetTickCount64()-started>=700)break;
+        com_ptr<IUIAutomationElement> root;
+        com_ptr<IUIAutomationElementArray> buttons;
+        int count=0;
+        if(FAILED(automation->ElementFromHandle(host,root.put()))||!root||GetTickCount64()-started>=700||
+           FAILED(root->FindAllBuildCache(TreeScope_Descendants,byClass.get(),cache.get(),buttons.put()))||!buttons||
+           FAILED(buttons->get_Length(&count)))continue;
+        std::vector<std::pair<LONG,com_ptr<IUIAutomationElement>>> candidates;
+        for(int i=0;i<count;++i){
+            com_ptr<IUIAutomationElement> button;
+            RECT bounds{};
+            if(SUCCEEDED(buttons->GetElement(i,button.put()))&&button&&SUCCEEDED(button->get_CachedBoundingRectangle(&bounds))&&!IsRectEmpty(&bounds))
+                candidates.emplace_back(bounds.left,std::move(button));
+        }
+        std::stable_sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b){return a.first<b.first;});
+        for(const auto& [left,button]:candidates){
+            if(GetTickCount64()-started>=700)break;
+            com_ptr<IUIAutomationElement> child;
+            if(FAILED(button->FindFirst(TreeScope_Descendants,image.get(),child.put()))||child)continue;
+            com_ptr<IUIAutomationInvokePattern> invoke;
+            if(SUCCEEDED(button->GetCurrentPatternAs(UIA_InvokePatternId,IID_PPV_ARGS(invoke.put())))&&invoke)return invoke;
+        }
     }
-    if (!best) return nullptr;
-    com_ptr<IUIAutomationElement> child;
-    if (image && SUCCEEDED(best->FindFirst(TreeScope_Descendants, image.get(), child.put())) && child) return nullptr;
-    return best;
+    return nullptr;
+}
+bool VisibleTrayWindow(HWND window) {
+    if (!window || !IsWindowVisible(window) || IsIconic(window)) return false;
+    DWORD cloaked=0;
+    if (SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_CLOAKED,&cloaked,sizeof(cloaked))) && cloaked) return false;
+    if (GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_LAYERED) {
+        COLORREF key=0;BYTE alpha=255;DWORD flags=0;
+        if (GetLayeredWindowAttributes(window,&key,&alpha,&flags) && (flags&LWA_ALPHA) && !alpha) return false;
+    }
+    RECT bounds{},intersection{};MONITORINFO monitor{sizeof(monitor)};
+    return GetWindowRect(window,&bounds) && GetMonitorInfoW(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),&monitor) &&
+        IntersectRect(&intersection,&bounds,&monitor.rcMonitor) &&
+        intersection.right-intersection.left>8 && intersection.bottom-intersection.top>8;
+}
+HWND VisibleOverflow() {
+    for (const auto* name : {L"TopLevelWindowForOverflowXamlIsland",L"NotifyIconOverflowWindow"}) {
+        const auto window=FindWindowW(name,nullptr);if(VisibleTrayWindow(window))return window;
+    }
+    return nullptr;
 }
 }  // namespace
 
 State Read(const std::wstring& display, bool readBrightness) {
     State state;
-    for (auto& radio : AllRadios()) {
+    const auto radios = AllRadios();
+    for (const auto& radio : radios) {
         const bool on = radio.State() == Radios::RadioState::On;
         if (radio.Kind() == Radios::RadioKind::WiFi && !state.wifi.available) state.wifi = {true, on};
         if (radio.Kind() == Radios::RadioKind::Bluetooth && !state.bluetooth.available) state.bluetooth = {true, on};
@@ -380,11 +426,11 @@ State Read(const std::wstring& display, bool readBrightness) {
     // Airplane is on only when every wireless radio is off.
     if (state.airplaneAvailable) {
         state.airplaneOn = true;
-        for (auto& radio : AllRadios())
+        for (const auto& radio : radios)
             if (Wireless(radio.Kind()) && radio.State() == Radios::RadioState::On) state.airplaneOn = false;
     }
     if (state.wifi.on) ReadWifi(state);
-    state.ethernet = EthernetUp();
+    ReadAdapters(state);
     if (const auto manager = Tethering(state.hotspotReason)) {
         state.hotspotAvailable = true;
         try { state.hotspotOn = manager->TetheringOperationalState() == Operators::TetheringOperationalState::On; } catch (...) {}
@@ -478,46 +524,42 @@ bool SetBrightness(const std::wstring& display, int percent) {
     return false;
 }
 bool OpenTrayOverflow(POINT anchor) {
-    HWND overflow = nullptr;
-    if (const HWND chevron = Win10Chevron()) {
-        SendMessageTimeoutW(chevron, BM_CLICK, 0, 0, SMTO_ABORTIFHUNG, 500, nullptr);
-        overflow = FindWindowW(L"NotifyIconOverflowWindow", nullptr);
-    } else {
-        const HRESULT apartment = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        {
-            com_ptr<IUIAutomation> automation;
-            const auto button = Win11Chevron(automation);
-            com_ptr<IUIAutomationInvokePattern> invoke;
-            if (!button || FAILED(button->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(invoke.put()))) || !invoke ||
-                FAILED(invoke->Invoke())) {
-                if (SUCCEEDED(apartment)) CoUninitialize();
-                // No hidden-icons button (every icon is pinned, or Explorer is
-                // still starting): Win+B focuses the notification area instead.
-                INPUT keys[4]{};
-                for (auto& key : keys) key.type = INPUT_KEYBOARD;
-                keys[0].ki.wVk = VK_LWIN;keys[1].ki.wVk = 'B';
-                keys[2].ki.wVk = 'B';keys[2].ki.dwFlags = KEYEVENTF_KEYUP;
-                keys[3].ki.wVk = VK_LWIN;keys[3].ki.dwFlags = KEYEVENTF_KEYUP;
-                return SendInput(4, keys, sizeof(INPUT)) == 4;
+    const auto started=GetTickCount64();
+    const auto finish=[started](bool ok,const char* stage){diag::Log("control-center-tray",std::string(stage)+(ok?" success":" failed")+" elapsed-ms="+std::to_string(GetTickCount64()-started));return ok;};
+    const HWND tray=FindWindowW(L"Shell_TrayWnd",nullptr);
+    if(!tray)return finish(false,"taskbar-missing");
+    HWND overflow=VisibleOverflow();
+    bool invoked=false;
+    if(!overflow){
+        if(const HWND chevron=Win10Chevron())
+            invoked=SendMessageTimeoutW(chevron,BM_CLICK,0,0,SMTO_ABORTIFHUNG,500,nullptr)!=0;
+        else {
+            const HRESULT apartment=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
+            if(SUCCEEDED(apartment)||apartment==RPC_E_CHANGED_MODE){
+                {
+                    const auto invoke=Win11Chevron(tray);
+                    invoked=invoke&&SUCCEEDED(invoke->Invoke());
+                }
+                if(SUCCEEDED(apartment))CoUninitialize();
             }
         }
-        if (SUCCEEDED(apartment)) CoUninitialize();
-        overflow = FindWindowW(L"TopLevelWindowForOverflowXamlIsland", nullptr);
+        // Explorer may have finished opening during Invoke; do not sleep first.
+        if(invoked){
+            const auto deadline=GetTickCount64()+1200;
+            while(!(overflow=VisibleOverflow())&&GetTickCount64()<deadline)Sleep(12);
+        }
     }
-    if (!overflow) return false;
-    // Wait for the flyout to appear, then move it above the control center.
-    for (int i = 0; i < 40 && !IsWindowVisible(overflow); ++i) Sleep(15);
-    if (!IsWindowVisible(overflow)) return false;
+    if(!overflow)return finish(false,invoked?"tray-open-unconfirmed":"overflow-button-unavailable");
     RECT bounds{};
-    GetWindowRect(overflow, &bounds);
+    if(!GetWindowRect(overflow, &bounds))return finish(false,"overflow-bounds");
     const int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
     MONITORINFO monitor{sizeof(monitor)};
-    GetMonitorInfoW(MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST), &monitor);
+    if(width<=0||height<=0||!GetMonitorInfoW(MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST), &monitor))return finish(false,"overflow-monitor");
     const auto& work = monitor.rcMonitor;
-    const int left = std::clamp(static_cast<int>(anchor.x) - width / 2, static_cast<int>(work.left), static_cast<int>(work.right) - width);
-    const int top = std::max(static_cast<int>(work.top), static_cast<int>(anchor.y) - height);
-    SetWindowPos(overflow, HWND_TOPMOST, left, top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    const int left = std::clamp(static_cast<int>(anchor.x) - width / 2, static_cast<int>(work.left), std::max(static_cast<int>(work.left),static_cast<int>(work.right) - width));
+    const int top = std::clamp(static_cast<int>(anchor.y) - height,static_cast<int>(work.top),std::max(static_cast<int>(work.top),static_cast<int>(work.bottom)-height));
+    if(!SetWindowPos(overflow, HWND_TOPMOST, left, top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE))return finish(false,"overflow-position");
     SetForegroundWindow(overflow);
-    return true;
+    return finish(VisibleTrayWindow(overflow),"overflow-visible");
 }
 }  // namespace lume::platform::windows::control_center

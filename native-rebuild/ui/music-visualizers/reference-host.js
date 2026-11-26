@@ -7,7 +7,7 @@ import {createMusicFontGate} from '../music-font-assets.js';
 // Each historical renderer gets an unloadable realm; native playback stays outside it.
 const MODES=new Set(['classic','cadenza','partita','fume','tilt','monet','sonnet']);
 // Styles from the newer Folia release are a separate bundle with the same stage protocol.
-const NEXT_MODES=new Set(['cappella','diorama','pendolo','tempera']);
+const NEXT_MODES=new Set(['cappella','diorama','pendolo','tempera','nebbia','hanabi','machi']);
 export function mountReference(host,initial,mode,{ensureFont,onError}={}) {
   if(!MODES.has(mode)&&!NEXT_MODES.has(mode))throw new Error('Unknown lyric renderer');
   const document=host.ownerDocument,window=document.defaultView;

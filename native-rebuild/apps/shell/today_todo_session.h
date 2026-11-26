@@ -15,7 +15,8 @@ public:
 
     TodayTodoSession(HINSTANCE,std::string path,Notify,std::function<void()> settings,
                    platform::windows::CalendarTodoPort todos,
-                   settings::IFileStore* files=nullptr);
+                   settings::IFileStore* files=nullptr,
+                   std::function<void(const std::string&,calendar::Date,HWND)> openTodoEditor={});
     ~TodayTodoSession();
     bool Restore();
     void SetMaterialSelectionHandler(MaterialSelectionHandler);

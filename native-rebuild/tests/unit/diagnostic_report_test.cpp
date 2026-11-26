@@ -177,6 +177,11 @@ void TaskbarEffectRegression() {
           "module reload failures give the actual recovery instruction");
     state["error"] = "core-attach-timeout";
     Check(checkState(state).detail.find("0x80070102") != std::string::npos, "attach timeouts are not disguised as an unexpected crash");
+    state["error"] = "core-failure";
+    check = checkState(state);
+    Check(check.status == shell::CheckStatus::Problem && check.detail.find("已停止自动重试") != std::string::npos &&
+          check.detail.find("隐藏已应用") != std::string::npos,
+          "one-shot core failure reports stopped retries while preserving independent hiding evidence");
     state["error"] = "";
     state["transparentTaskbar"] = false;
     state["hideApplied"] = false;
@@ -406,8 +411,8 @@ int main() {
 
     Check(shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostic-report","action":"create","note":"任务栏"})")->note == "\xE4\xBB\xBB\xE5\x8A\xA1\xE6\xA0\x8F", "create command");
     Check(shell::ParseDiagnosticReportCommand(LR"({"version":1,"scope":"diagnostic-report","action":"open-logs"})").has_value(), "open logs command");
-    for (const auto* action : {L"copy", L"self-check"})
-        Check(shell::ParseDiagnosticReportCommand(std::wstring(LR"({"version":1,"scope":"diagnostic-report","action":")") + action + L"\"}").has_value(), "copy and self-check commands");
+    for (const auto* action : {L"copy", L"self-check", L"open-help"})
+        Check(shell::ParseDiagnosticReportCommand(std::wstring(LR"({"version":1,"scope":"diagnostic-report","action":")") + action + L"\"}").has_value(), "diagnostic support commands");
     const auto text = shell::DiagnosticText(input);
     Check(text.find("Lume 诊断信息") != std::string::npos && text.find("启动自检") != std::string::npos &&
           text.find("日志位置") != std::string::npos && text.find("TASKBAR-NOTE") != std::string::npos, "copied text has version, self-check, log path and note");

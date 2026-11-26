@@ -55,6 +55,7 @@ void MusicDesktopControls::Hide() { if (fake.window) DestroyWindow(fake.window);
 bool MusicDesktopControls::Visible() const { return fake.visible; }
 HWND MusicDesktopControls::Handle() const { return fake.window; }
 widget::Preferences MusicDesktopControls::Bounds() const { return fake.prefs; }
+widget::Preferences MusicDesktopControls::PreferredBounds() const { return fake.prefs; }
 HRESULT MusicDesktopControls::EnableSystemMediaControls() {
     ++fake.enables;
     fake.registered = !fake.failMedia;

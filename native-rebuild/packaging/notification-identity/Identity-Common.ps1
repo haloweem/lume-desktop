@@ -70,7 +70,14 @@ function Get-LumeIdentityRegistrationAction($Package, $Config, [string]$External
     if (-not (Test-LumeIdentityOwner $Package $Config $ExternalPath $InstallDirectory)) {
         throw 'An identity for another publisher or installation already exists and was preserved.'
     }
-    if ([version]$Package.Version -gt [version]$Config.version) { throw 'A newer identity is already installed; refusing to downgrade it.' }
+    if ([version]$Package.Version -gt [version]$Config.version) {
+        if (-not $Production -or $Package.IsDevelopmentMode -or [string]$Package.Status -notin @('Ok', '0')) {
+            throw 'The newer identity cannot be reused and was preserved.'
+        }
+        $manifest = Get-AppxPackageManifest -Package $Package.PackageFullName -ErrorAction Stop
+        Assert-LumeIdentityManifest $manifest $Config ([string]$Package.Version)
+        return 'current'
+    }
     if ([version]$Package.Version -eq [version]$Config.version -and (-not $Production -or -not $Package.IsDevelopmentMode)) {
         return 'current'
     }
@@ -125,7 +132,7 @@ function Read-LumeIdentityXml([IO.Stream]$Stream) {
     try { $document = [Xml.XmlDocument]::new(); $document.XmlResolver = $null; $document.Load($reader); return ,$document }
     finally { $reader.Dispose() }
 }
-function Assert-LumeIdentityManifest([Xml.XmlDocument]$Manifest, $Config) {
+function Assert-LumeIdentityManifest([Xml.XmlDocument]$Manifest, $Config, [string]$ExpectedVersion = $Config.version) {
     $namespaces = [Xml.XmlNamespaceManager]::new($Manifest.NameTable)
     $namespaces.AddNamespace('p', 'http://schemas.microsoft.com/appx/manifest/foundation/windows10')
     $namespaces.AddNamespace('uap10', 'http://schemas.microsoft.com/appx/manifest/uap/windows10/10')
@@ -138,7 +145,7 @@ function Assert-LumeIdentityManifest([Xml.XmlDocument]$Manifest, $Config) {
     if ($Manifest.SelectNodes('/p:Package/p:Identity', $namespaces).Count -ne 1 -or
         $Manifest.SelectNodes('/p:Package/p:Applications/p:Application', $namespaces).Count -ne 1 -or
         -not $identity -or -not $app -or $identity.Name -cne $Config.name -or
-        $identity.Publisher -cne $Config.publisher -or $identity.Version -cne $Config.version -or
+        $identity.Publisher -cne $Config.publisher -or $identity.Version -cne $ExpectedVersion -or
         $app.Id -cne $Config.applicationId -or $app.Executable -cne 'LumeShell.exe') {
         throw 'The identity package does not match this Lume build.'
     }

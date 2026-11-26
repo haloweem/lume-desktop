@@ -9,8 +9,8 @@ const snapshot=(expandedLayout=1,fields={})=>({version:1,type:'dynamicIsland-sta
   enabled:true,running:true,locked:true,expanded:false,focusing:false,finished:false,remaining:0,
   hideFullscreen:true,topmost:false,hover:false,autoHide:true,size:'standard',material:'none',
   expandedLayout,loadStatus:'loaded',error:'',result:'snapshot',saved:false,...fields});
-test('all 1237 bounded layouts are canonical, preserving all 517 previous layouts',()=>{
-  let count=0,legacyCount=0,clockCount=0,fiveCount=0;
+test('all bounded layouts are canonical and preserve existing layout codes',()=>{
+  let count=0,legacyCount=0,clockCount=0,fiveCount=0,countdownCount=0,countdownFiveCount=0;
   const legacyDecode=value=>{
     const ids=[];
     while(value){const digit=value%6;value=Math.floor(value/6);if(!digit||ids.includes(digit-1))return null;ids.unshift(digit-1);}
@@ -22,23 +22,28 @@ test('all 1237 bounded layouts are canonical, preserving all 517 previous layout
     while(code){const digit=code%7;code=Math.floor(code/7);if(!digit||ids.includes(digit-1)||ids.length===4)return null;ids.unshift(digit-1);}
     return ids.includes(5)?ids:null;
   };
-  for(let code=0;code<=4416;++code){
+  for(let code=0;code<=11032;++code){
     const ids=decodeExpandedLayout(code);if(ids===null)continue;
     assert.ok(ids.length<=5);assert.equal(new Set(ids).size,ids.length);
     assert.equal(encodeExpandedLayout(ids),code);++count;
     if(code<1296){assert.deepEqual(ids,legacyDecode(code));++legacyCount;}
     else if(code<3697){assert.ok(ids.includes(5));++clockCount;}
-    else{assert.equal(ids.length,5);++fiveCount;}
+    else if(code<4417){assert.equal(ids.length,5);++fiveCount;}
+    else if(code<8513){assert.ok(ids.includes(6));++countdownCount;}
+    else{assert.equal(ids.length,5);assert.ok(ids.includes(6));++countdownFiveCount;}
   }
   for(let code=0;code<=3696;++code)assert.deepEqual(decodeExpandedLayout(code),previousDecode(code));
-  assert.equal(count,1237);assert.equal(legacyCount,206);assert.equal(clockCount,311);assert.equal(fiveCount,720);
+  assert.equal(count,3620);assert.equal(legacyCount,206);assert.equal(clockCount,311);assert.equal(fiveCount,720);
+  assert.equal(countdownCount,583);assert.equal(countdownFiveCount,1800);
   assert.deepEqual(decodeExpandedLayout(1),[0]);
   assert.deepEqual(decodeExpandedLayout(0),[]);
   assert.deepEqual(decodeExpandedLayout(53),[0,1,4],'music, calendar and to-dos retain their stored layout');
   assert.equal(encodeExpandedLayout([5]),1302);assert.deepEqual(decodeExpandedLayout(1302),[5]);
   assert.equal(encodeExpandedLayout([0,1,2,3,4]),3697);assert.equal(encodeExpandedLayout([5,4,3,2,1]),4416);
+  assert.equal(encodeExpandedLayout([6]),4424);assert.deepEqual(decodeExpandedLayout(4424),[6]);
+  assert.equal(encodeExpandedLayout([6,5,4,3,2]),11032);assert.deepEqual(decodeExpandedLayout(11032),[6,5,4,3,2]);
   for(const value of [-1,6,7,12,1296,1297,1303,1344,3696,4417,1.2,'1',null])assert.equal(decodeExpandedLayout(value),null);
-  for(const ids of [[0,0],[5,5],[0,1,2,3,4,5],[6],[-1],['1']])assert.equal(encodeExpandedLayout(ids),null);
+  for(const ids of [[0,0],[5,5],[0,1,2,3,4,5],[7],[-1],['1']])assert.equal(encodeExpandedLayout(ids),null);
 });
 test('the real bridge accepts only validated layouts and waits for a host acknowledgement',()=>{
   const sent=[],bridge=createBridge({postMessage:value=>sent.push(value)});
@@ -62,7 +67,7 @@ test('the real bridge accepts only validated layouts and waits for a host acknow
 });
 test('island home exposes expanded widgets and style navigation without compact or live preview controls',()=>{
   const html=islandPage(initialState(),'home');
-  assert.equal(expandedWidgets.length,6);
+  assert.equal(expandedWidgets.length,7);
   assert.doesNotMatch(html,/data-island-compact|data-island-preview|data-island-native-preview/);
   assert.match(html,/data-island-expanded-panel>/);
   assert.match(html,/data-island-styles/);
@@ -72,14 +77,14 @@ test('island home exposes expanded widgets and style navigation without compact 
   assert.match(html,/data-island-expanded-toggle="4"/);
   assert.match(html,/data-island-expanded-toggle="5"/);
   assert.match(html,/data-island-expanded-toggle="3"/);
-  assert.equal((html.match(/data-island-expanded-toggle="\d+"/g)||[]).length,5);
-  assert.match(html,/最多同时启用 5 个组件，横向排列/);
-  assert.match(html,/按住已启用的胶囊拖动排序/);
+  assert.match(html,/data-island-expanded-toggle="6"/);
+  assert.equal((html.match(/data-island-expanded-toggle="\d+"/g)||[]).length,6);
+  assert.doesNotMatch(html,/最多同时启用 5 个组件|按住已启用的胶囊拖动排序|Use the switches to enable/);
   const base=initialState();
   const layout=ids=>ids.reduce((code,id)=>code*6+id+1,0);
   const page=code=>islandPage({...base,dynamicIsland:{...base.dynamicIsland,expandedLayout:code}},'home');
   const mixed=page(layout([2,1,0,4]));
-  assert.equal((mixed.match(/data-island-expanded-toggle="\d+"/g)||[]).length,5,'new choices do not change a stored selection');
+  assert.equal((mixed.match(/data-island-expanded-toggle="\d+"/g)||[]).length,6,'the new countdown choice does not change a stored selection');
   assert.match(mixed,/data-island-expanded-toggle="4" aria-checked="true"/);
   assert.match(mixed,/data-island-expanded-toggle="1" aria-checked="true"/);
   assert.match(mixed,/data-island-expanded-toggle="0" aria-checked="true"/);
@@ -94,6 +99,8 @@ test('island home exposes expanded widgets and style navigation without compact 
   const five=page(encodeExpandedLayout([0,1,4,5,3]));
   assert.equal((five.match(/data-island-expanded-toggle="\d+" aria-checked="true"/g)||[]).length,5,'all five published widgets can be enabled together');
   assert.match(five,/aria-label="性能"/);
+  const countdown=page(encodeExpandedLayout([6,0,1]));
+  assert.match(countdown,/data-island-expanded-toggle="6" aria-checked="true"/);
   assert.doesNotMatch(html,/data-expanded-remove|data-expanded-number|data-expanded-selected|data-expanded-available|岛内|已加入|未加入/);
   assert.doesNotMatch(html,/QQ|WeChat|微信|data-island-messages/);
   const tabs=islandPage(initialState(),'home');

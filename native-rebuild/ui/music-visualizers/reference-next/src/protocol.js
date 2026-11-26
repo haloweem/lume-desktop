@@ -1,6 +1,6 @@
 // The newer Folia renderers share the reference stage protocol; only the mode list differs.
 export {preferenceSnapshot,EMPTY_ANALYSIS,analysisSnapshot,applyAnalysis,localArtwork,createStateReducer} from '../../reference/src/protocol.js';
-export const MODES=Object.freeze(['cappella','diorama','pendolo','tempera']);
+export const MODES=Object.freeze(['cappella','diorama','pendolo','tempera','nebbia','hanabi','machi']);
 
 export function acceptsMessage(event,parent,origin,mode) {
   return parent!==globalThis && event.source===parent && origin!=='null' && event.origin===origin &&

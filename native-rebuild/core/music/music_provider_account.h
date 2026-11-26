@@ -14,13 +14,16 @@ namespace lume::music::auth {
 
 using Json = nlohmann::json;
 using Cancelled = std::function<bool()>;
-enum class Provider { Netease, QQ, Kugou };
+enum class Provider { Netease, QQ, Kugou, Qishui };
+inline constexpr Provider Providers[] = {Provider::Netease, Provider::QQ, Provider::Kugou,
+    Provider::Qishui};
 enum class Operation { Begin, Poll, Refresh };
 inline const char* Name(Provider provider) {
     switch (provider) {
     case Provider::Netease: return "netease";
     case Provider::QQ: return "qq";
     case Provider::Kugou: return "kugou";
+    case Provider::Qishui: return "qishui";
     }
     return "";
 }
@@ -50,9 +53,11 @@ inline bool PublicImageUrl(std::string_view url) {
     if (url.size() > 2048 || url.substr(0, 8) != "https://" || url.find('\\') != url.npos ||
         std::any_of(url.begin(), url.end(), [](unsigned char c) { return c <= 32 || c >= 127; })) return false;
     // Keep these origins aligned with musicProviderImage and the page CSP.
-    for (const std::string_view host : {"y.qq.com", "y.gtimg.cn", "q1.qlogo.cn", "q2.qlogo.cn", "thirdqq.qlogo.cn",
+    for (const std::string_view host : {"y.qq.com", "y.gtimg.cn", "qpic.y.qq.com", "q1.qlogo.cn", "q2.qlogo.cn", "thirdqq.qlogo.cn",
         "p1.music.126.net", "p2.music.126.net", "p3.music.126.net", "p4.music.126.net",
-        "imge.kugou.com", "imgessl.kugou.com"}) {
+        "imge.kugou.com", "imgessl.kugou.com",
+        "p3.douyinpic.com", "p6.douyinpic.com", "p9.douyinpic.com", "p11.douyinpic.com", "p26.douyinpic.com",
+        "p1-douyin.byteimg.com", "p3-douyin.byteimg.com", "p6-douyin.byteimg.com", "p9-douyin.byteimg.com"}) {
         if (url.substr(8, host.size()) != host) continue;
         auto suffix = url.substr(8 + host.size());
         if (suffix.substr(0, 4) == ":443") suffix.remove_prefix(4);
@@ -85,6 +90,7 @@ struct Reply {
     std::string error;
     std::string avatarUrl = {};
     std::vector<Membership> memberships = {};
+    std::string loginMode = "qr";
 };
 using Execute = std::function<Reply(Provider, Operation, Json&, const Cancelled&)>;
 

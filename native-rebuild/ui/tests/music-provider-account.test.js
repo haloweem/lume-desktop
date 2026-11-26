@@ -31,7 +31,7 @@ function fixture() {
   return {controller,sent,request:()=>sent.at(-1).request,state:provider=>controller.snapshot().accounts.find(value=>value.provider===provider)};
 }
 
-test('provider bridge enforces exact three-account public contract and bounded commands',()=>{
+test('provider bridge enforces exact four-account public contract and bounded commands',()=>{
   const sent=[],bridge=createBridge({postMessage:value=>sent.push(value)});
   assert.equal(bridge.musicProviderAccount('snapshot'),true);
   for (const provider of MUSIC_PROVIDERS) for (const action of ['begin','cancel','refresh','logout'])
@@ -66,6 +66,46 @@ test('provider bridge enforces exact three-account public contract and bounded c
     assert.equal(validMusicProviderAccountMessage({...message(),...patch}),false);
 });
 
+test('four platforms replace the previous registry and reject removed or incomplete snapshots',()=>{
+  assert.deepEqual(MUSIC_PROVIDERS,['qq','netease','kugou','qishui']);
+  for (const removed of ['ytm','youtube','bodian','spotify','apple','appleMusic','fnmusic']) {
+    const f=fixture();
+    assert.equal(f.controller.open(removed),false);
+    assert.deepEqual(f.sent,[]);
+  }
+  const old={...message(),accounts:['netease','qq','kugou'].map(provider=>account(provider))};
+  assert.equal(validMusicProviderAccountMessage(old),false,'three-account states cannot overwrite the new registry');
+  const duplicate=message();duplicate.accounts[3]=account('kugou');
+  assert.equal(validMusicProviderAccountMessage(duplicate),false);
+  for (const provider of MUSIC_PROVIDERS) {
+    assert.equal(validMusicProviderAccountMessage(message(1,{[provider]:{status:'error',error:'unavailable'}})),true);
+    for(const secret of ['token','cookie','refreshToken','guardKey','musicUserToken'])
+      assert.equal(validMusicProviderAccountMessage(message(1,{[provider]:{[secret]:'test-secret'}})),false);
+  }
+});
+
+test('removed browser authentication is rejected and QR metadata remains compatible',()=>{
+  const bridge=createBridge({postMessage(){}});
+  assert.equal(bridge.musicProviderAccount('reopen',{provider:'qq',request:1}),false);
+  assert.equal(validMusicProviderAccountMessage(message(1,{qq:{loginMode:'qr'}})),true);
+  assert.equal(validMusicProviderAccountMessage(message(1,{qq:{loginMode:'browser'}})),false);
+  assert.equal(validMusicProviderAccountMessage(message(1,{qq:{phase:'browser'}})),false);
+  assert.equal(validMusicProviderAccountMessage(message(1,{qq:{avatarUrl:'https://is1-ssl.mzstatic.com/test.png'}})),false);
+});
+
+test('component preparation phases remain public and never trigger automatic retry',()=>{
+  const f=fixture(); f.controller.load();
+  for(const [revision,phase] of [[1,'downloading'],[2,'extracting']]) {
+    const state=message(revision,{qq:{status:'loading',phase}});
+    assert.equal(validMusicProviderAccountMessage(state),true);
+    assert.equal(f.controller.receive(state),true);
+    assert.equal(f.state('qq').phase,phase,'background restore retains its preparation phase');
+  }
+  assert.equal(validMusicProviderAccountMessage(message(3,{qq:{status:'authorizing',phase:'downloading'}})),false);
+  assert.equal(f.controller.receive(message(3,{qq:{status:'error',error:'runtime-download'}})),true);
+  assert.deepEqual(f.sent,[{action:'snapshot'}],'failure stays visible until an explicit user action');
+});
+
 test('lazy snapshots, monotonic requests and revision fencing survive cancel, switch and reopen',()=>{
   const f=fixture();
   assert.deepEqual(f.sent,[]);
@@ -91,6 +131,26 @@ test('lazy snapshots, monotonic requests and revision fencing survive cancel, sw
   f.controller.dispose();f.controller.open('qq');f.controller.load();
   assert.equal(f.sent.length,count);
   assert.equal(f.controller.receive(message(99)),false);
+});
+
+test('opening while saved accounts restore waits for the snapshot instead of starting a QR login',()=>{
+  const f=fixture();f.controller.load();f.controller.open('qq');
+  assert.deepEqual(f.sent,[{action:'snapshot'}]);
+  f.controller.receive(message(1,{qq:qqProfile()}));
+  assert.equal(f.controller.snapshot().modal,'qq');
+  assert.equal(f.controller.snapshot().selected,'qq');
+  f.controller.close();f.controller.open('qq');
+  assert.deepEqual(f.sent,[{action:'snapshot'}],'closing and reopening retains the restored session');
+});
+
+test('retained profile during sync or temporary failure is managed without issuing begin',()=>{
+  for(const status of ['loading','error']) {
+    const f=fixture();
+    f.controller.receive(message(1,{qq:qqProfile({status,error:status==='error'?'network':''})}));
+    f.controller.open('qq');f.controller.retry();f.controller.close();
+    assert.deepEqual(f.sent,[]);
+    assert.equal(f.state('qq').userId,'10001');
+  }
 });
 
 test('success, refresh and logout do not claim catalogs or change another platform',()=>{
@@ -227,15 +287,15 @@ test('online lists show official QQ membership images without pagination; local 
 test('transport failure fences old replies and synchronous receive is not overwritten',()=>{
   const controller=createMusicProviderAccount({now:()=>1,send:()=>false});
   controller.open('qq');
-  assert.equal(controller.snapshot().accounts[1].error,'service');
+  assert.equal(controller.snapshot().accounts.find(account=>account.provider==='qq').error,'service');
   controller.receive(message(1,{qq:pending(1)}));
-  assert.equal(controller.snapshot().accounts[1].error,'service');
+  assert.equal(controller.snapshot().accounts.find(account=>account.provider==='qq').error,'service');
   let sync;
   sync=createMusicProviderAccount({now:()=>1,send:(_,fields)=>{
     sync.receive(message(1,{qq:pending(fields.request)}));return true;
   }});
   sync.open('qq');
-  assert.equal(sync.snapshot().accounts[1].status,'authorizing');
+  assert.equal(sync.snapshot().accounts.find(account=>account.provider==='qq').status,'authorizing');
 });
 
 test('auth implementation has no playback owner, browser login, persistence or polling dependency',()=>{
@@ -269,7 +329,7 @@ function domFixture(t,options={},markup=musicProviderButtons()) {
   return {...f,dom,root,view,find,key:key=>dom.window.document.activeElement.dispatchEvent(
     new dom.window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}))};
 }
-test('signed-in panel renders only the selected profile, real images, logout and data sync',{skip:!jsdomPath},t=>{
+test('signed-in panel renders the selected profile, account manager and data sync',{skip:!jsdomPath},t=>{
   const f=domFixture(t,{},musicProviderAccountPanel());
   f.controller.select('qq');
   assert.equal(f.controller.receive(message(1,{qq:qqProfile(),
@@ -282,9 +342,15 @@ test('signed-in panel renders only the selected profile, real images, logout and
   assert.deepEqual([...row.querySelectorAll('img')].map(node=>node.getAttribute('src')).sort(),
     [avatarUrl,vipIconUrl].sort(),'a green-only account shows only its active green badge');
   assert.equal(f.root.querySelector('.MusicProviderSwitchers, .MusicProviderSwitcher, .MusicProviderAccountConnect'),null);
-  const logout=f.find('[data-music-provider-logout]'),sync=f.find('[data-music-provider-refresh]');
-  assert.equal(logout.hidden,false);
-  assert.ok(logout.querySelector('svg'),'logout is an icon button');
+  const manage=f.find('[data-music-provider-manage]'),sync=f.find('[data-music-provider-refresh]');
+  assert.equal(manage.hidden,false);
+  assert.ok(manage.querySelector('svg'),'account management remains an icon button');
+  manage.click();
+  assert.equal(f.controller.snapshot().modal,'qq');
+  assert.deepEqual(f.sent,[],'the account-card icon opens management without logging out');
+  assert.equal(f.find('[data-provider-identity-platform]').textContent,'QQ 音乐 · ID: 10001');
+  assert.equal(f.find('[data-provider-detail-memberships] img').getAttribute('src'),vipIconUrl);
+  f.find('[data-provider-close]').click();
   assert.equal(sync.hidden,false);
   assert.match(sync.textContent,/同步数据/);
   sync.click();
@@ -294,15 +360,15 @@ test('modal traps focus, escapes to opener, never displays raw QR text, and drop
   let resolve;
   const f=domFixture(t,{encode:()=>new Promise(done=>{resolve=done;})});
   const opener=f.find('[data-music-provider-open="qq"]');opener.focus();opener.click();
-  assert.equal(f.find('#music-provider-title').textContent,'QQ 扫码登录');
-  assert.equal(f.find('[data-provider-note]').textContent,'请使用手机 QQ 扫码确认');
+  assert.equal(f.find('[data-provider-title-label]').textContent,'登录到QQ 音乐');
+  assert.equal(f.find('[data-provider-note]').textContent,'使用手机 QQ、微信或 QQ 音乐扫码确认');
   assert.equal(f.dom.window.document.activeElement,f.find('[data-provider-close]'));
   assert.equal(f.find('dialog').getAttribute('aria-modal'),'true');
   f.controller.receive(message(1,{qq:pending(f.request())}));
   await Promise.resolve();
   assert.equal(f.root.textContent.includes('LUME-TEST-ONLY'),false);
   assert.equal(f.find('dialog').querySelector('a,iframe,input'),null);
-  f.find('[data-provider-select="kugou"]').focus();f.key('Tab');
+  f.find('[data-provider-select="qishui"]').focus();f.key('Tab');
   assert.equal(f.dom.window.document.activeElement,f.find('[data-provider-close]'));
   f.key('Escape');
   assert.equal(f.dom.window.document.querySelector('dialog'),null);
@@ -341,6 +407,24 @@ test('encoding failure has controlled retry and platform switch discards previou
   f.find('[data-provider-select="kugou"]').click();
   assert.equal(f.controller.snapshot().modal,'kugou');
   assert.equal(f.find('.MusicProviderQr img').hasAttribute('src'),false);
+});
+
+test('account window names download and preparation phases and offers explicit download retry',{skip:!jsdomPath},t=>{
+  const f=domFixture(t);
+  f.find('[data-music-provider-open="qq"]').click();
+  const request=f.request();
+  f.controller.receive(message(1,{qq:{request,status:'loading',phase:'downloading'}}));
+  assert.match(f.find('[data-provider-message]').textContent,/正在下载音乐组件/);
+  assert.equal(f.find('[data-provider-retry]').hidden,true);
+  f.controller.receive(message(2,{qq:{request,status:'loading',phase:'extracting'}}));
+  assert.match(f.find('[data-provider-message]').textContent,/正在准备音乐组件/);
+  f.controller.receive(message(3,{qq:{request,status:'error',error:'runtime-download'}}));
+  assert.match(f.find('[data-provider-message]').textContent,/音乐组件下载失败/);
+  assert.equal(f.find('[data-provider-retry]').hidden,false);
+  assert.equal(f.find('[data-provider-retry]').textContent,'重试下载');
+  assert.equal(f.sent.filter(item=>item.action==='begin').length,1);
+  f.find('[data-provider-retry]').click();
+  assert.equal(f.sent.filter(item=>item.action==='begin').length,2);
 });
 test('provider updates leave stage, playback clock calls, controls and local queue untouched',{skip:!jsdomPath},t=>{
   const dom=new JSDOM('<main></main>',{url:'https://lume.local/',pretendToBeVisual:true});
@@ -387,7 +471,7 @@ test("account card shows one badge: the highest active membership tier", () => {
   assert.deepEqual(visibleMemberships(undefined),[]);
 });
 
-test('connect buttons switch to signed-in platforms and open QR login for the rest',{skip:!jsdomPath},t=>{
+test('clicking a signed-in platform switches immediately and keeps account management open',{skip:!jsdomPath},t=>{
   const selected=[];
   const f=domFixture(t,{onSelect:provider=>selected.push(provider)},musicProviderAccountPanel()+musicProviderButtons());
   f.view.setVisible(true);
@@ -396,20 +480,68 @@ test('connect buttons switch to signed-in platforms and open QR login for the re
   assert.equal(f.controller.receive(message(1,{qq:qqProfile(),
     netease:{status:'signed-in',userId:'netease-user',displayName:'NetEase fixture'}})),true);
   const tab=provider=>f.find(`.MusicProviderButton[data-music-provider-open="${provider}"]`);
-  assert.equal(tab('netease').querySelector('[data-music-provider-label]').textContent,'\u5207\u6362\u5230\u7f51\u6613\u4e91\u97f3\u4e50');
+  assert.equal(tab('netease').querySelector('[data-music-provider-label]').textContent,'管理网易云音乐');
   assert.equal(tab('qq').dataset.signedIn,'true');
   assert.equal(tab('kugou').dataset.signedIn,'false');
   assert.match(tab('kugou').querySelector('[data-music-provider-label]').textContent,/^\u8fde\u63a5/);
   assert.match(musicProviderButtons([{provider:'kugou',status:'signed-in',userId:'8'}]),
-    /data-music-provider-open="kugou" data-signed-in="true">[^]*?\u5207\u6362\u5230/,'guest page markup starts with the right labels');
+    /data-music-provider-open="kugou" data-signed-in="true">[^]*?管理/,'guest page markup starts with the right labels');
   tab('netease').click();
-  assert.equal(f.controller.snapshot().selected,'netease','a signed-in platform is switched to, not logged into again');
+  assert.equal(f.controller.snapshot().selected,'netease','clicking the platform immediately selects its catalog');
+  assert.equal(f.controller.snapshot().modal,'netease');
+  assert.equal(f.find('[data-provider-name]').textContent,'NetEase fixture');
+  assert.deepEqual(selected,['netease']);
+  assert.equal(f.dom.window.document.querySelector('[data-provider-switch]'),null,'no second switch confirmation is needed');
   assert.equal(f.find('[data-music-provider-active-name]').textContent,'NetEase fixture');
   assert.equal(f.sent.some(item=>item.action==='begin'),false,'switching never starts a QR login');
   assert.equal(f.state('qq').status,'signed-in','the other account stays signed in');
+  f.find('[data-provider-close]').click();
   tab('kugou').click();
   assert.deepEqual([f.sent.at(-1).action,f.sent.at(-1).provider],['begin','kugou'],'an unsigned platform opens its QR login');
   assert.deepEqual(selected,['netease','kugou']);
+});
+
+test('four-platform account window has no removed platform or official-window login actions',{skip:!jsdomPath},t=>{
+  const f=domFixture(t);
+  f.controller.open('qishui');
+  assert.equal(f.dom.window.document.querySelector('[data-provider-select="appleMusic"]'),null);
+  assert.equal(f.dom.window.document.querySelector('[data-provider-browser]'),null);
+  assert.equal(f.dom.window.document.querySelector('[data-provider-reopen]'),null);
+  assert.equal(f.find('.MusicProviderQr').hidden,false);
+});
+
+test('one account window keeps every signed-in platform available without relogin',{skip:!jsdomPath},t=>{
+  const selected=[];
+  const f=domFixture(t,{onSelect:provider=>selected.push(provider)},musicProviderAccountPanel());
+  f.controller.select('netease');
+  const signed=MUSIC_PROVIDERS.reduce((patch,provider)=>({...patch,[provider]:{status:'signed-in',userId:`user-${provider}`,displayName:`Name ${provider}`}}),{});
+  signed.qishui.avatarUrl='https://p3.douyinpic.com/test';
+  assert.equal(f.controller.receive(message(1,signed)),true);
+  f.find('[data-music-provider-open]').click();
+  selected.length=0;
+  assert.equal(f.find('dialog').querySelectorAll('[data-provider-select]').length,4);
+  assert.equal(f.find('dialog').querySelectorAll('[data-signed-in="true"]').length,4);
+  assert.equal(f.find('[data-provider-select="qishui"] [data-provider-row-status]').textContent,'Name qishui');
+  assert.equal(f.find('[data-provider-select="qishui"] [data-provider-row-avatar]').getAttribute('src'),'https://p3.douyinpic.com/test');
+  f.find('[data-provider-select="qishui"]').click();
+  assert.equal(f.controller.snapshot().selected,'qishui');
+  assert.equal(f.find('[data-provider-name]').textContent,'Name qishui');
+  assert.equal(f.find('[data-provider-avatar]').getAttribute('src'),'https://p3.douyinpic.com/test');
+  assert.deepEqual(f.sent,[],'inspecting four existing sessions performs no login or cancellation');
+  assert.deepEqual(selected,['qishui']);
+  assert.equal(f.controller.snapshot().selected,'qishui');
+  assert.equal(f.controller.snapshot().accounts.filter(account=>account.status==='signed-in').length,4);
+});
+
+test('only the explicit account-details logout button ends a session',{skip:!jsdomPath},t=>{
+  const f=domFixture(t,{},musicProviderAccountPanel());
+  f.controller.receive(message(1,{qq:qqProfile(),netease:{status:'signed-in',userId:'other'}}));
+  f.controller.select('qq');f.find('[data-music-provider-manage]').click();
+  f.dom.window.dispatchEvent(new f.dom.window.Event('pagehide'));
+  assert.equal(f.state('qq').userId,'10001');assert.deepEqual(f.sent,[]);
+  f.find('[data-music-provider-manage]').click();f.find('[data-provider-logout]').click();
+  assert.deepEqual(f.sent.map(({action,provider})=>[action,provider]),[['logout','qq']]);
+  assert.equal(f.state('netease').userId,'other');
 });
 test('platforms without badge artwork show the tier as text with its expiry',{skip:!jsdomPath},t=>{
   const f=domFixture(t,{},musicProviderAccountPanel());

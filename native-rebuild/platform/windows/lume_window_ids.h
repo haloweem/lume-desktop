@@ -37,6 +37,7 @@ inline constexpr wchar_t ContentOccludedProp[] = L"LumeContentOccluded";
 // Class names.
 // Every native desktop surface (Dock, clock, calendar, widgets) starts with this.
 inline constexpr wchar_t DesktopClassPrefix[] = L"LumeNativeDesktop";
+inline constexpr wchar_t AnimationOwnerProperty[] = L"Lume.MinimizeAnimation.Active.v1";
 inline constexpr wchar_t DockIconsClass[] = L"LumeNativeDesktopDock";
 inline constexpr wchar_t DockBarClass[] = L"LumeNativeDesktopDockBar";
 inline constexpr wchar_t LaunchpadClass[] = L"LumeDockLaunchpad";

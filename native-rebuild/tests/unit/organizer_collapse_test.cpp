@@ -69,6 +69,13 @@ const organizer::Collection& Host(const shell::OrganizerSession& session){
     const auto* host=organizer::Find(session.Snapshot(),organizer::DefaultCollectionId);
     Check(host!=nullptr,"default collection remains present");return *host;
 }
+void WaitForStrip(HWND window){
+    const auto deadline=GetTickCount64()+1500;
+    const auto height=MulDiv(StripHeight,GetDpiForWindow(window),96);
+    RECT rect{};
+    while(GetClientRect(window,&rect)&&rect.bottom!=height&&GetTickCount64()<deadline)PumpFor(16);
+    Size(window,StripWidth,StripHeight,"the closing transition settles at the compact HWND size");
+}
 nlohmann::json Snapshot(const shell::OrganizerSession& session){return nlohmann::json::parse(OrganizerUtf8(session.State()));}
 void Command(HWND window,UINT command){SendMessageW(window,WM_COMMAND,command,0);Pump();}
 LPARAM Point(HWND window,float x,float y){
@@ -88,7 +95,7 @@ void Wheel(HWND window,float x,float y,int detents){
 void LoseFocus(HWND window){
     // Exercise the actual focus-loss handler without moving the system cursor
     // or activating any existing user application.
-    SetFocus(nullptr);SendMessageW(window,WM_KILLFOCUS,0,0);Pump();
+    SetFocus(nullptr);SendMessageW(window,WM_KILLFOCUS,0,0);Pump();WaitForStrip(window);
 }
 void ClickStripPart(shell::OrganizerSession& session,OrganizerHit::Kind kind){
     const auto& collection=Host(session);
@@ -115,6 +122,71 @@ void CheckStored(Files& files,const std::string& path,organizer::Mode mode,int w
         collection->bounds->width==width&&collection->bounds->height==height,
         "stored mode and original expanded dimensions survive the strip transition");
 }
+// Read the submitted layered foreground, including its one-alpha hit pane.
+// The HWND already occupies its final bounds throughout the reveal.
+int PaintedHeight(HWND window){
+    RECT r{};Check(GetClientRect(window,&r)!=FALSE,"read organizer client");
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=r.right;info.bmiHeader.biHeight=-r.bottom;
+    info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
+    void* bits=nullptr;const auto dc=CreateCompatibleDC(nullptr);
+    const auto dib=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);
+    Check(dc&&dib&&bits,"allocate organizer frame readback");
+    const auto old=SelectObject(dc,dib);
+    SendMessageW(window,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);GdiFlush();
+    const auto* pixels=static_cast<const std::uint32_t*>(bits);
+    int height=r.bottom;
+    while(height>0&&(pixels[(height-1)*r.right+r.right/3]>>24)==0)--height;
+    SelectObject(dc,old);DeleteObject(dib);DeleteDC(dc);
+    return height;
+}
+void UnfoldFrames(const std::filesystem::path& item){
+    Files files;const std::string path="unfold-frames.json";auto state=Seed(item,420,392);
+    state.collections.front().mode=organizer::Mode::Collapsed;SaveSeed(files,path,state);
+    shell::OrganizerSession session(GetModuleHandleW(nullptr),path,{},[]{},&files);
+    Check(session.Restore(),"unfold frame fixture restores");const auto window=session.Handle();
+    const int compact=PaintedHeight(window);
+    const auto saved=files.values.at(path);
+    BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+    SendMessageW(window,WM_KEYDOWN,VK_SPACE,0);
+    RECT expanded{};GetClientRect(window,&expanded);
+    const int first=PaintedHeight(window);
+    if(animations){
+        Check(first==compact,"opening starts with only the folded strip painted and interactive");
+        bool intermediate=false;const auto deadline=GetTickCount64()+1500;
+        while(GetTickCount64()<deadline){
+            Pump();const int current=PaintedHeight(window);
+            if(current>compact&&current<expanded.bottom)intermediate=true;
+            if(current==expanded.bottom)break;
+            Sleep(8);
+        }
+        Check(intermediate,"opening presents an intermediate body size");
+    }else Check(first==expanded.bottom,"reduced motion immediately presents the final body");
+    Check(PaintedHeight(window)==expanded.bottom&&files.values.at(path)==saved,
+        "temporary animation reaches full height without a preference write");
+    SendMessageW(window,WM_KEYDOWN,VK_ESCAPE,0);
+    if(animations){
+        Check(PaintedHeight(window)==expanded.bottom,"closing starts from the presented full panel");
+        int middle=expanded.bottom;const auto deadline=GetTickCount64()+1500;
+        do{PumpFor(16);middle=PaintedHeight(window);}while(middle==expanded.bottom&&GetTickCount64()<deadline);
+        Check(middle>compact&&middle<expanded.bottom,"closing renders an intermediate frame");
+        SendMessageW(window,WM_KEYDOWN,VK_RETURN,0);
+        Check(PaintedHeight(window)==middle,"reopening mid-close retains the presented frame");
+        SendMessageW(window,WM_KEYDOWN,VK_ESCAPE,0);
+        Check(PaintedHeight(window)==middle,"reversing an opening starts at its current frame");
+    }else Check(PaintedHeight(window)==compact,"reduced motion immediately closes the panel");
+    WaitForStrip(window);
+    Check(PaintedHeight(window)==compact,"an interrupted opening stays folded after queued ticks");
+    SendMessageW(window,WM_COMMAND,5,0);
+    Check(PaintedHeight(window)==(animations?compact:expanded.bottom),"persistent unfold uses the same reveal");
+    CheckStored(files,path,organizer::Mode::Expanded,420,392);
+    PumpFor(350);
+    SendMessageW(window,WM_COMMAND,4,0);
+    CheckStored(files,path,organizer::Mode::Collapsed,420,392);
+    Check(PaintedHeight(window)==(animations?expanded.bottom:compact),"menu fold follows the same return transition");
+    WaitForStrip(window);
+    session.Shutdown();WaitForIcons();
+}
 void SingleCollection(const std::filesystem::path& item,int width,int height){
     Files files;const std::string path="single-"+std::to_string(width)+".json";
     SaveSeed(files,path,Seed(item,width,height));unsigned opened=0;
@@ -123,7 +195,7 @@ void SingleCollection(const std::filesystem::path& item,int width,int height){
         shell::OrganizerSession session(GetModuleHandleW(nullptr),path,{},[]{},&files,open);
         Check(session.Restore()&&session.Running(),"custom-size organizer restores");
         const HWND window=session.Handle();Size(window,width,height,"existing custom dimensions stay unchanged");
-        Command(window,4);
+        Command(window,4);WaitForStrip(window);
         Check(Host(session).mode==organizer::Mode::Collapsed,"command 4 enables folding");
         Size(window,StripWidth,StripHeight,"folding uses a 260 by 44 title strip");
         session.DropHoverForTest(organizer::DefaultCollectionId,POINT{24,20},true);
@@ -138,7 +210,7 @@ void SingleCollection(const std::filesystem::path& item,int width,int height){
         Size(window,width,height,"sustained drop hover temporarily expands the compact strip");
         Check(GetFocus()==priorFocus,"drop hover expansion does not take keyboard focus");
         session.DropHoverForTest(organizer::DefaultCollectionId,POINT{24,20},false);
-        Pump();
+        Pump();WaitForStrip(window);
         Size(window,StripWidth,StripHeight,"leaving a drop hover refolds the temporary strip");
         const auto state=Snapshot(session);
         Check(state.at("mode")=="collapsed"&&state.at("width")==StripWidth&&state.at("height")==StripHeight,
@@ -172,16 +244,15 @@ void SingleCollection(const std::filesystem::path& item,int width,int height){
         const auto reply=session.HandlePage(scale);
         Check(reply&&nlohmann::json::parse(OrganizerUtf8(*reply)).value("saved",false)&&Host(session).iconScale==73,
             "the settings-page icon-size command remains functional");
-        for(unsigned accent=0;accent<6;++accent){
-            Command(window,230+accent);
-            Check(static_cast<unsigned>(Host(session).accent)==accent,"all six native marker commands apply");
-        }
+        const auto savedWithoutMarker=files.values.at(path);
         Command(window,234);
-        Check(Host(session).accent==organizer::Accent::Rose,"native color command changes the collection marker");
-        const auto markedSaved=files.values.at(path);
-        files.failWrites=true;Command(window,235);files.failWrites=false;
-        Check(Host(session).accent==organizer::Accent::Rose&&files.values.at(path)==markedSaved&&Snapshot(session).at("error")=="save",
-            "failed marker save preserves the prior color and file");
+        Check(files.values.at(path)==savedWithoutMarker,"retired color commands are inert");
+        Command(window,6);Command(window,4);
+        Check(Host(session).layout==organizer::Layout::List&&Host(session).mode==organizer::Mode::Collapsed,"folding preserves list mode");
+        Command(window,7);
+        Check(Host(session).layout==organizer::Layout::Icons&&Host(session).mode==organizer::Mode::Collapsed,"choosing icons preserves folding");
+        Command(window,5);
+        Check(Host(session).layout==organizer::Layout::Icons&&Host(session).mode==organizer::Mode::Expanded,"unfolding preserves icon layout");
         Command(window,4);CheckStored(files,path,organizer::Mode::Collapsed,width,height);
         session.Shutdown();WaitForIcons();Check(!IsWindow(window),"single organizer releases its window");
     }
@@ -190,7 +261,7 @@ void SingleCollection(const std::filesystem::path& item,int width,int height){
         Check(Host(reopened).mode==organizer::Mode::Collapsed&&reopened.Restore(),"folding remains enabled after session recreation");
         Size(reopened.Handle(),StripWidth,StripHeight,"recreated session restores the title strip");
         Command(reopened.Handle(),5);Size(reopened.Handle(),width,height,"recreated session restores the saved expanded size");
-        Check(Host(reopened).items.size()==1&&Host(reopened).iconScale==73&&Host(reopened).accent==organizer::Accent::Rose,
+        Check(Host(reopened).items.size()==1&&Host(reopened).iconScale==73&&Host(reopened).accent==organizer::Accent::None,
             "folding and restart retain contents, settings-page icon scale and marker color");
         reopened.Shutdown();WaitForIcons();
     }
@@ -214,7 +285,7 @@ void GroupAndNewCollection(const std::filesystem::path& item){
     SaveSeed(files,path,state);unsigned opened=0;
     shell::OrganizerSession session(GetModuleHandleW(nullptr),path,{},[]{},&files,[&](HWND,const std::wstring&){++opened;return true;});
     Check(session.Restore()&&session.Running(),"tab group restores");
-    const auto window=session.Handle();Command(window,4);
+    const auto window=session.Handle();Command(window,4);WaitForStrip(window);
     Check(std::all_of(session.Snapshot().collections.begin(),session.Snapshot().collections.end(),[](const auto& collection){
         return collection.mode==organizer::Mode::Collapsed;
     }),"folding mode propagates to grouped tabs");
@@ -237,7 +308,7 @@ void GroupAndNewCollection(const std::filesystem::path& item){
     Check(organizer::ActiveTab(session.Snapshot(),organizer::DefaultCollectionId)->id==organizer::DefaultCollectionId,
         "drop hover over another compact tab selects that target");
     Size(window,520,400,"drop hover over a compact tab opens its saved expanded dimensions");
-    session.DropHoverForTest(organizer::DefaultCollectionId,{},false);Pump();
+    session.DropHoverForTest(organizer::DefaultCollectionId,{},false);Pump();WaitForStrip(window);
     Size(window,StripWidth,StripHeight,"leaving the tab drop target refolds the group");
     const auto selectedBefore=organizer::ActiveTab(session.Snapshot(),organizer::DefaultCollectionId)->id;
     Wheel(window,layout.tabStrip.x+30,tabY,-8);
@@ -301,7 +372,7 @@ void ScrollPreservation(const std::filesystem::path& root){
     Check(!IsWindow(editor)&&openAt()==afterScroll,"closing search restores its original scroll position once");
     Wheel(window,x,y,-2);const auto afterSearchScroll=openAt();
     Check(afterSearchScroll!=afterScroll,"scrolling after closing search establishes a different visible row");
-    Command(window,4);
+    Command(window,4);WaitForStrip(window);
     for(int attempt=0;attempt<2;++attempt){
         ClickStripPart(session,OrganizerHit::Kind::Title);Size(window,420,392,"temporary opening retains expanded dimensions while scrolled");
         RECT bounds{};Check(GetWindowRect(window,&bounds)&&bounds.left==original.left&&bounds.top==original.top,
@@ -338,7 +409,7 @@ void HoverLifecycleAndSelectedReset(const std::filesystem::path& item){
         session.DropHoverForTest(organizer::DefaultCollectionId,POINT{24,20},true);
         PumpFor(600);
         Size(session.Handle(),420,392,"same target hover arms a new timer after disable and enable");
-        session.DropHoverForTest(organizer::DefaultCollectionId,{},false);Pump();
+        session.DropHoverForTest(organizer::DefaultCollectionId,{},false);Pump();WaitForStrip(session.Handle());
         Size(session.Handle(),StripWidth,StripHeight,"reenabled hover still refolds on leave");
         session.Shutdown();WaitForIcons();
     }
@@ -399,7 +470,7 @@ int main(){
         const auto root=UniqueTestDirectory(std::filesystem::temp_directory_path()/L"LumeOrganizerCollapseTest");
         const auto item=root/L"collapse fixture.txt";
         {std::ofstream file(item,std::ios::binary);file<<"isolated organizer collapse fixture\n";Check(file.good(),"write harmless local fixture");}
-        SingleCollection(item,420,392);SingleCollection(item,520,400);GroupAndNewCollection(item);ScrollPreservation(root);
+        UnfoldFrames(item);SingleCollection(item,420,392);SingleCollection(item,520,400);GroupAndNewCollection(item);ScrollPreservation(root);
         HoverLifecycleAndSelectedReset(item);
         std::cout<<"PASS organizer folding, temporary opening, focus, position, scroll, persistence, rollback, tabs, color and new-box defaults\n";
     }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';result=1;}

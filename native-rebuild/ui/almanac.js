@@ -14,7 +14,7 @@ export function almanacStatus(state) {
     rollback:t('黄历组件恢复失败，请重新启用组件','Could not restore the almanac widget. Enable it again.'),
   }[state.almanacError] || t('黄历配置读取失败，当前使用默认设置；尚未保存','Could not load almanac settings. Using defaults; not yet saved.');
   if(state.almanacLoadStatus==='recovered')return t('已从备份恢复黄历配置，尚未保存到主配置','Almanac settings restored from backup; not yet saved to the main configuration.');
-  if(state.almanacMaterialStatus==='transparent-fallback')return t('材质暂不可用，当前为透明显示','Material unavailable. Using a transparent fallback.');
+  if(state.almanacMaterialStatus==='transparent-fallback')return t('当前使用兼容材质','Using a compatible material.');
   return '';
 }
 export function almanacNotice(state,{previousStatus,hasInlineStatus=false}={}) {

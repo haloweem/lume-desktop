@@ -26,7 +26,7 @@ Snapshot Sample(std::string_view city) {
 }
 struct Probe {
     std::atomic<int> alive{0}, calls{0}, notices{0}, loads{0};
-    std::atomic<bool> release{false}, block{true}, ignoreCancel{false}, cancelled{false}, fail{false};
+    std::atomic<bool> release{false}, block{true}, ignoreCancel{false}, cancelled{false}, fail{false},invalidLocation{false};
     std::mutex mutex;
     std::vector<std::string> cities;
     std::optional<Snapshot> cached;
@@ -50,6 +50,7 @@ public:
         if (cancel.Cancelled()) p_.cancelled = true;
         // Deliberately return a result even after cancel: the UI mailbox must
         // independently reject the previous generation.
+        if (p_.invalidLocation) return {{{}, ProviderError::InvalidLocation, 0}, false};
         if (p_.fail) return {{{}, ProviderError::Unavailable, 0}, false};
         return {{Sample(city), ProviderError::None, 0}, false};
     }
@@ -115,6 +116,10 @@ void FailureCacheAndTimer() {
     p.fail = false;
     Until([&] { return p.calls >= 2 && worker.Latest().error == ProviderError::None &&
         !worker.Latest().loading; }, "timer recovers without manual restart");
+    p.invalidLocation=true;
+    Until([&]{return worker.Latest().error==ProviderError::InvalidLocation;},"expired location exposed separately from a weather network error");
+    Expect(!worker.Latest().snapshot,"expired coordinates cannot retain a fresh-looking old-city display");
+    p.invalidLocation=false;
     worker.Stop();
     p.cached->updatedAt = Now - Day - 1; p.fail = true;
     Expect(worker.Start("auto"), "restart with stale cache");

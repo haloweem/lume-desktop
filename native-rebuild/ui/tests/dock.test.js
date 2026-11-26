@@ -5,9 +5,10 @@ import {initialState,reduce} from '../state.js';
 import {modules,localizedItem} from '../catalog.js';
 import {catalog,card,home,search} from '../pages.js';
 import {setLanguage} from '../localization.js';
-import {dockPage,dockStatus,validDockState} from '../dock.js';
+import {dockPage,dockStatus,validDockState,validDockSummonShortcut,dockSummonShortcutFromEvent,dockSummonShortcutDefault} from '../dock.js';
 
-const snapshot=(fields={})=>({version:1,type:'dock-state',enabled:false,running:false,material:'liquid-glass',reflection:false,systemTray:false,iconScale:100,
+const snapshot=(fields={})=>({version:1,type:'dock-state',enabled:false,running:false,material:'liquid-glass',reflection:false,systemTray:false,
+  summonEnabled:false,summonShortcutCode:0,summonHotkeyRegistered:false,iconScale:100,
   position:50,bottomOffset:0,iconSpacing:10,
   pinned:0,added:0,materialStatus:'inactive',loadStatus:'fresh',error:'',result:'snapshot',saved:false,...fields});
 
@@ -74,7 +75,7 @@ test('dock state reducer tracks saving, results and errors',()=>{
   let state=reduce(initialState(),{type:'request',scope:'dock',key:'enabled',value:true});
   assert.equal(state.dockStatus,'saving');
   state=reduce(state,{type:'host',message:snapshot({enabled:true,running:true,pinned:2,result:'applied',saved:true,loadStatus:'loaded'})});
-  assert.equal(state.dockStatus,'saved');assert.deepEqual(state.dock,{enabled:true,running:true,material:'liquid-glass',reflection:false,showRunning:true,systemTray:false,iconScale:100,position:50,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:2,added:0});
+  assert.equal(state.dockStatus,'saved');assert.deepEqual(state.dock,{screen:1,screenCount:1,enabled:true,running:true,material:'liquid-glass',reflection:false,reflectionRatio:50,reflectionTransparency:50,showRunning:true,runningPreview:false,animation:false,animateRestore:true,animateLaunch:true,animateClose:true,animationDuration:400,showStartMenu:true,launchpadEnabled:true,edge:'bottom',systemTray:false,summonEnabled:false,summonShortcutCode:0,summonHotkeyRegistered:false,iconScale:100,position:50,positionMode:'center',positionOffset:0,bottomOffset:0,iconSpacing:10,launchpadScale:100,launchpadIconScale:100,pinned:2,added:0});
   state=reduce(state,{type:'host',message:snapshot({error:'limit'})});
   assert.equal(state.dockStatus,'error');assert.match(dockStatus(state),/上限/);
   assert.equal(reduce(initialState(),{type:'unavailable',scope:'all'}).dockStatus,'unavailable');
@@ -122,50 +123,59 @@ test('Dock running-area changes wait for acknowledgement, preserve failures and 
   assert.equal(state.dock.showRunning,true);assert.equal(state.dockStatus,'saved');
 });
 
-test('Dock running-area switch is localized directly below reflection and follows busy state',()=>{
+test('Dock running-area switch is localized and follows busy state',()=>{
   const state={...initialState(),dockStatus:'idle'};
   try {
     for(const language of ['zh-CN','en']){
       setLanguage(language);
       const html=dockPage(state,'settings');
-      const reflection=html.indexOf('data-action="dock-reflection"'),running=html.indexOf('data-action="dock-show-running"'),reset=html.indexOf('data-action="dock-reset"');
-      assert.ok(reflection>=0&&reflection<running&&running<reset);
+      const material=html.indexOf('id="dock-material"'),running=html.indexOf('data-action="dock-show-running"'),reset=html.indexOf('data-action="dock-reset"');
+      assert.ok(material>=0&&material<running&&running<reset);
       const control=html.match(/<button[^>]*data-action="dock-show-running"[^>]*>/)?.[0]||'';
       assert.match(control,/aria-checked="true"/);
       assert.match(control,language==='en'?/aria-label="Running apps"/:/aria-label="运行区"/);
-      assert.match(html,language==='en'?/Show running apps in the Dock/:/在 Dock 中显示正在运行的应用/);
+      assert.doesNotMatch(html,/Show running apps in the Dock|在 Dock 中显示正在运行的应用|class="setting-help"/);
       for(const dockStatus of ['loading','saving'])
         assert.match(dockPage({...state,dockStatus},'settings'),/<button[^>]*data-action="dock-show-running"[^>]*disabled/);
       assert.match(dockPage({...state,dock:{...state.dock,showRunning:false}},'settings'),/<button[^>]*aria-checked="false"[^>]*data-action="dock-show-running"/);
-      for(const tab of ['dock','launchpad','control-center','details'])
+      for(const tab of ['dock','control-center','details'])
         assert.doesNotMatch(dockPage(state,tab),/data-action="dock-show-running"/);
     }
   } finally {setLanguage('zh-CN');}
 });
 
-test('Dock categories retain their controls and state without duplicating launchpad or control center settings',()=>{
+test('Dock settings place control center after running apps and omit launchpad counts',()=>{
   const state={...initialState(),dock:{...initialState().dock,enabled:true,running:true,material:'frosted-glass',pinned:4,added:1},dockStatus:'idle'};
   const settings=dockPage(state,'settings');
   assert.match(settings,/data-settings-scope="dock"/);
   assert.match(settings,/id="dock-material"/);
-  assert.match(settings,/data-action="dock-reflection"/);
+  assert.equal([...settings.matchAll(/class="settings-group__body"/g)].length,5);
+  assert.doesNotMatch(settings,/data-action="dock-reflection"/);
+  for(const value of ['liquid-glass','frosted-glass','none'])
+    assert.ok(settings.includes(`data-dock-material="${value}" aria-pressed="${value==='frosted-glass'}"`));
   assert.match(settings,/data-action="dock-reset"/);
-  assert.doesNotMatch(settings,/id="dock-icon-scale"|id="dock-launchpad-scale"|data-action="dock-system-tray"|data-dock-summary/);
+  assert.doesNotMatch(settings,/id="dock-icon-scale"|data-dock-summary/);
+  const runAt=settings.indexOf('data-action="dock-show-running"'),centerAt=settings.indexOf('data-action="dock-system-tray"');
+  const summonAt=settings.indexOf('data-action="dock-summon-enabled"');
+  assert.ok(runAt>=0&&runAt<centerAt&&centerAt<summonAt,'control center follows the running-area setting');
+  assert.match(settings,/class="dock-shortcut-field"/);
+  assert.match(settings,/data-dock-summon-shortcut[^>]*>Win \+ Insert<\/button>/);
+  assert.match(settings,/data-action="dock-summon-clear"/);
+  assert.doesNotMatch(settings,/class="setting-help"|未设置快捷键，不会唤出 Dock|No shortcut set/);
   const dock=dockPage(state);
   for(const id of ['dock-icon-scale','dock-bottom-offset','dock-icon-spacing'])assert.match(dock,new RegExp(`id="${id}"`));
-  assert.doesNotMatch(dock,/id="dock-material"|data-action="dock-reflection"|data-action="dock-reset"|id="dock-launchpad-scale"/);
-  const launchpad=dockPage(state,'launchpad');
-  assert.match(launchpad,/id="dock-launchpad-scale"/);
-  assert.match(launchpad,/id="dock-launchpad-icon-scale"/);
-  assert.match(launchpad,/已固定 4 项，启动台已添加 1 项/);
-  assert.doesNotMatch(launchpad,/id="dock-material"|data-action="dock-reset"|data-action="dock-system-tray"/);
-  // The control center toggle (protocol key systemTray) is offered and follows its state.
-  const center=dockPage(state,'control-center');
-  assert.match(center,/控制中心/);
+  assert.match(dock,/<h2>图标倒影<\/h2>/);
+  assert.match(dock,/data-action="dock-reflection"/);
+  assert.match(dock,/id="dock-reflection-ratio"[^>]+value="50"[^>]+disabled/);
+  assert.match(dock,/id="dock-reflection-transparency"[^>]+value="50"[^>]+disabled/);
+  assert.doesNotMatch(dock,/id="dock-material"|data-action="dock-reset"|id="dock-launchpad-scale"/);
+  assert.match(settings,/id="dock-material"[\s\S]*data-action="dock-launchpad-enabled"[\s\S]*id="dock-launchpad-scale"[\s\S]*id="dock-launchpad-icon-scale"[\s\S]*id="dock-screen-label"/);
+  assert.equal(dockPage(state,'launchpad'),settings);
+  assert.equal(validDockState(snapshot({launchpadEnabled:0})),false);
+  assert.equal(reduce(initialState(),{type:'host',message:snapshot({launchpadEnabled:false})}).dock.launchpadEnabled,false);
   const toggle=page=>page.match(/<[^>]*data-action="dock-system-tray"[^>]*>/)?.[0]||'';
-  assert.ok(toggle(center)&&!/aria-checked="true"/.test(toggle(center)));
-  assert.match(toggle(dockPage({...state,dock:{...state.dock,systemTray:true}},'control-center')),/aria-checked="true"/);
-  assert.doesNotMatch(center,/id="dock-material"|id="dock-launchpad-scale"|data-action="dock-reset"/);
+  assert.ok(toggle(settings)&&!/aria-checked="true"/.test(toggle(settings)));
+  assert.match(toggle(dockPage({...state,dock:{...state.dock,systemTray:true}},'settings')),/aria-checked="true"/);
   assert.match(dockPage(state,'details'),/启动台显示桌面上的图标/);
 });
 
@@ -174,36 +184,67 @@ test('Dock sidebar has distinct localized navigation and the generated icon fami
   try {
     for(const language of ['zh-CN','en']){
       setLanguage(language);
-      for(const tab of ['dock','launchpad','control-center','settings','details']){
+      for(const tab of ['dock','settings','details']){
         const html=dockPage(state,tab);
         const nav=html.match(/<nav[^>]*role="tablist"[^>]*>([\s\S]*?)<\/nav>/)?.[1]||'';
         assert.deepEqual([...nav.matchAll(/data-tab="([^"]+)"/g)].map(match=>match[1]),
-          ['dock','launchpad','control-center','settings','details']);
+          ['dock','settings','details']);
         assert.deepEqual([...nav.matchAll(/aria-selected="true" data-tab="([^"]+)"/g)].map(match=>match[1]),[tab]);
-        for(const [key,icon] of [['dock','dock'],['launchpad','launchpad'],['control-center','control-center'],['settings','settings']]){
+        for(const [key,icon] of [['dock','dock'],['settings','settings']]){
           const button=nav.match(new RegExp(`<button[^>]*data-tab="${key}"[^>]*>([\\s\\S]*?)<\\/button>`))?.[1]||'';
           assert.match(button,new RegExp(`${icon}-${tab===key?'selected':'default'}-24\\.png`));
           assert.match(button,/-48\.png 2x, [^"]+-72\.png 3x/);
         }
         assert.match(nav,/data-tab="settings"[^>]*>[\s\S]*settings-(?:default|selected)-24\.png[\s\S]*data-tab="details"/,
           'the existing settings gear remains immediately above Details');
-        assert.match(nav,language==='en'?/aria-label="Launchpad"/:/aria-label="启动台"/);
-        assert.match(nav,language==='en'?/aria-label="Control center"/:/aria-label="控制中心"/);
+        assert.doesNotMatch(nav,/data-tab="launchpad"/);
+        assert.doesNotMatch(nav,language==='en'?/Control center/:/控制中心/);
       }
     }
   } finally {setLanguage('zh-CN');}
 });
-test('dock offers no material, icon reflection and icon size',()=>{
-  assert.equal(validDockState(snapshot({material:'none',reflection:true,iconScale:120})),true);
-  for(const fields of [{iconScale:150},{reflection:'yes'},{material:'clear'}])
+test('Dock summon is opt-in and only accepts safe registered shortcuts',()=>{
+  const state=initialState();
+  assert.equal(state.dock.summonEnabled,false);
+  assert.equal(dockSummonShortcutDefault,2093);
+  assert.equal(state.dock.summonShortcutCode,dockSummonShortcutDefault);
+  assert.equal(validDockSummonShortcut(dockSummonShortcutDefault),true);
+  assert.equal(validDockState(snapshot({summonEnabled:true})),true,'enabled without a key remains inactive');
+  assert.equal(validDockSummonShortcut(0),true);
+  assert.equal(validDockSummonShortcut(800),true,'Ctrl+Alt+Space');
+  assert.equal(validDockSummonShortcut(2592),true,'Win+Ctrl+Space');
+  assert.equal(validDockSummonShortcut(544),true,'Ctrl+Space is a customizable global shortcut');
+  assert.equal(validDockSummonShortcut(814),false,'Ctrl+Alt+Delete is reserved');
+  assert.equal(validDockSummonShortcut(371),false,'Alt+F4 is reserved');
+  assert.equal(dockSummonShortcutFromEvent({key:' ',keyCode:32,ctrlKey:true,altKey:true}),800);
+  assert.equal(dockSummonShortcutFromEvent({key:' ',keyCode:32,ctrlKey:true}),544);
+  const sent=[],bridge=createBridge({postMessage:value=>sent.push(value)});
+  assert.equal(bridge.send('dock','summonEnabled',true),true);
+  assert.equal(bridge.send('dock','summonCapture',true),true);
+  assert.equal(bridge.send('dock','summonShortcut',800),true);
+  assert.equal(bridge.send('dock','summonShortcut',544),true);
+  assert.equal(bridge.send('dock','summonShortcut',0),true);
+  assert.deepEqual(sent,['v1|dock|summonEnabled|true','v1|dock|summonCapture|true',
+    'v1|dock|summonShortcut|800','v1|dock|summonShortcut|544','v1|dock|summonShortcut|0']);
+});
+test('Dock validates and restores both saved reflection percentages',()=>{
+  const message=snapshot({material:'none',reflection:true,reflectionRatio:80,reflectionTransparency:18,iconScale:120});
+  assert.equal(validHostMessage(message),true);
+  const restored=reduce(initialState(),{type:'host',message}).dock;
+  assert.equal(restored.reflectionRatio,80);assert.equal(restored.reflectionTransparency,18);
+  for(const fields of [{iconScale:150},{reflection:'yes'},{material:'clear'},{reflectionRatio:101},{reflectionTransparency:-1},{reflectionRatio:'50'}])
     assert.equal(validDockState(snapshot(fields)),false,JSON.stringify(fields));
   const sent=[];const bridge=createBridge({postMessage:value=>sent.push(value)});
   assert.equal(bridge.send('dock','material','none'),true);
   assert.equal(bridge.send('dock','reflection',true),true);
+  assert.equal(bridge.send('dock','reflectionRatio',80),true);
+  assert.equal(bridge.send('dock','reflectionTransparency',50),true);
+  assert.equal(bridge.send('dock','reflectionRatio',101),false);
+  assert.equal(bridge.send('dock','reflectionTransparency',-1),false);
   assert.equal(bridge.send('dock','iconScale',120),true);
   assert.equal(bridge.send('dock','iconScale',50),true);
   assert.equal(bridge.send('dock','iconScale',121),false);
-  assert.deepEqual(sent,['v1|dock|material|none','v1|dock|reflection|true','v1|dock|iconScale|120','v1|dock|iconScale|50']);
+  assert.deepEqual(sent,['v1|dock|material|none','v1|dock|reflection|true','v1|dock|reflectionRatio|80','v1|dock|reflectionTransparency|50','v1|dock|iconScale|120','v1|dock|iconScale|50']);
 });
 test('launchpad size and icon size have independent native commands and numeric inputs',()=>{
   const sent=[],bridge=createBridge({postMessage:value=>sent.push(value)});
@@ -217,7 +258,7 @@ test('launchpad size and icon size have independent native commands and numeric 
     }
   }
   for(const [tab,ids] of [['dock',['dock-icon-scale','dock-bottom-offset','dock-icon-spacing']],
-    ['launchpad',['dock-launchpad-scale','dock-launchpad-icon-scale']]]){
+    ['settings',['dock-launchpad-scale','dock-launchpad-icon-scale']]]){
     const html=dockPage({...initialState(),dockStatus:'idle'},tab);
     for(const id of ids)assert.match(html,new RegExp(`id="${id}-number" type="number"`));
   }
@@ -225,20 +266,29 @@ test('launchpad size and icon size have independent native commands and numeric 
 
 test('Dock layout settings send validated values and keep their state',()=>{
   const sent=[];const bridge=createBridge({postMessage:value=>sent.push(value)});
-  for(const [action,value] of [['position',75],['bottomOffset',80],['iconSpacing',24]])
+  for(const [action,value] of [['positionMode','left'],['positionOffset',25],['bottomOffset',80],['iconSpacing',24]])
     assert.equal(bridge.send('dock',action,value),true);
-  for(const [action,value] of [['position',101],['bottomOffset',-20],['iconSpacing',25]])
+  for(const [action,value] of [['positionMode','top'],['positionOffset',51],['bottomOffset',-20],['iconSpacing',25]])
     assert.equal(bridge.send('dock',action,value),false);
-  assert.deepEqual(sent,['v1|dock|position|75','v1|dock|bottomOffset|80','v1|dock|iconSpacing|24']);
-  const message=snapshot({position:75,bottomOffset:80,iconSpacing:24});
+  assert.deepEqual(sent,['v1|dock|positionMode|left','v1|dock|positionOffset|25','v1|dock|bottomOffset|80','v1|dock|iconSpacing|24']);
+  const message=snapshot({positionMode:'left',positionOffset:25,bottomOffset:80,iconSpacing:24});
   assert.ok(validDockState(message));
   assert.equal(validDockState(snapshot({position:101})),false);
+  assert.equal(validDockState(snapshot({positionMode:'top'})),false);
+  assert.equal(validDockState(snapshot({positionOffset:51})),false);
   assert.equal(validDockState(snapshot({iconSpacing:25})),false);
   assert.equal(validDockState(snapshot({position:12,iconSpacing:5,iconScale:105})),true);
   const state=reduce(initialState(),{type:'host',message});
-  assert.equal(state.dock.position,75);assert.equal(state.dock.bottomOffset,80);assert.equal(state.dock.iconSpacing,24);
+  assert.equal(state.dock.positionMode,'left');assert.equal(state.dock.positionOffset,25);assert.equal(state.dock.bottomOffset,80);assert.equal(state.dock.iconSpacing,24);
   const page=dockPage(state);
-  assert.ok(!page.includes('id="dock-position"'),'horizontal position is no longer offered');
-  assert.ok(page.indexOf('id="dock-icon-scale"')<page.indexOf('id="dock-bottom-offset"')&&page.indexOf('id="dock-bottom-offset"')<page.indexOf('id="dock-icon-spacing"'));
+  assert.match(page,/<h2>尺寸<\/h2>/);
+  assert.match(page,/<h2>位置<\/h2>/);
+  assert.match(page,/data-dock-position="center" aria-pressed="false"/);
+  assert.match(page,/data-dock-position="left" aria-pressed="true"/);
+  assert.match(page,/data-dock-position="right" aria-pressed="false"/);
+  assert.ok(page.indexOf('id="dock-icon-scale"')<page.indexOf('id="dock-icon-spacing"'));
+  assert.ok(page.indexOf('id="dock-icon-spacing"')<page.indexOf('data-dock-position="center"'));
+  assert.ok(page.indexOf('id="dock-position-offset"')<page.indexOf('id="dock-bottom-offset"'));
+  assert.match(page,/data-dock-position-offset-row[^>]*>/);
   assert.match(page,/id="dock-bottom-offset"/);
 });

@@ -22,7 +22,7 @@
 （例如报 `SSL peer certificate ... was not OK`），可以手动下载
 `https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg`，
 改名为 `sdk.zip` 放到 `build-artifacts/dependencies/webview2-1.0.2903.40/`，CMake 会校验它的 SHA-256。
-除此之外不会联网下载依赖，所有第三方代码都已随源码提供。
+客户端界面使用的第三方源码与资源随仓库提供。在线音乐运行库另有固定版本的 npm 依赖；生成包含该运行库的安装包时，还需要访问 npm、Node.js 下载站以及锁文件记录的上游地址。
 
 ## 2. 编译
 
@@ -63,6 +63,14 @@ node --test tests/
 
 ## 4. 生成安装程序（可选）
 
+在线音乐运行库的源码位于 `native-rebuild/music-runtime/`，Folia 适配器原始源码、修改记录和许可保存在其 `vendor/` 下。生成运行库需要官方 Node.js 24.15.0，在 `native-rebuild/` 下运行：
+
+```powershell
+.\tools\build-folia-runtime.ps1 -Destination ..\build-artifacts\music-runtime-stage -NodePath 'C:\Program Files\nodejs\node.exe'
+```
+
+目标目录须为空。构建脚本使用锁文件安装依赖，生成运行库清单并核对哈希。打包时可以通过 `-MusicRuntimeRoot <运行库目录>` 复用已验证的运行库。
+
 需要 Inno Setup 6 和 innounp。默认在 `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe` 和 WinGet 的 innounp 位置查找，
 也可以用环境变量 `LUME_ISCC`、`LUME_INNOUNP` 指定。还需要上一节提到的 `wallpaper-runtime/mpv.exe`。
 
@@ -96,6 +104,7 @@ node tools/extract-music-3d.mjs --check
 | `native-rebuild/core/` | 与平台无关的模型与逻辑 |
 | `native-rebuild/platform/windows/` | Windows 实现：窗口、壁纸、任务栏、组件、材质、音乐协议 |
 | `native-rebuild/ui/` | 设置与音乐界面（WebView2 页面，原生 ES 模块，无需打包） |
+| `native-rebuild/music-runtime/` | 在线音乐运行库、固定依赖清单与 Folia 适配器源码 |
 | `native-rebuild/vendor/` | 随附的第三方代码与运行时 |
 | `native-rebuild/tests/` | 单元测试与打包脚本 |
 | `native-rebuild/packaging/` | Inno Setup 安装脚本 |

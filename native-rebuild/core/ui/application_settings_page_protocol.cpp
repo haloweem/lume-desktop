@@ -32,6 +32,8 @@ std::optional<ApplicationSettingsPageCommand> ParseApplicationSettingsPageJson(s
         else if (action == "chooseDataDirectory") command.action = ApplicationSettingsAction::ChooseDataDirectory;
         else if (action == "language") { command.action = ApplicationSettingsAction::Language; hasValue = true; }
         else if (action == "balancedMode") { command.action = ApplicationSettingsAction::BalancedMode; hasValue = true; }
+        else if (action == "chooseGame") command.action=ApplicationSettingsAction::ChooseGame;
+        else if (action == "removeGame") { command.action=ApplicationSettingsAction::RemoveGame; hasValue=true; }
         else if (action == "autostart") { command.action = ApplicationSettingsAction::Autostart; hasValue = true; }
         else if (action == "interfaceScale") { command.action = ApplicationSettingsAction::InterfaceScale; hasValue = true; }
         else if (action == "previewInterfaceScale") { command.action = ApplicationSettingsAction::PreviewInterfaceScale; hasValue = true; }
@@ -43,6 +45,9 @@ std::optional<ApplicationSettingsPageCommand> ParseApplicationSettingsPageJson(s
                 if (!value.is_string()) return {};
                 command.language = value.get<std::string>();
                 if (command.language != "zh-CN" && command.language != "en") return {};
+            } else if (command.action == ApplicationSettingsAction::RemoveGame) {
+                if (!value.is_number_unsigned() || value>=16) return {};
+                command.gameIndex=value.get<unsigned>();
             } else if (command.action == ApplicationSettingsAction::InterfaceScale ||
                        command.action == ApplicationSettingsAction::PreviewInterfaceScale) {
                 if (!value.is_number_integer() || value < 50 || value > 75) return {};

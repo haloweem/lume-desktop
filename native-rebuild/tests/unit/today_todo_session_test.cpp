@@ -192,6 +192,26 @@ int main(int argc,char** argv){try{
   restored.Shutdown();Check(Checklists().empty(),"restored checklist closes cleanly");
  }
  {
+  Files routedFiles;widget::PreferencesStore routedStore(routedFiles,{320,152,320,152,720,720});
+  auto routedPrefs=widget::Defaults({320,152,320,152,720,720});routedPrefs.enabled=true;
+  Check(routedStore.Save("routed",routedPrefs),"seed routed checklist");
+  struct Request{std::string id;calendar::Date date{};HWND owner=nullptr;};std::vector<Request> requests;
+  shell::TodayTodoSession routed(GetModuleHandleW(nullptr),"routed",{},[]{},port,&routedFiles,
+   [&](const std::string& id,calendar::Date date,HWND owner){requests.push_back({id,date,owner});});
+  Check(routed.Restore()&&Checklists().size()==1,"restore checklist with shared-editor routing");
+  const auto owner=routed.Handle();Menu(owner,false,0);
+  Check(requests.size()==1&&requests.back().id.empty()&&requests.back().date==today&&requests.back().owner==owner,
+        "new task routes to the shared editor with its date and checklist owner");
+  TodayTodoView routedView;routedView.Update(repository.Read(),*port.time,now);
+  const auto rowIndex=routedView.Hit(31,56);Check(rowIndex>=0&&routedView.TaskAt(rowIndex),"identify the clicked checklist row");
+  const auto expectedId=routedView.TaskAt(rowIndex)->id;
+  Menu(owner,true,0);
+  Check(requests.size()==2&&requests.back().id==expectedId&&requests.back().date==today&&requests.back().owner==owner,
+        "row edit routes the selected task to the shared editor");
+  Check(Editor(owner)==nullptr,"routed checklist does not create its private editor window");
+  routed.Shutdown();Check(Checklists().empty(),"routed checklist closes cleanly");
+ }
+ {
   Files isolated;widget::PreferencesStore multiStore(isolated,{320,152,220,152,720,720});
   auto rootPrefs=widget::Defaults({320,152,220,152,720,720});rootPrefs.enabled=true;rootPrefs.solid=true;
   auto childPrefs=rootPrefs;childPrefs.x=420;childPrefs.y=180;childPrefs.placed=true;

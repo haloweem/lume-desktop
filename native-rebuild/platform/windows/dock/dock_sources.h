@@ -8,6 +8,7 @@ namespace lume::platform::windows::dock_sources {
 // Case-insensitive path identity and NFKC lowercase search keys.
 std::string PathKey(std::string_view);
 std::string SearchKey(std::string_view);
+bool IsWindowsSettings(const std::string& path);
 // Files and folders on the user and public desktops, excluding hidden and
 // system entries such as desktop.ini. Paths are normalized UTF-8.
 std::vector<std::string> DesktopPaths();
@@ -19,13 +20,13 @@ std::vector<dock::RunningApp> RunningApps();
 // Restores and focuses the program's windows; a program already in front is
 // minimized, and one with several windows cycles to the next. Returns false
 // when the program has no window (the caller starts it instead).
-bool ActivateProgram(const std::string& executable);
+bool ActivateProgram(const std::string& executable, bool animateActivation = false);
 bool CloseProgram(const std::string& executable);
 // Taskbar-style windows in first-seen order, each marked minimized or not.
 std::vector<dock::ProgramWindow> ProgramWindows();
 std::vector<dock::ProgramWindow> ProgramWindowsFor(const std::string& executable);
 // Restores and focuses a window; a window already in front is minimized.
-bool ActivateWindow(std::uint64_t handle);
+bool ActivateWindow(std::uint64_t handle, bool animateActivation = false);
 // Selecting a preview always restores/focuses; it never toggles minimization.
 bool FocusWindow(std::uint64_t handle);
 // True when `path` is the Recycle Bin, or a shortcut to it.

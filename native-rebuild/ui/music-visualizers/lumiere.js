@@ -56,7 +56,7 @@ export function mountLumiere(host,initial,{onError}={}){
       subtitleSource=latest.lines;
       subtitleLines=subtitleSource===lines?prepared:prepareLumiereLines(subtitleSource||[]);
     }
-    subtitles.update(subtitleLines,latest.currentTime||0,theme);
+    subtitles.update(subtitleLines,latest.currentTime||0,theme,latest.preferences?.subtitleContentMode);
   }
   function update(next){
     if(disposed)return;

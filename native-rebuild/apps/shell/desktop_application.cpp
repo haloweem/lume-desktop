@@ -1,4 +1,5 @@
 #include "apps/shell/desktop_application.h"
+#include "platform/windows/folia_music_runtime.h"
 #include "apps/shell/desktop_service_lifecycle.h"
 #include "platform/windows/text_util.h"
 #include "platform/windows/lume_window_ids.h"
@@ -9,6 +10,7 @@
 #include "platform/windows/control_center/control_center_window.h"
 #include "core/todo/todo_time.h"
 #include "apps/shell/performance_session.h"
+#include "apps/shell/balanced_game_policy.h"
 #include "apps/shell/spectrum_session.h"
 #include "apps/shell/resource_snapshot.h"
 #include "apps/shell/almanac_session.h"
@@ -107,6 +109,8 @@ MusicProviderAccountOptions MusicAccountOptions(const DesktopApplicationOptions&
     auto accounts = options.musicAccounts;
     accounts.verification = options.verification;
     accounts.wake = std::move(wake);
+    if (!accounts.verification && !accounts.execute)
+        accounts.runtime = SharedFoliaMusicRuntime(accounts.root);
     return accounts;
 }
 MusicBackgroundSessionOptions MusicBackgroundOptions(const DesktopApplicationOptions& options,
@@ -155,7 +159,7 @@ struct DesktopApplication::State {
     }
     // The calendar's todo form, opened from the island below the capsule. It
     // writes through the shared TodoSession, so every todo view refreshes.
-    void OpenIslandTodoEditor(const std::string& id,calendar::Date day){
+    void OpenIslandTodoEditor(const std::string& id,calendar::Date day,HWND fallbackOwner=nullptr){
         if(exiting||!todos)return;
         if(islandEditor.IsOpen()){SetForegroundWindow(islandEditor.Handle());return;}
         const auto snapshot=todos->Read();
@@ -170,23 +174,72 @@ struct DesktopApplication::State {
             seed.patch.schedule=todo::DefaultSchedule(day,now,time);
             if(!seed.patch.schedule)return;
         }
-        const HWND owner=dynamicIsland.Handle();
-        const unsigned dpi=owner?GetDpiForWindow(owner):GetDpiForSystem();
-        MONITORINFO monitor{sizeof(monitor)};
-        if(!GetMonitorInfoW(MonitorFromPoint({0,0},MONITOR_DEFAULTTOPRIMARY),&monitor))return;
-        const auto work=monitor.rcWork;
-        const int width=std::min<int>(work.right-work.left,MulDiv(480,static_cast<int>(dpi),96));
-        const int height=std::min<int>(work.bottom-work.top,MulDiv(560,static_cast<int>(dpi),96));
-        // Below the island, but never past the bottom of a short work area.
-        const int left=work.left+(work.right-work.left-width)/2,
-                  top=std::max<int>(work.top,std::min<int>(work.top+MulDiv(64,static_cast<int>(dpi),96),work.bottom-height));
-        calendar::Preferences appearance;appearance.material=calendar::Material::FrostedGlass;
-        islandEditor.Open(instance,owner,RECT{left,top,left+width,top+height},dpi,appearance,time,seed,now,existing,
+        OpenIslandSheet(std::move(seed),std::move(existing),now,fallbackOwner,TodoSheetWindow::Mode::Task,
             [this](const todo::Command& command){
                 todo::CommandResult result;result.error=todo::Error::ReadOnly;
                 if(exiting||!todos)return result;
                 return todos->Dispatch(command);
-            },{},WindowsLocalTime::NowMillis);
+            });
+    }
+    void OpenIslandSheet(todo::Command seed,std::optional<todo::TaskView> existing,todo::Millis now,
+                         HWND fallbackOwner,TodoSheetWindow::Mode mode,TodoSheetWindow::Save save,
+                         std::optional<TodoSheetWindow::CountdownAppearance> countdownAppearance={}){
+        const HWND islandOwner=dynamicIsland.Handle();
+        const HWND owner=(mode==TodoSheetWindow::Mode::Countdown||!islandOwner)?fallbackOwner:islandOwner;
+        RECT anchor{};
+        if(!IsWindow(owner)||!GetWindowRect(owner,&anchor))return;
+        const unsigned dpi=GetDpiForWindow(owner);
+        calendar::Preferences appearance;appearance.material=calendar::Material::FrostedGlass;
+        islandEditor.Open(instance,owner,anchor,dpi,appearance,todos->Time(),
+            std::move(seed),now,std::move(existing),std::move(save),{},WindowsLocalTime::NowMillis,mode,countdownAppearance);
+    }
+    void OpenIslandCountdownEditor(HWND owner){
+        if(exiting||!todos)return;
+        if(islandEditor.IsOpen()){SetForegroundWindow(islandEditor.Handle());return;}
+        const auto& time=todos->Time();const auto now=WindowsLocalTime::NowMillis();
+        const auto current=dynamicIsland.CountdownSettings();
+        const auto localNow=time.ToLocal(now);
+        const auto date=current.date>0?calendar::AddDays({1970,1,1},current.date):
+            (localNow?std::optional<calendar::Date>{localNow->date}:std::nullopt);
+        if(!date)return;
+        const auto schedule=todo::DefaultSchedule(*date,now,time);if(!schedule)return;
+        todo::TaskView existing;existing.id="lume-countdown";existing.title=current.title;existing.schedule=*schedule;existing.day=*date;
+        if(current.reminder){existing.reminder.kind=todo::ReminderKind::Relative;existing.reminder.leadMilliseconds=0;}
+        todo::Command seed;seed.type=todo::CommandType::Update;seed.id=existing.id;
+        std::optional<TodoSheetWindow::CountdownAppearance> appearance;
+        const bool solid=current.style==IslandCountdownStyle::Violet;
+        appearance.emplace();
+        appearance->singleColor=solid;appearance->textColor=current.textColor;
+        appearance->backgroundColor=solid?current.solidColor:current.backgroundColor;
+        appearance->textAlpha=current.textAlpha;appearance->backgroundAlpha=solid?current.solidAlpha:current.backgroundAlpha;
+        appearance->countUp=current.countUp;
+        OpenIslandSheet(std::move(seed),std::move(existing),now,owner,TodoSheetWindow::Mode::Countdown,
+            [this,date](const todo::Command& command){
+                todo::CommandResult result;
+                result.error=todo::Error::WriteFailed;
+                if(exiting||command.type!=todo::CommandType::Update)return result;
+                auto next=dynamicIsland.CountdownSettings();
+                if(command.patch.title)next.title=*command.patch.title;
+                auto target=*date;
+                if(command.patch.schedule){
+                    const auto local=todos->Time().ToLocal(command.patch.schedule->startAt);
+                    if(!local){result.error=todo::Error::InvalidTime;return result;}
+                    target=local->date;
+                }
+                next.date=calendar::DaysSinceUnixEpoch(target);
+                if(next.date<=0){result.error=todo::Error::InvalidTime;return result;}
+                if(command.patch.reminder)next.reminder=command.patch.reminder->kind!=todo::ReminderKind::None;
+                if(const auto colors=islandEditor.CountdownColors()){
+                    next.countUp=colors->countUp;
+                    if(colors->singleColor){next.solidColor=colors->backgroundColor;next.solidAlpha=colors->backgroundAlpha;}
+                    else{next.textColor=colors->textColor;next.backgroundColor=colors->backgroundColor;
+                        next.textAlpha=colors->textAlpha;next.backgroundAlpha=colors->backgroundAlpha;}
+                }
+                if(dynamicIsland.SaveCountdownSettings(std::move(next))){
+                    result.ok=result.committed=result.changed=true;result.error=todo::Error::None;
+                }
+                return result;
+            },appearance);
     }
     // Music from another player, for its minimized window in the Dock.
     std::optional<NowPlaying> NowPlayingCover() {
@@ -219,6 +272,11 @@ struct DesktopApplication::State {
             value.externalSetPlaying=[this](bool playing){systemMedia.SetPlaying(playing);};
         }
         value.openSettings=[this]{Open(ManagerPage::DynamicIsland);};
+        value.editWidget=[this](dynamic_island::ExpandedWidget widget,HWND owner){
+            if(widget==dynamic_island::ExpandedWidget::Countdown){OpenIslandCountdownEditor(owner);return;}
+            islandSettingsSection=dynamic_island::ExpandedWidgetIds[static_cast<std::size_t>(widget)];
+            Open(ManagerPage::DynamicIsland);
+        };
         value.previewWallpaper=[] {
             wchar_t executable[32768]{};
             const auto length=GetModuleFileNameW(nullptr,executable,32768);
@@ -264,7 +322,8 @@ struct DesktopApplication::State {
             [this]{Open(ManagerPage::Calendar);},todos),
         todayTodo(instance,this->options.todayTodoPreferencesPath,
             Notifier(),
-            [this]{Open(ManagerPage::TodayTodo);},todos->Port()),
+            [this]{Open(ManagerPage::TodayTodo);},todos->Port(),nullptr,
+            [this](const std::string& id,calendar::Date day,HWND owner){OpenIslandTodoEditor(id,day,owner);}),
         performance(instance,this->options.performancePreferencesPath,
             Notifier(ManagerPage::Performance),
             [this]{Open(ManagerPage::Performance);}),
@@ -284,6 +343,8 @@ struct DesktopApplication::State {
             Notifier(ManagerPage::Radial),
             [this](bool shortcut){radialShortcutSettings=shortcut;Open(ManagerPage::Radial);}),
         dock(instance,[this]{auto value=this->options.dock;value.verification=this->options.verification;
+                value.animationScope=AnimationScope(this->options);
+                value.managerWindow=[this]{return window.Handle();};
                 if(!value.nowPlaying)value.nowPlaying=[this]{return NowPlayingCover();};return value;}(),
             Notifier(ManagerPage::Dock),
             [this]{Open(ManagerPage::Home);},[this]{Open(ManagerPage::Dock);},[this]{return visible;}),
@@ -301,7 +362,11 @@ struct DesktopApplication::State {
             nullptr,AnimationScope(this->options)),
         applicationSettings(instance,SettingsOptions(this->options),
             [this](const std::wstring& message){
-                if(!applicationSettings.HasWork())window.SetInterfaceScale(applicationSettings.Preferences().interfaceScale);
+                if(!applicationSettings.HasWork()) {
+                    const auto settings=applicationSettings.Preferences();
+                    window.SetInterfaceScale(settings.interfaceScale);
+                    SetGamePreferences(settings);
+                }
                 Post(message);
                 if(!exiting){dynamicIsland.SetEnglish(applicationSettings.Preferences().language=="en");lume::platform::windows::TodoSheetWindow::SetEnglish(applicationSettings.Preferences().language=="en");lume::platform::windows::ControlCenterWindow::SetEnglish(applicationSettings.Preferences().language=="en");updateNotifications.SetLanguage(applicationSettings.Preferences().language=="en");updateNotifications.Wake();Wake();}
             },
@@ -379,6 +444,8 @@ struct DesktopApplication::State {
             if(exiting)return;
             if(const auto report=ParseDiagnosticReportCommand(message)) {
                 if(report->action=="open-logs")OpenLogFolder();
+                else if(report->action=="open-help")
+                    ShellExecuteW(window.Handle(),L"open",L"https://www.lumedesktop.com/bugs.html",nullptr,nullptr,SW_SHOWNORMAL);
                 else if(report->action=="copy")StartDiagnosticJob(DiagnosticJob::Copy,report->note);
                 else if(report->action=="self-check")StartDiagnosticJob(DiagnosticJob::Check,{});
                 else StartDiagnosticJob(DiagnosticJob::Report,report->note);
@@ -466,6 +533,10 @@ struct DesktopApplication::State {
     }
     MusicSessionOptions PlaybackOptions() {
         auto value=MusicOptions(options,[this]{Wake();});
+        if (!options.verification && !value.createHost) {
+            auto runtime = SharedFoliaMusicRuntime(options.musicAccounts.root);
+            value.issuedSource = [runtime](std::string_view source) { return runtime->SourceAllowed(source); };
+        }
         value.analysisActive=[this]{ return dynamicIsland.AnalysisActive(); };
         if(!value.resolveSource && !value.resolveAudioSource)value.resolveAudioSource=[this](const auto& track,auto quality,const auto& cancelled){
             return musicOnline.ResolveAudioSource(track,quality,cancelled);
@@ -486,6 +557,7 @@ struct DesktopApplication::State {
     MusicOnlineOptions OnlineOptions() {
         auto value=options.musicOnline;
         value.verification=options.verification;
+        if (!value.verification && !value.execute) value.runtime = SharedFoliaMusicRuntime(options.musicAccounts.root);
         if(!value.acquire)value.acquire=[this](auto provider){return musicAccounts.AcquireCredentials(provider);};
         if(!value.current)value.current=[this](const auto& lease){return musicAccounts.IsCurrent(lease);};
         value.wake=[this]{Wake();};
@@ -815,7 +887,12 @@ struct DesktopApplication::State {
         if(!ready||!navigation)return;
         const auto page=*navigation;navigation.reset();
         if(page==ManagerPage::Home)return;
-        if(page==ManagerPage::DynamicIsland){Post(L"{\"version\":1,\"type\":\"navigate\",\"page\":\"dynamicIsland\"}");return;}
+        if(page==ManagerPage::DynamicIsland){
+            const auto section=std::exchange(islandSettingsSection,{});
+            if(section.empty())Post(L"{\"version\":1,\"type\":\"navigate\",\"page\":\"dynamicIsland\"}");
+            else Post(std::wstring(L"{\"version\":1,\"type\":\"navigate\",\"page\":\"dynamicIsland\",\"section\":\"")+Wide(section)+L"\"}");
+            return;
+        }
         if(page==ManagerPage::Radial){
             Post(radialShortcutSettings?L"{\"version\":1,\"type\":\"navigate\",\"page\":\"radial\",\"section\":\"shortcut\"}":
                 L"{\"version\":1,\"type\":\"navigate\",\"page\":\"radial\"}");
@@ -833,7 +910,31 @@ struct DesktopApplication::State {
         const wchar_t* name=page==ManagerPage::TodayTodo?L"todayTodo":page==ManagerPage::Calendar?L"calendar":page==ManagerPage::Performance?L"performance":page==ManagerPage::Spectrum?L"spectrum":page==ManagerPage::Almanac?L"almanac":page==ManagerPage::Weather?L"weather":page==ManagerPage::Organizer?L"organizer":page==ManagerPage::Icons?L"icons":page==ManagerPage::Taskbar?L"taskbar":page==ManagerPage::MinimizeAnimation?L"minimize":page==ManagerPage::Music?L"music":page==ManagerPage::Dock?L"dock":L"clock";
         Post(std::wstring(L"{\"version\":1,\"type\":\"navigate\",\"page\":\"")+name+L"\"}");
     }
+    void SetGamePreferences(const application_settings::Preferences& prefs) {
+        gamePolicy.Configure(prefs.balancedMode,prefs.gamePrograms);
+        window_layer::Refresh();
+    }
+    bool ObserveGame(const window_layer::Context& state) {
+        if(exiting)return false;
+        const bool idle=gamePolicy.Observe(state,GetTickCount64());
+        wallpaper.SetGameIdle(idle);
+        // Keep a manager visible on another screen usable. Only suspend a
+        // covered manager, and wake it immediately on Alt+Tab.
+        const HWND manager=window.Handle();
+        RECT bounds{},front{};
+        const bool covered=gamePolicy.InFront() && manager && IsWindowVisible(manager) &&
+            GetWindowRect(manager,&bounds) && GetWindowRect(state.foreground,&front) && window_layer::Covers(front,bounds);
+        if(desiredGameIdle!=idle || managerCovered!=covered) {
+            desiredGameIdle=idle;managerCovered=covered;Wake();
+        }
+        return idle;
+    }
     void DrainPendingWork(){
+        if (!exiting && appliedGameIdle!=desiredGameIdle) {
+            appliedGameIdle=desiredGameIdle;
+            dock.SetGameIdle(appliedGameIdle);
+        }
+        if (!exiting) window.SetGameCovered(managerCovered);
         DrainMaterialCapturePermission();
         DrainReport();
         while(!musicCommands.empty()) {
@@ -847,8 +948,10 @@ struct DesktopApplication::State {
         if(const auto state=musicOnline.DrainNotification())Post(*state);
         musicLibraryCoordinator.Process(musicLibrary.Drain());
         const auto snapshot=music.Snapshot();
-        musicDesktop.Update(snapshot);
-        dynamicIsland.Update(islandMediaAdapter.Project(snapshot,dynamicIsland.Snapshot().enabled));
+        if(!appliedGameIdle) {
+            musicDesktop.Update(snapshot);
+            dynamicIsland.Update(islandMediaAdapter.Project(snapshot,dynamicIsland.Snapshot().enabled));
+        }
         musicLibraryCoordinator.SaveQueue(snapshot);
         for(const auto& state:musicBackground.Drain())Post(state);
     }
@@ -955,7 +1058,13 @@ struct DesktopApplication::State {
         const auto initialized=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(initialized))return 1;
         // Display permissions must be ready before any restored widget can show.
         lume::platform::windows::desktop_level::Watcher desktopLevel;
-        if(!options.verification)desktopLevel.Start(instance);
+        if(!options.verification) {
+            SetGamePreferences(applicationSettings.Preferences());
+            window_layer::balancedPolicy=[this](const auto& context){return ObserveGame(context);};
+            // Screen selection overlays also cover the entire display. Leave
+            // automatic component hiding off while this feature is suspended.
+            desktopLevel.Start(instance, false);
+        }
         lume::platform::windows::window_layer::observer=[](HWND window, auto kind, bool hidden){
             DWORD pid=0;const auto& state=lume::platform::windows::window_layer::context;
             GetWindowThreadProcessId(state.foreground,&pid);
@@ -1022,6 +1131,7 @@ struct DesktopApplication::State {
             }
             showManager=opening;
         }while(!exiting&&opening);
+        window_layer::balancedPolicy={};
         todos->SetChanged({});
         if(!lifecycle.Shutdown())result=1;
         diagnosticTray=nullptr;thread=0;CoUninitialize();return result;
@@ -1099,8 +1209,11 @@ struct DesktopApplication::State {
     bool openDiagnosticsOnNext=false;
     ULONGLONG dockNotRunningSince=0;
     bool radialShortcutSettings=false;
+    std::string islandSettingsSection;
     DWORD thread=0;
     MaterialCapturePermissionSession materialPermission;
+    BalancedGamePolicy gamePolicy;
+    bool desiredGameIdle=false,appliedGameIdle=false,managerCovered=false;
     bool visible=false,ready=false,opening=false,exiting=false,ran=false,awaitingQuit=false,remindersStarted=false;
     std::map<std::string,std::string> tracedStates;
     DiagnosticJobSession diagnosticJobs;

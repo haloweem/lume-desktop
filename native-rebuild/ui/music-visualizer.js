@@ -15,10 +15,27 @@ export const MUSIC_VISUALIZERS = Object.freeze([
   Object.freeze({id:'pendolo',label:'时计'}),
   Object.freeze({id:'classic',label:'流光'}),
   Object.freeze({id:'tempera',label:'凝彩'}),
+  Object.freeze({id:'nebbia',label:'雾笺'}),
+  Object.freeze({id:'hanabi',label:'花火'}),
+  Object.freeze({id:'machi',label:'町景'}),
 ]);
 export const DEFAULT_MUSIC_VISUALIZER = 'partita';
 export const resolveMusicVisualizer = mode => MUSIC_VISUALIZERS.some(item=>item.id===mode) ? mode : DEFAULT_MUSIC_VISUALIZER;
 const galleryStyles=new WeakMap();
+function withSubtitles(mount,mode){
+  return (host,state)=>{
+    const renderer=mount(host,state),label=host.ownerDocument.createElement('div');
+    Object.assign(label.style,{position:'absolute',bottom:'12%',left:'5%',right:'5%',textAlign:'center',whiteSpace:'pre-line',pointerEvents:'none',zIndex:'20',textShadow:'0 1px 3px #222'});
+    host.append(label);
+    return {update(next){
+      renderer.update(next);
+      const choice=next.preferences?.subtitleContentMode??'translation',line=next.lines[next.activeLineIndex];
+      const text=!line||next.currentTime>line.endTime||choice==='none'||(mode==='3d'&&choice==='translation')?'':
+        (choice==='both'?[line.romanization,line.translation]:[line[choice]]).filter(value=>value?.trim()&&value!==line.fullText).join('\n');
+      if(label.textContent!==text)label.textContent=text;
+    },dispose(){label.remove();renderer.dispose();}};
+  };
+}
 const loadVisualizer = async (mode,host,options) => {
   if(mode==='lumiere'){
     const {mountLumiere}=await import('./music-visualizers/lumiere.js');
@@ -35,9 +52,9 @@ const loadVisualizer = async (mode,host,options) => {
       }));
     }
     await galleryStyles.get(document);
-    return (await import('./music-visualizers/gallery.js')).mountGallery;
+    return withSubtitles((await import('./music-visualizers/gallery.js')).mountGallery,mode);
   }
-  if(mode==='3d') return (await import('./music-visualizers/three-d.js')).mountThreeD;
+  if(mode==='3d') return withSubtitles((await import('./music-visualizers/three-d.js')).mountThreeD,mode);
   const {mountReference}=await import('./music-visualizers/reference-host.js');
   return (host,state)=>mountReference(host,state,mode,options);
 };

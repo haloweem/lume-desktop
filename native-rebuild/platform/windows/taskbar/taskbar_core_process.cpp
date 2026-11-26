@@ -22,10 +22,12 @@ Error TaskbarCoreDialogError(std::wstring_view text) {
     if (text.find(L"已更新。请重启 Windows") != std::wstring_view::npos ||
         text.find(L"has been updated. Please restart Windows") != std::wstring_view::npos)
         return Error::CoreRestartRequired;
+    // Only call this for a dialog owned by the verified child. Unknown or
+    // unreadable text is still a core failure, never permission to relaunch it.
     // The pinned core uses this fixed English stage label; the HRESULT is
     // stable even when Windows localizes its accompanying description.
     if (text.find(L"Failed to initialize XAML Diagnostics.") == std::wstring_view::npos)
-        return Error::None;
+        return Error::CoreFailure;
     std::wstring lower(text);
     for (auto& c : lower) c = static_cast<wchar_t>(std::towlower(c));
     for (const auto& [code, error] : {
@@ -37,7 +39,7 @@ Error TaskbarCoreDialogError(std::wstring_view text) {
             if (end == lower.size() || !std::iswxdigit(lower[end])) return error;
         }
     }
-    return Error::None;
+    return Error::CoreFailure;
 }
 TaskbarCoreDiagnostics ReadTaskbarCoreDiagnostics(const std::filesystem::path& path, DWORD corePid, DWORD explorerPid) {
     TaskbarCoreDiagnostics result;
@@ -119,7 +121,7 @@ TaskbarCoreDiagnostics ReadTaskbarCoreDiagnostics(const std::filesystem::path& p
                 case 0x80070102: result.error = Error::CoreAttachTimeout; break;
                 case 0x80070666: // ERROR_PRODUCT_VERSION
                 case 0x80070020: result.error = Error::CoreRestartRequired; break;
-                default: result.error = Error::CoreEffectUnconfirmed; break;
+                default: result.error = result.serviceReady ? Error::CoreEffectUnconfirmed : Error::CoreFailure; break;
             }
         }
         result.valid = true;
@@ -144,12 +146,11 @@ HWND CoreWindow(DWORD pid) {
     }, reinterpret_cast<LPARAM>(&search));
     return search.window;
 }
-// The core reports a fatal error (for example "Failed to initialize XAML
-// Diagnostics", 0x800401E3, when Explorer's taskbar XAML is not up yet) in a
-// message box and exits once it is dismissed. Lume restarts the core with
-// backoff, so the box is dismissed here instead of being left to the user.
+// The core exits after its fatal dialog is dismissed. Remember that first
+// dialog independently of its heartbeat, so no timer or recovery launch can
+// show the same failure again before an explicit user retry.
 void DismissCoreDialogs(DWORD pid, std::atomic<Error>& failure) {
-    struct Search { DWORD pid; std::atomic<Error>& failure; bool found; } search{pid, failure, false};
+    struct Search { DWORD pid; std::atomic<Error>& failure; } search{pid, failure};
     EnumWindows([](HWND window, LPARAM data) -> BOOL {
         auto& state = *reinterpret_cast<Search*>(data); DWORD owner = 0;
         GetWindowThreadProcessId(window, &owner);
@@ -162,8 +163,8 @@ void DismissCoreDialogs(DWORD pid, std::atomic<Error>& failure) {
         const auto text = GetDlgItem(window, 0xFFFF);
         if (text) GetWindowTextW(text, message, 2048);
         const auto error = TaskbarCoreDialogError(message);
-        if (error != Error::None) state.failure = error;
-        if (!state.found) {
+        auto expected = Error::None;
+        if (state.failure.compare_exchange_strong(expected, error)) {
             std::string utf8(8192, '\0');
             const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8.data(), 8192, nullptr, nullptr);
             utf8.resize(length > 0 ? static_cast<std::size_t>(length - 1) : 0);
@@ -171,7 +172,6 @@ void DismissCoreDialogs(DWORD pid, std::atomic<Error>& failure) {
         }
         PostMessageW(window, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
         PostMessageW(window, WM_CLOSE, 0, 0);
-        state.found = true;
         return TRUE;
     }, reinterpret_cast<LPARAM>(&search));
 }
@@ -206,8 +206,11 @@ struct TaskbarCoreProcess::Impl {
                 while (!guardStop && WaitForSingleObject(copy, 500) == WAIT_TIMEOUT) {
                     if (api.readDialogFailure) {
                         const auto failure = api.readDialogFailure(watched);
-                        if (failure != Error::None) reportedFailure = failure;
-                    } else DismissCoreDialogs(watched, reportedFailure);
+                        if (failure != Error::None) {
+                            auto expected = Error::None;
+                            dialogFailure.compare_exchange_strong(expected, failure);
+                        }
+                    } else DismissCoreDialogs(watched, dialogFailure);
                 }
                 CloseHandle(copy);
             });
@@ -225,28 +228,49 @@ struct TaskbarCoreProcess::Impl {
         const bool known = process && GetExitCodeProcess(process, &code);
         diag::Log("taskbar", std::string("core ") + when + ", code " + (known ? diag::ExitCodeText(code) : std::string("unknown")));
     }
+    Error UnexpectedExit() {
+        CaptureFailure();
+        // The user may dismiss the fatal dialog before the guard sees it.
+        // An unexpected exit still ends this attempt; recovery must not create
+        // another copy of that dialog just to restore the background.
+        if (FailureOr(Error::None) == Error::None) reportedFailure = Error::CoreFailure;
+        const auto failure = FailureOr(Error::CoreFailure);
+        auto expected = Error::None;
+        dialogFailure.compare_exchange_strong(expected, failure);
+        return failure;
+    }
     Error WaitReady(bool recovery) {
         ready = false;
         for (;;) {
             if (!recovery && cancel) return Error::Cancelled;
             const auto state = api.wait(process, 0);
-            if (state == WAIT_OBJECT_0) { CaptureFailure(); LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
+            if (state == WAIT_OBJECT_0) { LogExit("exited before ready"); return UnexpectedExit(); }
             if (state != WAIT_TIMEOUT) return Error::CoreStart;
             const auto elapsed = GetTickCount64() - launchedAt;
             const auto report = CaptureFailure();
+            if (const auto failure = FailureOr(Error::None); taskbar::RequiresExplicitRetry(failure))
+                return failure;
             const bool serviceReady = report.valid && report.serviceReady;
-            if ((reportedFailure == Error::None || (serviceReady && !taskbar::RequiresExplicitRetry(reportedFailure.load()))) &&
+            if (dialogFailure == Error::None &&
+                (reportedFailure == Error::None || (serviceReady && !taskbar::RequiresExplicitRetry(reportedFailure.load()))) &&
                 (diagnosticsFile.empty() || serviceReady) &&
                 CoreWindow(pid) && elapsed >= timings.readySettleMs) {
                 ready = true; return Error::None;
             }
-            if (elapsed >= timings.startTimeoutMs) { diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms"); return FailureOr(diagnosticsFile.empty() ? Error::CoreStart : Error::CoreAttachTimeout); }
+            if (elapsed >= timings.startTimeoutMs) {
+                diag::Log("taskbar", "core not ready after " + std::to_string(elapsed) + " ms");
+                if (!diagnosticsFile.empty() && FailureOr(Error::None) == Error::None)
+                    reportedFailure = Error::CoreAttachTimeout;
+                return FailureOr(diagnosticsFile.empty() ? Error::CoreStart : Error::CoreAttachTimeout);
+            }
             const auto waited = api.wait(process, timings.waitSliceMs);
-            if (waited == WAIT_OBJECT_0) { CaptureFailure(); LogExit("exited before ready"); return FailureOr(Error::CoreExited); }
+            if (waited == WAIT_OBJECT_0) { LogExit("exited before ready"); return UnexpectedExit(); }
             if (waited != WAIT_TIMEOUT) return Error::CoreStart;
         }
     }
     Error FailureOr(Error fallback) const {
+        const auto dialog = dialogFailure.load();
+        if (dialog != Error::None) return dialog;
         const auto failure = reportedFailure.load();
         return failure == Error::None ? fallback : failure;
     }
@@ -255,14 +279,16 @@ struct TaskbarCoreProcess::Impl {
         // A query of an already connected background can fail temporarily and
         // recover on the next heartbeat. Do not turn it into a sticky launch
         // failure; the independent effect status still reports that failure.
-        if (report.valid && !report.serviceReady && report.error != Error::None) reportedFailure = report.error;
+        if (report.valid && !report.serviceReady && report.error != Error::None &&
+            !taskbar::RequiresExplicitRetry(reportedFailure.load())) reportedFailure = report.error;
         else if (report.valid && report.serviceReady && !taskbar::RequiresExplicitRetry(reportedFailure.load())) reportedFailure = Error::None;
         return report;
     }
     Error Start(bool recovery) {
-        // A known access failure will also fail a recovery launch. Keep its
-        // journal, and wait for an explicit user retry instead of another box.
-        if (taskbar::RequiresExplicitRetry(reportedFailure.load())) return reportedFailure.load();
+        // A first fatal dialog or failed attach blocks both ordinary launches
+        // and restoration launches. Keep the journal for a later explicit retry.
+        const auto failure = FailureOr(Error::None);
+        if (dialogFailure != Error::None || taskbar::RequiresExplicitRetry(failure)) return failure;
         if (process) {
             const auto state = api.wait(process, 0);
             if (state == WAIT_TIMEOUT) {
@@ -274,13 +300,15 @@ struct TaskbarCoreProcess::Impl {
             // An unsuccessful wait is not evidence of process exit. Preserve
             // the actual handles and do not launch a second owned core.
             if (state != WAIT_OBJECT_0) return Error::CoreStart;
+            DWORD code = 1;
+            if (!closeRequested || !GetExitCodeProcess(process, &code) || code != 0) return UnexpectedExit();
         }
         Close();
         reportedFailure = Error::None;
         if (!recovery && cancel) return Error::Cancelled;
         // Give Explorer's XAML taskbar time to appear rather than letting the
         // core fail on it; past the limit the core still starts and retries.
-        for (const auto until = GetTickCount64() + XamlWaitMs; !TaskbarXamlReady() && GetTickCount64() < until;) {
+        for (const auto until = GetTickCount64() + timings.xamlWaitMs; !TaskbarXamlReady() && GetTickCount64() < until;) {
             if (!recovery && cancel) return Error::Cancelled;
             Sleep(100);
         }
@@ -341,27 +369,31 @@ struct TaskbarCoreProcess::Impl {
             if (!closeRequested) LogExit("exited unexpectedly");
             DWORD code = 1;
             const bool completed = closeRequested && GetExitCodeProcess(process, &code) && code == 0;
+            if (!completed) UnexpectedExit();
             Close();
             recoveryRequired = !completed;
             if (completed) return Error::None;
         }
         if (!process && (previous || recoveryRequired)) {
-            if (taskbar::RequiresExplicitRetry(reportedFailure.load())) return reportedFailure.load();
+            const auto failure = FailureOr(Error::None);
+            if (dialogFailure != Error::None || taskbar::RequiresExplicitRetry(failure)) return failure;
             const auto error = Start(true);
             if (error != Error::None) return error;
         }
         if (!process) return Error::None;
+        if (dialogFailure != Error::None) return dialogFailure.load();
         if (!closeRequested) {
             const auto window = CoreWindow(pid);
-            if (!window || !PostMessageW(window, WM_CLOSE, 0, 0)) return Error::CoreStop;
+            if (!window || !PostMessageW(window, WM_CLOSE, 0, 0)) return FailureOr(Error::CoreStop);
             closeRequested = true; ready = false;
         }
-        if (api.wait(process, timings.stopTimeoutMs) != WAIT_OBJECT_0) return Error::CoreStop;
+        if (api.wait(process, timings.stopTimeoutMs) != WAIT_OBJECT_0) return FailureOr(Error::CoreStop);
         DWORD code = 1;
         if (!GetExitCodeProcess(process, &code)) return Error::CoreStop;
+        if (code != 0) UnexpectedExit();
         Close();
         recoveryRequired = code != 0;
-        return code == 0 ? Error::None : Error::CoreStop;
+        return code == 0 ? Error::None : FailureOr(Error::CoreStop);
     }
     const std::atomic_bool& cancel;
     Prepare prepare;
@@ -373,27 +405,35 @@ struct TaskbarCoreProcess::Impl {
     std::filesystem::path diagnosticsFile;
     ULONGLONG launchedAt = 0;
     bool ready = false, closeRequested = false, recoveryRequired = false;
-    static constexpr ULONGLONG XamlWaitMs = 15000;
     std::thread guard;
     std::atomic_bool guardStop{false};
     std::atomic<Error> reportedFailure{Error::None};
+    // Separate from reportedFailure: a later heartbeat or Explorer reload must
+    // not erase a dialog or fatal exit (including a manually dismissed dialog).
+    std::atomic<Error> dialogFailure{Error::None};
 };
 TaskbarCoreProcess::TaskbarCoreProcess(const std::atomic_bool& cancel, Prepare prepare, TaskbarCoreTimings timings,
                                      TaskbarCoreProcessApi api)
     : impl_(std::make_unique<Impl>(cancel, std::move(prepare), timings, api)) {}
 TaskbarCoreProcess::~TaskbarCoreProcess() = default;
 Error TaskbarCoreProcess::Start(bool recovery) { return impl_->Start(recovery); }
-void TaskbarCoreProcess::ResetFailure() { impl_->reportedFailure = Error::None; }
+void TaskbarCoreProcess::ResetFailure() {
+    // A user retry accepts the old failure, not another reading of the dead
+    // child's report during Stop(true). Join its guard before clearing locks.
+    if (impl_->process && impl_->api.wait(impl_->process, 0) == WAIT_OBJECT_0) impl_->Close();
+    impl_->dialogFailure = Error::None;
+    impl_->reportedFailure = Error::None;
+}
 Error TaskbarCoreProcess::Stop(bool previous) { return impl_->Stop(previous); }
 bool TaskbarCoreProcess::Alive() const { return impl_->Alive(); }
-bool TaskbarCoreProcess::Ready() const { return impl_->reportedFailure == Error::None && impl_->ready && !impl_->closeRequested && impl_->Alive(); }
+bool TaskbarCoreProcess::Ready() const { return impl_->FailureOr(Error::None) == Error::None && impl_->ready && !impl_->closeRequested && impl_->Alive(); }
 bool TaskbarCoreProcess::HasProcess() const { return impl_->process != nullptr; }
 taskbar::TransparencyStatus TaskbarCoreProcess::Transparency() const {
     return ReadTaskbarCoreDiagnostics(impl_->diagnosticsFile, impl_->pid, CurrentExplorerPid()).transparency;
 }
 bool TaskbarCoreProcess::ReloadResolved() const {
     const auto current = CurrentExplorerPid();
-    return impl_->reportedFailure == Error::CoreRestartRequired && impl_->launchExplorerPid &&
+    return impl_->dialogFailure == Error::None && impl_->reportedFailure == Error::CoreRestartRequired && impl_->launchExplorerPid &&
         current && current != impl_->launchExplorerPid;
 }
 std::uintptr_t TaskbarCoreProcess::ExitSignal() const { return reinterpret_cast<std::uintptr_t>(impl_->process); }

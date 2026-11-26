@@ -11,7 +11,7 @@ export function mountMusicEffects(host, {onError, load = loadEffect} = {}) {
   const document = host.ownerDocument;
   let state = null, runtime = null, pending = null, controller = null;
   let mode = 'none', background = null, generation = 0, disposed = false;
-  let failed = false, sceneKey = [];
+  let failed = false, sceneKey = [], foreground = false;
   host.dataset.effectMode = 'none';
   host.dataset.effectState = 'idle';
   const visible = () => state?.visible === true && !document.hidden;
@@ -38,12 +38,16 @@ export function mountMusicEffects(host, {onError, load = loadEffect} = {}) {
       if (disposed) return;
       state = next;
       const selected = selection();
+      const overlay = ['nebbia','hanabi','machi'].includes(state.visualizer);
+      const changeRainLayer = selected === 'rain-window' && foreground !== overlay;
+      foreground = overlay;
+      host.dataset.effectLayer = overlay ? 'foreground' : 'background';
       const canvas = selected === 'rain-window' ? state.scene.canvas : null;
       const nextSceneKey = [state?.scene?.canvas, state?.scene?.canvas?.width, state?.scene?.canvas?.height,
         state?.scene?.mediaSource, state?.scene?.media?.url, state?.scene?.media?.kind];
       const sceneChanged = nextSceneKey.some((value, index) => value !== sceneKey[index]);
       sceneKey = nextSceneKey;
-      if (selected !== mode || canvas !== background || (failed && sceneChanged)) {
+      if (selected !== mode || changeRainLayer || canvas !== background || (failed && sceneChanged)) {
         clear();
         failed = false;
         mode = selected;

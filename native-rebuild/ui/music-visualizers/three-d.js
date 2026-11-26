@@ -32,7 +32,7 @@ export function mountThreeD(host, state) {
       paused: !value.playing,
       visible: value.visible !== false && !document.hidden,
       theme,
-      showTranslation: true,
+      showTranslation: (value.preferences?.subtitleContentMode ?? 'translation') === 'translation',
       visualizerEffectMode: preferences?.effectMode === 'star-river' ? 'star-river' : 'none',
       coverUrl: localArtwork(value.current?.artwork,document.baseURI),
     };

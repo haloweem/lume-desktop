@@ -3,6 +3,7 @@
 #include <deque>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 using namespace lume::weather;
 using namespace weather_fixture;
 namespace {
@@ -19,7 +20,7 @@ struct Harness {
         [&](const HttpRequest& r, const Cancellation&) {
             requests.push_back(r);
             if (cancelOnRequest) cancel.Cancel();
-            Expect(!replies.empty(), "no unexpected location request");
+            if (replies.empty()) return HttpResponse{};
             auto result = std::move(replies.front()); replies.pop_front(); return result;
         }, [&] { return now; }, Local, [](std::string_view text) { return std::string(text); }};
     LocationResult Resolve(std::string_view city = "auto") { return location.Resolve(city, cancel); }
@@ -29,11 +30,11 @@ struct DeviceHarness {
     std::deque<HttpResponse> replies;
     std::vector<HttpRequest> requests;
     Cancellation cancel;
-    std::optional<Location> deviceLocation = Location{31.385123, 120.981234, {}, {}};
+    std::optional<DeviceFix> deviceLocation = DeviceFix{Location{31.385123, 120.981234, {}, {}}, DeviceLocationSource::Wifi, 100, Now};
     WeatherLocation location{
         [&](const HttpRequest& r, const Cancellation&) {
             requests.push_back(r);
-            Expect(!replies.empty(), "no unexpected device location request");
+            if (replies.empty()) return HttpResponse{};
             auto result = std::move(replies.front()); replies.pop_front(); return result;
         }, [&] { return now; }, Local, [](std::string_view text) { return std::string(text); },
         [&](Millis, const Cancellation&) { return deviceLocation; }};
@@ -48,9 +49,9 @@ void CancelDuringDeviceLocation() {
     WeatherLocation location{
         [&](const HttpRequest&,const Cancellation&){++requests;return HttpResponse{};},
         []{return Now;},Local,{},
-        [&](Millis,const Cancellation& token)->std::optional<Location>{
+        [&](Millis,const Cancellation& token)->std::optional<DeviceFix>{
             passed=&token==&cancel;cancel.Cancel();
-            return Location{31.385123,120.981234,{}, {}};
+            return DeviceFix{Location{31.385123,120.981234,{}, {}}, DeviceLocationSource::Wifi, 100, Now};
         }};
     const auto result=location.Resolve("auto",cancel);
     Expect(passed&&result.error==ProviderError::Cancelled&&!result.location&&requests==0,
@@ -65,16 +66,16 @@ void FixedAndCached() {
     h.replies = {Ip()};
     auto first = h.Resolve();
     Expect(first.location && first.location->name == u8"昆山" &&
-        first.location->longitude == 120.981234 && h.requests.size() == 1 &&
+        first.location->longitude == 120.981234 && h.requests.size() == 2 &&
         h.requests[0].url == "https://api.ip.sb/geoip" && h.requests[0].direct, "original primary IP provider, coordinates and a direct (unproxied) request");
-    h.now += 6 * Hour - 60000;
-    Expect(h.Resolve().location.has_value() && h.requests.size() == 1, "IP location cached for 6 hours");
+    h.now += 30 * 60000 - 60000;
+    Expect(h.Resolve().location.has_value() && h.requests.size() == 2, "IP location cached for at most 30 minutes");
     h.now += 60000;
     h.replies = {Ip(u8"上海")};
-    Expect(h.Resolve().location->name == u8"上海" && h.requests.size() == 2, "IP cache expires on boundary");
+    Expect(h.Resolve().location->name == u8"上海" && h.requests.size() == 4, "IP cache expires on boundary");
     h.now -= 60000;
     h.replies = {Ip()};
-    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 3, "clock rollback does not retain future IP cache");
+    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 6, "clock rollback does not retain future IP cache");
 }
 void FallbackAndNames() {
     Harness h;
@@ -87,9 +88,9 @@ void FallbackAndNames() {
         h.requests[1].direct && !h.requests[2].direct,
         "IP fallback and Chinese reverse-geocoding preserve original priority; only IP lookups go direct");
     Harness secondary;
-    secondary.replies = {Ip("Kunshan"), HttpResponse{}, Good({{"address", {{"county", u8"昆山市"}}}})};
+    secondary.replies = {Ip("Kunshan"), HttpResponse{}, HttpResponse{}, Good({{"address", {{"county", u8"昆山市"}}}})};
     Expect(secondary.Resolve().location->name == u8"昆山市" &&
-        secondary.requests[2].url.find("https://nominatim.openstreetmap.org/reverse?") == 0,
+        secondary.requests[3].url.find("https://nominatim.openstreetmap.org/reverse?") == 0,
         "secondary reverse-geocoder used when primary is unavailable");
     Harness noName;
     noName.replies = {Ip("Unknown"), HttpResponse{}, HttpResponse{}};
@@ -100,7 +101,7 @@ void FallbackAndNames() {
     Harness badZone;
     badZone.replies = {Ip(u8"昆山", "Invented/Place")};
     const auto fallbackZone = badZone.Resolve();
-    Expect(fallbackZone.location && fallbackZone.location->timezone == "UTC" && badZone.requests.size() == 1,
+    Expect(fallbackZone.location && fallbackZone.location->timezone == "UTC" && badZone.requests.size() == 2,
         "original discards invalid timezone without discarding real coordinates");
 }
 void InvalidAndCancelled() {
@@ -135,7 +136,7 @@ void DeviceLocationUnavailableFallsBack() {
     h.replies = {Ip()};
     const auto result = h.Resolve();
     Expect(result.location && result.location->name == u8"昆山" &&
-        h.requests.size() == 1 && h.requests[0].url == "https://api.ip.sb/geoip",
+        h.requests.size() == 2 && h.requests[0].url == "https://api.ip.sb/geoip",
         "unavailable system location preserves the original IP fallback");
 }
 // A computer in China (region CN, UTC+8) behind a VPN or proxy.
@@ -144,16 +145,16 @@ struct ChinaHarness {
     std::deque<HttpResponse> replies;
     std::vector<HttpRequest> requests;
     Cancellation cancel;
-    std::optional<Location> deviceLocation;
+    std::optional<DeviceFix> deviceLocation;
     std::optional<std::string> stored;
     WeatherLocation location{
         [&](const HttpRequest& r, const Cancellation&) {
             requests.push_back(r);
-            Expect(!replies.empty(), "no unexpected location request");
+            if (replies.empty()) return HttpResponse{};
             auto result = std::move(replies.front()); replies.pop_front(); return result;
         }, [&] { return now; }, Local, [](std::string_view text) { return std::string(text); },
         [&](Millis, const Cancellation&) { return deviceLocation; },
-        LocationEnvironment{{"CN"}, [](Millis time) { return Local(time, "Asia/Shanghai"); }},
+        LocationEnvironment{{"CN"}, [](Millis time) { return Local(time, "Asia/Shanghai"); }, [] { return "Asia/Shanghai"; }},
         LocationStore{[&] { return stored; }, [&](std::string_view text) { stored = std::string(text); return true; }}};
     LocationResult Resolve() { return location.Resolve("auto", cancel); }
 };
@@ -185,29 +186,29 @@ void FarMoveNeedsConfirmation() {
     Expect(h.Resolve().location->name == u8"昆山", "first trusted IP location");
     h.now += 6 * Hour;
     h.replies = {Beijing()};
-    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 2, "a single far result does not move the city");
+    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 4, "a single far result does not move the city");
     h.now += 9 * 60000;
-    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 2, "the unconfirmed result waits before retrying");
+    Expect(h.Resolve().location->name == u8"昆山" && h.requests.size() == 4, "the unconfirmed result waits before retrying");
     h.now += 60000;
     h.replies = {Beijing()};
-    Expect(h.Resolve().location->name == u8"北京" && h.requests.size() == 3, "the same far result twice moves the city");
+    Expect(h.Resolve().location->name == u8"北京" && h.requests.size() == 6, "the same far result twice moves the city");
     h.now += 6 * Hour;
     h.replies = {IpAt(u8"昌平", 40.2207, 116.2312, "Asia/Shanghai", "CN")};
     Expect(h.Resolve().location->name == u8"昌平", "nearby results update at once");
 }
 void DeviceFixOutranksIp() {
     ChinaHarness h;
-    h.deviceLocation = Location{31.385123, 120.981234, u8"昆山", "Asia/Shanghai"};
+    h.deviceLocation = DeviceFix{Location{31.385123, 120.981234, u8"昆山", "Asia/Shanghai"}, DeviceLocationSource::Wifi, 100, h.now};
     Expect(h.Resolve().location->name == u8"昆山" && h.requests.empty(), "system fix needs no IP lookup");
     h.deviceLocation.reset();
     h.now += 30 * 60000;
     Expect(h.Resolve().location->name == u8"昆山" && h.requests.empty(),
         "a recent system fix is kept when the system service is briefly unavailable");
-    h.now += Day;
+    h.now += 2 * Hour;
     h.replies = {Beijing()};
-    Expect(h.Resolve().location->name == u8"昆山", "after a day, IP may move it only with confirmation");
-    h.deviceLocation = Location{39.9042, 116.4074, u8"北京", "Asia/Shanghai"};
+    Expect(h.Resolve().location->name == u8"昆山", "after two hours, IP may move it only with confirmation");
     h.now += 10 * 60000;
+    h.deviceLocation = DeviceFix{Location{39.9042, 116.4074, u8"北京", "Asia/Shanghai"}, DeviceLocationSource::Wifi, 100, h.now};
     Expect(h.Resolve().location->name == u8"北京", "a new system fix moves the city at once");
 }
 void TrustedLocationPersists() {
@@ -231,10 +232,54 @@ void TrustedLocationPersists() {
     corrupt.replies = {HttpResponse{}, HttpResponse{}};
     Expect(!corrupt.Resolve().location, "a corrupt saved location is ignored");
 }
+void AccuracyAndTimezone() {
+    const DeviceFix good{Location{31.385123,120.981234,u8"昆山",{}}, DeviceLocationSource::Wifi,100,Now};
+    Expect(ReliableDeviceFix(good,Now), "fresh Wi-Fi fix is reliable");
+    for (auto source : {DeviceLocationSource::Ip,DeviceLocationSource::Default,DeviceLocationSource::Unknown}) {
+        ChinaHarness h; h.deviceLocation=good; h.deviceLocation->source=source; h.replies={Beijing(),Beijing()};
+        Expect(h.Resolve().location->name==u8"北京" && h.requests.size()==2, "coarse/default/unknown device fixes cannot override corroborated IP");
+    }
+    for (double accuracy : {0.0, -1.0, 50000.0, std::numeric_limits<double>::infinity()}) {
+        auto bad=good;bad.accuracyMeters=accuracy;Expect(!ReliableDeviceFix(bad,Now),"invalid or coarse accuracy rejected");
+    }
+    auto stale=good; stale.sampledAt=Now-16*60000;
+    Expect(!ReliableDeviceFix(stale,Now),"old device sample rejected");
+    stale.sampledAt=Now+60000;Expect(!ReliableDeviceFix(stale,Now),"future sample rejected");
+    ChinaHarness h;h.deviceLocation=good;
+    const auto result=h.Resolve();
+    Expect(result.location && result.location->timezone=="Asia/Shanghai" && h.requests.empty(),"system fix without timezone uses the Windows IANA zone");
+}
+void ProviderAgreementAndStaleBounds() {
+    ChinaHarness conflict;conflict.replies={Beijing(),Kunshan()};
+    Expect(!conflict.Resolve().location,"conflicting first IP results are not presented as a precise city");
+    ChinaHarness h;h.replies={Kunshan(),Kunshan()};h.Resolve();
+    h.now+=30*60000;h.replies={Beijing(),Beijing()};
+    Expect(h.Resolve().location->name==u8"北京","independent agreement confirms a real move on the next refresh");
+    auto saved=h.stored;ChinaHarness old;old.stored=saved;old.now=h.now+90*Day;
+    Expect(!old.Resolve().location,"ninety-day-old location is not a successful fallback");
+    ChinaHarness future;future.stored=saved;future.now=h.now-60000;
+    Expect(!future.Resolve().location,"future-dated persisted location ignored");
+    h.now+=Day;Expect(!h.Resolve().location,"in-memory fallback also expires at one day");
+}
+void ConfirmationSurvivesRestartButNotFailures() {
+    ChinaHarness first;first.replies={Kunshan()};first.Resolve();
+    first.now+=30*60000;first.replies={Beijing()};
+    Expect(first.Resolve().location->name==u8"昆山","one distant observation awaits confirmation");
+    ChinaHarness restarted;restarted.stored=first.stored;restarted.now=first.now+10*60000;restarted.replies={Beijing()};
+    Expect(restarted.Resolve().location->name==u8"北京","a second observation after restart confirms the move");
+    ChinaHarness interrupted;interrupted.stored=first.stored;interrupted.now=first.now+10*60000;
+    interrupted.Resolve();interrupted.now+=10*60000;interrupted.replies={Beijing()};
+    Expect(interrupted.Resolve().location->name==u8"昆山","failed lookup breaks consecutive confirmation");
+    ChinaHarness late;late.stored=first.stored;late.now=first.now+31*60000;late.replies={Beijing()};
+    Expect(late.Resolve().location->name==u8"昆山","expired pending evidence cannot confirm a move");
+    ChinaHarness legacy;auto value=Json::parse(*first.stored);value["version"]=1;value["origin"]="device";value.erase("pending");legacy.stored=value.dump();legacy.now=first.now;legacy.replies={Beijing(),Beijing()};
+    Expect(legacy.Resolve().location->name==u8"北京","old device caches without quality evidence cannot block a current location");
+}
 }
 int main() {
     FixedAndCached(); FallbackAndNames(); InvalidAndCancelled(); CancelDuringDeviceLocation();
     DeviceLocationWins(); DeviceLocationUnavailableFallsBack();
     ProxyExitsRejected(); FarMoveNeedsConfirmation(); DeviceFixOutranksIp(); TrustedLocationPersists();
+    AccuracyAndTimezone();ProviderAgreementAndStaleBounds();ConfirmationSurvivesRestartButNotFailures();
     std::cout << "weather automatic location, fixed cities, Chinese names, cache and cancellation passed\n";
 }

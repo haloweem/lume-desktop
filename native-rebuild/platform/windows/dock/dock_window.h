@@ -1,5 +1,6 @@
 #pragma once
 #include "core/dock/dock_model.h"
+#include "platform/windows/display_monitors.h"
 #include "platform/windows/material/widget_material_runtime.h"
 #include "platform/windows/widget_ui/widget_canvas.h"
 #include <windows.h>
@@ -16,10 +17,17 @@ struct DockAppearance {
     bool frosted = false;
     bool transparent = false;  // no glass: only the icons are drawn
     bool reflection = false;   // mirrored, fading icons below the row
+    int reflectionRatio = dock::DefaultReflectionRatio;
+    int reflectionTransparency = dock::DefaultReflectionTransparency;
     int iconScale = 100;
     int position = dock::DefaultPosition;
+    int positionMode = dock::PositionCenter;
+    int positionOffset = dock::DefaultPositionOffset;
     int bottomOffset = dock::DefaultBottomOffset;
+    dock::Edge edge = dock::Edge::Bottom;
     int iconSpacing = dock::DefaultIconSpacing;
+    std::optional<DisplayMonitor> monitor;
+    bool animation = false;
 };
 struct DockSystemTrayStatus {
     std::wstring time;
@@ -59,6 +67,7 @@ struct DockWindowPorts {
     std::function<std::vector<dock::ProgramWindow>(const dock::Item&)> windowsFor;
     std::function<void(std::uint64_t handle)> focusWindow;
     std::function<DockSystemTrayStatus()> systemTray;
+    bool publishSlots = true;
 };
 // The Dock: a glass bar at desktop level, positioned in the primary work
 // area (bottom-centre by default), with a transparent icon layer above it so icons can magnify past the
@@ -82,6 +91,9 @@ public:
     bool Show(std::vector<dock::Item>, const DockAppearance&);
     void Stop();
     bool Paint();
+    bool SummonTemporarily();
+    void RestoreDesktopLayer();
+    bool ContainsPreviewPoint(POINT screen) const;
     // Coalesce asynchronous icon completions into one queued redraw.
     void RequestPaint();
     HWND Handle() const;       // icon layer (input)
@@ -90,6 +102,7 @@ public:
     // Logical visibility is kept separately from the native windows because
     // Explorer can hide/recreate its desktop band while the Dock is running.
     bool LayersVisible() const;
+    void RefreshDesktopLayer();
     RECT ScreenBounds() const; // the glass bar
     WidgetMaterialState MaterialState() const;
     // Width of the bar at rest.
@@ -118,6 +131,7 @@ public:
     float GapOpen() const;
     // Testing: an icon's current on-screen rectangle (animated).
     RECT IconBounds(std::size_t index) const;
+    void RecordAppClick(std::size_t index, const std::string& program);
     // Testing: the dragged icon is outside the Dock and would be removed on release.
     bool Removing() const;
     // Testing: the window drawn as a live thumbnail for items[index], if any.

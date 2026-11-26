@@ -1,0 +1,1 @@
+var e={render:{scale:"global",antialias:"global"},colorMode:"mixed",sparkAmount:1,ornamentAmount:1,textMotion:1,blockOpacity:1,riseSpeed:1,spin:1,ambient:1,glow:1,bloom:.8,chorusBloom:1.3,launches:!0,overlayFrame:!0,textOnly:!1,sky:.85,collage:1,renderQuality:"full"};export{e as a};

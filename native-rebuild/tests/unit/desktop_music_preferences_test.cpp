@@ -18,7 +18,8 @@ Json SonnetDefaults() {
 }
 Json AppliedPreferences() {
     auto value = LegacyPreferences();
-    value["version"] = 3;
+    value["version"] = 4;
+    value["subtitleContentMode"] = "both";
     value["effectMode"] = "star-river";
     value["sonnetColors"] = Json{{"lyricsFontColor", "#abcdef"}, {"karaokeFillColor", "#123abc"},
         {"glowColor", "#456def"}};
@@ -44,19 +45,19 @@ struct Probe {
         const auto& preferences = json.at("preferences");
         if (request == 0 && !migrated) {
             auto expected = LegacyPreferences();
-            expected["version"] = 3; expected["sonnetColors"] = SonnetDefaults(); expected["effectMode"] = "none";
+            expected["version"] = 4; expected["sonnetColors"] = SonnetDefaults(); expected["effectMode"] = "none"; expected["subtitleContentMode"] = "translation";
             Check(json.value("status", "") == "ready" && json.value("revision", 0) == 4 && preferences == expected,
                   "native bridge starts with migrated v1 settings, no effect and original Sonnet defaults");
             migrated = true;
         } else if (request >= 100 && request <= 108) {
             auto expected = LegacyPreferences();
-            expected["version"] = 3; expected["sonnetColors"] = SonnetDefaults(); expected["effectMode"] = "none";
+            expected["version"] = 4; expected["sonnetColors"] = SonnetDefaults(); expected["effectMode"] = "none"; expected["subtitleContentMode"] = "translation";
             Check(request == 100 + static_cast<int>(barriers) && json.value("status", "") == "error" &&
                   json.value("error", "") == "conflict" && json.value("revision", 0) == 4 &&
                   preferences == expected, "ordered stale-revision barriers preserve the migrated preferences between invalid commands");
             ++barriers;
         } else if (request == 38) {
-            auto expected = AppliedPreferences(); expected["effectMode"] = "none";
+            auto expected = AppliedPreferences(); expected["effectMode"] = "none"; expected["subtitleContentMode"] = "translation";
             Check(migrated && json.value("status", "") == "ready" && json.value("revision", 0) == 5 &&
                   preferences == expected, "native bridge migrates exact v2 with all Sonnet colors and no effect");
             migratedV2 = true;
@@ -78,7 +79,7 @@ struct Probe {
                   preferences == expected, "native bridge effect-only change preserves renderer and every color");
             effectChanged = true;
         } else if (request == 43) {
-            const auto expected = Json{{"version", 3}, {"mode", "partita"}, {"fontFamily", ""}, {"effectMode", "none"},
+            const auto expected = Json{{"version", 4}, {"mode", "partita"}, {"fontFamily", ""}, {"effectMode", "none"}, {"subtitleContentMode", "translation"},
                 {"animationIntensity", "normal"}, {"lyricsFontColor", "#ffffff"},
                 {"lyricsKaraokeFillColor", "#ffffff"}, {"sonnetColors", SonnetDefaults()}};
             Check(effectChanged && json.value("status", "") == "ready" && json.value("revision", 0) == 9 &&
@@ -126,7 +127,7 @@ int main() {
         (() => {
             const webview = window.chrome.webview;
             const preferences = {
-                version:3, mode:'gallery', fontFamily:'Arial', animationIntensity:'calm', effectMode:'star-river',
+                version:4, mode:'gallery', fontFamily:'Arial', animationIntensity:'calm', effectMode:'star-river', subtitleContentMode:'both',
                 lyricsFontColor:'#FF2200', lyricsKaraokeFillColor:'#00AAFF',
                 sonnetColors:{lyricsFontColor:'#ABCDEF',karaokeFillColor:'#123ABC',glowColor:'#456DEF'}};
             const post = (action, request, revision, value) => webview.postMessage({
@@ -140,7 +141,7 @@ int main() {
                         const [request, value] = invalid[nextInvalid++];
                         post('apply', request, 4, value);
                         post('apply', 100 + nextInvalid, 3, preferences);
-                    } else post('apply', 38, 4, {...withoutEffect,version:2});
+                    } else post('apply', 38, 4, {...v2,version:2});
                     return;
                 }
                 if (data.status !== 'ready') return;
@@ -161,11 +162,12 @@ int main() {
                 }
             };
             const {effectMode, ...withoutEffect} = preferences;
-            const {sonnetColors, ...v1} = withoutEffect;
+            const {subtitleContentMode, ...v2} = withoutEffect;
+            const {sonnetColors, ...v1} = v2;
             const invalid = [
                 [30, {...preferences,effectMode:'rain'}], [31, withoutEffect],
                 [32, {...preferences,version:2}], [33, {...v1,version:1,effectMode:'none'}],
-                [34, {...preferences,effectMode:null}], [35, {...preferences,version:4}],
+                [34, {...preferences,effectMode:null}], [35, {...preferences,version:5}],
                 [39, {...preferences,sonnetColors:{...preferences.sonnetColors,unknown:'#ffffff'}}],
                 [40, {...preferences,sonnetColors:{...preferences.sonnetColors,glowColor:'invalid'}}],
             ];

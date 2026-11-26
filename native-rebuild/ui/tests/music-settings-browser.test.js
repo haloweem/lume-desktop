@@ -49,7 +49,7 @@ test('music settings preview real lyrics without rebuilding the stage and restor
           status:'paused',current:track,queue:[track],timeline:{position:3,duration:60},capabilities:{canToggle:true,canPrevious:true,canNext:true,canSeek:true}});
         harness.receive({version:1,type:'navigate',page:'music'});
         window.lyricsFixture={version:1,type:'music-lyrics',session:1,trackId:track.id,
-          lines:[{startTime:0,endTime:6,fullText:'A melody in the light',words:[],translation:''}]};
+          lines:[{startTime:0,endTime:6,fullText:'A melody in the light',words:[],translation:'光中的旋律',romanization:'guāng zhōng de xuán lǜ'}]};
         harness.receive(lyricsFixture);
       });
       await page.locator('[data-music-open-player]').click();
@@ -63,6 +63,9 @@ test('music settings preview real lyrics without rebuilding the stage and restor
       await page.getByRole('option',{name:'Arial',exact:true}).click();
       await page.waitForFunction(()=>harness.commands.some(command=>command?.scope==='music-preferences'&&command.preferences?.fontFamily==='Arial'));
       const stage=page.frames().find(item=>item.url().includes('reference/index.html'));
+      await page.locator('[data-music-preference="subtitleContentMode"]').selectOption('both');
+      await page.waitForFunction(()=>harness.commands.some(command=>command?.scope==='music-preferences'&&command.preferences?.subtitleContentMode==='both'));
+      await stage.waitForFunction(()=>document.getElementById('reference-stage').dataset.referenceSubtitleMode==='both');
       await stage.waitForFunction(()=>[...document.querySelectorAll('[style]')].some(node=>node.style.fontFamily.includes('Arial')));
       const saves=()=>page.evaluate(()=>harness.commands.filter(command=>command?.scope==='music-preferences'&&command.action==='apply').length);
       const beforeCount=await saves();
@@ -88,6 +91,7 @@ test('music settings preview real lyrics without rebuilding the stage and restor
       await page.evaluate(()=>harness.receive(lyricsFixture));
       await page.locator('[data-music-action="lyrics"]').click();
       assert.equal(await page.locator('[data-music-preference="fontFamily"]').inputValue(),'Arial');
+      assert.equal(await page.locator('[data-music-preference="subtitleContentMode"]').inputValue(),'both');
       assert.equal(await page.locator('[data-music-preference="lyricsFontColor"]').inputValue(),'#ff2200');
       const overflow=await page.locator('[data-music-settings]').evaluate(root=>root.scrollWidth>root.clientWidth);
       assert.equal(overflow,false);assert.deepEqual(errors,[]);

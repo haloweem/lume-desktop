@@ -1,7 +1,9 @@
 #include "platform/windows/organizer/desktop_organizer_source.h"
 #include "platform/windows/organizer/organizer_text.h"
+#include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -40,17 +42,22 @@ bool ShortcutApplication(const std::filesystem::path& path){
     }
     link->Release();return application;
 }
+std::vector<std::wstring> DesktopRoots(const std::vector<std::wstring>& roots,bool& complete){
+    if(!roots.empty())return roots;
+    std::vector<std::wstring> directories;
+    for(const auto* folderId:{&FOLDERID_Desktop,&FOLDERID_PublicDesktop}){
+        PWSTR raw=nullptr;
+        if(FAILED(SHGetKnownFolderPath(*folderId,KF_FLAG_DONT_VERIFY,nullptr,&raw))||!raw)complete=false;
+        else directories.emplace_back(raw);
+        CoTaskMemFree(raw);
+    }
+    return directories;
+}
 organizer::DesktopSnapshot ReadDesktop(const std::atomic_bool& stop,const std::vector<std::wstring>& roots){
     organizer::DesktopSnapshot result;result.complete=true;std::set<std::string> paths;
     std::size_t sourceBytes=0;
     const auto initialized=CoInitializeEx(nullptr,COINIT_MULTITHREADED);
-    std::vector<std::wstring> directories=roots;
-    if(directories.empty())for(const auto* folderId:{&FOLDERID_Desktop,&FOLDERID_PublicDesktop}){
-        PWSTR raw=nullptr;
-        if(FAILED(SHGetKnownFolderPath(*folderId,KF_FLAG_DONT_VERIFY,nullptr,&raw))||!raw)result.complete=false;
-        else directories.emplace_back(raw);
-        CoTaskMemFree(raw);
-    }
+    const auto directories=DesktopRoots(roots,result.complete);
     for(const auto& root:directories){
         if(stop){result.complete=false;break;}
         const std::filesystem::path directory(root);
@@ -157,5 +164,44 @@ DesktopOrganizerSource::~DesktopOrganizerSource()=default;
 bool DesktopOrganizerSource::Start(){return impl_->Start();}
 void DesktopOrganizerSource::Refresh(){if(impl_->window)impl_->Request();}
 void DesktopOrganizerSource::Stop(){impl_->Stop();}
+bool DesktopOrganizerSource::CanRecycle(const std::vector<std::string>& paths) const {
+    if(paths.empty())return false;
+    bool complete=true;
+    const auto roots=DesktopRoots(impl_->roots,complete);
+    for(const auto& path:paths){
+        const auto normalized=organizer::NormalizeLocalPath(path);
+        if(!normalized || *normalized!=path || path.back()=='.' || path.back()==' ')return false;
+        const auto parent=std::filesystem::path(OrganizerWide(path)).parent_path().wstring();
+        if(std::none_of(roots.begin(),roots.end(),[&](const auto& root){
+            return CompareStringOrdinal(parent.c_str(),-1,root.c_str(),-1,TRUE)==CSTR_EQUAL;
+        }))return false;
+    }
+    return true;
+}
+std::vector<std::string> DesktopOrganizerSource::Recycle(HWND owner,const std::vector<std::string>& paths) const {
+    if(!CanRecycle(paths))return {};
+    Microsoft::WRL::ComPtr<IFileOperation> operation;
+    if(FAILED(CoCreateInstance(CLSID_FileOperation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&operation))) ||
+       FAILED(operation->SetOwnerWindow(owner)) ||
+       FAILED(operation->SetOperationFlags(FOF_ALLOWUNDO|FOFX_RECYCLEONDELETE|FOFX_ADDUNDORECORD|FOF_WANTNUKEWARNING)))return {};
+    std::vector<std::string> queued;
+    for(const auto& path:paths){
+        const auto wide=OrganizerWide(path);
+        Microsoft::WRL::ComPtr<IShellItem> item;
+        if(GetFileAttributesW(wide.c_str())!=INVALID_FILE_ATTRIBUTES &&
+           SUCCEEDED(SHCreateItemFromParsingName(wide.c_str(),nullptr,IID_PPV_ARGS(&item))) &&
+           SUCCEEDED(operation->DeleteItem(item.Get(),nullptr)))queued.push_back(path);
+    }
+    if(queued.empty())return {};
+    // The shell can complete part of a selection before the user cancels.
+    operation->PerformOperations();
+    queued.erase(std::remove_if(queued.begin(),queued.end(),[](const auto& path){
+        const auto wide=OrganizerWide(path);
+        if(GetFileAttributesW(wide.c_str())!=INVALID_FILE_ATTRIBUTES)return true;
+        const auto error=GetLastError();
+        return error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND;
+    }),queued.end());
+    return queued;
+}
 bool DesktopOrganizerSource::Running()const{return impl_->window!=nullptr;}
 }

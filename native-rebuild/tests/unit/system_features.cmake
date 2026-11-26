@@ -64,6 +64,8 @@ endforeach()
 if(MINGW)
   target_link_options(lume-minimize-animation-runtime-test PRIVATE -municode)
 endif()
+add_test(NAME lume-dock-genie-test COMMAND lume-minimize-animation-runtime-test --dock)
+set_tests_properties(lume-dock-genie-test PROPERTIES RUN_SERIAL TRUE TIMEOUT 40)
 foreach(scenario initialization shutdown)
   add_test(NAME lume-minimize-animation-${scenario}-regression
     COMMAND lume-minimize-animation-runtime-test "--${scenario}-regression")

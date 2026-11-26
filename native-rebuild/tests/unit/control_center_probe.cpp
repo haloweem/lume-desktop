@@ -29,10 +29,15 @@ int main(int argc,char** argv){
         std::cout<<"accent="<<std::hex<<control_center::AccentColor()<<std::dec<<std::endl;control_center::ScanNetworks();Sleep(3500);
         for(const auto& n:control_center::Networks())std::wcout<<L"net signal="<<n.signal<<L" secured="<<n.secured<<L" connected="<<n.connected<<L" known="<<n.known<<std::endl;
         for(const auto& d:control_center::PairedDevices())std::wcout<<L"device connected="<<d.connected<<std::endl;return 0;}
-    if(argc>1&&std::string(argv[1])=="tray"){POINT anchor{1400,1200};const bool ok=control_center::OpenTrayOverflow(anchor);Pump(600);
+    if(argc>1&&std::string(argv[1])=="tray"){SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        MONITORINFO monitor{sizeof(monitor)};GetMonitorInfoW(MonitorFromWindow(FindWindowW(L"Shell_TrayWnd",nullptr),MONITOR_DEFAULTTOPRIMARY),&monitor);
+        const HWND previous=GetForegroundWindow();POINT anchor{monitor.rcWork.right-180,monitor.rcWork.bottom-30};const bool ok=control_center::OpenTrayOverflow(anchor);Pump(600);
         HWND o=FindWindowW(L"TopLevelWindowForOverflowXamlIsland",nullptr);RECT r{};GetWindowRect(o,&r);
-        std::cout<<"tray-open="<<ok<<" visible="<<IsWindowVisible(o)<<" rect="<<r.left<<","<<r.top<<","<<r.right<<","<<r.bottom<<" anchor=1400,1200"<<std::endl;
-        Shot({r.left-20,r.top-20,r.right+20,r.bottom+20},L"cc-tray.bmp");keybd_event(VK_ESCAPE,0,0,0);keybd_event(VK_ESCAPE,0,KEYEVENTF_KEYUP,0);return 0;}
+        std::cout<<"tray-open="<<ok<<" visible="<<IsWindowVisible(o)<<" rect="<<r.left<<","<<r.top<<","<<r.right<<","<<r.bottom<<" anchor="<<anchor.x<<","<<anchor.y<<std::endl;
+        if(IsWindowVisible(o))Shot({r.left-20,r.top-20,r.right+20,r.bottom+20},L"cc-tray.bmp");
+        if(GetForegroundWindow()==o||GetForegroundWindow()==FindWindowW(L"Shell_TrayWnd",nullptr)){
+            keybd_event(VK_ESCAPE,0,0,0);keybd_event(VK_ESCAPE,0,KEYEVENTF_KEYUP,0);if(IsWindow(previous))SetForegroundWindow(previous);}
+        return ok?0:1;}
     const bool frosted=argc>1&&std::string(argv[1])=="frosted",none=argc>1&&std::string(argv[1])=="none";
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     ControlCenterWindow::SetEnglish(false);

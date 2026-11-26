@@ -310,7 +310,8 @@ void ApplyTaskbarRuntimeState(SelfCheck& check, const nlohmann::json& modules) {
         const auto detail = error == "core-access-denied"
             ? "任务栏透明服务接入系统任务栏时被拒绝访问（0x80070005），已停止自动重试"
             : error == "core-restart-required" ? "任务栏接入模块仍被 Explorer 占用或版本不一致，需要重新加载，已停止自动重试"
-            : error == "core-attach-timeout" ? "任务栏接入系统 XAML 超时（0x80070102），尚未确认透明效果"
+            : error == "core-attach-timeout" ? "任务栏接入系统 XAML 超时（0x80070102），已停止自动重试"
+            : error == "core-failure" ? "任务栏透明服务运行失败，已停止自动重试"
             : error == "core-effect-unconfirmed" ? "任务栏服务正在运行，但尚未确认背景透明效果"
             : error.empty() ? std::string("原任务栏设置仍待恢复") : "任务栏运行失败（" + error + "）";
         check.detail = check.status == CheckStatus::Ok ? detail : check.detail + "；" + detail;

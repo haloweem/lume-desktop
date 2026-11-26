@@ -24,10 +24,15 @@ bool Disconnect();
 bool ConnectedTo(const std::wstring& ssid);
 void ForgetCreatedProfile(const std::wstring& ssid);
 
-// Paired Bluetooth devices. Windows exposes no public API to connect or
-// disconnect them, so the panel lists them and opens Settings to manage.
-struct Device { std::wstring name; bool connected = false; };
+struct Device {
+    std::wstring name;
+    bool connected = false;
+    std::wstring id;
+    bool paired = false;
+};
 std::vector<Device> PairedDevices();
+std::vector<Device> BluetoothDevices();
+bool PairDevice(const std::wstring& id);
 
 // The Windows accent color the panel uses for "on" (0xRRGGBB): the darker
 // accent shade Windows uses for filled controls, default blue when unknown.

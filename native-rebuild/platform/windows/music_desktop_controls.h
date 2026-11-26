@@ -67,6 +67,7 @@ public:
     bool Visible() const;
     HWND Handle() const;
     widget::Preferences Bounds() const;
+    widget::Preferences PreferredBounds() const;
     const MusicDesktopState& State() const;
 
     // Preferred: lazily owns an invisible, nonactivating top-level HWND.

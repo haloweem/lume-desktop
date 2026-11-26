@@ -24,17 +24,16 @@ export function mountLumiereSubtitles(host){
   function hide(){animation?.cancel();animation=null;layer.hidden=true;key='';}
   return {
     position,hide,
-    update(lines,time,theme){
+    update(lines,time,theme,subtitleContentMode='translation'){
       if(disposed)return;
       let index=-1;
       for(let i=0;i<lines.length&&lines[i].startTime<=time;i++)
         if(time<=getLineRenderEndTime(lines[i]))index=i;
       const activeLine=lines[index]||null;
       const recent=getRecentCompletedLine({lines,currentLineIndex:index,currentTime:time,getLineEndTime:getLineRenderEndTime});
-      const content=resolveVisualizerSubtitleOverlayContent({showText:true,activeLine,
+      const content=resolveVisualizerSubtitleOverlayContent({showText:true,activeLine,subtitleContentMode,hideTranslationSubtitle:subtitleContentMode==='none',
         recentCompletedLine:recent===lines.at(-1)?null:recent,
         nextLines:getUpcomingLines(lines,index,2)});
-      // Lume shows translations only, never the upcoming-line strip.
       const rows=content.subtitleText?content.subtitleTracks.map(track=>track.text):[];
       if(!rows.length){hide();return;}
       position();

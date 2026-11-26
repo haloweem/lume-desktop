@@ -10,27 +10,30 @@ function fixture({language}){
   let current={version:1,type:'dynamicIsland-state',enabled:true,running:true,locked:true,
     expanded:false,focusing:false,finished:false,remaining:0,hideFullscreen:true,topmost:false,
     hover:false,autoHide:true,size:'standard',material:'none',shape:'capsule',leftWidget:0,rightWidget:0,
-    screen:1,screens:[1,2],hoverDelayMs:300,animationSpeed:'normal',bounce:'normal',expandedLayout:1,clockStyle:'simple',calendarStyle:'default',
+    screen:1,screens:[1,2],hoverDelayMs:300,animationSpeed:'normal',bounce:'normal',expandedLayout:1,clockStyle:'simple',calendarStyle:'default',countdownStyle:'standard',countdownDate:21916,countdownTitle:'旅行 <2029>',countdownReminder:true,
     loadStatus:'loaded',error:'',result:'snapshot',saved:false};
   const emit=value=>listeners.forEach(listener=>listener({data:value}));
-  window.expandedFixture={commands,
+  window.expandedFixture={commands,sendFails:false,
     reply(failed=false){if(pending===null)throw Error('no pending setting');
       if(!failed)current={...current,[pending.key]:pending.value};pending=null;
       emit({...current,result:'applied',saved:!failed,error:failed?'save':''});},
-    current:()=>current.expandedLayout,style:()=>current.clockStyle,calendarStyle:()=>current.calendarStyle,
+    current:()=>current.expandedLayout,style:()=>current.clockStyle,calendarStyle:()=>current.calendarStyle,countdownStyle:()=>current.countdownStyle,
+    update(patch){current={...current,...patch};emit({...current,result:'snapshot',saved:false});},
     snapshot(){emit({...current,result:'snapshot',saved:false});},
-    navigate(){emit({version:1,type:'navigate',page:'dynamicIsland'});},
+    navigate(section){emit({version:1,type:'navigate',page:'dynamicIsland',...(section?{section}:{})});},
   };
   window.chrome={webview:{
     addEventListener(name,listener){if(name==='message')listeners.add(listener);},
     removeEventListener(name,listener){if(name==='message')listeners.delete(listener);},
-    postMessage(command){commands.push(command);
+    postMessage(command){
+      if(window.expandedFixture.sendFails&&typeof command==='string'&&command.startsWith('v1|dynamicIsland|'))throw Error('simulated unavailable bridge');
+      commands.push(command);
       if(command==='v1|ready')queueMicrotask(()=>{
         emit({version:1,type:'app-settings-state',revision:1,language,balancedMode:true,autostart:false,
           busy:false,error:'',update:{status:'idle',version:'',progress:0}});
         emit(current);window.expandedFixture.navigate();
       });
-      else if(typeof command==='string'&&/^v1\|dynamicIsland\|(expandedLayout|clockStyle|calendarStyle|material)\|[^|]+$/.test(command)){
+      else if(typeof command==='string'&&/^v1\|dynamicIsland\|(expandedLayout|clockStyle|calendarStyle|countdownStyle|material)\|[^|]+$/.test(command)){
         if(pending!==null)throw Error('duplicate setting save');
         const [,,key,value]=command.split('|');pending={key,value:key==='expandedLayout'?Number(value):value};
       }
@@ -54,19 +57,80 @@ test('expanded widgets and static styles preserve ordering, acknowledgements and
         await page.addInitScript(fixture,{language});await page.goto(harness.origin);
         const picker=page.locator('[data-island-expanded-picker]');await picker.waitFor({state:'visible'});
         await page.evaluate(()=>document.fonts.ready);
-        await page.waitForFunction(()=>[...document.querySelectorAll('.island-expanded-icon')].every(image=>image.complete&&image.naturalWidth===256));
+        await page.waitForFunction(()=>[...document.querySelectorAll('.island-expanded-icon')].every(image=>image.complete&&image.naturalWidth>0&&(image.src.endsWith('.svg')||image.naturalWidth===256)));
         assert.equal(await page.locator('[data-island-native-preview],[data-island-preview-mode],[data-island-compact-widget]').count(),0);
         assert.deepEqual(await page.locator('.settings-side-nav [data-tab]').evaluateAll(nodes=>nodes.map(node=>node.dataset.tab)),['home','todo','notifications','settings','details']);
-        assert.deepEqual(await page.locator('[data-island-style-widget]').evaluateAll(nodes=>nodes.map(node=>node.dataset.islandStyleWidget)),['music','calendar-weather','todos','clock','system']);
+        assert.deepEqual(await page.locator('[data-island-style-widget]').evaluateAll(nodes=>nodes.map(node=>node.dataset.islandStyleWidget)),['music','calendar-weather','todos','clock','system','countdown']);
         const categoriesBefore=await page.evaluate(()=>window.expandedFixture.commands.length);
         const waitImages=()=>page.waitForFunction(()=>[...document.querySelectorAll('[data-island-style-card] img')].every(image=>image.complete&&image.naturalWidth>0));
-        for(const widget of ['music','calendar-weather','todos','system','clock']){
+        for(const widget of ['music','calendar-weather','todos','system','countdown','clock']){
           await page.locator(`[data-island-style-widget="${widget}"]`).click();
           assert.equal(await page.locator(`[data-island-style-widget="${widget}"]`).getAttribute('aria-pressed'),'true');
-          assert.equal(await page.locator('[data-island-style-card]').count(),widget==='clock'?6:widget==='calendar-weather'?2:1);await waitImages();
-          assert.equal(await page.locator('[data-island-style-card] img').first().evaluate(image=>image.getAttribute('src').endsWith('-en.png')),language==='en','thumbnail language follows the page');
+          assert.equal(await page.locator('[data-island-style-card]').count(),widget==='clock'?6:widget==='calendar-weather'?2:widget==='countdown'?2:1);
+          if(widget==='countdown'){
+            assert.equal(await page.locator('.island-countdown-preview').count(),2);
+            assert.equal(await page.locator('[data-island-countdown-date]').count(),0);
+          }
+          else await waitImages();
+          if(widget!=='countdown')assert.equal(await page.locator('[data-island-style-card] img').first().evaluate(image=>image.getAttribute('src').endsWith('-en.png')),language==='en','thumbnail language follows the page');
         }
         assert.equal(await page.evaluate(()=>window.expandedFixture.commands.length),categoriesBefore,'category selection sends no command');
+        await page.locator('[data-island-style-widget="countdown"]').click();
+        const card=page.locator('[data-island-countdown-style="standard"]');
+        assert.equal(await card.getAttribute('aria-pressed'),'true');
+        assert.equal(await card.locator('.island-style-card__caption > span').first().textContent(),language==='en'?'Default style':'默认样式');
+        assert.equal(await card.locator('.island-style-card__check').isVisible(),true);
+        assert.equal(await card.locator('.island-countdown-preview__title').textContent(),language==='en'?'New Year':'新年');
+        await page.evaluate(()=>window.expandedFixture.update({countdownTitle:'距离新年还有',countdownDate:Math.floor(Date.UTC(2026,10,26)/86400000)}));
+        assert.equal(await card.locator('.island-countdown-preview__title').textContent(),language==='en'?'New Year':'新年','sample stays independent from the live countdown settings');
+        const today=await page.evaluate(()=>{const date=new Date();return [date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');});
+        const remaining=await page.evaluate(()=>{const date=new Date();return String(Math.round((Date.UTC(date.getFullYear()+1,0,1)-Date.UTC(date.getFullYear(),date.getMonth(),date.getDate()))/86400000));});
+        assert.equal(await card.locator('.island-countdown-preview__number').textContent(),remaining);
+        const countdownDateText=await card.locator('.island-countdown-preview__date').textContent();
+        assert.equal(countdownDateText,(language==='en'?'Date: ':'日期：')+today);
+        assert.deepEqual(await card.locator('.island-countdown-preview').evaluate(node=>{
+          const bounds=node.getBoundingClientRect();
+          const title=node.querySelector('.island-countdown-preview__title').getBoundingClientRect();
+          const middle=node.querySelector('.island-countdown-preview__number').getBoundingClientRect();
+          const date=node.querySelector('.island-countdown-preview__date');
+          const footer=date.getBoundingClientRect();
+          return {ratio:Number((bounds.width/bounds.height).toFixed(2)),middle:Number((middle.height/bounds.height).toFixed(2)),
+            header:Number((title.height/bounds.height).toFixed(2)),footer:Number((footer.height/bounds.height).toFixed(2)),
+            dateAlign:getComputedStyle(date).justifyContent,
+            title:getComputedStyle(node.querySelector('.island-countdown-preview__title')).backgroundColor,
+            number:getComputedStyle(node.querySelector('.island-countdown-preview__number')).backgroundColor,
+            dateColor:getComputedStyle(date).backgroundColor};
+        }),{ratio:1.2,middle:0.63,header:0.19,footer:0.18,dateAlign:'center',title:'rgb(33, 131, 192)',
+          number:'rgb(250, 250, 250)',dateColor:'rgb(244, 243, 241)'},
+        'countdown preview matches the native three-band layout');
+        const violet=page.locator('[data-island-countdown-style="violet"]');
+        assert.equal(await violet.locator('.island-countdown-preview__event').textContent(),language==='en'?'New Year':'新年');
+        assert.equal(await violet.locator('.island-countdown-preview__days strong').textContent(),remaining);
+        const solidPreview=violet.locator('.island-countdown-preview');
+        assert.doesNotMatch(await solidPreview.locator('.island-countdown-preview__date').textContent(),/周年|years/);
+        assert.match(await solidPreview.locator('.island-countdown-preview__interval').textContent(),language==='en'?/days remaining/:/还有\d+天/);
+        const solidRatio=await solidPreview.evaluate(node=>{
+          const bounds=node.getBoundingClientRect();return Number((bounds.width/bounds.height).toFixed(2));
+        });
+        assert.equal(solidRatio,2.22,'solid countdown preview uses the shorter 20:9 layout ratio');
+        assert.doesNotMatch(await solidPreview.textContent(),/0周年|倒数日|0 years|Countdown/);
+        assert.match(await violet.locator('.island-countdown-preview__days strong').evaluate(node=>getComputedStyle(node).fontFamily),/Times New Roman/);
+        assert.equal(await violet.locator('button,a,[role="button"]').count(),0,'violet sample has no pin, edit or delete controls');
+        assert.doesNotMatch(await violet.textContent(),/编辑|删除|固定|Edit|Delete|Pin/);
+        for(const style of ['violet','standard']){
+          const choice=page.locator(`[data-island-countdown-style="${style}"]`);
+          await choice.click();await page.evaluate(()=>window.expandedFixture.reply());
+          assert.equal(await choice.getAttribute('aria-pressed'),'true');
+          await page.locator('[data-tab="settings"]').click();await page.locator('[data-tab="home"]').click();
+          assert.equal(await choice.getAttribute('aria-pressed'),'true','each countdown style survives page reentry');
+        }
+        const countdownSizes=await page.locator('[data-island-countdown-style]').evaluateAll(cards=>cards.map(card=>{const rect=card.getBoundingClientRect();return {width:rect.width,height:rect.height};}));
+        assert.ok(countdownSizes.every(size=>Math.abs(size.width-countdownSizes[0].width)<1&&Math.abs(size.height-countdownSizes[0].height)<1),'countdown style selection frames have equal dimensions');
+        if(width===1536&&language==='zh-CN')await page.locator('[data-island-styles]').screenshot({path:path.join(output,'countdown-all-styles.png'),animations:'disabled'});
+        await page.evaluate(()=>window.expandedFixture.navigate('music'));
+        assert.equal(await page.locator('[data-island-style-widget="music"]').getAttribute('aria-pressed'),'true');
+        await page.locator('[data-island-style-widget="countdown"]').click();
+        if(width===1536&&language==='zh-CN')await page.screenshot({path:path.join(output,'countdown-standard-preview.png')});
         await page.locator('[data-island-style-widget="calendar-weather"]').click();
         const oldCalendar=page.locator('[data-island-calendar-style="default"]'),almanac=page.locator('[data-island-calendar-style="chinese-almanac"]');
         await almanac.click();assert.equal(await almanac.getAttribute('aria-pressed'),'false');
@@ -100,6 +164,13 @@ test('expanded widgets and static styles preserve ordering, acknowledgements and
           await page.locator('[data-tab="settings"]').click();await page.locator('[data-tab="home"]').click();
           assert.equal(await choice.getAttribute('aria-pressed'),'true','each style survives page reentry');
         }
+        const retry=page.locator('[data-island-clock-style="digital"]');
+        await page.evaluate(()=>window.expandedFixture.sendFails=true);await retry.click();
+        assert.equal(await retry.isDisabled(),false,'unavailable bridge state keeps style choices retryable');
+        await page.evaluate(()=>window.expandedFixture.sendFails=false);await retry.click();
+        await page.evaluate(()=>window.expandedFixture.reply());
+        assert.equal(await retry.getAttribute('aria-pressed'),'true','style changes recover after a bridge send failure');
+        await progress.click();await page.evaluate(()=>window.expandedFixture.reply());
         const cardGeometry=await page.locator('[data-island-clock-style]').evaluateAll(cards=>cards.map(card=>{
           const {x,y,width,height}=card.getBoundingClientRect();return {x,y,width,height};
         }));
@@ -118,15 +189,19 @@ test('expanded widgets and static styles preserve ordering, acknowledgements and
           const style=getComputedStyle(node);return {margin:style.marginTop,padding:style.paddingTop,transform:style.transform};
         }),{margin:'24px',padding:'24px',transform:'none'},'cards move upward by reducing positive section spacing');
         const choose=id=>picker.locator(`[data-island-expanded-toggle="${id}"]`);
-        const music=choose(0),calendar=choose(1),clock=choose(5),todos=choose(4),performance=choose(3);
-        assert.deepEqual(await picker.locator('[data-island-expanded-chip]').evaluateAll(nodes=>nodes.map(node=>Number(node.dataset.islandExpandedChip))),[0,1,4,5,3]);
-        assert.equal(await picker.locator('[role="switch"]').count(),5);
+        const music=choose(0),calendar=choose(1),clock=choose(5),todos=choose(4),performance=choose(3),countdown=choose(6);
         const toggle=async(widget,failed=false)=>{await widget.locator('.island-widget-enable').click();await page.evaluate(failed=>window.expandedFixture.reply(failed),failed);};
+        assert.deepEqual(await picker.locator('[data-island-expanded-chip]').evaluateAll(nodes=>nodes.map(node=>Number(node.dataset.islandExpandedChip))),[0,1,4,5,3,6]);
+        assert.equal(await picker.locator('[role="switch"]').count(),6);
+        assert.equal(await countdown.getAttribute('aria-label'),language==='en'?'Countdown':'倒数日');
+        await toggle(countdown);assert.equal(await countdown.getAttribute('aria-checked'),'true');
+        assert.equal(await page.evaluate(()=>window.expandedFixture.current()),encodeExpandedLayout([0,6]));
+        await toggle(countdown);assert.equal(await countdown.getAttribute('aria-checked'),'false');
         await toggle(calendar,true);assert.equal(await calendar.getAttribute('aria-checked'),'false');await toggle(calendar);
         const moveEarlier=picker.locator('[data-island-expanded-move="1"][data-direction="-1"]');
         await moveEarlier.focus();await moveEarlier.press('Enter');await page.evaluate(()=>window.expandedFixture.reply());
         assert.equal(await page.evaluate(()=>window.expandedFixture.current()),encodeExpandedLayout([1,0]));
-        await clock.locator('.island-widget-enable').click();assert.equal(await picker.locator('[role="switch"][aria-disabled="true"]').count(),5);
+        await clock.locator('.island-widget-enable').click();assert.equal(await picker.locator('[role="switch"][aria-disabled="true"]').count(),6);
         const pendingLayouts=await page.evaluate(()=>window.expandedFixture.commands.length);await clock.click({force:true});
         assert.equal(await page.evaluate(()=>window.expandedFixture.commands.length),pendingLayouts);
         await page.evaluate(()=>window.expandedFixture.reply());
@@ -155,7 +230,7 @@ test('expanded widgets and static styles preserve ordering, acknowledgements and
         await page.screenshot({path:path.join(output,`${width}-${language}-reminder-icons.png`)});
         await page.locator('[data-tab="home"]').click();assert.equal(await progress.getAttribute('aria-pressed'),'true');
         assert.equal(await picker.locator('[role="switch"][aria-checked="true"]').count(),5);
-        assert.deepEqual(await picker.locator('[data-island-expanded-chip]').evaluateAll(nodes=>nodes.map(node=>Number(node.dataset.islandExpandedChip))),[1,5,4,0,3]);
+        assert.deepEqual(await picker.locator('[data-island-expanded-chip]').evaluateAll(nodes=>nodes.map(node=>Number(node.dataset.islandExpandedChip))),[1,5,4,0,3,6]);
         await waitImages();await page.evaluate(()=>document.activeElement.blur());await page.waitForTimeout(230);
         await page.screenshot({path:path.join(output,`${width}-${language}-clock-styles.png`),animations:'disabled'});
         await page.locator('[data-island-styles]').screenshot({path:path.join(output,`${width}-${language}-clock-cards.png`),animations:'disabled'});

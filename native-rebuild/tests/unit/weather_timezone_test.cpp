@@ -10,6 +10,9 @@ void Expect(bool value, const char* reason) {
 }
 int main() {
     WeatherTimezone zone;
+    const auto systemZone=zone.SystemZone();
+    Expect(!systemZone.empty() && zone.Local(*ParseUtc("2026-11-15T00:00:00Z"),systemZone).has_value(),
+        "Windows current timezone maps to a valid IANA identifier");
     const auto january = *ParseUtc("2026-01-15T03:35:00Z");
     const auto july = *ParseUtc("2026-07-15T03:35:00Z");
     Expect(zone.Local(january, "Asia/Shanghai") == "2026-01-15T11:35", "named Chinese city timezone");

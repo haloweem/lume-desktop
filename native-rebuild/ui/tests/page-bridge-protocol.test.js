@@ -30,13 +30,20 @@ const hostAccepts = message => exact.has(message) || numeric.some(({prefix, min,
   const digits = message.slice(prefix.length);
   if (!/^(0|[1-9]\d{0,3})$/.test(digits)) return false;
   const value = Number(digits);
-  return value >= min && value <= max && (!prefix.startsWith('v1|radial|shortcut|') || hostRadialShortcut(value));
+  if (value < min || value > max) return false;
+  if (prefix === 'v1|dock|summonShortcut|') return hostSummonShortcut(value);
+  return prefix !== 'v1|radial|shortcut|' || hostRadialShortcut(value);
 });
 
-// The host's radial shortcut check, translated from its C++ body.
-const radialBody = source.match(/bool ValidRadialShortcut\(int code\) noexcept \{([\s\S]*?)\n\}/)[1]
-  .replace(/const (int|bool) /g, 'const ').replace('code / 256', 'Math.trunc(code / 256)');
-const hostRadialShortcut = new Function('code', radialBody);
+// Evaluate the same shortcut predicates as the native host.
+function shortcutPredicate(cpp, pattern) {
+  const body = cpp.match(pattern)[1].replace(/const (int|bool|unsigned) /g, 'const ')
+    .replace('code / 256', 'Math.trunc(code / 256)');
+  return new Function('code', body);
+}
+const hostRadialShortcut = shortcutPredicate(source, /bool ValidRadialShortcut\(int code\) noexcept \{([\s\S]*?)\n\}/);
+const dockSource = readFileSync(new URL('../../core/dock/dock_model.cpp', import.meta.url), 'utf8');
+const hostSummonShortcut = shortcutPredicate(dockSource, /bool ValidSummonShortcut\(unsigned code\) noexcept \{([\s\S]*?)\n\}/);
 
 const pageSends = parts => {
   const sent = [];
@@ -63,7 +70,7 @@ test('numeric ranges agree at and beyond both ends', () => {
   for (const {prefix, min, max} of numeric) {
     // Per-style settings carry an extra word: v1|spectrum|blocks|barWidth|9.
     const words = prefix.split('|').slice(1, -1);
-    if (words[0] === 'radial') continue;  // checked value by value below
+    if (words[0] === 'radial' || prefix === 'v1|dock|summonShortcut|') continue;  // checked value by value below
     for (const value of [min, max]) {
       const message=pageSends([...words, value]);
       if(prefix==='v1|dynamicIsland|expandedLayout|') {
@@ -79,6 +86,12 @@ test('radial shortcuts agree for every code', () => {
   for (let code = -1; code <= 4096; ++code) {
     assert.equal(validRadialShortcut(code), code >= 1 && code <= 4095 && hostRadialShortcut(code), String(code));
     assert.equal(pageSends(['radial', 'shortcut', code]) !== null, hostAccepts(`v1|radial|shortcut|${code}`), String(code));
+  }
+});
+
+test('Dock summon shortcuts agree for every code', () => {
+  for (let code = -1; code <= 4096; ++code) {
+    assert.equal(pageSends(['dock', 'summonShortcut', code]) !== null, hostAccepts(`v1|dock|summonShortcut|${code}`), String(code));
   }
 });
 
@@ -124,6 +137,7 @@ test('settings page controls use the host ranges', () => {
   const dock = read('dock.js'), organizer = read('organizer.js'), minimize = read('minimize.js'),
     icons = read('desktop-icons.js'), controls = read('component-settings-commands.js');
   const dockKey = {'dock-icon-scale': 'iconScale', 'dock-bottom-offset': 'bottomOffset', 'dock-icon-spacing': 'iconSpacing',
+    'dock-position-offset': 'positionOffset', 'dock-reflection-ratio': 'reflectionRatio', 'dock-reflection-transparency': 'reflectionTransparency',
     'dock-launchpad-scale': 'launchpadScale', 'dock-launchpad-icon-scale': 'launchpadIconScale'};
   for (const m of dock.matchAll(/rangeControl\('([\w-]+)',t\([^)]*\),[^,]+,(\d+),(\d+),/g))
     expect(`dock.js slider ${m[1]}`, `v1|dock|${dockKey[m[1]]}|`, m[2], m[3]);

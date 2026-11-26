@@ -1,6 +1,6 @@
 # 可选的 Windows 通知身份
 
-这个目录提供稀疏包元数据和身份管理脚本。构建本身不会注册身份。**生产安装器只有在打包时提供已受信任签名的 MSIX 后，才会在启动 Lume 前为原登录用户自动注册。** 脚本从不开启开发者模式、导入证书或自动申请 Windows 通知权限；通知访问仍由用户在产品中主动选择。
+这个目录提供稀疏包元数据和身份管理脚本。生产安装器校验随包签名 MSIX 的哈希后，在启动 Lume 前为原登录用户尝试注册。系统注册失败时，安装器记录原因并继续启动，依赖系统身份的通知功能可能受限。下次覆盖安装会再次检查。Windows 通知访问仍由用户在产品中主动选择。
 
 身份名称和 ApplicationId 固定在 `cmake/LayerApps.cmake`；`LUME_NOTIFICATION_IDENTITY_PUBLISHER` 是 CMake CACHE STRING（默认 `CN=LumeDesktop`），必须配置为真实签名证书的精确 Subject。Publisher 的 XML 和 JSON 分别转义；版本从 CMake `PROJECT_VERSION` 生成。包清单、exe 内嵌 `msix` 元数据和 `identity-config.json` 使用同一组值。可用 `-DLUME_NOTIFICATION_IDENTITY=OFF` 关闭构建此可选元数据，但这样的构建不能携带生产身份包。
 
@@ -26,7 +26,7 @@
 & 'D:\lume\notification-identity\Register-NotificationIdentity.ps1' -IdentityPackagePath 'C:\releases\Lume.NotificationIdentity.msix' -InstallDirectory 'D:\lume'
 ```
 
-制作 MSIX 时，使用构建输出 `notification-identity/AppxManifest.xml`，并将 `Assets` 保持在清单旁的包内 `Assets` 路径；使用独立身份包制作工具和生产签名流程。此目录不附带证书、私钥、未签名 MSIX，也不自动信任任何签名。清单声明 `runFullTrust`、`userNotificationListener`、`unvirtualizedResources` 和 `graphicsCaptureWithoutBorder`；HKCU/AppData 写入虚拟化被禁用，保持现有设置位置。现有同名包必须 Publisher 和实际外部位置匹配；支持正常版本升级，拒绝降级或接管其他安装目录。
+制作 MSIX 时，使用构建输出 `notification-identity/AppxManifest.xml`，并将 `Assets` 保持在清单旁的包内 `Assets` 路径；使用独立身份包制作工具和生产签名流程。此目录不附带证书、私钥、未签名 MSIX，也不自动信任任何签名。清单声明 `runFullTrust`、`userNotificationListener`、`unvirtualizedResources` 和 `graphicsCaptureWithoutBorder`；HKCU/AppData 写入虚拟化被禁用，保持现有设置位置。现有同名包必须 Publisher 和实际外部位置匹配。回装旧版时，若已有更高版本的正式身份，脚本会检查包状态和已注册清单中的应用入口及所需能力，检查通过后直接复用。
 
 `graphicsCaptureWithoutBorder` 用于现有玻璃材质的 Windows Graphics Capture 无边框权限，与 `userNotificationListener` 消息读取权限彼此独立。能力声明只描述应用需要的权限，不代表用户已授权；身份构建、注册和安装脚本均不调用 `RequestAccessAsync` 或修改系统权限。运行时只有系统已允许无边框捕获才启动玻璃采样，未授权、撤权或系统不支持时使用非采样材质回退，避免因添加通知身份而显示捕获边框。制作和部署验证均拒绝缺少任一所需能力的身份包。
 

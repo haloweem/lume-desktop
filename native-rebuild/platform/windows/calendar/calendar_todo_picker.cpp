@@ -45,7 +45,7 @@ struct CalendarTodoPicker::Impl : std::enable_shared_from_this<Impl> {
         if(restore&&IsWindow(focus)&&IsWindowEnabled(focus))SetFocus(focus);
         closing=false;
     }
-    bool Open(HINSTANCE instance,const calendar::Preferences &prefs) {
+    bool Open(HINSTANCE instance,const calendar::Preferences &prefs,bool opaque) {
         surface=std::make_unique<todo_ui::Surface>(dpi,prefs);
         WNDCLASSEXW wc{};
         wc.cbSize=sizeof(wc);wc.hInstance=instance;wc.lpfnWndProc=Proc;
@@ -88,7 +88,9 @@ struct CalendarTodoPicker::Impl : std::enable_shared_from_this<Impl> {
             for(auto id:{Month,Hour,Minute})SendMessageW(Get(id),EM_SETLIMITTEXT,2,0);
             WriteInputs();
         }
-        Layout();surface->Attach(window,true);
+        Layout();
+        if(opaque)surface->AttachOpaque(window,8.f);
+        else surface->Attach(window,true);
         surface->Show(Get(choice?ChoiceFirst+std::max(chosen,0):numeric?(reminder.kind==todo::ReminderKind::None?None:Number):Year));
         return true;
     }
@@ -353,7 +355,7 @@ struct CalendarTodoPicker::Impl : std::enable_shared_from_this<Impl> {
         }
     }
 };
-CalendarTodoPicker::CalendarTodoPicker()=default;
+CalendarTodoPicker::CalendarTodoPicker(bool opaque):opaque_(opaque){}
 CalendarTodoPicker::~CalendarTodoPicker(){Close();}
 bool CalendarTodoPicker::OpenDate(HINSTANCE instance,HWND owner,HWND trigger,RECT host,unsigned dpi,
     const calendar::Preferences &prefs,todo::LocalDateTime value,todo::LocalDateTime now,DateChanged callback,CurrentTime nowProvider) {
@@ -361,7 +363,7 @@ bool CalendarTodoPicker::OpenDate(HINSTANCE instance,HWND owner,HWND trigger,REC
     auto p=std::make_shared<Impl>();
     impl_=p;p->owner=owner;p->trigger=trigger;p->host=host;p->dpi=dpi;
     p->value=value;p->today=now;p->dateChanged=std::move(callback);p->nowProvider=std::move(nowProvider);
-    return p->Open(instance,prefs);
+    return p->Open(instance,prefs,opaque_);
 }
 bool CalendarTodoPicker::OpenReminder(HINSTANCE instance,HWND owner,HWND trigger,RECT host,unsigned dpi,
     const calendar::Preferences &prefs,todo::ReminderDraft value,ReminderChanged callback) {
@@ -369,7 +371,7 @@ bool CalendarTodoPicker::OpenReminder(HINSTANCE instance,HWND owner,HWND trigger
     auto p=std::make_shared<Impl>();
     impl_=p;p->owner=owner;p->trigger=trigger;p->host=host;p->dpi=dpi;
     p->numeric=true;p->reminder=value;p->reminderChanged=std::move(callback);
-    return p->Open(instance,prefs);
+    return p->Open(instance,prefs,opaque_);
 }
 bool CalendarTodoPicker::OpenChoice(HINSTANCE instance,HWND owner,HWND trigger,RECT host,unsigned dpi,
     const calendar::Preferences &prefs,std::vector<std::wstring> options,int chosen,ChoiceChanged callback) {
@@ -378,7 +380,7 @@ bool CalendarTodoPicker::OpenChoice(HINSTANCE instance,HWND owner,HWND trigger,R
     auto p=std::make_shared<Impl>();
     impl_=p;p->owner=owner;p->trigger=trigger;p->host=host;p->dpi=dpi;
     p->choice=true;p->options=std::move(options);p->chosen=chosen;p->choiceChanged=std::move(callback);
-    return p->Open(instance,prefs);
+    return p->Open(instance,prefs,opaque_);
 }
 void CalendarTodoPicker::Close(bool restore){auto p=std::move(impl_);if(p)p->Close(restore);}
 HWND CalendarTodoPicker::Handle() const noexcept{return impl_?impl_->window:nullptr;}

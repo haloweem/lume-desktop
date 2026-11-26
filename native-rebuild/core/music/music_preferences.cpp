@@ -59,6 +59,7 @@ Json Parse(std::basic_string_view<Char> input) {
 
 bool operator==(const MusicPreferences& left, const MusicPreferences& right) {
     return left.version == right.version && left.mode == right.mode && left.effectMode == right.effectMode &&
+        left.subtitleContentMode == right.subtitleContentMode &&
         left.fontFamily == right.fontFamily &&
         left.animationIntensity == right.animationIntensity && left.lyricsFontColor == right.lyricsFontColor &&
         left.lyricsKaraokeFillColor == right.lyricsKaraokeFillColor &&
@@ -68,12 +69,14 @@ bool operator==(const MusicPreferences& left, const MusicPreferences& right) {
 }
 
 bool NormalizeMusicPreferences(const MusicPreferences& input, MusicPreferences& output) {
-    constexpr std::array<std::string_view, 14> modes{
+    constexpr std::array<std::string_view, 17> modes{
         "partita", "fume", "sonnet", "gallery", "3d", "lumiere", "motif", "cadenza", "tilt", "cappella", "diorama", "pendolo",
-        "classic", "tempera"};
+        "classic", "tempera", "nebbia", "hanabi", "machi"};
     constexpr std::array<std::string_view, 4> effects{"none", "rain-window", "snow", "star-river"};
-    if (input.version != 3 || std::find(modes.begin(), modes.end(), input.mode) == modes.end() ||
+    constexpr std::array<std::string_view, 4> subtitleModes{"translation", "romanization", "both", "none"};
+    if (input.version != 4 || std::find(modes.begin(), modes.end(), input.mode) == modes.end() ||
         std::find(effects.begin(), effects.end(), input.effectMode) == effects.end() ||
+        std::find(subtitleModes.begin(), subtitleModes.end(), input.subtitleContentMode) == subtitleModes.end() ||
         (input.animationIntensity != "calm" && input.animationIntensity != "normal" && input.animationIntensity != "chaotic") ||
         !FontFamily(input.fontFamily)) return false;
     auto next = input;
@@ -92,14 +95,19 @@ bool DecodeMusicPreferences(const Json& json, MusicPreferences& output, std::str
         if (json.at("version") == 1) {
             if (!detail::MusicPreferencesKeys(json, {"version", "mode", "fontFamily", "animationIntensity",
                     "lyricsFontColor", "lyricsKaraokeFillColor"})) return false;
-        } else if (json.at("version") == 2 || json.at("version") == 3) {
+        } else if (json.at("version") == 2 || json.at("version") == 3 || json.at("version") == 4) {
             if (json.at("version") == 2) {
                 if (!detail::MusicPreferencesKeys(json, {"version", "mode", "fontFamily", "animationIntensity",
                         "lyricsFontColor", "lyricsKaraokeFillColor", "sonnetColors"})) return false;
-            } else {
+            } else if (json.at("version") == 3) {
                 if (!detail::MusicPreferencesKeys(json, {"version", "mode", "fontFamily", "animationIntensity",
                         "lyricsFontColor", "lyricsKaraokeFillColor", "sonnetColors", "effectMode"})) return false;
                 next.effectMode = json.at("effectMode").get<std::string>();
+            } else {
+                if (!detail::MusicPreferencesKeys(json, {"version", "mode", "fontFamily", "animationIntensity",
+                        "lyricsFontColor", "lyricsKaraokeFillColor", "sonnetColors", "effectMode", "subtitleContentMode"})) return false;
+                next.effectMode = json.at("effectMode").get<std::string>();
+                next.subtitleContentMode = json.at("subtitleContentMode").get<std::string>();
             }
             if (!detail::MusicPreferencesKeys(json.at("sonnetColors"),
                     {"lyricsFontColor", "karaokeFillColor", "glowColor"})) return false;
@@ -127,7 +135,8 @@ bool DecodeMusicPreferences(const Json& json, MusicPreferences& output, std::str
 Json EncodeMusicPreferences(const MusicPreferences& preferences) {
     MusicPreferences p;
     if (!NormalizeMusicPreferences(preferences, p)) throw std::invalid_argument("music preferences");
-    return Json{{"version", 3}, {"mode", p.mode}, {"effectMode", p.effectMode}, {"fontFamily", p.fontFamily},
+    return Json{{"version", 4}, {"mode", p.mode}, {"effectMode", p.effectMode},
+        {"subtitleContentMode", p.subtitleContentMode}, {"fontFamily", p.fontFamily},
         {"animationIntensity", p.animationIntensity}, {"lyricsFontColor", p.lyricsFontColor},
         {"lyricsKaraokeFillColor", p.lyricsKaraokeFillColor},
         {"sonnetColors", Json{{"lyricsFontColor", p.sonnetLyricsFontColor},

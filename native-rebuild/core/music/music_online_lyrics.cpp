@@ -368,6 +368,24 @@ LocalLyricsResult ParseOnlineLyrics(auth::Provider provider, const auth::Json& r
         Require(response.is_object(), "invalid-response");
         std::size_t bytes = 0, nodes = 0;
         BoundJson(response, bytes, nodes);
+        if (response.contains("foliaLines")) {
+            LocalLyricsResult result;
+            const auto& lines = response.at("foliaLines");
+            Require(lines.is_array() && lines.size() <= kLyricsMaxLines, "invalid-response");
+            for (const auto& line : lines) {
+                LyricLine value;
+                value.startTime = line.at("startTime").get<double>();
+                value.endTime = line.at("endTime").get<double>();
+                value.fullText = line.at("fullText").get<std::string>();
+                value.translation = line.value("translation", std::string{});
+                value.romanization = line.value("romanization", std::string{});
+                for (const auto& word : line.value("words", Json::array()))
+                    value.words.push_back({word.at("startTime").get<double>(), word.at("endTime").get<double>(), word.at("text").get<std::string>()});
+                result.lines.push_back(std::move(value));
+            }
+            Require(ValidateLyrics(result.lines), "invalid-timeline");
+            return result;
+        }
         if (provider == auth::Provider::Netease) {
             Require(!HasCodeError(response, 200), "provider-error");
             if (Flag(response, "pureMusic") || Flag(response, "nolyric")) return {};
@@ -430,9 +448,8 @@ LocalLyricsResult ParseOnlineLyrics(auth::Provider provider, const auth::Json& r
 
 LocalLyricsResult ParseOnlineLyrics(std::string_view provider, const auth::Json& response,
     double duration) noexcept {
-    if (provider == "netease") return ParseOnlineLyrics(auth::Provider::Netease, response, duration);
-    if (provider == "qq") return ParseOnlineLyrics(auth::Provider::QQ, response, duration);
-    if (provider == "kugou") return ParseOnlineLyrics(auth::Provider::Kugou, response, duration);
+    for (const auto candidate : auth::Providers)
+        if (provider == auth::Name(candidate)) return ParseOnlineLyrics(candidate, response, duration);
     return {{}, "unsupported-provider"};
 }
 
